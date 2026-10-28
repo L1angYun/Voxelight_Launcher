@@ -55,7 +55,9 @@
 }
 
 .vx-lattice-frame--selected .vx-lattice-frame__dot {
-  border-radius: 0.4px;
+  width: 2px;
+  height: 8px;
+  border-radius: 1px;
   opacity: 1;
   rotate: 0deg;
 }
