@@ -14,19 +14,20 @@ import {
 } from "../visual/overture/motion";
 import "./WorldScene.css";
 
-export const CUBE_SIZE_PX = 8;
-export const CUBE_PITCH_PX = 32;
-export const CUBE_TOP_HEIGHT = 4;
-export const CUBE_SIDE_WIDTH = 4;
+export const CUBE_SIZE_PX = 20;
+export const CUBE_PITCH_PX = 28;
+export const CUBE_TOP_HEIGHT = 10;
+export const CUBE_SIDE_WIDTH = 10;
 export const CUBE_DEFAULT_OPACITY = 0.85;
-export const CUBE_PULSE_MIN = 0.70;
-export const CUBE_PULSE_MAX = 0.95;
+export const CUBE_PULSE_MIN = 0.72;
+export const CUBE_PULSE_MAX = 0.96;
 export const CUBE_ACTIVE_BUDGET = 50;
 export const CUBE_FLIP_DURATION_MS = 280;
 export const CUBE_STAY_DURATION_MS = 1800;
 export const CUBE_GLOW_RADIUS_PX = 10;
 export const CUBE_GLOW_DURATION_MS = 800;
 export const CUBE_TRIGGER_RADIUS_PX = 120;
+export const CUBE_RIPPLE_FALLOFF_PX = 220;
 export const POINTER_SPRING: SpringTuning = { stiffness: 90, damping: 13 };
 
 export type WorldSceneState = "idle" | "preparing" | "running" | "error";
@@ -67,6 +68,8 @@ type CubeCell = {
   phase: number;
   period: number;
   cooldownUntil: number;
+  ripplePhase: number;
+  rippleAmplitude: number;
 };
 
 type CubeMotion = {
@@ -278,16 +281,25 @@ function createCubeCells(width: number, height: number): CubeCell[] {
       const random = seededRandom(
         Math.imul(column + 1, 0x9e3779b1) ^ Math.imul(row + 1, 0x85ebca6b),
       );
-      const rpm = 0.3 + random() * 0.5;
-      const direction = random() < 0.5 ? -1 : 1;
+      // All cubes share the same slow rotation speed; direction and phase are
+      // offset by grid position so they form a diagonal wave rather than each
+      // spinning independently.
+      const rpm = 0.18 + random() * 0.08;        // tight band → uniform feel
+      const direction = (column + row) % 2 === 0 ? 1 : -1;  // checkerboard dirs
+      // Diagonal wave: phase advances smoothly along column+row so the whole
+      // field ripples from top-left to bottom-right like a single breathing skin.
+      const diagonalIndex = column + row;
+      const wavePhase = diagonalIndex * 0.22;    // ~1.4 rad per diagonal step
       cells.push({
         x: (column + 0.5) * CUBE_PITCH_PX,
         y: (row + 0.5) * CUBE_PITCH_PX,
-        rotation: random() * TWO_PI,
+        rotation: wavePhase + random() * 0.15,   // tiny jitter, keeps alignment
         rotationSpeed: direction * (rpm / 60) * TWO_PI,
-        phase: random() * TWO_PI + seed * 0.2,
-        period: 8 + random() * 6,
+        phase: wavePhase + random() * 0.2,       // pulse phase tracks the wave
+        period: 10 + random() * 4,               // longer, calmer breathing
         cooldownUntil: 0,
+        ripplePhase: 0,
+        rippleAmplitude: 0,
       });
     }
   }
@@ -427,7 +439,9 @@ function drawCubeFaces(
 }
 
 function clearCubeCell(context: CanvasRenderingContext2D, cell: CubeCell) {
-  context.clearRect(cell.x - 5, cell.y - 6, 11, 11);
+  // Derive the clear box from the cube footprint so larger cubes redraw cleanly.
+  const half = CUBE_SIZE_PX / 2 + Math.max(CUBE_SIDE_WIDTH, CUBE_TOP_HEIGHT) + 2;
+  context.clearRect(cell.x - half, cell.y - half, half * 2, half * 2);
 }
 
 function drawCubeCell(
@@ -436,17 +450,33 @@ function drawCubeCell(
   palette: Palette,
   now: number,
   motion?: CubeMotion,
+  pointerX?: number,
+  pointerY?: number,
 ) {
   clearCubeCell(context, cell);
   const pose = cubePose(motion, now);
   const rotation = cubeRotation(cell, now);
   const facing = Math.abs(Math.cos(rotation));
+
+  let rippleBoost = 0;
+  let rippleTilt = 0;
+  if (pointerX !== undefined && pointerY !== undefined) {
+    const deltaX = cell.x - pointerX;
+    const deltaY = cell.y - pointerY;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    if (distance < CUBE_RIPPLE_FALLOFF_PX) {
+      const falloff = 1 - distance / CUBE_RIPPLE_FALLOFF_PX;
+      rippleBoost = falloff * falloff * 0.68;
+      rippleTilt = falloff * 0.3;
+    }
+  }
+
   const idleWidth = CUBE_SIZE_PX * (0.2 + facing * 0.8);
   const pulse = cubePulse(cell, now);
   const opacity = pose.accent
-    ? clamp(pulse + 0.16, CUBE_PULSE_MIN, 0.82)
-    : pulse;
-  const tint = 0.08 + facing * 0.06;
+    ? clamp(pulse + 0.16 + rippleBoost, CUBE_PULSE_MIN, 0.98)
+    : clamp(pulse + rippleBoost, CUBE_PULSE_MIN, CUBE_PULSE_MAX);
+  const tint = 0.08 + facing * 0.06 + rippleBoost * 0.24;
   const idleFront = mixColor(palette.base, palette.accent, tint);
   const idleTop = mixColor(idleFront, color(WHITE), 0.25);
   const idleSide = mixColor(idleFront, color(BLACK), 0.2);
@@ -456,7 +486,7 @@ function drawCubeCell(
   drawCubeFaces(
     context,
     cell,
-    idleWidth * pose.widthFactor,
+    idleWidth * pose.widthFactor * (1 + rippleTilt),
     rotation,
     pose.accent ? palette.accentWhite : idleFront,
     pose.accent ? palette.accentTop : idleTop,
@@ -496,6 +526,8 @@ function drawPulseShard(
   now: number,
   active: Map<CubeCell, CubeMotion>,
   cursor: number,
+  pointerX?: number,
+  pointerY?: number,
 ) {
   if (cells.length === 0) return cursor;
   let index = cursor % cells.length;
@@ -503,7 +535,16 @@ function drawPulseShard(
 
   while (drawn < CUBE_IDLE_REDRAW_CELLS && drawn < cells.length) {
     const cell = cells[index];
-    if (!active.has(cell)) drawCubeCell(context, cell, palette, now);
+    if (!active.has(cell)) {
+      let inRipple = false;
+      if (pointerX !== undefined && pointerY !== undefined) {
+        const deltaX = cell.x - pointerX;
+        const deltaY = cell.y - pointerY;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        if (distance < CUBE_RIPPLE_FALLOFF_PX) inRipple = true;
+      }
+      if (!inRipple) drawCubeCell(context, cell, palette, now, undefined, pointerX, pointerY);
+    }
     index = (index + 1) % cells.length;
     drawn += 1;
   }
@@ -873,16 +914,29 @@ export function WorldScene({
       }
     };
 
-    const updateCubes = (now: number) => {
+    const updateCubes = (now: number, pointerX?: number, pointerY?: number) => {
       if (!cubeContext) return;
       for (const [cell, motion] of active) {
         if (now >= motion.finishAt) {
           active.delete(cell);
-          drawCubeCell(cubeContext, cell, palette, now);
+          drawCubeCell(cubeContext, cell, palette, now, undefined, pointerX, pointerY);
         } else {
-          drawCubeCell(cubeContext, cell, palette, now, motion);
+          drawCubeCell(cubeContext, cell, palette, now, motion, pointerX, pointerY);
         }
       }
+
+      if (pointerX !== undefined && pointerY !== undefined) {
+        for (const cell of cells) {
+          if (active.has(cell)) continue;
+          const deltaX = cell.x - pointerX;
+          const deltaY = cell.y - pointerY;
+          const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+          if (distance < CUBE_RIPPLE_FALLOFF_PX) {
+            drawCubeCell(cubeContext, cell, palette, now, undefined, pointerX, pointerY);
+          }
+        }
+      }
+
       pulseCursor = drawPulseShard(
         cubeContext,
         cells,
@@ -948,7 +1002,9 @@ export function WorldScene({
         WORLD_CAMERA.spring,
       );
 
-      updateCubes(now);
+      const rippleX = finePointerRef.current && pointerGoal.current.active ? smoothX : undefined;
+      const rippleY = finePointerRef.current && pointerGoal.current.active ? smoothY : undefined;
+      updateCubes(now, rippleX, rippleY);
       if (glowContext) {
         drawGlowLayer(glowContext, width, height, palette, now, active);
       }
@@ -960,6 +1016,7 @@ export function WorldScene({
         cameraSpring.current.y.position,
         cameraScaleSpring.current.position,
       );
+      scene.dataset.rippleActive = String(rippleX !== undefined && rippleY !== undefined);
     };
 
     const tick = (now: number) => {
@@ -1045,8 +1102,8 @@ export function WorldScene({
       data-cube-glow-duration={CUBE_GLOW_DURATION_MS}
       data-cube-trigger-radius={CUBE_TRIGGER_RADIUS_PX}
       data-cube-rotation="true"
-      data-cube-rotation-rpm-min="0.3"
-      data-cube-rotation-rpm-max="0.8"
+      data-cube-rotation-rpm-min="0.18"
+      data-cube-rotation-rpm-max="0.26"
       data-pointer-fine={finePointer}
       data-pointer-active="false"
     >
