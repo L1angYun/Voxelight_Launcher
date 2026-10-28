@@ -196,11 +196,12 @@
   position: absolute;
   z-index: 1;
   top: clamp(6px, 1.4vh, 18px);
-  right: clamp(-76px, -2.5vw, -20px);
+  right: 0;
   bottom: 0;
   width: min(51vw, 770px);
-  min-width: 440px;
+  min-width: 340px;
   pointer-events: none;
+  overflow: hidden;
   animation: vx-home-character-stage-enter 1100ms 170ms var(--ease-out) both;
 }
 
