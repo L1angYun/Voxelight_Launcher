@@ -1,0 +1,56 @@
+{
+  "actions": {
+    "launch": "Launch game",
+    "cancel": "Cancel",
+    "save": "Save",
+    "close": "Close",
+    "retry": "Retry",
+    "back": "Back",
+    "create": "Create",
+    "import": "Import",
+    "delete": "Delete",
+    "remove": "Remove",
+    "openFolder": "Open folder",
+    "settings": "Settings",
+    "download": "Download",
+    "pause": "Pause",
+    "resume": "Resume",
+    "stop": "Stop",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "search": "Search",
+    "add": "Add",
+    "manage": "Manage"
+  },
+  "navigation": {
+    "home": "Play",
+    "library": "Library",
+    "discover": "Discover",
+    "multiplayer": "Multiplayer",
+    "downloads": "Downloads",
+    "accounts": "Players",
+    "settings": "Settings"
+  },
+  "status": {
+    "loading": "Loading…",
+    "ready": "Ready",
+    "running": "Running",
+    "offline": "Offline",
+    "unknown": "Unknown",
+    "empty": "Nothing here yet"
+  },
+  "errors": {
+    "internalUnexpected": "Something went wrong. Open diagnostics for details.",
+    "missing": "This content cannot be displayed.",
+    "desktopRequired": "Use the desktop app for this action."
+  },
+  "units": {
+    "files": "files"
+  },
+  "a11y": {
+    "mainNavigation": "Main navigation",
+    "windowControls": "Window controls",
+    "closeDialog": "Close dialog"
+  }
+}

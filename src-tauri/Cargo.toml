@@ -1,0 +1,49 @@
+[package]
+name = "voxelight-launcher"
+version = "0.5.0"
+description = "Voxelight Launcher with a Rust core and React interface"
+authors = ["Voxelight Launcher contributors"]
+license = "GPL-3.0-only"
+homepage = "https://github.com/L1angYun/Voxelight-Launcher"
+repository = "https://github.com/L1angYun/Voxelight-Launcher"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "voxelight_launcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "system-proxy"] }
+tokio = { version = "1", features = ["fs", "io-util", "process", "sync", "time", "rt-multi-thread"] }
+futures-util = "0.3"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+flate2 = "1"
+fastnbt = "2"
+md5 = "0.7"
+uuid = { version = "1", features = ["v4"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+regex = "1"
+dirs = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+shell-words = "1"
+windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "System_UserProfile", "UI_ViewManagement"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+
+[profile.dev.package.ring]
+debug = false

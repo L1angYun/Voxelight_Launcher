@@ -1,0 +1,71 @@
+{
+  "title": "下载",
+  "active": "活动任务",
+  "history": "历史任务",
+  "activeCount": "{{count}} 项活动任务",
+  "historyCount": "{{count}} 项历史任务",
+  "taskTitle": "{{kind}} · {{target}}",
+  "interruptedDescription": "启动器关闭时任务尚未完成；重试可复用已校验文件。",
+  "tasks": {
+    "kind": {
+      "install": "游戏安装",
+      "resource": "内容下载",
+      "modpack": "整合包安装",
+      "java": "Java 运行时",
+      "server": "服务端安装",
+      "unknown": "下载任务"
+    },
+    "stage": {
+      "queued": "等待队列",
+      "download": "正在下载文件",
+      "verify": "正在校验文件",
+      "install": "正在安装文件",
+      "complete": "已完成",
+      "paused": "已暂停",
+      "failed": "失败",
+      "cancelled": "已取消",
+      "interrupted": "已中断",
+      "unknown": "未知阶段"
+    }
+  },
+  "status": {
+    "queued": "排队中",
+    "running": "正在下载",
+    "paused": "已暂停",
+    "interrupted": "上次被中断",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "unknown": "未知状态"
+  },
+  "progress": {
+    "files": "{{completed}} / {{total}} 个文件",
+    "completedUnknown": "{{completed}} 个文件 · 总量未知",
+    "label": "{{completed}} / {{total}}",
+    "byteLabel": "{{completed}} / {{total}}",
+    "byteLabelUnknown": "已下载 {{completed}}，总量未知",
+    "bytesCompleted": "已下载 {{completed}}",
+    "sizePending": "等待大小信息",
+    "percent": "{{percent}}%",
+    "rate": "{{rate}}/秒",
+    "unknownShort": "总量未知"
+  },
+  "empty": {
+    "title": "还没有下载任务",
+    "description": "游戏与内容下载会显示在这里。",
+    "activeTitle": "当前没有活动任务",
+    "activeDescription": "排队中的下载会在这里显示真实字节进度。",
+    "historyTitle": "暂无任务历史",
+    "historyDescription": "已完成和可恢复的任务会保留在这里。",
+    "active": "当前没有活动任务，已完成和可恢复的任务保留在历史中。",
+    "history": "完成、取消或可恢复的任务会保留在这里。"
+  },
+  "errors": {
+    "taskFailed": "任务未能完成。可重试时会显示恢复操作，也可以回到对应来源重新执行。",
+    "download": {
+      "notFound": "任务已不存在，请刷新后重试。",
+      "retryUnsupported": "请回到对应资源、整合包或备份页面重新执行，已校验文件会复用。",
+      "active": "任务仍在执行或排队。"
+    }
+  }
+}

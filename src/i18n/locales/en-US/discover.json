@@ -1,0 +1,38 @@
+{
+  "title": "Discover",
+  "subtitle": "Find content compatible with the current instance.",
+  "search": "Search resources",
+  "searchPlaceholder": "Search mods, resource packs, shaders, or modpacks…",
+  "source": "Source",
+  "typeLabel": "Content type",
+  "type": {
+    "mod": "Mod",
+    "resourcepack": "Resource pack",
+    "shader": "Shader",
+    "modpack": "Modpack"
+  },
+  "target": "Install into",
+  "versionDirectory": "Use version directory",
+  "details": "View details",
+  "install": "Install",
+  "noResults": "No resources found",
+  "noResultsDescription": "Try another keyword or content type.",
+  "noDescription": "No description provided for this project.",
+  "authorUnknown": "Unknown author",
+  "versions": "Compatible versions",
+  "noVersions": "No compatible versions for the current instance",
+  "dependencies": "Dependencies",
+  "noDependencies": "No dependencies declared for this project",
+  "dependency": {
+    "required": "Required",
+    "optional": "Optional",
+    "incompatible": "Incompatible",
+    "embedded": "Embedded",
+    "unknown": "Unknown relationship"
+  },
+  "external": "Open project page",
+  "notice": {
+    "resourceInstalled": "Resource installed.",
+    "instanceInstalled": "Instance installed."
+  }
+}

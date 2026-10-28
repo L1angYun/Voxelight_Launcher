@@ -1,0 +1,84 @@
+:root {
+  color-scheme: dark;
+  --bg-base: #141516;
+  --bg-raised: #1c1d1f;
+  --bg-overlay: rgba(20, 21, 22, 0.88);
+  --surface-solid: #242527;
+  --surface-glass: rgba(43, 44, 47, 0.68);
+  --text-primary: #eeede9;
+  --text-secondary: #b3b2af;
+  --text-tertiary: #8b8b88;
+  --border-subtle: rgba(237, 232, 223, 0.12);
+  --border-strong: rgba(237, 232, 223, 0.23);
+  --surface-hover: rgba(237, 232, 223, 0.06);
+  --optical-cold: #a8afce;
+  --optical-warm: #c5a68b;
+  --success: #8dd7a5;
+  --warning: #e4c27d;
+  --danger: #f29a9a;
+  --info: #91c8e8;
+  --scrim-strong: rgba(5, 10, 13, 0.88);
+  --scrim-soft: rgba(5, 10, 13, 0.48);
+  --font-ui: "MiSans", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 28px;
+  --text-hero: 40px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --content-max: 1280px;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-pill: 999px;
+  --shadow-raised: 0 16px 48px rgba(0, 0, 0, 0.22);
+  --shadow-glass: 0 20px 64px rgba(0, 0, 0, 0.28);
+  --duration-fast: 140ms;
+  --duration-normal: 180ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-base: #f3f1eb;
+  --bg-raised: #eae7e0;
+  --bg-overlay: rgba(243, 241, 235, 0.9);
+  --surface-solid: #faf9f5;
+  --surface-glass: rgba(255, 254, 250, 0.76);
+  --text-primary: #242522;
+  --text-secondary: #63635d;
+  --text-tertiary: #74746d;
+  --border-subtle: rgba(50, 45, 36, 0.14);
+  --border-strong: rgba(50, 45, 36, 0.26);
+  --surface-hover: rgba(50, 45, 36, 0.05);
+  --optical-cold: #606e9b;
+  --optical-warm: #9a7153;
+  --success: #28734a;
+  --warning: #87601b;
+  --danger: #a03e46;
+  --info: #276783;
+  --scrim-strong: rgba(242, 245, 239, 0.92);
+  --scrim-soft: rgba(242, 245, 239, 0.58);
+  --shadow-raised: 0 16px 48px rgba(50, 45, 36, 0.1);
+  --shadow-glass: 0 20px 64px rgba(50, 45, 36, 0.14);
+}
+
+[data-high-contrast="true"] {
+  --bg-overlay: var(--bg-raised);
+  --surface-glass: var(--surface-solid);
+  --text-secondary: var(--text-primary);
+  --text-tertiary: var(--text-secondary);
+  --border-subtle: var(--text-secondary);
+  --border-strong: var(--text-primary);
+}

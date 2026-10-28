@@ -1,0 +1,396 @@
+// @vitest-environment jsdom
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nextProvider } from "react-i18next";
+import { GlassProvider } from "../../visual/glass/GlassSystem";
+import { command, defaults, type Account, type Bootstrap } from "../../lib/launcher";
+import { useDefaultSkin } from "../../lib/defaultSkin";
+import type { PlayerProfile } from "../../lib/playerProfile";
+import type { LauncherContextValue } from "../../app/controller/types";
+import { createLauncherI18n } from "../../i18n";
+import { AccountsPage } from "./AccountsPage";
+
+const mocks = vi.hoisted(() => ({
+  character: vi.fn(),
+  open: vi.fn(),
+  openUrl: vi.fn(),
+}));
+const commandMock = vi.mocked(command);
+const defaultSkinMock = vi.mocked(useDefaultSkin);
+let mockLauncher: LauncherContextValue;
+let root: Root;
+let container: HTMLDivElement;
+let reducedMotion = false;
+
+vi.mock("../../lib/launcher", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/launcher")>()),
+  command: vi.fn(),
+  desktop: true,
+}));
+vi.mock("../../lib/defaultSkin", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/defaultSkin")>()),
+  useDefaultSkin: vi.fn(),
+}));
+vi.mock("../../app/controller/LauncherProvider", () => ({
+  useLauncher: () => mockLauncher,
+}));
+vi.mock("../../app/AppearanceProvider", () => ({
+  useAppearance: () => ({ reducedMotion }),
+}));
+vi.mock("../../visual/character/CharacterCanvas", () => ({
+  CharacterCanvas: (props: unknown) => {
+    mocks.character(props);
+    return null;
+  },
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
+
+const microsoft: Account = {
+  id: "fixture-classic",
+  username: "CyanFixture",
+  uuid: "11111111111111111111111111111111",
+  type: "microsoft",
+  isSelected: true,
+  skinUrl: "fixture-skin",
+  skinModel: "slim",
+};
+const authlib: Account = {
+  id: "fixture-authlib",
+  username: "AmberFixture",
+  uuid: "22222222222222222222222222222222",
+  type: "authlib",
+  isSelected: false,
+  skinUrl: null,
+  skinModel: "classic",
+  authlibServer: "https://auth.example.invalid/api/",
+};
+const profile: PlayerProfile = {
+  id: microsoft.uuid,
+  name: microsoft.username,
+  skins: [{ id: "skin", state: "ACTIVE", url: "fixture-skin", variant: "slim" }],
+  capes: [{ id: "cape", state: "ACTIVE", url: "fixture-cape", alias: "Fixture cape" }],
+};
+const device = {
+  sessionId: "device-fixture",
+  userCode: "TEST-CODE",
+  verificationUri: "https://microsoft.com/devicelogin",
+  expiresIn: 30,
+  interval: 5,
+  message: "Fixture authorization",
+};
+
+function fixture(): LauncherContextValue {
+  const config = { ...defaults, microsoftClientId: "fixture-client-id", defaultSkin: "steve" as const };
+  const data: Bootstrap = {
+    config,
+    accounts: [microsoft, authlib],
+    instances: [],
+    installedVersions: [],
+    capabilities: {},
+  };
+  return {
+    data,
+    config,
+    manifest: null,
+    activeAccount: microsoft,
+    accountAppearance: {
+      profile,
+      setProfile: vi.fn(),
+      skinUrl: "fixture-skin",
+      model: "slim",
+      capeUrl: "fixture-cape",
+      hasAccountSkin: true,
+      loading: false,
+      error: "",
+      refresh: vi.fn(),
+    },
+    selectedInstance: undefined,
+    selectedVersion: undefined,
+    selectedVersionId: "1.21.1",
+    selectedRunningGame: undefined,
+    running: [],
+    progress: null,
+    logs: [],
+    busy: "",
+    notice: null,
+    gamePid: undefined,
+    reload: vi.fn(async () => {}),
+    saveConfig: vi.fn(async () => true),
+    setConfig: vi.fn(),
+    selectInstance: vi.fn(),
+    selectVersion: vi.fn(),
+    launch: vi.fn(async () => {}),
+    launchMultiplayer: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
+    cancelPreparation: vi.fn(async () => {}),
+    run: vi.fn(async (_key, action) => action()),
+    dismissNotice: vi.fn(),
+  };
+}
+
+function setAccounts(accounts: Account[]) {
+  mockLauncher.data.accounts = accounts;
+  mockLauncher.activeAccount = accounts.find((account) => account.isSelected);
+}
+
+async function render() {
+  const i18n = createLauncherI18n("en-US", "en-US");
+  await i18n.initPromise;
+  await act(async () => root.render(createElement(I18nextProvider, { i18n },
+    createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(AccountsPage)))));
+}
+
+function button(label: string, scope: ParentNode = container): HTMLButtonElement {
+  const found = Array.from(scope.querySelectorAll<HTMLButtonElement>("button"))
+    .find((candidate) => candidate.textContent?.trim() === label || candidate.getAttribute("aria-label") === label);
+  if (!found) throw new Error(`Missing button: ${label}`);
+  return found;
+}
+
+function buttonContaining(label: string): HTMLButtonElement {
+  const found = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    .find((candidate) => candidate.textContent?.includes(label));
+  if (!found) throw new Error(`Missing button containing: ${label}`);
+  return found;
+}
+
+async function click(label: string) {
+  await act(async () => button(label).click());
+}
+
+async function fill(label: string, value: string) {
+  const input = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  if (!input) throw new Error(`Missing input: ${label}`);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+beforeEach(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  mockLauncher = fixture();
+  reducedMotion = false;
+  mocks.character.mockReset();
+  mocks.open.mockReset();
+  mocks.openUrl.mockReset();
+  commandMock.mockReset();
+  commandMock.mockImplementation(async (name, args) => {
+    if (name === "begin_microsoft_login") return device;
+    if (name === "login_authlib") return {
+      status: "selectProfile",
+      sessionId: "authlib-session",
+      profiles: [{ id: "profile-one", name: "First" }, { id: "profile-two", name: "Second" }],
+      account: null,
+    };
+    if (name === "save_config") return args?.config;
+    if (["upload_account_skin", "reset_account_skin", "select_account_cape", "get_player_profile"].includes(name)) return profile;
+    if (name === "poll_microsoft_login") return { status: "pending", retryAfterSeconds: 5, account: null };
+    return null;
+  });
+  defaultSkinMock.mockReturnValue({
+    skin: { id: "steve", name: "Steve", dataUrl: "fixture-steve", model: "classic" },
+    loading: false,
+    error: "",
+    refresh: vi.fn(),
+  });
+  Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:fixture-local") });
+  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function () { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function () { this.open = false; this.dispatchEvent(new Event("close")); } });
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  vi.useRealTimers();
+  vi.clearAllMocks();
+});
+
+describe("accounts and appearance", () => {
+  it("keeps the no-account default clearly labeled as a local preview", async () => {
+    setAccounts([]);
+    await render();
+    expect(container.textContent).toContain("No accounts yet");
+    expect(container.textContent).toContain("Local preview only");
+    expect(container.textContent).not.toContain("Microsoft skin updated");
+    expect(mocks.character).toHaveBeenCalledWith(expect.objectContaining({ skinUrl: "fixture-steve" }));
+    expect(commandMock).not.toHaveBeenCalledWith("upload_account_skin", expect.anything());
+  });
+
+  it("creates an offline account through the new login dialog", async () => {
+    setAccounts([]);
+    await render();
+    await click("Add account");
+    await click("Offline");
+    await fill("Player name", "Fixture_Player");
+    await click("Add offline account");
+    expect(commandMock).toHaveBeenCalledWith("add_offline_account", { username: "Fixture_Player" });
+    expect(mockLauncher.reload).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("dialog")?.open).toBe(false);
+  });
+
+  it("selects, refreshes and removes accounts with their existing IPC arguments", async () => {
+    await render();
+    await click("Select AmberFixture");
+    expect(commandMock).toHaveBeenCalledWith("select_account", { accountId: authlib.id });
+    await click("Refresh CyanFixture session");
+    expect(commandMock).toHaveBeenCalledWith("refresh_account", { accountId: microsoft.id });
+    await click("Remove AmberFixture");
+    expect(commandMock).toHaveBeenCalledWith("remove_account", { accountId: authlib.id });
+    expect(mockLauncher.reload).toHaveBeenCalledTimes(3);
+  });
+
+  it("cancels the active Microsoft device session without polling or adding an account", async () => {
+    await render();
+    await click("Add account");
+    vi.useFakeTimers();
+    await click("Start Microsoft login");
+    expect(container.textContent).toContain("TEST-CODE");
+    await click("Cancel authorization");
+    expect(commandMock).toHaveBeenCalledWith("cancel_auth_login", { sessionId: device.sessionId });
+    await act(async () => vi.advanceTimersByTimeAsync(10000));
+    expect(commandMock).not.toHaveBeenCalledWith("poll_microsoft_login", expect.anything());
+    expect(mockLauncher.reload).not.toHaveBeenCalled();
+  });
+
+  it("selects an Authlib profile and clears the password immediately", async () => {
+    await render();
+    await click("Add account");
+    await click("Authlib");
+    await fill("Authlib API URL", "https://auth.example.invalid/api/");
+    await fill("Username or email", "fixture-user");
+    await fill("Password", "fixture-password");
+    await click("Sign in with Authlib");
+    expect(commandMock).toHaveBeenCalledWith("login_authlib", {
+      server: "https://auth.example.invalid/api/",
+      username: "fixture-user",
+      password: "fixture-password",
+      profileId: null,
+    });
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Password"]')).toBeNull();
+    await act(async () => buttonContaining("Second").click());
+    expect(commandMock).toHaveBeenCalledWith("select_authlib_profile", { sessionId: "authlib-session", profileId: "profile-two" });
+    expect(mockLauncher.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a neutral profile failure with retry and never substitutes the default character", async () => {
+    mockLauncher.accountAppearance = {
+      ...mockLauncher.accountAppearance,
+      profile: null,
+      skinUrl: undefined,
+      capeUrl: undefined,
+      hasAccountSkin: false,
+      error: "fixture diagnostic",
+      errorCode: "auth.profileUnavailable",
+    };
+    await render();
+    expect(container.textContent).toContain("We couldn't load this account's appearance.");
+    expect(mocks.character).not.toHaveBeenCalled();
+    await click("Retry appearance");
+    expect(mockLauncher.accountAppearance.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles an empty skin and cape profile without inventing content", async () => {
+    mockLauncher.accountAppearance = {
+      ...mockLauncher.accountAppearance,
+      profile: { ...profile, skins: [], capes: [] },
+      skinUrl: undefined,
+      capeUrl: undefined,
+      hasAccountSkin: false,
+    };
+    await render();
+    expect(container.textContent).toContain("No account skin is available");
+    expect(container.textContent).toContain("No capes are available");
+    expect(container.querySelector('select[aria-label="Cape"]')).toBeNull();
+    expect(mocks.character).not.toHaveBeenCalled();
+  });
+
+  it("uploads, resets and changes capes only after explicit online-account actions", async () => {
+    mocks.open.mockResolvedValue("E:\\fixtures\\skin.png");
+    await render();
+    expect(commandMock).not.toHaveBeenCalledWith("upload_account_skin", expect.anything());
+    await click("Upload skin");
+    expect(commandMock).toHaveBeenCalledWith("upload_account_skin", { accountId: microsoft.id, path: "E:\\fixtures\\skin.png", model: "slim" });
+    expect(container.textContent).toContain("Microsoft skin updated");
+    await click("Reset skin");
+    expect(commandMock).toHaveBeenCalledWith("reset_account_skin", { accountId: microsoft.id });
+    const cape = container.querySelector<HTMLSelectElement>('select[aria-label="Cape"]')!;
+    await act(async () => {
+      cape.value = "";
+      cape.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(commandMock).toHaveBeenCalledWith("select_account_cape", { accountId: microsoft.id, capeId: null });
+    expect(mockLauncher.accountAppearance.setProfile).toHaveBeenCalledWith(profile);
+  });
+
+  it("does not upload when the native skin picker is cancelled", async () => {
+    mocks.open.mockResolvedValue(null);
+    await render();
+    await click("Upload skin");
+    expect(commandMock).not.toHaveBeenCalledWith("upload_account_skin", expect.anything());
+    expect(mockLauncher.reload).not.toHaveBeenCalled();
+  });
+
+  it("loads a URL only into the local preview and never claims an online update", async () => {
+    await render();
+    expect(container.querySelector('[aria-label="Online account source · changes below require an explicit action"]')).not.toBeNull();
+    await click("Local preview");
+    expect(container.querySelector('[aria-label="Local preview only · does not change your account"]')).not.toBeNull();
+    await fill("Online skin URL", "https://example.invalid/skin.png");
+    await click("Load URL");
+    expect(mocks.character).toHaveBeenCalledWith(expect.objectContaining({ skinUrl: "https://example.invalid/skin.png" }));
+    expect(container.textContent).toContain("Local preview only");
+    expect(container.textContent).not.toContain("Microsoft skin updated");
+    expect(commandMock).not.toHaveBeenCalledWith("upload_account_skin", expect.anything());
+  });
+
+  it("imports a PNG into the local preview without calling an account mutation", async () => {
+    await render();
+    await click("Local preview");
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Import local PNG"]')!;
+    const file = new File(["fixture"], "local.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(mocks.character).toHaveBeenCalledWith(expect.objectContaining({ skinUrl: "blob:fixture-local" }));
+    expect(commandMock).not.toHaveBeenCalledWith("upload_account_skin", expect.anything());
+  });
+
+  it("saves the default preview character separately from the online account", async () => {
+    await render();
+    await click("Local preview");
+    const alex = container.querySelector<HTMLInputElement>('input[aria-label="Alex"]')!;
+    await act(async () => alex.click());
+    expect(commandMock).toHaveBeenCalledWith("save_config", {
+      config: expect.objectContaining({ defaultSkin: "alex" }),
+    });
+    expect(commandMock).not.toHaveBeenCalledWith("upload_account_skin", expect.anything());
+  });
+
+  it("offers only Steve and Alex as default preview characters", async () => {
+    await render();
+    await click("Local preview");
+    expect(container.querySelector('input[aria-label="Lumen"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Steve"]')).not.toBeNull();
+    expect(container.querySelector('input[aria-label="Alex"]')).not.toBeNull();
+  });
+
+  it("shows reduced-motion controls without claiming automatic motion is active", async () => {
+    reducedMotion = true;
+    await render();
+    await click("Local preview");
+    const rotate = button("Auto-rotate");
+    expect(rotate.disabled).toBe(true);
+    expect(rotate.getAttribute("aria-pressed")).toBe("false");
+    const animation = container.querySelector<HTMLSelectElement>('select[aria-label="Preview animation"]')!;
+    expect(animation.value).toBe("none");
+    expect(animation.disabled).toBe(true);
+    expect(container.textContent).toContain("Reduced motion is enabled");
+  });
+});

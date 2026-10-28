@@ -1,0 +1,212 @@
+.vx-lattice-frame {
+  position: absolute;
+  inset: -3px;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+  color: var(--text-secondary);
+  opacity: 0;
+}
+
+[data-visual-owner="lattice"]:has(> .vx-lattice-frame) {
+  overflow: visible;
+}
+
+.vx-lattice-frame__dot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: calc(0.52 + var(--lattice-weight, 0.5) * 0.48);
+  transform-origin: center;
+  will-change: transform, width, height;
+}
+
+.vx-lattice-frame--hover {
+  color: var(--text-secondary);
+  opacity: 0.68;
+}
+
+.vx-lattice-frame--focus {
+  color: var(--accent);
+  opacity: 0.94;
+}
+
+.vx-lattice-frame--selected {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.vx-lattice-frame.is-dispersing {
+  color: var(--text-secondary);
+  opacity: 0.46;
+}
+
+.vx-lattice-frame--hover .vx-lattice-frame__dot {
+  border-radius: 50%;
+}
+
+.vx-lattice-frame--focus .vx-lattice-frame__dot {
+  border-radius: 0.4px;
+  rotate: 45deg;
+}
+
+.vx-lattice-frame--selected .vx-lattice-frame__dot {
+  border-radius: 0.4px;
+  opacity: 1;
+  rotate: 0deg;
+}
+
+.vx-lattice-frame--selected .vx-lattice-frame__dot[data-anchor="true"] {
+  background: color-mix(in srgb, var(--accent) 88%, white);
+}
+
+.vx-lattice-frame__dot[data-glint="true"]::after {
+  position: absolute;
+  inset: -4px;
+  border: 1px solid color-mix(in srgb, white 84%, var(--accent));
+  border-radius: 50%;
+  content: "";
+  animation: vx-lattice-lock-flash 620ms var(--ease-out) both;
+}
+
+/* canvas element base — replaced the old CSS-only cell grid */
+canvas.vx-lattice-progress {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+[data-effects="full"] .vx-lattice-frame {
+  transition:
+    opacity 180ms var(--ease-out),
+    color 180ms ease;
+}
+
+[data-effects="full"] .vx-lattice-frame__dot {
+  transition:
+    width 180ms var(--ease-out),
+    height 180ms var(--ease-out),
+    rotate 220ms var(--ease-out),
+    border-radius 180ms var(--ease-out),
+    opacity 160ms ease,
+    background-color 180ms ease;
+}
+
+@keyframes vx-lattice-lissajous {
+  0%,
+  100% {
+    translate: var(--lattice-drift-x-back) 0;
+  }
+
+  25% {
+    translate: 0 var(--lattice-drift-y-back);
+  }
+
+  50% {
+    translate: var(--lattice-drift-x) 0;
+  }
+
+  75% {
+    translate: 0 var(--lattice-drift-y);
+  }
+}
+
+@keyframes vx-lattice-scan {
+  0%,
+  78%,
+  100% {
+    opacity: 0.24;
+    scale: 0.68;
+  }
+
+  10% {
+    opacity: 1;
+    scale: 1.25;
+  }
+}
+
+@keyframes vx-lattice-progress-lock {
+  0% {
+    opacity: 0.15;
+    scale: 0.55;
+    translate: 0 2px;
+  }
+
+  42% {
+    opacity: 1;
+    scale: 1.55;
+    translate: 0 0;
+  }
+
+  100% {
+    opacity: 1;
+    scale: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes vx-lattice-lock-flash {
+  0% {
+    opacity: 0;
+    scale: 0.35;
+  }
+
+  36% {
+    opacity: 0.95;
+    scale: 1;
+  }
+
+  100% {
+    opacity: 0;
+    scale: 2.1;
+  }
+}
+
+[data-effects="lite"] .vx-lattice-frame,
+[data-effects="lite"] .vx-lattice-frame__dot,
+[data-reduced-motion="true"] .vx-lattice-frame,
+[data-reduced-motion="true"] .vx-lattice-frame__dot {
+  transition: none !important;
+  animation: none !important;
+}
+
+[data-effects="lite"] .vx-lattice-frame--hover,
+[data-reduced-motion="true"] .vx-lattice-frame--hover {
+  opacity: 0.52;
+}
+
+@media (hover: none) {
+  .vx-lattice-frame--hover {
+    color: var(--text-secondary);
+    opacity: 0.42;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vx-lattice-frame,
+  .vx-lattice-frame__dot {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  .vx-lattice-frame {
+    color: Highlight;
+  }
+
+  .vx-lattice-frame__dot {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+}
+
+.vx-overture-root[data-overture-playing="true"] .vx-lattice-frame,
+.vx-overture-root[data-overture-playing="true"] .vx-lattice-frame__dot {
+  transition: none;
+  animation: none;
+}

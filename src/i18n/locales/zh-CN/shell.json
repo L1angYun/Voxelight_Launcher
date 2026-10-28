@@ -1,0 +1,47 @@
+{
+  "a11y": {
+    "skipToContent": "跳到主要内容"
+  },
+  "brand": {
+    "name": "Voxelight"
+  },
+  "notifications": {
+    "auth.required": "先选择一个角色，再启动游戏。",
+    "instance.required": "先选择或创建一个实例。",
+    "game.launched": "游戏已启动。",
+    "game.stopped": "游戏已结束。",
+    "game.stopRequested": "结束游戏请求已执行，进程仍在退出。",
+    "game.notRunning": "没有找到当前选择对应的运行游戏。",
+    "game.exited": "游戏已退出（退出码 {{code}}）。",
+    "preparation.cancelRequested": "已请求取消准备任务。",
+    "settings.saved": "设置已保存。",
+    "versions.unavailable": "无法获取版本列表，请检查网络后重试。",
+    "instance.installed": "实例已安装完成。"
+  },
+  "operations": {
+    "game.prepare": "正在准备游戏",
+    "game.stop": "正在结束游戏",
+    "preparation.cancel": "正在取消准备",
+    "settings.save": "正在保存设置",
+    "instance.install": "正在安装游戏",
+    "folder.open": "正在打开目录"
+  },
+  "errors": {
+    "instance.running": "此实例已在运行，请勿重复启动。",
+    "instance.notFound": "实例不存在，请刷新实例列表。",
+    "backup.notFound": "没有找到对应的实例备份。",
+    "backup.invalid": "备份清单无效，无法使用此备份。",
+    "backup.path": "备份路径无效，请更换保存位置。",
+    "resource.pathUnsafe": "资源路径不安全，请重新选择。",
+    "resource.unavailable": "无法读取资源目录，请检查访问权限。",
+    "auth.serviceKeyMissing": "请先在设置中保存你自己申请的 CurseForge API Key。",
+    "auth.required": "需要先选择角色。",
+    "instance.required": "需要先选择实例。",
+    "game.notRunning": "当前选择没有正在运行的游戏。",
+    "versions.unavailable": "无法获取版本列表。",
+    "desktop.required": "请使用桌面版执行此操作。",
+    "renderer.unavailable": "无法启用 3D 预览，请检查显卡驱动和硬件加速。",
+    "skin.loadFailed": "皮肤加载失败，请重试。",
+    "cape.loadFailed": "披风加载失败，请重试。"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "title": "Downloads",
+  "active": "Active",
+  "history": "History",
+  "activeCount": "{{count}} active",
+  "historyCount": "{{count}} in history",
+  "taskTitle": "{{kind}} · {{target}}",
+  "interruptedDescription": "The launcher closed before this task finished. Retry to reuse verified files.",
+  "tasks": {
+    "kind": {
+      "install": "Game installation",
+      "resource": "Content download",
+      "modpack": "Modpack installation",
+      "java": "Java runtime",
+      "server": "Server installation",
+      "unknown": "Download task"
+    },
+    "stage": {
+      "queued": "Waiting in queue",
+      "download": "Downloading files",
+      "verify": "Verifying files",
+      "install": "Installing files",
+      "complete": "Complete",
+      "paused": "Paused",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted",
+      "unknown": "Unknown stage"
+    }
+  },
+  "status": {
+    "queued": "Queued",
+    "running": "Downloading",
+    "paused": "Paused",
+    "interrupted": "Interrupted",
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "unknown": "Unknown"
+  },
+  "progress": {
+    "files": "{{completed}} / {{total}} files",
+    "completedUnknown": "{{completed}} files · total unknown",
+    "label": "{{completed}} of {{total}}",
+    "byteLabel": "{{completed}} of {{total}}",
+    "byteLabelUnknown": "{{completed}} downloaded, total size unknown",
+    "bytesCompleted": "{{completed}} downloaded",
+    "sizePending": "Size pending",
+    "percent": "{{percent}}%",
+    "rate": "{{rate}}/s",
+    "unknownShort": "unknown total"
+  },
+  "empty": {
+    "title": "No download tasks yet",
+    "description": "Game and content downloads will appear here.",
+    "activeTitle": "No active tasks",
+    "activeDescription": "Queued downloads will appear here with their real byte progress.",
+    "historyTitle": "No task history",
+    "historyDescription": "Completed and recoverable tasks will stay here.",
+    "active": "No active tasks. Finished and recoverable tasks remain in history.",
+    "history": "Completed, cancelled, and recoverable tasks will remain here."
+  },
+  "errors": {
+    "taskFailed": "The task did not complete. Retry when available, or return to its source.",
+    "download": {
+      "notFound": "This task no longer exists. Refresh and try again.",
+      "retryUnsupported": "Return to the content, modpack, or backup page to run this task again. Verified files will be reused.",
+      "active": "This task is still running or queued."
+    }
+  }
+}

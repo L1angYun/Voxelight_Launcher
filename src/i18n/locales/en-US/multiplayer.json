@@ -1,0 +1,133 @@
+{
+  "title": "Multiplayer",
+  "subtitle": "Join servers or manage a local server process.",
+  "views": "Multiplayer views",
+  "tab": {
+    "servers": "Servers",
+    "managed": "Managed servers"
+  },
+  "environment": "Game environment",
+  "chooseEnvironment": "Choose an installed version",
+  "environmentRequired": "Choose a game environment before saving or joining a server.",
+  "refresh": "Refresh",
+  "addServer": "Add server",
+  "saveServer": "Save server",
+  "removeServer": "Remove server",
+  "confirmRemove": "Remove “{{name}}” from the server list? The previous list will be backed up.",
+  "hiddenAddress": "Address hidden",
+  "checkStatus": "Check status",
+  "join": "Join",
+  "joinWorld": "Join world",
+  "players": "{{online}} / {{max}} players",
+  "latency": "{{value}} ms",
+  "status": {
+    "unknown": "Not checked",
+    "online": "Online",
+    "offline": "Offline or unavailable"
+  },
+  "emptyServers": {
+    "title": "No saved servers",
+    "description": "Add a server address to save it in this environment's multiplayer list."
+  },
+  "lanTitle": "LAN worlds",
+  "discoverLan": "Discover LAN",
+  "lanHint": "Ask a friend to open a world to LAN, then search this network.",
+  "lanEmpty": "No LAN worlds found on this network.",
+  "managedDescription": "Install, configure, and inspect independent local servers.",
+  "managedList": "Managed server list",
+  "managedBusy": "Working on the server task…",
+  "defaultServerName": "My vanilla server",
+  "createServer": "Create server",
+  "createTitle": "Create a vanilla server",
+  "serverVersion": "Minecraft version",
+  "createNotice": "Downloads are verified. Creation does not accept the EULA or start the server.",
+  "installServer": "Install server",
+  "noManaged": "No managed servers yet.",
+  "javaAuto": "auto",
+  "managedStatus": {
+    "stopped": "Stopped",
+    "starting": "Starting",
+    "running": "Running",
+    "stopping": "Saving and stopping",
+    "error": "Needs log review",
+    "unknown": "Unknown process state"
+  },
+  "eula": {
+    "accept": "Accept the Minecraft EULA",
+    "consent": "I have read and accept"
+  },
+  "startServer": "Start server",
+  "installAndStart": "Install and start",
+  "saveAndStop": "Save and stop",
+  "forceStop": "Force stop",
+  "serverSettings": "Server settings",
+  "saveSettings": "Save settings",
+  "settingsWhileRunning": "Stop the server before changing these settings.",
+  "console": "Console",
+  "consoleLog": "Server console log",
+  "autoScroll": "Auto-scroll",
+  "consoleCommand": "Console command",
+  "consolePlaceholder": "Enter a console command, such as list",
+  "sendCommand": "Send command",
+  "playerAction": "Player action",
+  "playerName": "Player name",
+  "managePlayer": "Manage player",
+  "playerActions": {
+    "whitelist add": "Add to whitelist",
+    "whitelist remove": "Remove from whitelist",
+    "op": "Grant operator",
+    "deop": "Remove operator",
+    "ban": "Ban player",
+    "pardon": "Pardon player"
+  },
+  "emptyManaged": {
+    "title": "No server selected",
+    "description": "Create a server to manage its console, settings, and players."
+  },
+  "fields": {
+    "serverName": "Server name",
+    "serverAddress": "Server address",
+    "port": "Port",
+    "maxPlayers": "Maximum players",
+    "maxMemory": "Maximum memory (MB)",
+    "viewDistance": "View distance",
+    "gamemode": "Game mode",
+    "difficulty": "Difficulty",
+    "bindAddress": "Bind address (blank for all interfaces)",
+    "motd": "MOTD",
+    "onlineMode": "Verify licensed accounts (online-mode)",
+    "whitelist": "Allow only whitelisted players"
+  },
+  "gamemode": {
+    "survival": "Survival",
+    "creative": "Creative",
+    "adventure": "Adventure",
+    "spectator": "Spectator"
+  },
+  "difficulty": {
+    "peaceful": "Peaceful",
+    "easy": "Easy",
+    "normal": "Normal",
+    "hard": "Hard"
+  },
+  "notice": {
+    "serverSaved": "Server saved to the game list.",
+    "serverRemoved": "Server removed. The previous list was backed up.",
+    "serverCreated": "Server installed. Review and accept the EULA before starting.",
+    "settingsSaved": "Server settings saved.",
+    "forceStopRequested": "Force stop requested.",
+    "stopRequested": "Save and stop requested.",
+    "commandSent": "Command sent. See the console log for its result."
+  },
+  "errors": {
+    "processFailed": "The server process failed. Review the console logs before restarting.",
+    "server": {
+      "eulaRequired": "Read and explicitly accept the Minecraft EULA before starting this server.",
+      "notFound": "The server no longer exists. Refresh the list.",
+      "busy": "Another server or download operation is still running.",
+      "addressInvalid": "Enter a valid hostname or IP address with an optional port.",
+      "portInUse": "Another managed server is already using this port.",
+      "processUnavailable": "The server process is not running, so this action is unavailable."
+    }
+  }
+}

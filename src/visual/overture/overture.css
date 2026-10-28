@@ -1,0 +1,118 @@
+.vx-overture-root { display: contents; }
+.vx-overture-scene { position: relative; min-height: 0; overflow: hidden; isolation: isolate; }
+.vx-overture-scene__media { position: absolute; inset: 0; overflow: hidden; }
+.vx-overture-scene__landscape.world-scene { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; aspect-ratio: auto; background: transparent; }
+.vx-overture-scene__landscape .world-scene__canvas { width: 100%; height: 100%; }
+.vx-overture-scene__character-frame {
+  position: absolute;
+  z-index: 2;
+  right: clamp(48px, 7vw, 104px);
+  bottom: 104px;
+  width: clamp(150px, 17vw, 240px);
+  height: clamp(250px, 58%, 460px);
+}
+.vx-overture-scene__character-camera {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 65%;
+  will-change: transform;
+}
+.vx-overture-scene__character-camera::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  right: 15%;
+  bottom: 1%;
+  left: 15%;
+  height: 12px;
+  border-radius: 50%;
+  background: rgb(11 19 25 / 28%);
+  filter: blur(6px);
+}
+.vx-overture-scene__character { position: relative; z-index: 1; width: 100%; height: 100%; filter: saturate(.9) contrast(1.04); }
+.vx-overture-scene__viewfinder,
+.vx-overture-scene__aperture {
+  position: absolute;
+  z-index: 2;
+  inset: -10% -24% -7%;
+  pointer-events: none;
+}
+.vx-overture-scene__viewfinder { opacity: .34; }
+.vx-overture-scene__viewfinder svg,
+.vx-overture-scene__optics { display: block; width: 100%; height: 100%; overflow: visible; }
+.vx-overture-scene__viewfinder ellipse {
+  fill: none;
+  stroke: var(--optical-cold);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.vx-overture-scene__aperture { z-index: 3; }
+.vx-overture-scene__blade {
+  fill: color-mix(in srgb, var(--optical-cold) 46%, transparent);
+  stroke: color-mix(in srgb, var(--optical-cold) 70%, transparent);
+  stroke-width: .65;
+  transform-box: view-box;
+  transform-origin: 160px 210px;
+}
+.vx-overture-scene__blades > g:nth-child(even) .vx-overture-scene__blade {
+  fill: color-mix(in srgb, var(--optical-warm) 38%, transparent);
+  stroke: color-mix(in srgb, var(--optical-warm) 64%, transparent);
+}
+.vx-overture-scene__scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, var(--scrim-strong) 0%, color-mix(in srgb, var(--scrim-strong) 68%, transparent) 24%, transparent 53%),
+    linear-gradient(0deg, color-mix(in srgb, var(--bg-base) 82%, transparent) 0%, transparent 25%);
+}
+[data-theme="light"] .vx-overture-scene__scrim {
+  background:
+    linear-gradient(90deg, rgb(238 240 232 / 88%) 0%, rgb(238 240 232 / 54%) 24%, transparent 52%),
+    linear-gradient(0deg, rgb(232 234 222 / 58%) 0%, transparent 24%);
+}
+[data-theme="light"] .vx-overture-scene__viewfinder { opacity: .42; }
+.vx-overture-scene__content { position: absolute; z-index: 4; top: 16px; left: 18px; max-width: calc(100% - 36px); }
+.vx-character-placeholder { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 9px; min-width: 0; padding: 12px 8px; border-radius: 8px; background: color-mix(in srgb, var(--bg-base) 62%, transparent); color: var(--text-secondary); text-align: center; font-size: var(--text-xs); backdrop-filter: blur(8px); }
+.vx-character-placeholder strong { font-weight: 500; }
+.vx-character-placeholder .vx-button { min-height: 34px; padding: 6px 8px; font-size: 11px; line-height: 1.35; white-space: normal; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .vx-overture-scene[data-motion="full"] .vx-overture-scene__media { animation: vx-overture-develop var(--overture-stage-duration, 830ms) var(--ease-out) both; }
+  .vx-overture-scene[data-motion="full"] .vx-overture-scene__character-frame { animation: vx-overture-character-in var(--overture-stage-duration, 830ms) var(--ease-out) 100ms both; }
+  .vx-overture-scene[data-motion="full"] .vx-overture-scene__content { animation: vx-overture-content-in 570ms var(--ease-out) 180ms both; }
+  /* Softened spring easing (lower stiffness → more oscillation before settling) */
+  .vx-overture-scene[data-playing="true"][data-motion="full"] .vx-overture-scene__optics { animation: vx-overture-optics var(--overture-stage-duration, 830ms) linear(0, .18, .46, .72, .90, 1.00, 1.04, 1.02, 1.00, .99, 1) both; }
+  .vx-overture-scene[data-playing="true"][data-motion="full"] .vx-overture-scene__blade { animation: vx-overture-blade var(--overture-stage-duration, 830ms) linear(0, .20, .54, .80, 1.00, 1.05, 1.02, 1.00) both; }
+  .vx-overture-scene[data-playing="true"][data-motion="full"] .vx-overture-scene__viewfinder { animation: vx-overture-viewfinder var(--overture-stage-duration, 830ms) ease-out both; }
+}
+
+@keyframes vx-overture-develop { from { opacity: .32; transform: translateY(10px) scale(1.012); filter: saturate(.35); } to { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); } }
+@keyframes vx-overture-character-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes vx-overture-content-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vx-overture-optics { 0% { transform: rotate(-10deg); } 58% { transform: rotate(5deg); } 100% { transform: rotate(9deg); } }
+@keyframes vx-overture-blade {
+  0%   { opacity: 0; transform: scale(.68) rotate(-6deg); }
+  16%  { opacity: .84; }
+  40%  { opacity: .55; transform: scale(1.02) rotate(1.5deg); }
+  62%  { opacity: .30; transform: scale(1.08) rotate(4deg); }
+  78%  { opacity: .72; transform: scale(1.04) rotate(5.5deg); filter: brightness(2.4) saturate(0.4); }
+  88%  { opacity: .08; transform: scale(1.18) rotate(6.5deg); filter: brightness(1); }
+  100% { opacity: 0;  transform: scale(1.22) rotate(8deg); filter: brightness(1); }
+}
+
+.vx-overture-scene[data-motion="static"] :is(.vx-overture-scene__media, .vx-overture-scene__character-frame, .vx-overture-scene__content),
+.vx-overture-scene[data-motion="static"] .vx-overture-scene__character-camera { animation: none; will-change: auto; }
+.vx-overture-scene[data-playing="true"][data-motion="static"] :is(.vx-overture-scene__media, .vx-overture-scene__character-frame) { animation: vx-overture-static-event var(--overture-static-duration, 450ms) ease-out both; }
+.vx-overture-scene[data-playing="true"][data-motion="static"] .vx-overture-scene__viewfinder { animation: vx-overture-static-iris var(--overture-static-duration, 450ms) ease-out both; }
+.vx-overture-scene[data-motion="static"] .vx-overture-scene__blade { display: none; }
+[data-high-contrast="true"] .vx-overture-scene__scrim { background: linear-gradient(90deg, var(--bg-base), color-mix(in srgb, var(--bg-base) 84%, transparent) 34%, transparent 66%); }
+
+@media (max-width: 800px) {
+  .vx-overture-scene__character-frame { right: 24px; bottom: 126px; width: 145px; height: 250px; }
+}
+@media (max-width: 550px) {
+  .vx-overture-scene__character-frame { top: 24px; right: 20px; bottom: auto; width: 100px; height: 140px; }
+  .vx-overture-scene__character-camera::after { display: none; }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Voxelight Launcher",
+  "version": "0.5.0",
+  "identifier": "dev.voxelight.launcher",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Voxelight Launcher",
+        "width": 1440,
+        "height": 930,
+        "minWidth": 1050,
+        "minHeight": 720,
+        "center": true,
+        "decorations": false,
+        "backgroundColor": "#0c0f13"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src ipc: http://ipc.localhost https://api.modrinth.com https://textures.minecraft.net; font-src 'self' data:; worker-src 'self' blob:; object-src 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "license": "GPL-3.0-only",
+    "licenseFile": "../LICENSE",
+    "homepage": "https://github.com/L1angYun/Voxelight-Launcher",
+    "resources": {
+      "../LICENSE": "licenses/LICENSE",
+      "../NOTICE": "licenses/NOTICE",
+      "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../licenses/": "licenses/"
+    },
+    "icon": ["icons/icon.ico", "icons/32x32.png", "icons/128x128.png"],
+    "shortDescription": "Voxelight Minecraft Java 启动器 · Rust + Tauri",
+    "category": "Game",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "template": "installer/windows/installer.nsi",
+        "installerHooks": "installer/windows/VoxelightPages.nsh",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": true,
+        "customLanguageFiles": {
+          "English": "installer/windows/languages/English.nsh",
+          "SimpChinese": "installer/windows/languages/SimpChinese.nsh"
+        },
+        "sidebarImage": "installer/windows/assets/sidebar.bmp",
+        "headerImage": "installer/windows/assets/header.bmp",
+        "installerIcon": "installer/windows/assets/installer.ico",
+        "uninstallerIcon": "installer/windows/assets/uninstaller.ico",
+        "uninstallerHeaderImage": "installer/windows/assets/header.bmp"
+      }
+    }
+  }
+}
