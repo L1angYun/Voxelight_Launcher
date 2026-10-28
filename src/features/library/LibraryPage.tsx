@@ -15,6 +15,7 @@ import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
 import { Button, IconButton } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
+import { Select } from "../../components/ui/Select";
 import { InstanceCard } from "./InstanceCard";
 import { InstanceDetailPage } from "./InstanceDetailPage";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
@@ -198,15 +199,17 @@ export function LibraryPage() {
           />
         </label>
         <div className="vx-library-commandbar__tools">
-          <select
+          <Select
+            className="vx-library-sort-select"
             aria-label={t("library:sort")}
             value={sort}
-            onChange={(event) => setSort(event.target.value)}
-          >
-            <option value="recent">{t("library:sortRecent")}</option>
-            <option value="name">{t("library:sortName")}</option>
-            <option value="version">{t("library:sortVersion")}</option>
-          </select>
+            onChange={setSort}
+            options={[
+              { value: "recent", label: t("library:sortRecent") },
+              { value: "name", label: t("library:sortName") },
+              { value: "version", label: t("library:sortVersion") },
+            ]}
+          />
           <div
             className="vx-library-view"
             role="group"

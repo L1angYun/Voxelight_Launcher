@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Download, History, RefreshCw, Upload } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
+import { Select } from "../../components/ui/Select";
 import { useResourceManager } from "./useInstanceContent";
 import { errorText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
@@ -13,11 +14,17 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
   return (
     <div className="vx-detail-stack">
       <div className="vx-toolbar">
-        <select aria-label={t("library:resourceKind")} value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}>
-          <option value="resourcepack">{t("library:resourcepacks")}</option>
-          <option value="mod">{t("library:mods")}</option>
-          <option value="shader">{t("library:shaders")}</option>
-        </select>
+        <Select
+          className="vx-resource-kind-select"
+          aria-label={t("library:resourceKind")}
+          value={kind}
+          onChange={(value) => setKind(value as typeof kind)}
+          options={[
+            { value: "resourcepack", label: t("library:resourcepacks") },
+            { value: "mod", label: t("library:mods") },
+            { value: "shader", label: t("library:shaders") },
+          ]}
+        />
         <div className="vx-action-row">
           <Button variant="secondary" icon={<Upload size={15} />} onClick={() => void manager.importFiles()}>{t("library:importResources")}</Button>
           <Button variant="secondary" icon={<RefreshCw size={15} />} onClick={() => void manager.refresh()}>{t("common:actions.retry")}</Button>
