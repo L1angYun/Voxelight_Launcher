@@ -1,220 +1,120 @@
 .world-scene {
-  --world-camera-scale: 1;
-  /* Dark theme – stronger directional light from upper-right (sun at ~960,245 in SVG coords) */
-  --world-sky-top: #111e2e;
-  --world-sky-mid: #4d6475;
-  --world-sky-horizon: #c89a68;
-  --world-sky-bottom: #7a5e48;
-  --world-sun-core: #ffe8b8;
-  --world-sun-mid: #f4b87a;
-  --world-sun-edge: #e8a060;
-  /* Darker earth shadows – left/near faces are significantly darker than lit faces */
-  --world-earth-top: #58533f;
-  --world-earth-bottom: #162028;
-  --world-water-top: #adb0a0;
-  --world-water-mid: #5f8888;
-  --world-water-bottom: #244550;
-  /* Mountains – stronger value contrast so distant ones read */
-  --world-mountain-far: #5e6870;
-  --world-mountain-snow: #dddad2;
-  --world-mountain-ridge: #455960;
-  --world-mountain-mid: #2e4a50;
-  --world-ground: #2e4c50;
-  --world-grass: #636d55;
-  /* Pine trees – lit top face vs shadowed front face */
-  --world-pine: #1e3e38;
-  --world-pine-shade: #101e1e;
-  --world-pine-light: #9aaa6e;
-  --world-pine-distant: #2e4a4e;
-  --world-pine-distant-shade: #203a3e;
-  --world-trunk: #3c3228;
-  /* Particles – warmer, larger effective color */
-  --world-firefly: #ffd880;
-  --world-dust: #a8c8c0;
   position: relative;
-  display: block;
   width: 100%;
-  min-width: 0;
-  min-height: 260px;
-  aspect-ratio: 640 / 520;
+  height: 100%;
   overflow: hidden;
-  background: var(--world-sky-top);
+  isolation: isolate;
+  background: var(--bg-base);
   contain: layout paint;
+  pointer-events: auto;
 }
 
-[data-theme="light"] .world-scene {
-  /* Light theme – brighter midday sun from upper-right, strong shadows */
-  --world-sky-top: #5c82a0;
-  --world-sky-mid: #92b2bc;
-  --world-sky-horizon: #ddb880;
-  --world-sky-bottom: #aa8560;
-  --world-sun-core: #ffe898;
-  --world-sun-mid: #eaac60;
-  --world-sun-edge: #d09050;
-  --world-earth-top: #6e7050;
-  --world-earth-bottom: #243c38;
-  --world-water-top: #c8c8a8;
-  --world-water-mid: #6a9898;
-  --world-water-bottom: #2e5860;
-  --world-mountain-far: #7a9098;
-  --world-mountain-snow: #e8e4d8;
-  --world-mountain-ridge: #5a7870;
-  --world-mountain-mid: #406058;
-  --world-ground: #4e6c60;
-  --world-grass: #7c8e60;
-  --world-pine: #2e5446;
-  --world-pine-shade: #1a3830;
-  --world-pine-light: #a8b870;
-  --world-pine-distant: #527060;
-  --world-pine-distant-shade: #405850;
-  --world-trunk: #584c38;
-  --world-firefly: #ffe890;
-  --world-dust: #d8e8c0;
+.world-scene.vx-global-scene {
+  pointer-events: auto;
+}
+
+.world-scene::before,
+.world-scene::after {
+  position: absolute;
+  top: -32%;
+  right: 8%;
+  z-index: 1;
+  width: 0.6vw;
+  min-width: 5px;
+  height: 172%;
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 10%, transparent) 72%,
+    transparent 100%
+  );
+  content: "";
+  pointer-events: none;
+  transform: rotate(24deg);
+  transform-origin: 50% 0;
+  opacity: 0.045;
+  filter: blur(0.7px);
+}
+
+.world-scene::after {
+  right: 18%;
+  width: 1vw;
+  min-width: 7px;
+  transform: rotate(20deg);
+  opacity: 0.065;
+  filter: blur(1.2px);
+}
+
+.world-scene__cube-canvas,
+.world-scene__glow-canvas,
+.world-scene__particle-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform: translate3d(var(--world-camera-x, 0), var(--world-camera-y, 0), 0)
+    scale(var(--world-camera-scale, 1));
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.world-scene__cube-canvas {
+  z-index: 0;
+}
+
+.world-scene__glow-canvas {
+  z-index: 1;
+  pointer-events: none;
+}
+
+.world-scene__particle-canvas {
+  z-index: 2;
+  pointer-events: none;
 }
 
 .world-scene__camera {
   position: absolute;
-  inset: -24px;
-  transform: scale(var(--world-camera-scale));
-  transform-origin: 72% 52%;
-  transition: opacity 180ms ease-out;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  transform-origin: 50% 50%;
   will-change: transform;
 }
-.world-scene__canvas { display: block; width: 100%; height: 100%; }
-.world-scene__particle-canvas {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  transition: opacity 180ms ease-out;
-}
-.world-scene[data-ambient="false"] .world-scene__particle-canvas,
-.world-scene[data-motion="reduced"] .world-scene__particle-canvas { opacity: 0; }
-.world-scene[data-paused="true"] .world-scene__camera { will-change: auto; }
-/* Paused during overture: freeze animations but keep scene visible */
-.world-scene[data-paused="true"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) {
-  animation-play-state: paused;
+
+.world-scene[data-motion="reduced"]
+  :is(
+    .world-scene__cube-canvas,
+    .world-scene__glow-canvas,
+    .world-scene__particle-canvas,
+    .world-scene__camera
+  ),
+.world-scene[data-paused="true"]
+  :is(
+    .world-scene__cube-canvas,
+    .world-scene__glow-canvas,
+    .world-scene__particle-canvas,
+    .world-scene__camera
+  ) {
+  will-change: auto;
 }
 
-.world-scene [data-parallax] {
-  transform-box: view-box;
-  transform-origin: center;
+[data-effects="lite"] .world-scene::before,
+[data-effects="lite"] .world-scene::after,
+[data-reduced-motion="true"] .world-scene::before,
+[data-reduced-motion="true"] .world-scene::after {
+  display: none;
 }
-.world-scene__clouds,
-.world-scene__water,
-.world-scene__beacon,
-.world-scene__pixels,
-.world-scene__foliage,
-.world-scene__terrain,
-.world-scene__dawn-glow,
-.world-scene__light-beams,
-.world-scene__world-aura,
-.world-scene__energy-trail,
-.world-scene__landmass,
-.world-scene__beacon-halo { transform-box: fill-box; transform-origin: center; }
-.world-scene__atmosphere,
-.world-scene__light-beams { mix-blend-mode: screen; }
-.world-scene__energy-trail { vector-effect: non-scaling-stroke; }
-.world-scene__beacon-progress { transition: stroke-dashoffset 240ms ease; }
-.world-scene__sun-sweep {
-  transform-box: view-box;
-  transform-origin: 956px 210px;
-  mix-blend-mode: screen;
-  pointer-events: none;
-  will-change: transform, opacity;
-}
-
-/* Stronger sun face highlights on voxel near-faces – top-edge strip on ground masses */
-.world-scene__landmass::after {
-  content: none; /* shadow pass handled via SVG opacity layers in WorldScene.tsx */
-}
-
-/* Volumetric depth: near-face shadow overlay on foliage to separate top-lit from shadow */
-.world-scene__foliage {
-  filter: none; /* per-layer contrast handled in SVG fill values */
-}
-
-/* Shadow depth: near-face overlay on foreground landmass to separate lit top from shadowed front */
-.world-scene__landmass > path:nth-child(even) { /* even paths are the shadow-face fills */
-  /* Individual fill colors carry the shadow; no override needed – handled by token values */
-}
-/* Near-face voxel edge highlights: thin bright strip on the top edge of the main earth block */
-.world-scene__landmass {
-  filter: none; /* depth achieved through fill tokens */
-}
-
-/* Light-beam mix-blend gets stronger; atmosphere gets a screen-mode glow */
-.world-scene__atmosphere { mix-blend-mode: screen; }
-.world-scene__light-beams { mix-blend-mode: screen; }
-
-@keyframes world-light-cycle {
-  0%, 100% { opacity: 0.54; }
-  50% { opacity: 1; }
-}
-@keyframes world-dawn-cycle {
-  0%, 100% { opacity: 0.46; }
-  50% { opacity: 0.88; }
-}
-@keyframes world-sun-sweep {
-  0% { opacity: 0; transform: rotate(-8deg); }
-  3% { opacity: 0; }
-  9% { opacity: 0.28; }
-  20% { opacity: 0.58; }
-  26% { opacity: 0.16; }
-  30%, 100% { opacity: 0; transform: rotate(10deg); }
-}
-
-/* Sun corona pulse: adds a slow warm halo pulse around the light source */
-@keyframes world-sun-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.68; }
-  50%  { transform: scale(1.07); opacity: 1; }
-}
-
-/* Foreground terrain gets subtle shadow breathing */
-@keyframes world-terrain-depth {
-  0%, 100% { opacity: 0.18; }
-  50%       { opacity: 0.28; }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .world-scene .world-scene__light-beams {
-    animation: world-light-cycle var(--world-light-cycle, 60s) ease-in-out infinite;
-  }
-  .world-scene .world-scene__sun-sweep {
-    animation: world-sun-sweep var(--world-light-cycle, 60s) cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  }
-  .world-scene .world-scene__dawn-glow {
-    animation: world-dawn-cycle var(--world-light-cycle, 60s) ease-in-out -30s infinite;
-  }
-  .world-scene .world-scene__world-aura {
-    animation: world-sun-pulse calc(var(--world-light-cycle, 60s) / 2) ease-in-out -8s infinite;
-  }
-  .world-scene .world-scene__terrain {
-    animation: world-terrain-depth calc(var(--world-light-cycle, 60s) / 3) ease-in-out -12s infinite;
-  }
-}
-
-/* Pause ALL ambient animations during overture, interacting, or overriding effects */
-.world-scene[data-ambient="false"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain),
-.world-scene[data-paused="true"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) {
-  animation-play-state: paused;
-}
-[data-effects="lite"] .world-scene__particle-canvas,
-[data-reduced-motion="true"] .world-scene__particle-canvas,
-[data-high-contrast="true"] .world-scene__particle-canvas { display: none; }
-[data-effects="lite"] .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain),
-[data-reduced-motion="true"] .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) {
-  animation: none !important;
-}
-[data-effects="lite"] .world-scene__camera,
-[data-reduced-motion="true"] .world-scene__camera { will-change: auto; }
-[data-effects="lite"] .world-scene__beacon-progress,
-[data-reduced-motion="true"] .world-scene__beacon-progress { transition: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) { animation: none !important; }
-  .world-scene__beacon-progress { transition: none; }
-  .world-scene__camera { will-change: auto; }
+  .world-scene
+    :is(
+      .world-scene__cube-canvas,
+      .world-scene__glow-canvas,
+      .world-scene__particle-canvas,
+      .world-scene__camera
+    ) {
+    will-change: auto;
+  }
 }

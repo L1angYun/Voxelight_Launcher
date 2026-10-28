@@ -242,100 +242,102 @@ export function HomePage() {
       </section>
 
       <section className="vx-home__stage" aria-label={t("home:instance")}>
-        <GlassSurface
-          className="vx-home__glass-panel vx-home__console"
-          variant="dialog"
-        >
-          <span className="vx-home__console-glint" aria-hidden="true" />
-          <div className="vx-home__console-heading">
-            <div className="vx-home__identity">
-              <span className="vx-home__console-kicker">
-                <Box size={12} strokeWidth={1.5} aria-hidden="true" />
-                {t("home:instance")}
+        <div className="vx-home__console-wrap">
+          <GlassSurface
+            className="vx-home__glass-panel vx-home__console"
+            variant="dialog"
+          >
+            <span className="vx-home__console-glint" aria-hidden="true" />
+            <div className="vx-home__console-heading">
+              <div className="vx-home__identity">
+                <span className="vx-home__console-kicker">
+                  <Box size={12} strokeWidth={1.5} aria-hidden="true" />
+                  {t("home:instance")}
+                </span>
+                <p className="vx-home__console-name" title={stageTitle}>
+                  {stageTitle}
+                </p>
+              </div>
+              <span className="vx-home__console-signal" aria-hidden="true">
+                <i />
+                <i />
+                <i />
               </span>
-              <p className="vx-home__console-name" title={stageTitle}>
-                {stageTitle}
-              </p>
             </div>
-            <span className="vx-home__console-signal" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-          </div>
 
-          <div className="vx-home__console-body">
-            {versionLabel ? (
-              <ul className="vx-home__meta" aria-label={t("home:instance")}>
-                {currentInstance ? (
+            <div className="vx-home__console-body">
+              {versionLabel ? (
+                <ul className="vx-home__meta" aria-label={t("home:instance")}>
+                  {currentInstance ? (
+                    <li>
+                      <Box size={11} aria-hidden="true" />
+                      <span>{versionLabel}</span>
+                    </li>
+                  ) : null}
                   <li>
-                    <Box size={11} aria-hidden="true" />
-                    <span>{versionLabel}</span>
+                    <span className="vx-home__meta-dot" />
+                    <span>{loaderLabel}</span>
                   </li>
-                ) : null}
-                <li>
-                  <span className="vx-home__meta-dot" />
-                  <span>{loaderLabel}</span>
-                </li>
-                <li>
-                  <span className="vx-home__meta-dot" />
-                  <span>{javaLabel}</span>
-                </li>
-              </ul>
-            ) : null}
+                  <li>
+                    <span className="vx-home__meta-dot" />
+                    <span>{javaLabel}</span>
+                  </li>
+                </ul>
+              ) : null}
 
-            {currentInstance || useVersionDirectory ? (
-              <LaunchConsole
-                instance={currentInstance}
-                instances={data.instances}
-                version={selectedVersion}
-                onSelectInstance={chooseInstance}
-                onLaunch={beginLaunch}
-                onStop={stop}
-                onCancel={cancelPreparation}
-                onOpenFolder={() =>
-                  void run("folder.open", () =>
-                    command("open_folder", { kind: "game" }),
-                  )
-                }
-                busy={busy}
-                running={running}
-                progress={currentProgress}
-              />
-            ) : (
-              <EmptyState
-                title={t("home:noInstance")}
-                description={t("home:noInstanceDescription")}
-                action={
-                  <div className="vx-empty__actions">
-                    <Button
-                      variant="primary"
-                      icon={<Plus size={16} />}
-                      onClick={() => setCreateOpen(true)}
-                    >
-                      {t("home:createInstance")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      icon={<Upload size={16} />}
-                      onClick={() => setImportOpen(true)}
-                    >
-                      {t("home:importPack")}
-                    </Button>
-                  </div>
-                }
-              />
-            )}
-          </div>
+              {currentInstance || useVersionDirectory ? (
+                <LaunchConsole
+                  instance={currentInstance}
+                  instances={data.instances}
+                  version={selectedVersion}
+                  onSelectInstance={chooseInstance}
+                  onLaunch={beginLaunch}
+                  onStop={stop}
+                  onCancel={cancelPreparation}
+                  onOpenFolder={() =>
+                    void run("folder.open", () =>
+                      command("open_folder", { kind: "game" }),
+                    )
+                  }
+                  busy={busy}
+                  running={running}
+                  progress={currentProgress}
+                />
+              ) : (
+                <EmptyState
+                  title={t("home:noInstance")}
+                  description={t("home:noInstanceDescription")}
+                  action={
+                    <div className="vx-empty__actions">
+                      <Button
+                        variant="primary"
+                        icon={<Plus size={16} />}
+                        onClick={() => setCreateOpen(true)}
+                      >
+                        {t("home:createInstance")}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        icon={<Upload size={16} />}
+                        onClick={() => setImportOpen(true)}
+                      >
+                        {t("home:importPack")}
+                      </Button>
+                    </div>
+                  }
+                />
+              )}
+            </div>
+          </GlassSurface>
+        </div>
 
-          <div className="vx-home__recent">
-            <RecentInstances
-              instances={data.instances}
-              selectedId={currentInstance?.id}
-              onSelect={chooseInstance}
-            />
-          </div>
-        </GlassSurface>
+        <div className="vx-home__recent">
+          <RecentInstances
+            instances={data.instances}
+            selectedId={currentInstance?.id}
+            onSelect={chooseInstance}
+          />
+        </div>
       </section>
 
       {notice ? (

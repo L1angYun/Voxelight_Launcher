@@ -3,12 +3,21 @@
 import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WORLD_PARTICLE_BUDGET } from "../visual/overture/motion";
 import {
-  WORLD_LIGHT_CYCLE_MS,
-  WORLD_PARALLAX_DEPTHS,
-  WORLD_PARTICLE_BUDGET,
-} from "../visual/overture/motion";
-import { WorldScene, type WorldSceneState } from "./WorldScene";
+  CUBE_ACTIVE_BUDGET,
+  CUBE_ACTIVE_BUDGET as ACTIVE_BUDGET_ALIAS,
+  CUBE_FLIP_DURATION_MS,
+  CUBE_GLOW_DURATION_MS,
+  CUBE_GLOW_RADIUS_PX,
+  CUBE_PITCH_PX,
+  CUBE_SIZE_PX,
+  CUBE_STAY_DURATION_MS,
+  CUBE_TRIGGER_RADIUS_PX,
+  POINTER_SPRING,
+  WorldScene,
+  type WorldSceneState,
+} from "./WorldScene";
 
 type ObserverMock = {
   callback: IntersectionObserverCallback;
@@ -21,7 +30,38 @@ let root: Root | undefined;
 let observers: ObserverMock[];
 let pageHidden = false;
 let reducedMotion = false;
+let finePointer = true;
 let originalMatchMedia: PropertyDescriptor | undefined;
+let context: CanvasRenderingContext2D;
+
+function createCanvasContext() {
+  const gradient = () => ({ addColorStop: vi.fn() });
+  return {
+    arc: vi.fn(),
+    beginPath: vi.fn(),
+    clearRect: vi.fn(),
+    closePath: vi.fn(),
+    createLinearGradient: vi.fn(gradient),
+    createRadialGradient: vi.fn(gradient),
+    fill: vi.fn(),
+    fillRect: vi.fn(),
+    lineTo: vi.fn(),
+    moveTo: vi.fn(),
+    restore: vi.fn(),
+    rotate: vi.fn(),
+    save: vi.fn(),
+    setTransform: vi.fn(),
+    stroke: vi.fn(),
+    translate: vi.fn(),
+    fillStyle: "",
+    globalAlpha: 1,
+    globalCompositeOperation: "source-over",
+    lineWidth: 1,
+    shadowBlur: 0,
+    shadowColor: "",
+    strokeStyle: "",
+  } as unknown as CanvasRenderingContext2D;
+}
 
 function installIntersectionObserver() {
   observers = [];
@@ -54,6 +94,12 @@ function scene() {
   return element;
 }
 
+function canvas(className: string) {
+  const element = scene().querySelector<HTMLCanvasElement>(`.${className}`);
+  if (!element) throw new Error(`Missing ${className}`);
+  return element;
+}
+
 function intersect(isIntersecting: boolean) {
   const observer = observers[0];
   if (!observer) throw new Error("Missing intersection observer");
@@ -71,6 +117,22 @@ beforeEach(() => {
   ).IS_REACT_ACT_ENVIRONMENT = true;
   pageHidden = false;
   reducedMotion = false;
+  finePointer = true;
+  context = createCanvasContext();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+    context as never,
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: 960,
+    bottom: 540,
+    width: 960,
+    height: 540,
+    toJSON: () => ({}),
+  });
   vi.spyOn(document, "hidden", "get").mockImplementation(() => pageHidden);
   originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
   Object.defineProperty(window, "matchMedia", {
@@ -78,7 +140,7 @@ beforeEach(() => {
     writable: true,
     value: vi.fn((media: string) => ({
       get matches() {
-        return reducedMotion;
+        return media.includes("pointer: fine") ? finePointer : reducedMotion;
       },
       media,
       onchange: null,
@@ -89,6 +151,11 @@ beforeEach(() => {
       dispatchEvent: vi.fn(() => true),
     })),
   });
+  vi.stubGlobal(
+    "requestAnimationFrame",
+    vi.fn((_callback: FrameRequestCallback) => 1),
+  );
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
   installIntersectionObserver();
   container = document.createElement("div");
   document.body.append(container);
@@ -102,88 +169,149 @@ afterEach(async () => {
     await act(async () => currentRoot.unmount());
   }
   container.remove();
-  if (originalMatchMedia)
+  if (originalMatchMedia) {
     Object.defineProperty(window, "matchMedia", originalMatchMedia);
-  else Reflect.deleteProperty(window, "matchMedia");
+  } else {
+    Reflect.deleteProperty(window, "matchMedia");
+  }
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("WorldScene", () => {
-  it("renders an original decorative SVG with the composable scene API", async () => {
+  it("renders the three-layer cube optical field with the composable scene API", async () => {
     await render(createElement(WorldScene, { className: "home-hero__world" }));
     const element = scene();
-    const svg = element.querySelector("svg");
     expect(element.classList.contains("world-scene")).toBe(true);
     expect(element.classList.contains("home-hero__world")).toBe(true);
     expect(element.getAttribute("aria-hidden")).toBe("true");
     expect(element.dataset.sceneState).toBe("idle");
     expect(element.dataset.paused).toBe("false");
-    expect(svg?.getAttribute("aria-hidden")).toBe("true");
-    expect(svg?.getAttribute("viewBox")).toBe("0 0 1280 720");
-    expect(svg?.querySelectorAll("path, polygon, rect").length).toBeGreaterThan(
-      30,
+    expect(element.querySelector("svg")).toBeNull();
+    expect(element.querySelectorAll("canvas")).toHaveLength(3);
+    expect(element.querySelector(".world-scene__camera")).not.toBeNull();
+    expect(canvas("world-scene__cube-canvas").dataset.rendered).toBe("true");
+    expect(canvas("world-scene__glow-canvas").dataset.rendered).toBe("true");
+    expect(canvas("world-scene__particle-canvas").dataset.rendered).toBe(
+      "true",
     );
+    expect(context.clearRect).toHaveBeenCalled();
+    expect(context.fillRect).toHaveBeenCalled();
+    expect(context.stroke).toHaveBeenCalled();
     expect(element.querySelector("button, input, select, text")).toBeNull();
-    expect(element.querySelector("animate, animateTransform, set")).toBeNull();
   });
 
-  it("keeps SVG definition IDs unique across multiple instances", async () => {
+  it("keeps camera, state, progress, cube, and particle contracts", async () => {
+    const onCameraFrame = vi.fn();
+    const states: WorldSceneState[] = ["idle", "preparing", "running", "error"];
+
+    for (const state of states) {
+      await render(
+        createElement(WorldScene, {
+          state,
+          progress: 37,
+          onCameraFrame,
+        }),
+      );
+      expect(scene().dataset.sceneState).toBe(state);
+      expect(scene().dataset.sceneProgress).toBe("37");
+    }
+
+    expect(onCameraFrame).toHaveBeenCalled();
+    const pose = onCameraFrame.mock.calls.at(-1)?.[0];
+    expect(pose.x).toBeGreaterThanOrEqual(-1);
+    expect(pose.x).toBeLessThanOrEqual(1);
+    expect(pose.y).toBeGreaterThanOrEqual(-1);
+    expect(pose.y).toBeLessThanOrEqual(1);
+    expect(pose.scale).toBeGreaterThanOrEqual(1);
+    expect(WORLD_PARTICLE_BUDGET).toEqual({
+      fireflies: 32,
+      dust: 64,
+      total: 96,
+    });
+    expect(CUBE_SIZE_PX).toBe(3);
+    expect(CUBE_PITCH_PX).toBe(22);
+    expect(CUBE_ACTIVE_BUDGET).toBe(50);
+    expect(ACTIVE_BUDGET_ALIAS).toBe(CUBE_ACTIVE_BUDGET);
+    expect(CUBE_FLIP_DURATION_MS).toBe(280);
+    expect(CUBE_STAY_DURATION_MS).toBe(1800);
+    expect(CUBE_GLOW_RADIUS_PX).toBe(10);
+    expect(CUBE_GLOW_DURATION_MS).toBe(800);
+    expect(CUBE_TRIGGER_RADIUS_PX).toBe(120);
+    expect(POINTER_SPRING).toEqual({ stiffness: 90, damping: 13 });
+    expect(scene().dataset.particleBudget).toBe("96");
+    expect(scene().dataset.cubePitch).toBe("22");
+    expect(scene().dataset.cubeActiveBudget).toBe("50");
+    expect(scene().dataset.cubeFlipDuration).toBe("280");
+    expect(scene().dataset.cubeStayDuration).toBe("1800");
+    expect(scene().dataset.cubeTriggerRadius).toBe("120");
+    expect(scene().dataset.cubeRotation).toBe("true");
+    expect(scene().dataset.cubeRotationRpmMin).toBe("0.3");
+    expect(scene().dataset.cubeRotationRpmMax).toBe("0.8");
+  });
+
+  it("clamps preparation progress", async () => {
     await render(
-      createElement(
-        "div",
-        null,
-        createElement(WorldScene, { key: "one" }),
-        createElement(WorldScene, { key: "two" }),
-      ),
+      createElement(WorldScene, { state: "preparing", progress: 140 }),
     );
-    const ids = [...container.querySelectorAll("[id]")].map((node) => node.id);
-    expect(ids.length).toBeGreaterThan(4);
-    expect(new Set(ids).size).toBe(ids.length);
+    expect(scene().dataset.sceneProgress).toBe("100");
+
+    await render(
+      createElement(WorldScene, { state: "preparing", progress: -10 }),
+    );
+    expect(scene().dataset.sceneProgress).toBe("0");
   });
 
-  it("exposes reduced motion and leaves parallax untouched on pointer input", async () => {
-    reducedMotion = true;
+  it("tracks fine-pointer activity on the scene root and clears on leave", async () => {
     await render();
-    const element = scene();
-    const nearLayer = element.querySelector('[data-parallax="near"]');
-    const initialStyle = nearLayer?.getAttribute("style");
-    expect(element.dataset.motion).toBe("reduced");
+    expect(scene().dataset.pointerFine).toBe("true");
     await act(async () => {
-      element.dispatchEvent(
+      scene().dispatchEvent(
         new MouseEvent("pointermove", {
           bubbles: true,
-          clientX: 600,
-          clientY: 400,
+          clientX: 480,
+          clientY: 270,
         }),
       );
     });
-    expect(nearLayer?.getAttribute("style")).toBe(initialStyle);
+    expect(scene().dataset.pointerActive).toBe("true");
+    await act(async () => {
+      scene().dispatchEvent(new MouseEvent("pointerleave", { bubbles: true }));
+    });
+    expect(scene().dataset.pointerActive).toBe("false");
   });
 
-  it("reflects each scene state with a restrained beacon color change", async () => {
-    const states: WorldSceneState[] = ["idle", "preparing", "running", "error"];
-    const colors = new Set<string | null>();
-    for (const state of states) {
-      await render(createElement(WorldScene, { state }));
-      expect(scene().dataset.sceneState).toBe(state);
-      colors.add(
-        scene().querySelector("[data-scene-beacon]")?.getAttribute("fill") ??
-          null,
+  it("flips a limited set of cubes under the smoothed pointer", async () => {
+    await render();
+    await act(async () => {
+      scene().dispatchEvent(
+        new MouseEvent("pointermove", {
+          bubbles: true,
+          clientX: 480,
+          clientY: 270,
+        }),
       );
-    }
-    expect(colors.size).toBe(states.length);
-    expect(colors.has(null)).toBe(false);
+    });
+    const frame = vi.mocked(requestAnimationFrame).mock.calls.at(-1)?.[0];
+    expect(frame).toBeTypeOf("function");
+    await act(async () => {
+      frame?.(16);
+    });
+    const activeFlips = Number(scene().dataset.activeFlips);
+    expect(activeFlips).toBeGreaterThan(0);
+    expect(activeFlips).toBeLessThanOrEqual(CUBE_ACTIVE_BUDGET);
   });
 
   it("pauses while the document is hidden and resumes when visible", async () => {
     await render();
     expect(scene().dataset.paused).toBe("false");
+    expect(requestAnimationFrame).toHaveBeenCalled();
     pageHidden = true;
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     expect(scene().dataset.paused).toBe("true");
+    expect(cancelAnimationFrame).toHaveBeenCalled();
     pageHidden = false;
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
@@ -219,66 +347,26 @@ describe("WorldScene", () => {
     vi.stubGlobal("IntersectionObserver", undefined);
     await render();
     expect(scene().dataset.paused).toBe("false");
-    expect(scene().querySelector("svg")).not.toBeNull();
+    expect(canvas("world-scene__cube-canvas")).not.toBeNull();
   });
 
-  it("uses the expanded particle budget, deeper parallax, and faster light cycle", async () => {
+  it("repaints cached cube colours when the document theme changes", async () => {
     await render();
-    expect(WORLD_PARTICLE_BUDGET).toEqual({
-      fireflies: 32,
-      dust: 64,
-      total: 96,
+    const fillCalls = vi.mocked(context.fillRect).mock.calls.length;
+    await act(async () => {
+      document.documentElement.dataset.theme = "light";
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(WORLD_PARALLAX_DEPTHS.far).toBeCloseTo(0.264);
-    expect(WORLD_PARALLAX_DEPTHS.middle).toBeCloseTo(0.624);
-    expect(WORLD_PARALLAX_DEPTHS.character).toBeCloseTo(0.984);
-    expect(WORLD_PARALLAX_DEPTHS.foreground).toBeCloseTo(1.2);
-    expect(scene().style.getPropertyValue("--world-light-cycle")).toBe(
-      `${WORLD_LIGHT_CYCLE_MS}ms`,
+    expect(vi.mocked(context.fillRect).mock.calls.length).toBeGreaterThan(
+      fillCalls,
     );
   });
 
-  it("renders the layered environment and maps real preparation progress", async () => {
-    await render(
-      createElement(WorldScene, { state: "preparing", progress: 37 }),
-    );
-    const element = scene();
-    expect(element.dataset.sceneState).toBe("preparing");
-    expect(element.dataset.sceneProgress).toBe("37");
-    for (const selector of [
-      ".world-scene__atmosphere",
-      ".world-scene__light-beams",
-      ".world-scene__sun-sweep",
-      ".world-scene__energy-trail",
-      ".world-scene__landmass",
-      ".world-scene__beacon-halo",
-      ".world-scene__pixel--a",
-    ]) {
-      expect(element.querySelector(selector)).not.toBeNull();
-    }
-    const progress = element.querySelector(".world-scene__beacon-progress");
-    expect(progress?.getAttribute("data-beacon-progress")).toBe("37");
-    expect(progress?.getAttribute("stroke-dashoffset")).toBe("63");
-  });
-
-  it("uses a complete ring for running and clamps progress input", async () => {
-    await render(createElement(WorldScene, { state: "running", progress: 42 }));
-    let progress = scene().querySelector(".world-scene__beacon-progress");
-    expect(progress?.getAttribute("data-beacon-progress")).toBe("100");
-    expect(progress?.getAttribute("stroke-dashoffset")).toBe("0");
-
-    await render(
-      createElement(WorldScene, { state: "preparing", progress: 140 }),
-    );
-    expect(scene().dataset.sceneProgress).toBe("100");
-    progress = scene().querySelector(".world-scene__beacon-progress");
-    expect(progress?.getAttribute("stroke-dashoffset")).toBe("0");
-
-    await render(
-      createElement(WorldScene, { state: "preparing", progress: -10 }),
-    );
-    expect(scene().dataset.sceneProgress).toBe("0");
-    progress = scene().querySelector(".world-scene__beacon-progress");
-    expect(progress?.getAttribute("stroke-dashoffset")).toBe("100");
+  it("draws one static cube frame without starting a loop for reduced motion", async () => {
+    reducedMotion = true;
+    await render();
+    expect(scene().dataset.motion).toBe("reduced");
+    expect(canvas("world-scene__cube-canvas").dataset.rendered).toBe("true");
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
   });
 });
