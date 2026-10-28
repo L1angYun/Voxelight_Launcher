@@ -218,7 +218,9 @@ function JellyNavigationIndicator({
         if (Math.abs(next.width - lastWidth) < 0.5 && Math.abs(next.height - lastHeight) < 0.5) return;
         lastWidth = next.width;
         lastHeight = next.height;
-        scheduleMeasure();
+        // The nav itself was resized, so the layout moved the item, not navigation:
+        // jump to the new rect instead of springing, which reads as a stretch.
+        scheduleMeasure(true);
       });
     });
     observer.observe(nav);
@@ -229,7 +231,8 @@ function JellyNavigationIndicator({
   }, [activeId, itemRefs, navRef, scheduleMeasure]);
 
   useEffect(() => {
-    const remeasure = () => scheduleMeasure();
+    // Window resizes move items with the layout; snap rather than spring.
+    const remeasure = () => scheduleMeasure(true);
     window.addEventListener("resize", remeasure);
     let active = true;
     const snapToLoadedFont = () => {
