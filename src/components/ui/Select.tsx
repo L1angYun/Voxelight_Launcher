@@ -120,10 +120,10 @@ export function Select({
 
   return (
     <div className={cn("vx-select", open && "vx-select--open", disabled && "vx-select--disabled", className)}>
-      {/* Hidden native select for test accessibility and form submission */}
+      {/* Hidden native select for test automation — aria-label prefixed to avoid strict-mode conflicts */}
       <select
-        aria-label={ariaLabel}
-        aria-hidden="true"
+        aria-label={ariaLabel ? `${ariaLabel} (native)` : undefined}
+        data-testid={ariaLabel ? `native-select-${ariaLabel}` : undefined}
         tabIndex={-1}
         value={value}
         disabled={disabled}
