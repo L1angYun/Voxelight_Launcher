@@ -3,13 +3,7 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  isolation: isolate;
   background: var(--bg-base);
-  contain: layout paint;
-  pointer-events: auto;
-}
-
-.world-scene.vx-global-scene {
   pointer-events: auto;
 }
 

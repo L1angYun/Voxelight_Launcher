@@ -14,13 +14,13 @@ import {
 } from "../visual/overture/motion";
 import "./WorldScene.css";
 
-export const CUBE_SIZE_PX = 3;
-export const CUBE_PITCH_PX = 22;
-export const CUBE_TOP_HEIGHT = 1.5;
-export const CUBE_SIDE_WIDTH = 1.5;
-export const CUBE_DEFAULT_OPACITY = 0.55;
-export const CUBE_PULSE_MIN = 0.45;
-export const CUBE_PULSE_MAX = 0.65;
+export const CUBE_SIZE_PX = 8;
+export const CUBE_PITCH_PX = 32;
+export const CUBE_TOP_HEIGHT = 4;
+export const CUBE_SIDE_WIDTH = 4;
+export const CUBE_DEFAULT_OPACITY = 0.85;
+export const CUBE_PULSE_MIN = 0.70;
+export const CUBE_PULSE_MAX = 0.95;
 export const CUBE_ACTIVE_BUDGET = 50;
 export const CUBE_FLIP_DURATION_MS = 280;
 export const CUBE_STAY_DURATION_MS = 1800;
