@@ -1,23 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-only
+import { useEffect, useRef, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
-import { advanceSpring, clamp, createSpring, snapSpring } from "../visual/glass/jelly";
+  advanceSpring,
+  clamp,
+  createSpring,
+  snapSpring,
+  type SpringTuning,
+} from "../visual/glass/jelly";
 import {
-  OVERTURE_STAGE_MS,
   WORLD_CAMERA,
   WORLD_CANVAS_PIXEL_RATIO_MAX,
-  WORLD_LIGHT_CYCLE_MS,
-  WORLD_PARALLAX_DEPTHS,
   WORLD_PARTICLE_BUDGET,
 } from "../visual/overture/motion";
 import "./WorldScene.css";
+
+export const CUBE_SIZE_PX = 3;
+export const CUBE_PITCH_PX = 22;
+export const CUBE_TOP_HEIGHT = 1.5;
+export const CUBE_SIDE_WIDTH = 1.5;
+export const CUBE_DEFAULT_OPACITY = 0.55;
+export const CUBE_PULSE_MIN = 0.45;
+export const CUBE_PULSE_MAX = 0.65;
+export const CUBE_ACTIVE_BUDGET = 50;
+export const CUBE_FLIP_DURATION_MS = 280;
+export const CUBE_STAY_DURATION_MS = 1800;
+export const CUBE_GLOW_RADIUS_PX = 10;
+export const CUBE_GLOW_DURATION_MS = 800;
+export const CUBE_TRIGGER_RADIUS_PX = 120;
+export const POINTER_SPRING: SpringTuning = { stiffness: 90, damping: 13 };
 
 export type WorldSceneState = "idle" | "preparing" | "running" | "error";
 
@@ -29,62 +39,582 @@ type WorldSceneProps = {
   onCameraFrame?: (pose: { x: number; y: number; scale: number }) => void;
 };
 
-const beaconColors: Record<WorldSceneState, string> = {
-  idle: "#eed3a4", preparing: "#eeb76d", running: "#a8d5ce", error: "#d98779",
+type Rgba = {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
 };
 
-function usePrefersReducedMotion() {
-  const [reduced, setReduced] = useState(() =>
+type Palette = {
+  light: boolean;
+  base: Rgba;
+  top: Rgba;
+  side: Rgba;
+  line: Rgba;
+  accent: Rgba;
+  accentWhite: Rgba;
+  accentTop: Rgba;
+  accentSide: Rgba;
+  dust: Rgba;
+};
+
+type CubeCell = {
+  x: number;
+  y: number;
+  rotation: number;
+  rotationSpeed: number;
+  phase: number;
+  period: number;
+  cooldownUntil: number;
+};
+
+type CubeMotion = {
+  startedAt: number;
+  reverseAt: number;
+  finishAt: number;
+  glowStart: number;
+};
+
+type Particle = {
+  baseX: number;
+  baseY: number;
+  driftX: number;
+  driftY: number;
+  frequencyX: number;
+  frequencyY: number;
+  phaseX: number;
+  phaseY: number;
+  brightnessPhase: number;
+  size: number;
+  opacity: number;
+  firefly: boolean;
+};
+
+type PointerGoal = {
+  x: number;
+  y: number;
+  active: boolean;
+};
+
+const TWO_PI = Math.PI * 2;
+const FALLBACK_ACCENT = "#b4f17a";
+const DARK_BASE = "#08101a";
+const LIGHT_BASE = "#f0f2f6";
+const WHITE = "#ffffff";
+const BLACK = "#000000";
+const PARTICLE_SEED = 0x5eedf13e;
+const CUBE_TRIGGERS_PER_FRAME = 4;
+const CUBE_IDLE_REDRAW_CELLS = 160;
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? window.matchMedia(query).matches
       : false,
   );
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setReduced(media.matches);
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
     update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
+    media.addEventListener?.("change", update);
+    media.addListener?.(update);
+    return () => {
+      media.removeEventListener?.("change", update);
+      media.removeListener?.(update);
+    };
+  }, [query]);
 
-  return reduced;
+  return matches;
 }
 
-type Particle = {
-  x: number;
-  y: number;
-  size: number;
-  phase: number;
-  drift: number;
-  firefly: boolean;
-};
+function parseColor(value: string, fallback: Rgba): Rgba {
+  const text = value.trim().toLowerCase();
+  const hex = text.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+  if (hex) {
+    const raw = hex[1];
+    if (raw.length === 3) {
+      return {
+        r: Number.parseInt(`${raw[0]}${raw[0]}`, 16),
+        g: Number.parseInt(`${raw[1]}${raw[1]}`, 16),
+        b: Number.parseInt(`${raw[2]}${raw[2]}`, 16),
+        a: 1,
+      };
+    }
+    return {
+      r: Number.parseInt(raw.slice(0, 2), 16),
+      g: Number.parseInt(raw.slice(2, 4), 16),
+      b: Number.parseInt(raw.slice(4, 6), 16),
+      a: raw.length === 8 ? Number.parseInt(raw.slice(6, 8), 16) / 255 : 1,
+    };
+  }
 
-// Particle sizes: fireflies 2.5-4px, dust 1.5-2.5px. Budget from motion.ts.
-const particles: Particle[] = Array.from({ length: WORLD_PARTICLE_BUDGET.total }, (_, index) => ({
-  x: ((index * 47 + 13) % 101) / 101,
-  y: 0.22 + ((index * 31 + 7) % 75) / 100,
-  size: index < WORLD_PARTICLE_BUDGET.fireflies
-    ? 2.5 + (index % 4) * 0.5
-    : 1.5 + (index % 4) * 0.35,
-  phase: index * 0.61,
-  drift: 4 + (index % 7) * 2.4,
-  firefly: index < WORLD_PARTICLE_BUDGET.fireflies,
-}));
+  if (/^rgba?\(/i.test(text)) {
+    const values = text.match(/[\d.]+%?/g);
+    if (values && values.length >= 3) {
+      const channel = (token: string) =>
+        token.endsWith("%")
+          ? (Number.parseFloat(token) / 100) * 255
+          : Number.parseFloat(token);
+      const alpha = (token: string | undefined) => {
+        if (!token) return 1;
+        const parsed = Number.parseFloat(token);
+        return token.endsWith("%") ? parsed / 100 : parsed;
+      };
+      return {
+        r: clamp(channel(values[0]), 0, 255),
+        g: clamp(channel(values[1]), 0, 255),
+        b: clamp(channel(values[2]), 0, 255),
+        a: clamp(alpha(values[3]), 0, 1),
+      };
+    }
+  }
 
-// Stepped silhouettes and separately lit faces keep the landscape voxel-native.
-function VoxelPine({ x, y, scale = 1, distant = false }: { x: number; y: number; scale?: number; distant?: boolean }) {
-  return <g transform={`translate(${x} ${y}) scale(${scale})`}>
-    <path d="M-5-80H5V6H-5z" fill="var(--world-trunk)" />
-    <path d="M-5-80H0V6H-5z" fill="#a38d65" opacity=".28" />
-    <g className="world-scene__foliage">
-      <path d="M-9-144H9v19h13v20h15v22h14v21H34v16H17v12h-34v-12h-17v-16h-17v-21h14v-22h15v-20h13z" fill={distant ? "var(--world-pine-distant)" : "var(--world-pine)"} />
-      <path d="M0-144h9v19h13v20h15v22h14v21H34v16H17v12H0z" fill={distant ? "var(--world-pine-distant-shade)" : "var(--world-pine-shade)"} />
-      <path d="M-9-144H9v8H-9zM-22-125H9v7h-31zM-37-105H9v7h-46zM-51-83H9v8h-60z" fill="var(--world-pine-light)" opacity=".6" />
-      <path d="M-32-95h9v8h-9zM-16-72h11v10h-11zM13-112h7v7h-7zM22-70h11v8H22z" fill="#a3ad7e" opacity=".13" />
-    </g>
-  </g>;
+  return fallback;
+}
+
+function color(hex: string): Rgba {
+  return parseColor(hex, { r: 180, g: 241, b: 122, a: 1 });
+}
+
+function mixColor(from: Rgba, to: Rgba, amount: number): Rgba {
+  const weight = clamp(amount, 0, 1);
+  return {
+    r: from.r + (to.r - from.r) * weight,
+    g: from.g + (to.g - from.g) * weight,
+    b: from.b + (to.b - from.b) * weight,
+    a: from.a + (to.a - from.a) * weight,
+  };
+}
+
+function rgba(value: Rgba, alpha = value.a): string {
+  return `rgba(${Math.round(value.r)}, ${Math.round(value.g)}, ${Math.round(value.b)}, ${clamp(alpha, 0, 1).toFixed(3)})`;
+}
+
+function relativeLuminance(value: Rgba): number {
+  const linear = [value.r, value.g, value.b].map((component) => {
+    const normalized = component / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+}
+
+function readPalette(scene: HTMLElement): Palette {
+  const style = getComputedStyle(scene);
+  const themeHint = document.documentElement.dataset.theme === "light";
+  const backgroundText = style.getPropertyValue("--bg-base").trim();
+  const backgroundFallback = color(themeHint ? LIGHT_BASE : DARK_BASE);
+  const base = parseColor(backgroundText, backgroundFallback);
+  const light = themeHint || relativeLuminance(base) > 0.52;
+  const accent = parseColor(
+    style.getPropertyValue("--accent").trim(),
+    color(FALLBACK_ACCENT),
+  );
+  const white = color(WHITE);
+  const black = color(BLACK);
+  const accentWhite = mixColor(accent, white, 0.1);
+
+  return {
+    light,
+    base,
+    top: mixColor(base, white, 0.25),
+    side: mixColor(base, black, 0.2),
+    line: mixColor(base, black, 0.38),
+    accent,
+    accentWhite,
+    accentTop: mixColor(accentWhite, white, 0.25),
+    accentSide: mixColor(accentWhite, black, 0.2),
+    dust: mixColor(accent, white, light ? 0.58 : 0.72),
+  };
+}
+
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function createParticles(): Particle[] {
+  const random = seededRandom(PARTICLE_SEED);
+  return Array.from({ length: WORLD_PARTICLE_BUDGET.total }, (_, index) => {
+    const firefly = index < WORLD_PARTICLE_BUDGET.fireflies;
+    return {
+      baseX: 0.025 + random() * 0.95,
+      baseY: 0.03 + random() * 0.94,
+      driftX: 0.004 + random() * 0.024,
+      driftY: 0.003 + random() * 0.021,
+      frequencyX: 0.025 + random() * 0.06,
+      frequencyY: 0.021 + random() * 0.054,
+      phaseX: random() * TWO_PI,
+      phaseY: random() * TWO_PI,
+      brightnessPhase: random() * TWO_PI,
+      size: firefly ? 1.8 + random() * 1.4 : 0.8 + random() * 0.8,
+      opacity: firefly ? 0.48 + random() * 0.34 : 0.14 + random() * 0.2,
+      firefly,
+    };
+  });
+}
+
+const PARTICLES = createParticles();
+
+function createCubeCells(width: number, height: number): CubeCell[] {
+  const columns = Math.ceil(width / CUBE_PITCH_PX) + 1;
+  const rows = Math.ceil(height / CUBE_PITCH_PX) + 1;
+  const cells: CubeCell[] = [];
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const noise = Math.sin(column * 12.9898 + row * 78.233) * 43758.5453;
+      const seed = noise - Math.floor(noise);
+      const random = seededRandom(
+        Math.imul(column + 1, 0x9e3779b1) ^ Math.imul(row + 1, 0x85ebca6b),
+      );
+      const rpm = 0.3 + random() * 0.5;
+      const direction = random() < 0.5 ? -1 : 1;
+      cells.push({
+        x: (column + 0.5) * CUBE_PITCH_PX,
+        y: (row + 0.5) * CUBE_PITCH_PX,
+        rotation: random() * TWO_PI,
+        rotationSpeed: direction * (rpm / 60) * TWO_PI,
+        phase: random() * TWO_PI + seed * 0.2,
+        period: 8 + random() * 6,
+        cooldownUntil: 0,
+      });
+    }
+  }
+
+  return cells;
+}
+
+function cubePulse(cell: CubeCell, now: number): number {
+  const wave =
+    0.5 + Math.sin((now / 1000 / cell.period) * TWO_PI + cell.phase) * 0.5;
+  return CUBE_PULSE_MIN + (CUBE_PULSE_MAX - CUBE_PULSE_MIN) * wave;
+}
+
+function cubicBezierEase(progress: number): number {
+  const x = clamp(progress, 0, 1);
+  let low = 0;
+  let high = 1;
+  let middle = x;
+
+  for (let index = 0; index < 9; index += 1) {
+    middle = (low + high) / 2;
+    const inverse = 1 - middle;
+    const curveX =
+      3 * inverse * inverse * middle * 0.25 +
+      3 * inverse * middle * middle * 0.5 +
+      middle * middle * middle;
+    if (curveX < x) low = middle;
+    else high = middle;
+  }
+
+  const inverse = 1 - middle;
+  return (
+    3 * inverse * inverse * middle +
+    3 * inverse * middle * middle +
+    middle * middle * middle
+  );
+}
+
+function cubePose(
+  motion: CubeMotion | undefined,
+  now: number,
+): { widthFactor: number; accent: boolean } {
+  if (!motion) return { widthFactor: 1, accent: false };
+
+  const halfFlip = CUBE_FLIP_DURATION_MS / 2;
+  if (now < motion.reverseAt) {
+    const elapsed = Math.max(0, now - motion.startedAt);
+    if (elapsed < halfFlip) {
+      return {
+        widthFactor: 1 - cubicBezierEase(elapsed / halfFlip),
+        accent: false,
+      };
+    }
+    return {
+      widthFactor: cubicBezierEase((elapsed - halfFlip) / halfFlip),
+      accent: true,
+    };
+  }
+
+  const reverseElapsed = Math.max(0, now - motion.reverseAt);
+  if (reverseElapsed < halfFlip) {
+    return {
+      widthFactor: 1 - cubicBezierEase(reverseElapsed / halfFlip),
+      accent: true,
+    };
+  }
+  return {
+    widthFactor: cubicBezierEase((reverseElapsed - halfFlip) / halfFlip),
+    accent: false,
+  };
+}
+
+function cubeRotation(cell: CubeCell, now: number): number {
+  return cell.rotation + cell.rotationSpeed * (now / 1000);
+}
+
+function drawCubeFaces(
+  context: CanvasRenderingContext2D,
+  cell: CubeCell,
+  width: number,
+  rotation: number,
+  front: Rgba,
+  top: Rgba,
+  side: Rgba,
+  edge: Rgba,
+  accentFace: boolean,
+) {
+  if (width <= 0.04) return;
+
+  const ratio = clamp(width / CUBE_SIZE_PX, 0, 1);
+  const half = width / 2;
+  const frontLeft = cell.x - half;
+  const frontTop = cell.y - CUBE_SIZE_PX / 2;
+  const frontRight = cell.x + half;
+  const frontBottom = frontTop + CUBE_SIZE_PX;
+  const topHeight = CUBE_TOP_HEIGHT * (0.35 + ratio * 0.65);
+  const sideDirection = Math.sin(rotation) >= 0 ? 1 : -1;
+  const sideWidth =
+    sideDirection *
+    CUBE_SIDE_WIDTH *
+    (0.35 + Math.abs(Math.sin(rotation)) * 0.65);
+  const backTop = frontTop - topHeight;
+  const backBottom = frontBottom - topHeight;
+
+  context.strokeStyle = rgba(edge, accentFace ? 0.55 : 0.12);
+  context.lineWidth = accentFace ? 0.55 : 0.3;
+
+  context.beginPath();
+  context.moveTo(frontRight, frontTop);
+  context.lineTo(frontRight + sideWidth, backTop);
+  context.lineTo(frontRight + sideWidth, backBottom);
+  context.lineTo(frontRight, frontBottom);
+  context.closePath();
+  context.stroke();
+  context.fillStyle = rgba(side);
+  context.fill();
+
+  context.beginPath();
+  context.moveTo(frontLeft, frontTop);
+  context.lineTo(frontRight, frontTop);
+  context.lineTo(frontRight + sideWidth, backTop);
+  context.lineTo(frontLeft + sideWidth, backTop);
+  context.closePath();
+  context.stroke();
+  context.fillStyle = rgba(top);
+  context.fill();
+
+  context.beginPath();
+  context.moveTo(frontLeft, frontTop);
+  context.lineTo(frontRight, frontTop);
+  context.lineTo(frontRight, frontBottom);
+  context.lineTo(frontLeft, frontBottom);
+  context.closePath();
+  context.stroke();
+  context.fillStyle = rgba(front);
+  context.fillRect(frontLeft, frontTop, width, CUBE_SIZE_PX);
+}
+
+function clearCubeCell(context: CanvasRenderingContext2D, cell: CubeCell) {
+  context.clearRect(cell.x - 5, cell.y - 6, 11, 11);
+}
+
+function drawCubeCell(
+  context: CanvasRenderingContext2D,
+  cell: CubeCell,
+  palette: Palette,
+  now: number,
+  motion?: CubeMotion,
+) {
+  clearCubeCell(context, cell);
+  const pose = cubePose(motion, now);
+  const rotation = cubeRotation(cell, now);
+  const facing = Math.abs(Math.cos(rotation));
+  const idleWidth = CUBE_SIZE_PX * (0.2 + facing * 0.8);
+  const pulse = cubePulse(cell, now);
+  const opacity = pose.accent
+    ? clamp(pulse + 0.16, CUBE_PULSE_MIN, 0.82)
+    : pulse;
+  const tint = 0.08 + facing * 0.06;
+  const idleFront = mixColor(palette.base, palette.accent, tint);
+  const idleTop = mixColor(idleFront, color(WHITE), 0.25);
+  const idleSide = mixColor(idleFront, color(BLACK), 0.2);
+
+  context.save();
+  context.globalAlpha = opacity;
+  drawCubeFaces(
+    context,
+    cell,
+    idleWidth * pose.widthFactor,
+    rotation,
+    pose.accent ? palette.accentWhite : idleFront,
+    pose.accent ? palette.accentTop : idleTop,
+    pose.accent ? palette.accentSide : idleSide,
+    palette.accent,
+    pose.accent,
+  );
+
+  context.globalAlpha = opacity * 0.22;
+  context.fillStyle = rgba(palette.line);
+  const sideDirection = Math.sin(rotation) >= 0 ? 1 : -1;
+  context.fillRect(
+    cell.x + CUBE_SIZE_PX / 2 + sideDirection * (CUBE_SIDE_WIDTH + 0.8),
+    cell.y - CUBE_SIZE_PX / 2,
+    1,
+    CUBE_SIZE_PX + CUBE_TOP_HEIGHT,
+  );
+  context.restore();
+}
+
+function drawCubeLayer(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  cells: CubeCell[],
+  palette: Palette,
+  now: number,
+) {
+  context.clearRect(0, 0, width, height);
+  for (const cell of cells) drawCubeCell(context, cell, palette, now);
+}
+
+function drawPulseShard(
+  context: CanvasRenderingContext2D,
+  cells: CubeCell[],
+  palette: Palette,
+  now: number,
+  active: Map<CubeCell, CubeMotion>,
+  cursor: number,
+) {
+  if (cells.length === 0) return cursor;
+  let index = cursor % cells.length;
+  let drawn = 0;
+
+  while (drawn < CUBE_IDLE_REDRAW_CELLS && drawn < cells.length) {
+    const cell = cells[index];
+    if (!active.has(cell)) drawCubeCell(context, cell, palette, now);
+    index = (index + 1) % cells.length;
+    drawn += 1;
+  }
+
+  return index;
+}
+
+function drawGlowLayer(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  palette: Palette,
+  now: number,
+  active: Map<CubeCell, CubeMotion>,
+) {
+  context.clearRect(0, 0, width, height);
+  for (const [cell, motion] of active) {
+    const elapsed = now - motion.glowStart;
+    if (elapsed < 0 || elapsed >= CUBE_GLOW_DURATION_MS) continue;
+    const fade = 1 - elapsed / CUBE_GLOW_DURATION_MS;
+    const glow = context.createRadialGradient(
+      cell.x,
+      cell.y,
+      0,
+      cell.x,
+      cell.y,
+      CUBE_GLOW_RADIUS_PX,
+    );
+    glow.addColorStop(0, rgba(palette.accent, 0.6 * fade));
+    glow.addColorStop(0.32, rgba(palette.accent, 0.3 * fade));
+    glow.addColorStop(1, rgba(palette.accent, 0));
+    context.fillStyle = glow;
+    context.fillRect(
+      cell.x - CUBE_GLOW_RADIUS_PX,
+      cell.y - CUBE_GLOW_RADIUS_PX,
+      CUBE_GLOW_RADIUS_PX * 2,
+      CUBE_GLOW_RADIUS_PX * 2,
+    );
+  }
+}
+
+function drawParticles(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  palette: Palette,
+  now: number,
+) {
+  context.clearRect(0, 0, width, height);
+  const seconds = now / 1000;
+  const themeScale = palette.light ? 0.64 : 1;
+
+  context.save();
+  context.fillStyle = rgba(palette.accent);
+  context.shadowColor = rgba(palette.accent, 0.68);
+  context.shadowBlur = 8;
+  for (const particle of PARTICLES) {
+    if (!particle.firefly) continue;
+    const x =
+      particle.baseX * width +
+      Math.sin(seconds * particle.frequencyX + particle.phaseX) *
+        particle.driftX *
+        width;
+    const y =
+      particle.baseY * height +
+      Math.cos(seconds * particle.frequencyY + particle.phaseY) *
+        particle.driftY *
+        height;
+    context.globalAlpha =
+      clamp(
+        particle.opacity +
+          Math.sin(seconds * 0.78 + particle.brightnessPhase) * 0.09,
+        0.45,
+        0.86,
+      ) * themeScale;
+    context.beginPath();
+    context.arc(x, y, particle.size / 2, 0, TWO_PI);
+    context.fill();
+  }
+  context.restore();
+
+  context.save();
+  context.fillStyle = rgba(palette.dust);
+  for (const particle of PARTICLES) {
+    if (particle.firefly) continue;
+    const x =
+      particle.baseX * width +
+      Math.sin(seconds * particle.frequencyX + particle.phaseX) *
+        particle.driftX *
+        width;
+    const y =
+      particle.baseY * height +
+      Math.cos(seconds * particle.frequencyY + particle.phaseY) *
+        particle.driftY *
+        height;
+    context.globalAlpha =
+      clamp(
+        particle.opacity +
+          Math.cos(seconds * 0.54 + particle.brightnessPhase) * 0.045,
+        0.12,
+        0.36,
+      ) * themeScale;
+    context.fillRect(
+      x - particle.size / 2,
+      y - particle.size / 2,
+      particle.size,
+      particle.size,
+    );
+  }
+  context.globalAlpha = 1;
+  context.restore();
 }
 
 export function WorldScene({
@@ -95,97 +625,49 @@ export function WorldScene({
   onCameraFrame,
 }: WorldSceneProps) {
   const sceneRef = useRef<HTMLDivElement>(null);
-  const farLayerRef = useRef<SVGGElement>(null);
-  const middleLayerRef = useRef<SVGGElement>(null);
-  const foregroundLayerRef = useRef<SVGGElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const frameRef = useRef<number | null>(null);
-  const previousFrameTime = useRef(0);
-  const pointerGoal = useRef({ x: 0, y: 0 });
-  const camera = useRef({ x: createSpring(), y: createSpring() });
-  const cameraScale = useRef(1);
-  const cameraPush = useRef({ from: 1, target: 1, startedAt: 0 });
-  const canvasSize = useRef({ width: 0, height: 0 });
-  const particlePalette = useRef<{ firefly: string; dust: string } | null>(null);
-  const reducedMotion = usePrefersReducedMotion();
+  const cameraRef = useRef<HTMLDivElement>(null);
+  const cubeCanvasRef = useRef<HTMLCanvasElement>(null);
+  const glowCanvasRef = useRef<HTMLCanvasElement>(null);
+  const particleCanvasRef = useRef<HTMLCanvasElement>(null);
+  const pointerGoal = useRef<PointerGoal>({ x: 0, y: 0, active: false });
+  const pointerSpring = useRef({
+    x: createSpring(0.5),
+    y: createSpring(0.5),
+  });
+  const cameraSpring = useRef({
+    x: createSpring(),
+    y: createSpring(),
+  });
+  const cameraScaleSpring = useRef(createSpring(1));
+  const onCameraFrameRef = useRef(onCameraFrame);
+  const animationTimeRef = useRef(0);
+  const previousAnimationFrameRef = useRef<number | null>(null);
+  const cubeCellsRef = useRef<CubeCell[]>([]);
+  const activeCubeMotionsRef = useRef(new Map<CubeCell, CubeMotion>());
+  const cubeFieldSizeRef = useRef({ width: 0, height: 0 });
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const finePointer = useMediaQuery("(pointer: fine)");
+  const finePointerRef = useRef(finePointer);
   const [pageVisible, setPageVisible] = useState(() =>
     typeof document === "undefined" ? true : !document.hidden,
   );
   const [inView, setInView] = useState(true);
-  const [interacting, setInteracting] = useState(false);
-  const id = useId();
-  const skyId = `${id}-sky`;
-  const sunId = `${id}-sun`;
-  const earthId = `${id}-earth`;
-  const waterId = `${id}-water`;
-  const clipId = `${id}-clip`;
-  const beamId = `${id}-beam`;
-  const sweepId = `${id}-sun-sweep`;
-  const normalizedProgress = Math.min(100, Math.max(0, progress));
-  const beaconProgress =
-    state === "running" ? 100 : state === "idle" ? 0 : normalizedProgress;
-
+  const normalizedProgress = clamp(progress, 0, 100);
   const paused = userPaused || !pageVisible || !inView;
-  const motionEnabled = !reducedMotion && !paused && !interacting;
 
-  const resetPointer = useCallback(() => {
-    pointerGoal.current = { x: 0, y: 0 };
-  }, []);
-
-  const paintCamera = useCallback((scale: number, includePointer: boolean) => {
-    const x = includePointer ? clamp(camera.current.x.position, -1, 1) : 0;
-    const y = includePointer ? clamp(camera.current.y.position, -1, 1) : 0;
-    const layers = [
-      [farLayerRef.current, WORLD_PARALLAX_DEPTHS.far],
-      [middleLayerRef.current, WORLD_PARALLAX_DEPTHS.middle],
-      [foregroundLayerRef.current, WORLD_PARALLAX_DEPTHS.foreground],
-    ] as const;
-    for (const [layer, depth] of layers) {
-      if (!layer) continue;
-      const offsetX = x * WORLD_CAMERA.maxOffsetPx * depth;
-      const offsetY = y * WORLD_CAMERA.maxOffsetPx * depth * 0.62;
-      layer.style.transform = `translate3d(${offsetX.toFixed(2)}px, ${offsetY.toFixed(2)}px, 0)`;
-    }
-    cameraScale.current = scale;
-    sceneRef.current?.style.setProperty("--world-camera-scale", scale.toFixed(4));
-    onCameraFrame?.({ x, y, scale });
+  useEffect(() => {
+    onCameraFrameRef.current = onCameraFrame;
   }, [onCameraFrame]);
 
-  const drawParticles = useCallback((now: number) => {
-    const canvas = canvasRef.current;
-    const { width, height } = canvasSize.current;
-    if (!canvas || width < 1 || height < 1) return;
-    let context: CanvasRenderingContext2D | null = null;
-    try {
-      context = canvas.getContext("2d");
-    } catch {
-      return;
+  useEffect(() => {
+    finePointerRef.current = finePointer;
+    if (!finePointer && pointerGoal.current.active) {
+      pointerGoal.current = { ...pointerGoal.current, active: false };
+      if (sceneRef.current) {
+        sceneRef.current.dataset.pointerActive = "false";
+      }
     }
-    if (!context) return;
-    if (!particlePalette.current) {
-      const style = getComputedStyle(canvas);
-      particlePalette.current = {
-        firefly: style.getPropertyValue("--world-firefly").trim() || "#f0d0a0",
-        dust: style.getPropertyValue("--world-dust").trim() || "#c7d7cf",
-      };
-    }
-    const { firefly, dust } = particlePalette.current;
-    context.clearRect(0, 0, width, height);
-    const seconds = now / 1000;
-    for (const particle of particles) {
-      const phase = seconds * (particle.firefly ? 0.16 : 0.07) + particle.phase;
-      const x = particle.x * width + Math.sin(phase) * particle.drift;
-      const y = particle.y * height + Math.cos(phase * 0.83) * particle.drift * 0.72;
-      // Boosted alpha: fireflies 0.62–0.92, dust 0.28–0.44
-      context.globalAlpha = particle.firefly
-        ? 0.62 + (Math.sin(phase * 1.7) + 1) * 0.15
-        : 0.28 + (Math.cos(phase) + 1) * 0.08;
-      context.fillStyle = particle.firefly ? firefly : dust;
-      const size = particle.size * (particle.firefly ? 1.25 : 1);
-      context.fillRect(Math.round(x), Math.round(y), size, size);
-    }
-    context.globalAlpha = 1;
-  }, []);
+  }, [finePointer]);
 
   useEffect(() => {
     const update = () => setPageVisible(!document.hidden);
@@ -194,244 +676,396 @@ export function WorldScene({
   }, []);
 
   useEffect(() => {
-    const element = sceneRef.current;
-    if (!element || typeof IntersectionObserver === "undefined") {
+    const scene = sceneRef.current;
+    if (!scene || typeof IntersectionObserver === "undefined") {
       setInView(true);
       return;
     }
     const observer = new IntersectionObserver(([entry]) => {
       if (entry) setInView(entry.isIntersecting);
     });
-    observer.observe(element);
+    observer.observe(scene);
     return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
-    if (!motionEnabled) resetPointer();
-  }, [motionEnabled, resetPointer]);
-
-  useEffect(() => {
-    const press = (event: MouseEvent) => {
-      if (event.button === 0) setInteracting(true);
-    };
-    const release = () => setInteracting(false);
-    window.addEventListener("pointerdown", press, true);
-    window.addEventListener("pointerup", release, true);
-    window.addEventListener("pointercancel", release, true);
-    window.addEventListener("blur", release);
-    document.addEventListener("dragstart", press, true);
-    document.addEventListener("dragend", release, true);
-    return () => {
-      window.removeEventListener("pointerdown", press, true);
-      window.removeEventListener("pointerup", release, true);
-      window.removeEventListener("pointercancel", release, true);
-      window.removeEventListener("blur", release);
-      document.removeEventListener("dragstart", press, true);
-      document.removeEventListener("dragend", release, true);
-    };
-  }, []);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
     const scene = sceneRef.current;
-    if (!canvas || !scene) return;
+    if (!scene || !finePointer) return;
+
+    const movePointer = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return;
+      const bounds = scene.getBoundingClientRect();
+      const inside =
+        bounds.width > 0 &&
+        bounds.height > 0 &&
+        event.clientX >= bounds.left &&
+        event.clientX <= bounds.right &&
+        event.clientY >= bounds.top &&
+        event.clientY <= bounds.bottom;
+      pointerGoal.current = {
+        x: clamp(event.clientX - bounds.left, 0, Math.max(1, bounds.width)),
+        y: clamp(event.clientY - bounds.top, 0, Math.max(1, bounds.height)),
+        active: inside,
+      };
+      scene.dataset.pointerActive = String(inside);
+    };
+
+    const leavePointer = () => {
+      pointerGoal.current = { ...pointerGoal.current, active: false };
+      scene.dataset.pointerActive = "false";
+    };
+
+    const documentRoot = document.documentElement;
+    let lastSceneEventAt = -Infinity;
+    const sceneMove = (event: PointerEvent) => {
+      lastSceneEventAt = performance.now();
+      movePointer(event);
+    };
+    const windowMove = (event: PointerEvent) => {
+      if (performance.now() - lastSceneEventAt < 1) return;
+      movePointer(event);
+    };
+
+    scene.addEventListener("pointermove", sceneMove, { passive: true });
+    scene.addEventListener("pointerleave", leavePointer, { passive: true });
+    scene.addEventListener("pointercancel", leavePointer, { passive: true });
+    window.addEventListener("pointermove", windowMove, { passive: true });
+    window.addEventListener("blur", leavePointer);
+    documentRoot.addEventListener("pointerleave", leavePointer, {
+      passive: true,
+    });
+    return () => {
+      scene.removeEventListener("pointermove", sceneMove);
+      scene.removeEventListener("pointerleave", leavePointer);
+      scene.removeEventListener("pointercancel", leavePointer);
+      window.removeEventListener("pointermove", windowMove);
+      window.removeEventListener("blur", leavePointer);
+      documentRoot.removeEventListener("pointerleave", leavePointer);
+    };
+  }, [finePointer]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const cubeCanvas = cubeCanvasRef.current;
+    const glowCanvas = glowCanvasRef.current;
+    const particleCanvas = particleCanvasRef.current;
+    if (!scene || !cubeCanvas || !glowCanvas || !particleCanvas) return;
+
+    let cubeContext: CanvasRenderingContext2D | null = null;
+    let glowContext: CanvasRenderingContext2D | null = null;
+    let particleContext: CanvasRenderingContext2D | null = null;
+    try {
+      cubeContext = cubeCanvas.getContext("2d");
+      glowContext = glowCanvas.getContext("2d");
+      particleContext = particleCanvas.getContext("2d");
+    } catch {
+      cubeContext = null;
+      glowContext = null;
+      particleContext = null;
+    }
+
+    let width = 1;
+    let height = 1;
+    let cells = cubeCellsRef.current;
+    let palette = readPalette(scene);
+    let frame: number | null = null;
+    let pulseCursor = 0;
+    let pointerWasActive = false;
+    let triggerPoint = { x: 0, y: 0 };
+    let needsInitialTrigger = false;
+    const active = activeCubeMotionsRef.current;
+    const motionEnabled = !paused && !reducedMotion;
+    const scaleGoal =
+      state === "preparing" || state === "running" ? WORLD_CAMERA.pushScale : 1;
+
     const resize = () => {
       const bounds = scene.getBoundingClientRect();
-      const ratio = Math.min(window.devicePixelRatio || 1, WORLD_CANVAS_PIXEL_RATIO_MAX);
-      canvasSize.current = { width: bounds.width, height: bounds.height };
-      canvas.width = Math.max(1, Math.round(bounds.width * ratio));
-      canvas.height = Math.max(1, Math.round(bounds.height * ratio));
-      try {
-        canvas.getContext("2d")?.setTransform(ratio, 0, 0, ratio, 0, 0);
-      } catch {
-        canvasSize.current = { width: 0, height: 0 };
+      width = Math.max(
+        1,
+        bounds.width || scene.clientWidth || cubeCanvas.clientWidth || 640,
+      );
+      height = Math.max(
+        1,
+        bounds.height || scene.clientHeight || cubeCanvas.clientHeight || 360,
+      );
+      const ratio = Math.min(
+        typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
+        WORLD_CANVAS_PIXEL_RATIO_MAX,
+      );
+
+      for (const canvas of [cubeCanvas, glowCanvas, particleCanvas]) {
+        canvas.width = Math.max(1, Math.round(width * ratio));
+        canvas.height = Math.max(1, Math.round(height * ratio));
+      }
+      for (const context of [cubeContext, glowContext, particleContext]) {
+        context?.setTransform(ratio, 0, 0, ratio, 0, 0);
+      }
+
+      if (
+        width !== cubeFieldSizeRef.current.width ||
+        height !== cubeFieldSizeRef.current.height
+      ) {
+        cells = createCubeCells(width, height);
+        cubeCellsRef.current = cells;
+        cubeFieldSizeRef.current = { width, height };
+        active.clear();
+        pulseCursor = 0;
+      }
+      scene.dataset.cubeCount = String(cells.length);
+      scene.dataset.activeFlips = String(active.size);
+      cubeCanvas.dataset.rendered = "true";
+      glowCanvas.dataset.rendered = "true";
+      particleCanvas.dataset.rendered = "true";
+    };
+
+    const updateCamera = (x: number, y: number, scale: number) => {
+      const cameraX = clamp(x, -1, 1);
+      const cameraY = clamp(y, -1, 1);
+      if (cameraRef.current) {
+        cameraRef.current.style.transform = `translate3d(${(cameraX * WORLD_CAMERA.maxOffsetPx).toFixed(2)}px, ${(cameraY * WORLD_CAMERA.maxOffsetPx * 0.62).toFixed(2)}px, 0) scale(${scale.toFixed(4)})`;
+      }
+      onCameraFrameRef.current?.({ x: cameraX, y: cameraY, scale });
+    };
+
+    const paintFull = (now: number) => {
+      if (cubeContext) {
+        drawCubeLayer(cubeContext, width, height, cells, palette, now);
+      }
+      if (glowContext) {
+        drawGlowLayer(glowContext, width, height, palette, now, active);
+      }
+      if (particleContext) {
+        drawParticles(particleContext, width, height, palette, now);
+      }
+      scene.dataset.light = String(palette.light);
+    };
+
+    const triggerCubes = (now: number, x: number, y: number) => {
+      const room = CUBE_ACTIVE_BUDGET - active.size;
+      if (room <= 0) return;
+
+      const radiusSquared = CUBE_TRIGGER_RADIUS_PX ** 2;
+      const candidates: Array<{ cell: CubeCell; distance: number }> = [];
+      for (const cell of cells) {
+        if (active.has(cell) || now < cell.cooldownUntil) continue;
+        const deltaX = cell.x - x;
+        const deltaY = cell.y - y;
+        const distance = deltaX * deltaX + deltaY * deltaY;
+        if (distance <= radiusSquared) {
+          candidates.push({ cell, distance });
+        }
+      }
+      candidates.sort((left, right) => left.distance - right.distance);
+
+      const count = Math.min(room, CUBE_TRIGGERS_PER_FRAME);
+      for (
+        let index = 0;
+        index < count && index < candidates.length;
+        index += 1
+      ) {
+        const cell = candidates[index].cell;
+        active.set(cell, {
+          startedAt: now,
+          reverseAt: now + CUBE_FLIP_DURATION_MS + CUBE_STAY_DURATION_MS,
+          finishAt: now + CUBE_FLIP_DURATION_MS * 2 + CUBE_STAY_DURATION_MS,
+          glowStart: now + CUBE_FLIP_DURATION_MS,
+        });
       }
     };
-    resize();
-    const themeObserver = new MutationObserver(() => {
-      particlePalette.current = null;
-    });
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style"] });
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
-    observer?.observe(scene);
-    return () => {
-      observer?.disconnect();
-      themeObserver.disconnect();
-    };
-  }, []);
 
-  useEffect(() => {
-    const target = !reducedMotion && (state === "preparing" || state === "running")
-      ? WORLD_CAMERA.pushScale
-      : 1;
-    if (cameraPush.current.target === target) return;
-    cameraPush.current = {
-      from: cameraScale.current,
-      target,
-      startedAt: performance.now(),
-    };
-  }, [reducedMotion, state]);
-
-  useEffect(() => {
-    if (frameRef.current !== null && typeof cancelAnimationFrame !== "undefined") {
-      cancelAnimationFrame(frameRef.current);
-      frameRef.current = null;
-    }
-    previousFrameTime.current = 0;
-    if (reducedMotion || paused) {
-      snapSpring(camera.current.x, 0);
-      snapSpring(camera.current.y, 0);
-      paintCamera(reducedMotion ? 1 : cameraScale.current, false);
-      return;
-    }
-    if (!motionEnabled) {
-      snapSpring(camera.current.x, 0);
-      snapSpring(camera.current.y, 0);
-    }
-    const tick = (now: number) => {
-      const seconds = previousFrameTime.current
-        ? (now - previousFrameTime.current) / 1000
-        : 1 / 60;
-      previousFrameTime.current = now;
-      const push = cameraPush.current;
-      const pushProgress = clamp((now - push.startedAt) / OVERTURE_STAGE_MS, 0, 1);
-      const easedPush = 1 - Math.pow(1 - pushProgress, 3);
-      const scale = push.from + (push.target - push.from) * easedPush;
-      const pushAnimating = pushProgress < 1 && push.target !== push.from;
-      const ambientFrame = motionEnabled && !pushAnimating;
-      if (ambientFrame) {
-        camera.current.x.goal = pointerGoal.current.x;
-        camera.current.y.goal = pointerGoal.current.y;
-        advanceSpring(camera.current.x, seconds, WORLD_CAMERA.spring);
-        advanceSpring(camera.current.y, seconds, WORLD_CAMERA.spring);
+    const updateCubes = (now: number) => {
+      if (!cubeContext) return;
+      for (const [cell, motion] of active) {
+        if (now >= motion.finishAt) {
+          active.delete(cell);
+          drawCubeCell(cubeContext, cell, palette, now);
+        } else {
+          drawCubeCell(cubeContext, cell, palette, now, motion);
+        }
       }
-      sceneRef.current?.setAttribute("data-ambient", String(ambientFrame));
-      paintCamera(scale, ambientFrame);
-      if (ambientFrame) drawParticles(now);
-      if (motionEnabled || pushProgress < 1) {
-        frameRef.current = requestAnimationFrame(tick);
+      pulseCursor = drawPulseShard(
+        cubeContext,
+        cells,
+        palette,
+        now,
+        active,
+        pulseCursor,
+      );
+      scene.dataset.activeFlips = String(active.size);
+    };
+
+    const paintAnimated = (now: number, deltaSeconds: number) => {
+      const targetX = pointerGoal.current.active
+        ? pointerGoal.current.x / width
+        : 0.5;
+      const targetY = pointerGoal.current.active
+        ? pointerGoal.current.y / height
+        : 0.5;
+      const becameActive = pointerGoal.current.active && !pointerWasActive;
+      pointerWasActive = pointerGoal.current.active;
+
+      if (becameActive) {
+        pointerSpring.current.x.goal = targetX;
+        pointerSpring.current.y.goal = targetY;
+        snapSpring(pointerSpring.current.x, targetX);
+        snapSpring(pointerSpring.current.y, targetY);
+        needsInitialTrigger = true;
       } else {
-        frameRef.current = null;
-        previousFrameTime.current = 0;
+        pointerSpring.current.x.goal = targetX;
+        pointerSpring.current.y.goal = targetY;
+        advanceSpring(pointerSpring.current.x, deltaSeconds, POINTER_SPRING);
+        advanceSpring(pointerSpring.current.y, deltaSeconds, POINTER_SPRING);
       }
-    };
-    if (typeof requestAnimationFrame !== "undefined") {
-      frameRef.current = requestAnimationFrame(tick);
-    }
-    return () => {
-      if (frameRef.current !== null && typeof cancelAnimationFrame !== "undefined") {
-        cancelAnimationFrame(frameRef.current);
-      }
-      frameRef.current = null;
-      previousFrameTime.current = 0;
-    };
-  }, [drawParticles, motionEnabled, paintCamera, paused, reducedMotion, state]);
 
-  const movePointer = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (!motionEnabled || event.pointerType === "touch") return;
-      const bounds = event.currentTarget.getBoundingClientRect();
-      if (!bounds.width || !bounds.height) return;
-      const x = ((event.clientX - bounds.left) / bounds.width - 0.5) * 2;
-      const y = ((event.clientY - bounds.top) / bounds.height - 0.5) * 2;
-      pointerGoal.current = { x: clamp(x, -1, 1), y: clamp(y, -1, 1) };
-    },
-    [motionEnabled],
-  );
+      const smoothX = pointerSpring.current.x.position * width;
+      const smoothY = pointerSpring.current.y.position * height;
+      const pointerDistance = Math.hypot(
+        smoothX - triggerPoint.x,
+        smoothY - triggerPoint.y,
+      );
+      if (
+        finePointerRef.current &&
+        pointerGoal.current.active &&
+        (needsInitialTrigger || pointerDistance > 0.35)
+      ) {
+        triggerCubes(now, smoothX, smoothY);
+        triggerPoint = { x: smoothX, y: smoothY };
+        needsInitialTrigger = false;
+      }
+
+      cameraSpring.current.x.goal = pointerGoal.current.active
+        ? clamp((pointerGoal.current.x / width - 0.5) * 2, -1, 1)
+        : 0;
+      cameraSpring.current.y.goal = pointerGoal.current.active
+        ? clamp((pointerGoal.current.y / height - 0.5) * 2, -1, 1)
+        : 0;
+      cameraScaleSpring.current.goal = scaleGoal;
+      advanceSpring(cameraSpring.current.x, deltaSeconds, POINTER_SPRING);
+      advanceSpring(cameraSpring.current.y, deltaSeconds, POINTER_SPRING);
+      advanceSpring(
+        cameraScaleSpring.current,
+        deltaSeconds,
+        WORLD_CAMERA.spring,
+      );
+
+      updateCubes(now);
+      if (glowContext) {
+        drawGlowLayer(glowContext, width, height, palette, now, active);
+      }
+      if (particleContext) {
+        drawParticles(particleContext, width, height, palette, now);
+      }
+      updateCamera(
+        cameraSpring.current.x.position,
+        cameraSpring.current.y.position,
+        cameraScaleSpring.current.position,
+      );
+    };
+
+    const tick = (now: number) => {
+      const previousFrame = previousAnimationFrameRef.current;
+      const deltaSeconds =
+        previousFrame === null
+          ? 0
+          : clamp((now - previousFrame) / 1000, 0, 0.08);
+      previousAnimationFrameRef.current = now;
+      animationTimeRef.current += deltaSeconds * 1000;
+      paintAnimated(animationTimeRef.current, deltaSeconds);
+      frame =
+        typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame(tick)
+          : null;
+    };
+
+    resize();
+    paintFull(animationTimeRef.current);
+    updateCamera(0, 0, scaleGoal);
+
+    if (motionEnabled) {
+      if (typeof requestAnimationFrame === "function") {
+        frame = requestAnimationFrame(tick);
+      }
+    } else {
+      snapSpring(pointerSpring.current.x, 0.5);
+      snapSpring(pointerSpring.current.y, 0.5);
+      snapSpring(cameraSpring.current.x, 0);
+      snapSpring(cameraSpring.current.y, 0);
+      snapSpring(cameraScaleSpring.current, 1);
+      updateCamera(0, 0, 1);
+    }
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            resize();
+            paintFull(animationTimeRef.current);
+          });
+    resizeObserver?.observe(scene);
+
+    const themeObserver =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(() => {
+            palette = readPalette(scene);
+            paintFull(animationTimeRef.current);
+          });
+    themeObserver?.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "style"],
+    });
+
+    return () => {
+      previousAnimationFrameRef.current = null;
+      resizeObserver?.disconnect();
+      themeObserver?.disconnect();
+      if (frame !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(frame);
+      }
+    };
+  }, [paused, reducedMotion, state]);
 
   return (
-    <div ref={sceneRef} className={`world-scene${className ? ` ${className}` : ""}`}
-      aria-hidden="true" data-motion={reducedMotion ? "reduced" : "full"}
-      data-paused={paused ? "true" : "false"} data-scene-state={state}
-      data-scene-progress={normalizedProgress} data-ambient={motionEnabled ? "true" : "false"}
-      data-interacting={interacting ? "true" : "false"} data-parallax-layers="4"
-      style={{ "--world-light-cycle": `${WORLD_LIGHT_CYCLE_MS}ms` } as CSSProperties}
-      onPointerMove={movePointer} onPointerLeave={resetPointer} onPointerCancel={resetPointer}>
-      <div className="world-scene__camera">
-      <svg className="world-scene__canvas" width="100%" height="100%" viewBox="0 0 1280 720"
-        preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
-        <defs>
-          <linearGradient id={skyId} x2="0" y2="1">
-            <stop stopColor="var(--world-sky-top)" /><stop offset=".43" stopColor="var(--world-sky-mid)" />
-            <stop offset=".72" stopColor="var(--world-sky-horizon)" /><stop offset="1" stopColor="var(--world-sky-bottom)" />
-          </linearGradient>
-          <radialGradient id={sunId}>
-            <stop stopColor="var(--world-sun-core)" stopOpacity=".68" /><stop offset=".35" stopColor="var(--world-sun-mid)" stopOpacity=".22" /><stop offset="1" stopColor="var(--world-sun-edge)" stopOpacity="0" />
-          </radialGradient>
-          <linearGradient id={earthId} x2=".4" y2="1"><stop stopColor="var(--world-earth-top)" /><stop offset="1" stopColor="var(--world-earth-bottom)" /></linearGradient>
-          <linearGradient id={waterId} x2=".6" y2="1"><stop stopColor="var(--world-water-top)" /><stop offset=".4" stopColor="var(--world-water-mid)" /><stop offset="1" stopColor="var(--world-water-bottom)" /></linearGradient>
-          <linearGradient id={beamId} x2="0" y2="1"><stop stopColor="var(--world-sun-core)" stopOpacity=".2" /><stop offset="1" stopColor="var(--world-sun-core)" stopOpacity="0" /></linearGradient>
-          <linearGradient id={sweepId} x1="1" y1="0" x2="0" y2="1"><stop stopColor="var(--world-sun-core)" stopOpacity=".62" /><stop offset=".38" stopColor="var(--world-sun-mid)" stopOpacity=".24" /><stop offset="1" stopColor="var(--world-sun-edge)" stopOpacity="0" /></linearGradient>
-          <clipPath id={clipId}><rect width="1280" height="720" /></clipPath>
-        </defs>
-        <g clipPath={`url(#${clipId})`}>
-          <rect width="1280" height="720" fill={`url(#${skyId})`} />
-          <g className="world-scene__atmosphere">
-            <ellipse className="world-scene__dawn-glow" cx="960" cy="245" rx="430" ry="330" fill={`url(#${sunId})`} />
-            <rect x="928" y="182" width="56" height="56" fill="#f5ddaf" opacity=".96" />
-            <g className="world-scene__clouds" fill="#f5e4ce">
-              <path d="M555 158h118v-8h86v8h42v12H555z" opacity=".19" />
-              <path d="M1004 116h97v-9h108v9h83v14h-288z" opacity=".22" />
-              <path d="M314 92h111v-7h56v7h90v10H314z" opacity=".12" />
-            </g>
-          </g>
-          <g ref={farLayerRef} data-parallax="far" data-parallax-layer="far">
-            <path d="M0 355V260h75v-32h38v-25h45v-37h40v31h35v-17h35v-30h35v-29h41v-26h31v29h28v32h37v42h50v36h48v34h52v-20h43v-35h37v-23h31v-32h35v-27h34v-25h30v-23h28v25h28v44h27v39h35v37h50v26h54v-32h31v-41h28v-47h28v-35h28v-45h25v-28h24v-37h28v-29h27v36h24v31h28v38h27v34h26v42h36v36h42v110z" fill="var(--world-mountain-far)" />
-            <path d="M1008 178h28v-28h24v-37h28V84h27v36h24v31h28v38h-31v-16h-27v-22h-25v29h-30v25h-46zM268 156h35v-29h41v-26h31v29h28v32h-39v-14h-25v18h-39v19h-32z" fill="var(--world-mountain-snow)" opacity=".78" />
-            <path d="M1101 151h14v26h24v49h28v44h36v48h43v46h34v63h-204V290h-28v-46h29v-42h24z" fill="#6b7680" opacity=".7" />
-            <path d="M0 374V332h80v-40h47v-31h55v24h46v45h43v-21h40v-38h40v-29h49v-29h42v33h31v35h48v35h48v28h43v-33h42v-34h33v-26h34v-36h40v25h33v35h40v37h43v36h48v-23h43v-36h38v-33h34v-27h36v29h37v34h42v43h64v103z" fill="var(--world-mountain-ridge)" />
-            <path d="M0 427V368h105v-28h68v32h63v-27h53v-34h44v31h45v35h80v-24h47v-40h47v30h44v30h64v-24h45v-30h43v22h50v35h63v-25h52v-32h52v29h44v26h70v-41h47v-27h42v41h59v88z" fill="var(--world-mountain-mid)" />
-            <g opacity=".5">{[510, 549, 605, 650, 702, 775, 813, 862, 937, 979].map((x, i) => <VoxelPine key={x} x={x} y={385 + i % 3 * 8} scale={.22 + i % 3 * .06} distant />)}</g>
-          </g>
-          <g className="world-scene__light-beams" fill={`url(#${beamId})`}>
-            <path d="M928 198h56L734 720H380z" opacity=".6" /><path d="M971 198h13l-1 522H866z" opacity=".3" />
-          </g>
-          <g ref={middleLayerRef} data-parallax="middle" data-parallax-layer="middle">
-          <path d="M0 424 393 393 642 413 756 387 860 407 1000 397 1280 438V720H0z" fill="var(--world-ground)" />
-          <path d="m754 393 30 2-13 38 72 29-55 49 144 57-72 59 267 93H494l255-117-58-70 87-59-51-41z" fill={`url(#${waterId})`} />
-          <g className="world-scene__water" fill="none" stroke="#e5d7b6" strokeWidth="2" opacity=".4">
-            <path d="M742 434h33m14 34h39m-74 47h39m39 53h59m-165 37h73m88 32h115" />
-            <path d="M770 447h19m-28 44h28m35 53h35m-83 34h29m72 37h34" opacity=".6" />
-          </g>
-          </g>
-          <g ref={foregroundLayerRef} data-parallax="near" data-parallax-layer="foreground">
-            <g className="world-scene__landmass">
-              <path d="M0 368h161v28h140v29h119v31h117v34h93v43h65v58l-99 129H0z" fill={`url(#${earthId})`} />
-              <path d="M0 360h161v28h140v29h119v31h117v34h93v25h-74v-16H442v-27H330v-30H200v-28H0z" fill="#68785d" />
-              <path d="M0 480h242v23h118v30h106v25h77v32h72v31h-70v-20h-87v-31H341v-26H220v-29H0z" fill="#4a5147" />
-              <path d="M0 584h165v21h129v32h113v32h73v51H0z" fill="#303e3d" />
-              <path d="M1280 298h-78v38h-63v37h-57v37h-69v32h-54v35h-53v32h-43v54l131 157h386z" fill={`url(#${earthId})`} />
-              <path d="M1280 290h-78v38h-63v37h-57v37h-69v32h-54v35h-53v32h-43v25h45v-18h52v-29h56v-33h63v-34h62v-38h61v-36h78z" fill="var(--world-grass)" />
-              <path d="M1280 400h-84v39h-76v34h-69v35h-65v33h-72v30h97v-26h68v-27h65v-34h67v-34h69z" fill="#555a4b" />
-              <path d="M1280 507h-100v29h-82v28h-71v31h-62v42l122 83h193z" fill="#344343" />
-              <g className="world-scene__terrain" fill="#b1a38a" opacity=".18">
-                {Array.from({ length: 32 }, (_, i) => <rect key={i} x={i < 16 ? i % 5 * 105 + 32 : 950 + i % 4 * 86} y={448 + i % 7 * 29} width={17 + i % 3 * 9} height={10 + i % 2 * 8} />)}
-              </g>
-              <g opacity=".8"><VoxelPine x={544} y={472} scale={.52} /><VoxelPine x={482} y={445} scale={.65} /><VoxelPine x={1084} y={412} scale={.65} /><VoxelPine x={1157} y={374} scale={.82} /></g>
-              <VoxelPine x={1170} y={555} scale={1.7} /><VoxelPine x={1280} y={500} scale={2.15} />
-              <VoxelPine x={250} y={498} scale={1.1} />
-              <path d="M940 612h101v-26h94v-26h145v160H840v-55h100z" fill="#334c43" />
-              <path d="M940 605h101v-26h94v-26h145v16h-138v27h-94v26H947v41H840v-12h100z" fill="#849072" />
-              <path d="M947 622h101v-26h94v-27h138v50h-130v24h-109v26H947z" fill="#5d6650" />
-              <g className="world-scene__pixels" fill="#a5ad7d" opacity=".5"><path d="M1017 598v-11m-5 13v-8m9 6v-5M1108 575v-14m-5 17v-10m11 8v-6M1211 550v-15m-6 17v-9m12 8v-11" stroke="#a5ad7d" strokeWidth="3" /></g>
-            </g>
-          </g>
-          <g className="world-scene__sun-sweep" fill={`url(#${sweepId})`} opacity="0">
-            <path d="M956 210 984 198 508 720 214 720z" />
-            <path d="M956 210 970 205 692 720 596 720z" opacity=".58" />
-          </g>
-          <g className="world-scene__world-aura" transform="translate(861 419)">
-            <ellipse className="world-scene__beacon-halo" rx="36" ry="23" fill={`url(#${sunId})`} opacity=".3" />
-            <g className="world-scene__beacon">
-              <path d="M-3 0v-26h6V0z" fill="#504b40" /><path d="M-6-30H6v10H-6z" fill="#655c48" />
-              <path data-scene-beacon="" d="M-4-28H4v6H-4z" fill={beaconColors[state]} />
-              <path className="world-scene__beacon-progress" data-beacon-progress={beaconProgress} d="M-5-17H5" pathLength="100" stroke={beaconColors[state]} strokeWidth="2" strokeDasharray="100" strokeDashoffset={100 - beaconProgress} />
-            </g>
-          </g>
-          <path className="world-scene__energy-trail" d="M928 236h56" fill="none" stroke="#f5ddaf" strokeWidth="1" opacity=".1" />
-        </g>
-      </svg>
-      <canvas ref={canvasRef} className="world-scene__particle-canvas world-scene__particles world-scene__pixel--a" aria-hidden="true" />
+    <div
+      ref={sceneRef}
+      className={`world-scene${className ? ` ${className}` : ""}`}
+      aria-hidden="true"
+      data-motion={reducedMotion ? "reduced" : "full"}
+      data-paused={paused ? "true" : "false"}
+      data-scene-state={state}
+      data-scene-progress={normalizedProgress}
+      data-particle-budget={WORLD_PARTICLE_BUDGET.total}
+      data-cube-pitch={CUBE_PITCH_PX}
+      data-cube-size={CUBE_SIZE_PX}
+      data-cube-budget={CUBE_ACTIVE_BUDGET}
+      data-cube-active-budget={CUBE_ACTIVE_BUDGET}
+      data-cube-flip-duration={CUBE_FLIP_DURATION_MS}
+      data-cube-stay-duration={CUBE_STAY_DURATION_MS}
+      data-cube-glow-radius={CUBE_GLOW_RADIUS_PX}
+      data-cube-glow-duration={CUBE_GLOW_DURATION_MS}
+      data-cube-trigger-radius={CUBE_TRIGGER_RADIUS_PX}
+      data-cube-rotation="true"
+      data-cube-rotation-rpm-min="0.3"
+      data-cube-rotation-rpm-max="0.8"
+      data-pointer-fine={finePointer}
+      data-pointer-active="false"
+    >
+      <div ref={cameraRef} className="world-scene__camera">
+        <canvas
+          ref={cubeCanvasRef}
+          className="world-scene__cube-canvas"
+          aria-hidden="true"
+        />
+        <canvas
+          ref={glowCanvasRef}
+          className="world-scene__glow-canvas"
+          aria-hidden="true"
+        />
+        <canvas
+          ref={particleCanvasRef}
+          className="world-scene__particle-canvas"
+          aria-hidden="true"
+        />
       </div>
     </div>
   );

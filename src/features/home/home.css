@@ -16,6 +16,7 @@
   height: calc(100dvh - var(--shell-height, 82px));
   min-height: calc(100dvh - var(--shell-height, 82px));
   isolation: isolate;
+  overflow: hidden;
   color: var(--home-ink);
   font-family:
     "MiSans", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui,
@@ -33,15 +34,16 @@
 
 .vx-home::before {
   background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--bg-base) 48%, transparent),
-      transparent 54%
+    radial-gradient(
+      ellipse at 68% 47%,
+      color-mix(in srgb, var(--home-accent) 6%, transparent),
+      transparent 39%
     ),
     linear-gradient(
-      0deg,
-      color-mix(in srgb, var(--bg-base) 54%, transparent),
-      transparent 46%
+      180deg,
+      color-mix(in srgb, var(--bg-base) 30%, transparent),
+      transparent 17% 72%,
+      color-mix(in srgb, var(--bg-base) 58%, transparent) 100%
     );
 }
 
@@ -52,35 +54,36 @@
     transparent 1.3px
   );
   background-size: 22px 22px;
-  opacity: 0.11;
-  mask-image: linear-gradient(
-    90deg,
+  opacity: 0.1;
+  mask-image: radial-gradient(
+    ellipse at 50% 58%,
     #000 0,
-    color-mix(in srgb, #000 38%, transparent) 48%,
+    color-mix(in srgb, #000 54%, transparent) 42%,
     transparent 82%
   );
 }
 
 [data-theme="light"] .vx-home::before {
   background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, #f4f1e9 62%, transparent),
-      transparent 56%
+    radial-gradient(
+      ellipse at 68% 47%,
+      color-mix(in srgb, var(--home-accent) 10%, transparent),
+      transparent 37%
     ),
     linear-gradient(
-      0deg,
-      color-mix(in srgb, #f4f1e9 58%, transparent),
-      transparent 44%
+      180deg,
+      color-mix(in srgb, #f4f1e9 44%, transparent),
+      transparent 18% 70%,
+      color-mix(in srgb, #f4f1e9 72%, transparent) 100%
     );
 }
 
 [data-theme="light"] .vx-home::after {
-  opacity: 0.18;
-  mask-image: linear-gradient(
-    90deg,
+  opacity: 0.15;
+  mask-image: radial-gradient(
+    ellipse at 50% 58%,
     #000 0,
-    color-mix(in srgb, #000 28%, transparent) 48%,
+    color-mix(in srgb, #000 42%, transparent) 38%,
     transparent 78%
   );
 }
@@ -95,34 +98,37 @@
 
 .vx-home__light-shaft {
   position: absolute;
-  top: -28%;
-  right: 21%;
-  width: clamp(120px, 18vw, 280px);
-  height: 150%;
+  top: -24%;
+  right: 9%;
+  width: clamp(140px, 18vw, 300px);
+  height: 138%;
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in srgb, #f7dfb4 16%, transparent) 42%,
-    color-mix(in srgb, #f7dfb4 5%, transparent) 68%,
+    color-mix(in srgb, #f7dfb4 15%, transparent) 44%,
+    color-mix(in srgb, #f7dfb4 4%, transparent) 70%,
     transparent
   );
-  opacity: 0.32;
+  opacity: 0.28;
   filter: blur(10px);
   mix-blend-mode: screen;
-  transform: rotate(13deg);
+  transform: rotate(-9deg);
   transform-origin: top center;
 }
 
 .vx-home__stage-scan {
   position: absolute;
-  top: 10%;
+  top: 54%;
   left: 0;
-  width: 46%;
+  width: 100%;
   height: 1px;
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in srgb, var(--home-accent) 48%, transparent),
+    color-mix(in srgb, var(--home-accent) 8%, transparent) 12%,
+    color-mix(in srgb, var(--home-accent) 44%, transparent) 36%,
+    color-mix(in srgb, var(--home-accent) 44%, transparent) 64%,
+    color-mix(in srgb, var(--home-accent) 8%, transparent) 88%,
     transparent
   );
   box-shadow: 0 0 16px color-mix(in srgb, var(--home-accent) 22%, transparent);
@@ -132,28 +138,31 @@
 /* Masthead ----------------------------------------------------------------- */
 .vx-home__masthead {
   position: absolute;
-  z-index: 3;
-  top: clamp(22px, 4.4vh, 48px);
-  left: clamp(24px, 6vw, 96px);
-  width: min(62vw, 1080px);
+  z-index: 4;
+  top: clamp(18px, 3.2vh, 38px);
+  left: 50%;
+  width: min(84vw, 1180px);
+  text-align: center;
   pointer-events: none;
+  transform: translateX(-50%);
   animation: vx-home-masthead-enter 980ms var(--ease-out) both;
 }
 
 .vx-home__title {
-  --home-title-size: clamp(64px, 9.4vw, 148px);
+  --home-title-size: clamp(52px, 7.4vw, 116px);
   position: relative;
   z-index: 1;
   display: -webkit-box;
   max-width: 100%;
   max-height: 3em;
-  margin: 0;
+  margin: 0 auto;
   overflow: hidden;
   color: var(--home-ink);
   font-family: inherit;
   font-size: var(--home-title-size);
   font-weight: 680;
-  line-height: 0.88;
+  line-height: 0.92;
+  text-align: center;
   text-wrap: balance;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
@@ -161,45 +170,46 @@
   text-shadow:
     0 1px 0 color-mix(in srgb, #fff 18%, transparent),
     0 20px 70px color-mix(in srgb, #07110f 42%, transparent);
-  transform-origin: left bottom;
+  transform-origin: center bottom;
   animation: vx-home-title-develop 1160ms 80ms var(--ease-out) both;
 }
 
 .vx-home__title[data-title-density="wide"] {
-  --home-title-size: clamp(50px, 7.2vw, 112px);
-  line-height: 0.92;
+  --home-title-size: clamp(44px, 6.2vw, 96px);
+  line-height: 0.95;
 }
 
 .vx-home__title[data-title-density="compact"] {
-  --home-title-size: clamp(38px, 5.2vw, 84px);
-  line-height: 0.96;
+  --home-title-size: clamp(36px, 4.7vw, 74px);
+  line-height: 0.98;
 }
 
 .vx-home__title-rule {
   display: block;
-  width: min(74%, 720px);
+  width: clamp(72px, 12vw, 184px);
   height: 1px;
-  margin-top: clamp(18px, 2.8vh, 30px);
+  margin: clamp(15px, 2.4vh, 26px) auto 0;
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--home-accent) 72%, transparent),
-    color-mix(in srgb, var(--home-ink) 20%, transparent) 54%,
+    transparent,
+    color-mix(in srgb, var(--home-accent) 72%, transparent) 34%,
+    color-mix(in srgb, var(--home-accent) 72%, transparent) 66%,
     transparent
   );
   box-shadow: 0 0 18px color-mix(in srgb, var(--home-accent) 16%, transparent);
-  transform-origin: left;
+  transform-origin: center;
   animation: vx-home-rule-develop 760ms 430ms var(--ease-out) both;
 }
 
 /* Character stage ---------------------------------------------------------- */
 .vx-home__character-panel {
   position: absolute;
-  z-index: 1;
-  top: clamp(6px, 1.4vh, 18px);
-  right: 0;
-  bottom: 0;
-  width: min(51vw, 770px);
-  min-width: 340px;
+  z-index: 2;
+  top: clamp(92px, 15vh, 154px);
+  right: clamp(18px, 3.2vw, 64px);
+  bottom: clamp(184px, 28vh, 304px);
+  width: clamp(300px, 35vw, 640px);
+  min-width: 0;
   pointer-events: none;
   overflow: hidden;
   animation: vx-home-character-stage-enter 1100ms 170ms var(--ease-out) both;
@@ -208,22 +218,20 @@
 .vx-home__character-panel::before {
   content: "";
   position: absolute;
-  inset: 4% 2% 6%;
+  inset: 0;
   z-index: -1;
-  background: linear-gradient(
-    180deg,
-    transparent 0 42%,
-    color-mix(in srgb, var(--home-accent) 4%, transparent) 66%,
-    color-mix(in srgb, var(--home-accent) 11%, transparent) 88%,
-    transparent
+  background: radial-gradient(
+    ellipse at 54% 62%,
+    color-mix(in srgb, var(--home-accent) 10%, transparent),
+    color-mix(in srgb, var(--home-accent) 3%, transparent) 42%,
+    transparent 70%
   );
-  opacity: 0.74;
-  mask-image: radial-gradient(ellipse at 52% 74%, #000 0 22%, transparent 72%);
+  opacity: 0.68;
 }
 
 .vx-home__character {
   position: absolute;
-  inset: 1% 4% 4%;
+  inset: 0 5% 2%;
   z-index: 2;
   width: auto;
   height: auto;
@@ -308,8 +316,8 @@
 .vx-home__preview-source {
   position: absolute;
   z-index: 4;
-  right: clamp(44px, 5vw, 72px);
-  bottom: clamp(18px, 3vh, 30px);
+  right: 8%;
+  bottom: 0;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -360,17 +368,30 @@
 .vx-home__stage {
   position: absolute;
   z-index: 5;
-  left: clamp(24px, 6vw, 96px);
-  bottom: clamp(22px, 4.8vh, 50px);
-  width: min(590px, calc(100vw - 48px));
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: clamp(10px, 1.7vh, 18px);
+  padding: clamp(104px, 15vh, 154px) clamp(18px, 4vw, 64px)
+    clamp(14px, 2.4vh, 28px);
+  pointer-events: none;
+}
+
+.vx-home__console-wrap {
+  width: clamp(540px, 50vw, 880px);
+  max-width: calc(100vw - 48px);
+  pointer-events: auto;
   animation: vx-home-console-arrive 920ms 290ms var(--ease-out) both;
 }
 
 .vx-home__glass-panel {
   display: grid;
-  gap: 16px;
+  gap: 14px;
+  width: 100%;
   min-width: 0;
-  padding: 22px;
+  padding: 20px;
   overflow: hidden;
   border-radius: 24px;
   background:
@@ -417,7 +438,7 @@
 
 .vx-home__console-heading {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 18px;
   min-width: 0;
@@ -454,7 +475,7 @@
   max-width: 100%;
   overflow: hidden;
   color: var(--home-ink);
-  font-size: clamp(18px, 1.55vw, 23px);
+  font-size: clamp(17px, 1.35vw, 21px);
   font-weight: 650;
   line-height: 1.18;
   text-overflow: ellipsis;
@@ -769,31 +790,47 @@
 
 /* Recent instances -------------------------------------------------------- */
 .vx-home__recent {
+  width: min(1120px, calc(100vw - 56px));
   min-width: 0;
-  padding-top: 13px;
-  border-top: 1px solid color-mix(in srgb, var(--home-ink) 9%, transparent);
+  pointer-events: auto;
+  animation: vx-home-console-arrive 920ms 420ms var(--ease-out) both;
 }
 
 .vx-recent {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 11px;
+  gap: 12px;
   min-width: 0;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--home-ink) 9%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      120deg,
+      color-mix(in srgb, #fff 5%, transparent),
+      transparent 42%
+    ),
+    color-mix(in srgb, var(--surface-glass) 58%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent),
+    0 18px 44px -28px color-mix(in srgb, #000 72%, transparent);
+  backdrop-filter: blur(18px) saturate(1.16);
 }
 
 .vx-section-heading h2 {
-  margin: 0;
+  margin: 0 8px 0 6px;
   color: var(--home-faint);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 520;
+  line-height: 1.3;
   white-space: nowrap;
 }
 
 .vx-recent__grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 5px;
+  gap: 7px;
   min-width: 0;
 }
 
@@ -804,11 +841,11 @@
   grid-template-rows: auto auto;
   align-content: center;
   min-width: 0;
-  min-height: 53px;
-  padding: 8px 9px 7px 10px;
+  min-height: 58px;
+  padding: 9px 11px 8px;
   overflow: hidden;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--home-ink) 5.5%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--home-ink) 5%, transparent);
   color: var(--home-ink);
   text-align: left;
   transition:
@@ -826,7 +863,7 @@
   min-width: 0;
   padding-right: 13px;
   overflow: hidden;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 590;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -838,7 +875,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--home-faint);
-  font-size: 9px;
+  font-size: 9.5px;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -921,9 +958,9 @@
 @keyframes vx-home-title-develop {
   0% {
     opacity: 0;
-    clip-path: inset(0 100% 0 0);
+    clip-path: inset(0 0 100% 0);
     filter: blur(12px);
-    transform: translate3d(-18px, 24px, 0) scale(0.98);
+    transform: translate3d(0, -14px, 0) scale(0.985);
   }
   46% {
     opacity: 1;
@@ -1029,11 +1066,11 @@
   0%,
   100% {
     opacity: 0.2;
-    transform: translate3d(-2%, -1%, 0) rotate(13deg);
+    transform: translate3d(-2%, -1%, 0) rotate(-10deg);
   }
   50% {
     opacity: 0.44;
-    transform: translate3d(4%, 1%, 0) rotate(11.5deg);
+    transform: translate3d(2%, 1%, 0) rotate(-8deg);
   }
 }
 
@@ -1121,15 +1158,26 @@
 
 @media (max-width: 1180px) {
   .vx-home__masthead {
-    width: min(66vw, 830px);
+    width: min(88vw, 980px);
   }
 
   .vx-home__title {
-    --home-title-size: clamp(58px, 9vw, 112px);
+    --home-title-size: clamp(48px, 7.2vw, 96px);
   }
 
-  .vx-home__stage {
-    width: min(550px, calc(100vw - 48px));
+  .vx-home__character-panel {
+    top: 96px;
+    right: 18px;
+    bottom: clamp(168px, 27vh, 240px);
+    width: clamp(280px, 35vw, 420px);
+  }
+
+  .vx-home__console-wrap {
+    width: clamp(500px, 56vw, 720px);
+  }
+
+  .vx-home__recent {
+    width: min(1050px, calc(100vw - 48px));
   }
 
   .vx-home__glass-panel {
@@ -1137,16 +1185,15 @@
   }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 760px) {
   .vx-home {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(300px, 44vh) auto;
-    gap: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     height: auto;
     min-height: calc(100dvh - var(--shell-height, 82px));
-    padding: 24px;
-    overflow: hidden;
+    padding: 20px 18px 28px;
+    overflow: visible;
   }
 
   .vx-home__masthead,
@@ -1154,88 +1201,101 @@
   .vx-home__stage {
     position: relative;
     inset: auto;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    transform: none;
   }
 
   .vx-home__masthead {
-    grid-row: 1;
     width: 100%;
   }
 
   .vx-home__title,
   .vx-home__title[data-title-density] {
-    --home-title-size: clamp(48px, 10.5vw, 92px);
+    --home-title-size: clamp(42px, 10.5vw, 82px);
     max-width: 100%;
-    line-height: 0.92;
+    line-height: 0.94;
   }
 
   .vx-home__title-rule {
-    width: 100%;
-    margin-top: 16px;
+    margin-top: 13px;
   }
 
   .vx-home__character-panel {
-    grid-row: 2;
-    width: 100%;
+    flex: 0 0 auto;
+    align-self: flex-end;
+    width: min(78vw, 420px);
+    height: clamp(250px, 42vh, 360px);
     min-width: 0;
-    max-height: 450px;
+    margin-right: clamp(4px, 3vw, 24px);
   }
 
   .vx-home__character {
-    inset: 0 8%;
+    inset: 0 3% 1%;
   }
 
   .vx-home__character-orbit {
-    inset: 8% 8% 5%;
+    inset: 5% 6% 3%;
   }
 
   .vx-home__preview-source {
-    right: 10px;
-    bottom: 4px;
+    right: 6%;
+    bottom: 0;
   }
 
   .vx-home__stage {
-    grid-row: 3;
-    width: min(640px, 100%);
-    margin-bottom: 8px;
+    width: 100%;
+    padding: 0;
+    gap: 10px;
+    justify-content: flex-start;
   }
 
-  .vx-home::before {
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in srgb, var(--bg-base) 34%, transparent),
-        transparent 34%
-      ),
-      linear-gradient(
-        0deg,
-        color-mix(in srgb, var(--bg-base) 48%, transparent),
-        transparent 52%
-      );
+  .vx-home__console-wrap {
+    width: 100%;
+    max-width: none;
+  }
+
+  .vx-home__recent {
+    width: 100%;
+  }
+
+  .vx-recent {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+
+  .vx-section-heading h2 {
+    margin: 0 4px 2px;
   }
 }
 
 @media (max-width: 620px) {
   .vx-home {
-    grid-template-rows: auto minmax(250px, 36vh) auto;
     gap: 10px;
-    padding: 18px 16px 26px;
+    padding: 16px 14px 24px;
   }
 
   .vx-home__title,
   .vx-home__title[data-title-density] {
-    --home-title-size: clamp(42px, 13vw, 68px);
+    --home-title-size: clamp(38px, 12.5vw, 64px);
   }
 
   .vx-home__title-rule {
     margin-top: 12px;
   }
 
+  .vx-home__character-panel {
+    width: min(76vw, 340px);
+    height: clamp(240px, 38vh, 320px);
+  }
+
   .vx-home__character {
-    inset: -2% 0;
+    inset: -1% 0;
   }
 
   .vx-home__preview-source {
-    right: 2px;
+    right: 2%;
     max-width: 190px;
     padding: 5px 8px;
   }
@@ -1270,16 +1330,22 @@
   }
 
   .vx-recent {
-    grid-template-columns: 1fr;
-    gap: 7px;
+    padding: 7px;
   }
 
   .vx-recent__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(142px, 1fr));
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .vx-recent__grid::-webkit-scrollbar {
+    display: none;
   }
 
   .vx-recent-card {
-    min-height: 48px;
+    min-height: 52px;
   }
 
   .vx-home > .vx-toast {
@@ -1288,35 +1354,47 @@
   }
 }
 
-@media (min-width: 981px) and (max-height: 760px) {
+@media (min-width: 761px) and (max-height: 760px) {
   .vx-home__masthead {
-    top: 18px;
+    top: 12px;
   }
 
   .vx-home__title {
-    font-size: clamp(54px, 7.7vw, 96px);
+    font-size: clamp(44px, 6.2vw, 76px);
   }
 
   .vx-home__title-rule {
-    margin-top: 14px;
+    margin-top: 10px;
+  }
+
+  .vx-home__character-panel {
+    top: 70px;
+    right: 18px;
+    bottom: 160px;
+    width: clamp(280px, 35vw, 430px);
   }
 
   .vx-home__stage {
-    bottom: 20px;
+    gap: 8px;
+    padding-bottom: 10px;
+  }
+
+  .vx-home__console-wrap {
+    width: clamp(500px, 52vw, 720px);
   }
 
   .vx-home__glass-panel {
-    gap: 11px;
-    padding: 17px 19px;
+    gap: 9px;
+    padding: 14px 16px;
   }
 
   .vx-home__console-body,
   .vx-launch-console {
-    gap: 9px;
+    gap: 8px;
   }
 
   .vx-home__recent {
-    padding-top: 9px;
+    width: min(1050px, calc(100vw - 40px));
   }
 
   .vx-recent-card {
