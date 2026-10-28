@@ -1,39 +1,133 @@
-.vx-home { width: 100%; min-height: 100%; }
-.vx-home__stage {
+/* ─── HomePage layout ─────────────────────────────────────────────────────── */
+.vx-home {
   position: relative;
+  width: 100%;
+  min-height: 100%;
   display: grid;
-  grid-template-columns: minmax(300px, 390px) minmax(60px, 1fr) minmax(210px, 300px);
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 16px 24px;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr auto;
   min-height: calc(100dvh - var(--shell-height, 82px));
-  padding: 0 clamp(24px, 3.3vw, 48px) 18px;
   overflow: hidden;
   isolation: isolate;
 }
-.vx-home__scene { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; min-height: 0; }
-.vx-home__scene .vx-overture-scene__content { top: 18px; right: clamp(24px, 3.3vw, 48px); left: auto; max-width: 32%; }
-.vx-home__preview-source { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; margin: 0; padding: 6px 9px; border-radius: 6px; background: color-mix(in srgb, var(--bg-base) 76%, transparent); color: var(--text-primary); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; backdrop-filter: blur(8px); }
-.vx-home__instrument {
+
+/* Character panel occupies the right column, full height */
+.vx-home__character-panel {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1 / 3;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.vx-home__character {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.vx-home__preview-source {
+  position: absolute;
+  bottom: 28px;
+  right: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-base) 62%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+/* Stage (instrument panel) — left column, bottom-aligned */
+.vx-home__stage {
   position: relative;
   z-index: 4;
-  display: grid;
   grid-column: 1;
-  grid-row: 1;
-  align-self: end;
-  gap: 24px;
-  width: 100%;
-  min-width: 0;
-  padding: 24px 0 4px;
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 0 clamp(24px, 3.3vw, 48px) 28px;
+}
+
+.vx-home__glass-panel {
+  display: grid;
+  gap: 20px;
+  padding: 24px 26px;
   animation: vx-home-panel-develop 830ms var(--ease-out) both;
 }
-.vx-home__identity { min-width: 0; }
-.vx-home__identity h1 { max-width: 18ch; font-size: 40px; font-weight: 600; letter-spacing: 0; line-height: 1.16; text-wrap: balance; overflow-wrap: anywhere; }
-.vx-home__meta { display: flex; align-items: baseline; gap: 16px; list-style: none; padding: 0; margin: 10px 0 0; overflow: hidden; color: var(--text-secondary); font-size: var(--text-xs); white-space: nowrap; }
-.vx-home__meta li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.vx-home__meta li span { overflow: hidden; text-overflow: ellipsis; }
-.vx-home__meta svg { flex: 0 0 auto; color: var(--text-tertiary); }
-.vx-home__recent { position: relative; z-index: 5; grid-column: 1 / -1; grid-row: 2; min-width: 0; margin-top: 20px; }
 
+.vx-home__identity {
+  min-width: 0;
+}
+
+.vx-home__title {
+  max-width: 20ch;
+  font-size: clamp(28px, 3vw, 42px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.14;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.vx-home__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.vx-home__meta li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.vx-home__meta li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vx-home__meta li svg {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.vx-home__meta-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+
+/* Recent instances strip */
+.vx-home__recent {
+  position: relative;
+  z-index: 5;
+  min-width: 0;
+}
+
+/* ─── Launch console ─────────────────────────────────────────────────────── */
 .vx-launch-console { display: grid; gap: 12px; min-width: 0; }
 .vx-launch-console__context { display: grid; gap: 8px; }
 .vx-launch-console__context > label { color: var(--text-secondary); font-size: var(--text-xs); }
@@ -65,7 +159,8 @@
 .vx-launch-console__running .vx-button { min-height: 44px; border-radius: 999px; }
 .vx-launch-console__busy { margin: 0; color: var(--text-secondary); font-size: var(--text-xs); }
 
-.vx-recent { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 18px; min-width: 0; }
+/* ─── Recent instances ──────────────────────────────────────────────────── */
+.vx-recent { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px; min-width: 0; }
 .vx-section-heading h2 { color: var(--text-secondary); font-size: 12px; font-weight: 540; white-space: nowrap; }
 .vx-recent__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; min-width: 0; }
 .vx-recent-card {
@@ -76,14 +171,16 @@
   align-content: center;
   column-gap: 10px;
   min-width: 0;
-  min-height: 70px;
-  padding: 11px 13px;
+  min-height: 68px;
+  padding: 10px 13px;
   overflow: visible;
   border: 0;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-raised) 62%, transparent);
+  backdrop-filter: blur(14px);
   color: var(--text-primary);
   text-align: left;
+  transition: background var(--duration-fast);
 }
 .vx-recent-card__icon { grid-column: 1; grid-row: 1 / 3; align-self: center; color: var(--text-tertiary); }
 .vx-recent-card__name { grid-column: 2; grid-row: 1; min-width: 0; overflow: hidden; font-size: 12px; font-weight: 590; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
@@ -92,49 +189,76 @@
 .vx-recent-card.is-selected { background: color-mix(in srgb, var(--bg-raised) 88%, transparent); }
 .vx-recent-card.is-selected .vx-recent-card__icon { color: var(--accent); }
 
-.vx-home__instrument .vx-empty { padding: 0; }
-.vx-home__instrument .vx-empty h2 { font-size: 24px; line-height: 1.25; }
-.vx-home__instrument .vx-empty__actions { flex-wrap: wrap; }
+/* ─── Empty state overrides ─────────────────────────────────────────────── */
+.vx-home__glass-panel .vx-empty { padding: 0; }
+.vx-home__glass-panel .vx-empty h2 { font-size: 22px; line-height: 1.25; }
+.vx-home__glass-panel .vx-empty__actions { flex-wrap: wrap; }
 .vx-home > .vx-toast { position: fixed; z-index: 20; right: 24px; bottom: 22px; }
-.vx-form-stack { display: grid; gap: 20px; }
+
+/* ─── Animations ─────────────────────────────────────────────────────────── */
 .spin { animation: vx-spin .8s linear infinite; }
 @keyframes vx-spin { to { transform: rotate(360deg); } }
-@keyframes vx-home-panel-develop { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes vx-home-panel-develop { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes vx-home-static-develop { from { opacity: 0; } to { opacity: 1; } }
 
+/* ─── Character placeholder ─────────────────────────────────────────────── */
+.vx-character-placeholder {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+  padding: 24px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.vx-character-placeholder strong { font-size: 13px; font-weight: 500; max-width: 24ch; }
+
+/* ─── Hover/motion states ─────────────────────────────────────────────────── */
 @media (hover: hover) and (pointer: fine) {
   .vx-launch-console__launch .vx-button:hover:not(:disabled) { background: var(--accent-hover); }
-  .vx-recent-card:hover { background: var(--surface-hover); }
+  .vx-recent-card:hover { background: color-mix(in srgb, var(--surface-hover) 85%, transparent); }
 }
 
-@media (max-width: 1150px) {
-  .vx-home__stage { grid-template-columns: minmax(300px, 360px) minmax(48px, 1fr) minmax(200px, 240px); gap: 14px 18px; padding-inline: 26px; }
-  .vx-home__identity h1 { font-size: 34px; }
-  .vx-home__meta { gap: 12px; }
-  .vx-recent { gap: 12px; }
-  .vx-recent-card { padding-inline: 10px; column-gap: 8px; }
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+  .vx-home {
+    grid-template-columns: minmax(300px, 400px) 1fr;
+  }
+  .vx-home__title { font-size: clamp(24px, 2.8vw, 36px); }
 }
-@media (max-width: 800px) {
-  .vx-home__stage { grid-template-columns: minmax(0, 1fr); }
-  .vx-home__instrument { max-width: 64%; }
-  .vx-home__identity h1 { font-size: 30px; }
-  .vx-home__scene .vx-overture-scene__content { max-width: 40%; }
+
+@media (max-width: 860px) {
+  .vx-home {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+  .vx-home__character-panel {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 240px;
+    max-height: 38vh;
+    pointer-events: none;
+  }
+  .vx-home__stage {
+    grid-column: 1;
+    grid-row: 2;
+    padding: 0 20px 24px;
+  }
   .vx-recent { grid-template-columns: 1fr; gap: 8px; }
 }
+
 @media (max-width: 600px) {
   .vx-recent__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 550px) {
-  .vx-home__stage { padding: 0 18px 16px; }
-  .vx-home__instrument { max-width: 100%; padding-top: 170px; }
-  .vx-home__identity h1 { font-size: 28px; }
-  .vx-home__scene .vx-overture-scene__content { display: none; }
+  .vx-home__glass-panel { padding: 18px 20px; }
 }
 
+/* ─── Reduced motion / lite effects ────────────────────────────────────── */
 [data-reduced-motion="true"] .vx-home .spin,
 [data-effects="lite"] .vx-home .spin { animation: none; }
-[data-reduced-motion="true"] .vx-home__instrument,
-[data-effects="lite"] .vx-home__instrument { animation: vx-home-static-develop 180ms ease-out both; }
+[data-reduced-motion="true"] .vx-home__glass-panel,
+[data-effects="lite"] .vx-home__glass-panel { animation: vx-home-static-develop 180ms ease-out both; }
 [data-reduced-motion="true"] .vx-jelly-control > .vx-glass-surface,
 [data-effects="lite"] .vx-jelly-control > .vx-glass-surface { will-change: auto; }
 @media (prefers-reduced-motion: reduce) {

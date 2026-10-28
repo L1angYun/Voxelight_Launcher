@@ -61,17 +61,15 @@ type Particle = {
   firefly: boolean;
 };
 
-// Particle sizes boosted for visibility: fireflies 2.5-4px, dust 1.5-2.5px.
-// Budget constants are defined in motion.ts (fireflies: 16, dust: 32, total: 48).
+// Particle sizes: fireflies 2.5-4px, dust 1.5-2.5px. Budget from motion.ts.
 const particles: Particle[] = Array.from({ length: WORLD_PARTICLE_BUDGET.total }, (_, index) => ({
   x: ((index * 47 + 13) % 101) / 101,
-  y: 0.28 + ((index * 31 + 7) % 67) / 100,
-  // Fireflies: 2.5–4 px (were 1–2.3). Dust: 1.5–2.5 px (were 1–1.95).
+  y: 0.22 + ((index * 31 + 7) % 75) / 100,
   size: index < WORLD_PARTICLE_BUDGET.fireflies
-    ? 2.5 + (index % 3) * 0.75
-    : 1.5 + (index % 3) * 0.5,
-  phase: index * 0.73,
-  drift: 5 + (index % 5) * 2.2,
+    ? 2.5 + (index % 4) * 0.5
+    : 1.5 + (index % 4) * 0.35,
+  phase: index * 0.61,
+  drift: 4 + (index % 7) * 2.4,
   firefly: index < WORLD_PARTICLE_BUDGET.fireflies,
 }));
 
@@ -177,10 +175,10 @@ export function WorldScene({
       const phase = seconds * (particle.firefly ? 0.16 : 0.07) + particle.phase;
       const x = particle.x * width + Math.sin(phase) * particle.drift;
       const y = particle.y * height + Math.cos(phase * 0.83) * particle.drift * 0.72;
-      // Boosted alpha: fireflies 0.52–0.80, dust 0.22–0.34 (was 0.34–0.62 / 0.12–0.24)
+      // Boosted alpha: fireflies 0.62–0.92, dust 0.28–0.44
       context.globalAlpha = particle.firefly
-        ? 0.52 + (Math.sin(phase * 1.7) + 1) * 0.14
-        : 0.22 + (Math.cos(phase) + 1) * 0.06;
+        ? 0.62 + (Math.sin(phase * 1.7) + 1) * 0.15
+        : 0.28 + (Math.cos(phase) + 1) * 0.08;
       context.fillStyle = particle.firefly ? firefly : dust;
       const size = particle.size * (particle.firefly ? 1.25 : 1);
       context.fillRect(Math.round(x), Math.round(y), size, size);
