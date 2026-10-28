@@ -3,6 +3,11 @@
 import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  WORLD_LIGHT_CYCLE_MS,
+  WORLD_PARALLAX_DEPTHS,
+  WORLD_PARTICLE_BUDGET,
+} from "../visual/overture/motion";
 import { WorldScene, type WorldSceneState } from "./WorldScene";
 
 type ObserverMock = {
@@ -217,6 +222,22 @@ describe("WorldScene", () => {
     expect(scene().querySelector("svg")).not.toBeNull();
   });
 
+  it("uses the expanded particle budget, deeper parallax, and faster light cycle", async () => {
+    await render();
+    expect(WORLD_PARTICLE_BUDGET).toEqual({
+      fireflies: 32,
+      dust: 64,
+      total: 96,
+    });
+    expect(WORLD_PARALLAX_DEPTHS.far).toBeCloseTo(0.264);
+    expect(WORLD_PARALLAX_DEPTHS.middle).toBeCloseTo(0.624);
+    expect(WORLD_PARALLAX_DEPTHS.character).toBeCloseTo(0.984);
+    expect(WORLD_PARALLAX_DEPTHS.foreground).toBeCloseTo(1.2);
+    expect(scene().style.getPropertyValue("--world-light-cycle")).toBe(
+      `${WORLD_LIGHT_CYCLE_MS}ms`,
+    );
+  });
+
   it("renders the layered environment and maps real preparation progress", async () => {
     await render(
       createElement(WorldScene, { state: "preparing", progress: 37 }),
@@ -227,6 +248,7 @@ describe("WorldScene", () => {
     for (const selector of [
       ".world-scene__atmosphere",
       ".world-scene__light-beams",
+      ".world-scene__sun-sweep",
       ".world-scene__energy-trail",
       ".world-scene__landmass",
       ".world-scene__beacon-halo",

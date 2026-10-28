@@ -6,7 +6,7 @@ import { useDefaultSkin } from "../../lib/defaultSkin";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useAppearance } from "../../app/AppearanceProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
-import { OvertureScene } from "../../visual/overture/OvertureScene";
+import { CharacterCanvas } from "../../visual/character/CharacterCanvas";
 import { EmptyState, ToastRegion } from "../../components/ui/Feedback";
 import { Button } from "../../components/ui/Button";
 import { GlassSurface } from "../../visual/glass/GlassSystem";
@@ -49,25 +49,41 @@ export function HomePage() {
     () =>
       useVersionDirectory
         ? undefined
-        : selectedInstance ??
+        : (selectedInstance ??
           data.instances.find((i) => i.versionId === selectedVersionId) ??
-          data.instances[0],
+          data.instances[0]),
     [data.instances, selectedInstance, selectedVersionId, useVersionDirectory],
   );
 
-  const onlineAccount = activeAccount?.type === "microsoft" || activeAccount?.type === "authlib";
-  const { skin: defaultSkin, loading: defaultLoading, error: defaultError, refresh: refreshDefault } =
-    useDefaultSkin(data.config.defaultSkin, selectedVersionId, !onlineAccount);
+  const onlineAccount =
+    activeAccount?.type === "microsoft" || activeAccount?.type === "authlib";
+  const {
+    skin: defaultSkin,
+    loading: defaultLoading,
+    error: defaultError,
+    refresh: refreshDefault,
+  } = useDefaultSkin(
+    data.config.defaultSkin,
+    selectedVersionId,
+    !onlineAccount,
+  );
 
-  const previewUnavailable = onlineAccount ? !accountAppearance.skinUrl : !defaultSkin.dataUrl;
-  const previewLoading = onlineAccount ? accountAppearance.loading : defaultLoading;
+  const previewUnavailable = onlineAccount
+    ? !accountAppearance.skinUrl
+    : !defaultSkin.dataUrl;
+  const previewLoading = onlineAccount
+    ? accountAppearance.loading
+    : defaultLoading;
   const previewError = onlineAccount
     ? Boolean(accountAppearance.error || accountAppearance.errorCode)
     : Boolean(defaultError);
-  const retryPreview = onlineAccount ? accountAppearance.refresh : refreshDefault;
+  const retryPreview = onlineAccount
+    ? accountAppearance.refresh
+    : refreshDefault;
 
   useEffect(() => {
-    if (currentInstance && !selectedInstance) selectInstance(currentInstance.id);
+    if (currentInstance && !selectedInstance)
+      selectInstance(currentInstance.id);
   }, [currentInstance, selectInstance, selectedInstance]);
 
   useEffect(() => {
@@ -75,7 +91,8 @@ export function HomePage() {
   }, [play]);
 
   useEffect(() => {
-    if (gamePid) play({ id: `game-launched-${gamePid}`, kind: "game-launched" });
+    if (gamePid)
+      play({ id: `game-launched-${gamePid}`, kind: "game-launched" });
   }, [gamePid, play]);
 
   const versionLabel = currentInstance?.versionId ?? selectedVersionId;
@@ -146,49 +163,108 @@ export function HomePage() {
       </strong>
       {!previewLoading ? (
         <Button variant="ghost" onClick={retryPreview}>
-          {onlineAccount ? t("home:retryAppearance") : t("home:retryDefaultPreview")}
+          {onlineAccount
+            ? t("home:retryAppearance")
+            : t("home:retryDefaultPreview")}
         </Button>
       ) : null}
     </div>
   ) : undefined;
 
+  const stageTitle = currentInstance?.name ?? (versionLabel || t("home:title"));
+  const titleLength = Array.from(stageTitle).length;
+  const titleDensity =
+    titleLength > 48 ? "compact" : titleLength > 24 ? "wide" : "regular";
+  const stageState = running
+    ? "running"
+    : preparing
+      ? "preparing"
+      : currentInstance || useVersionDirectory
+        ? "ready"
+        : "empty";
+
   return (
-    <div className="vx-home" data-effects={effects}>
-      {/* OvertureScene — renders WorldScene + CharacterCanvas for test contracts;
-          the global scene in AppShell already covers the background, so we hide
-          the local WorldScene and only show the character frame */}
-      <div className="vx-home__character-panel">
-        <OvertureScene
-          skinUrl={onlineAccount ? accountAppearance.skinUrl : defaultSkin.dataUrl}
-          capeUrl={onlineAccount ? accountAppearance.capeUrl : null}
-          model={onlineAccount ? accountAppearance.model : defaultSkin.model}
-          paused={staticScene}
-          sceneId={currentInstance?.id ?? selectedVersionId ?? "empty"}
-          label={previewLabel}
-          characterFallback={characterFallback}
-          className="vx-home__scene"
-          state={running ? "running" : preparing || launchRequested ? "preparing" : "idle"}
-          progress={
-            currentProgress && currentProgress.total > 0
-              ? (currentProgress.completed / currentProgress.total) * 100
-              : 0
-          }
-        >
-          <p className="vx-home__preview-source">
-            <UserRound size={12} aria-hidden="true" />
-            {previewLabel}
-          </p>
-        </OvertureScene>
+    <div
+      className="vx-home"
+      data-effects={effects}
+      data-motion={staticScene ? "reduced" : "full"}
+      data-state={stageState}
+    >
+      <div className="vx-home__atmosphere" aria-hidden="true">
+        <span className="vx-home__light-shaft" />
+        <span className="vx-home__stage-scan" />
       </div>
 
-      {/* Main instrument panel — bottom-left */}
-      <section className="vx-home__stage" aria-labelledby="vx-home-instance-title">
-        <GlassSurface className="vx-home__glass-panel" variant="dialog">
-          {/* Identity */}
-          <div className="vx-home__identity">
-            <h1 id="vx-home-instance-title" className="vx-home__title">
-              {currentInstance?.name ?? (versionLabel || t("home:title"))}
-            </h1>
+      <header className="vx-home__masthead">
+        <h1
+          key={stageTitle}
+          id="vx-home-instance-title"
+          className="vx-home__title"
+          data-title-density={titleDensity}
+          title={stageTitle}
+        >
+          {stageTitle}
+        </h1>
+        <span className="vx-home__title-rule" aria-hidden="true" />
+      </header>
+
+      <section
+        className="vx-home__character-panel vx-home__scene"
+        aria-label={previewLabel}
+      >
+        <div className="vx-home__character-orbit" aria-hidden="true">
+          <span className="vx-home__orbit-ring vx-home__orbit-ring--outer" />
+          <span className="vx-home__orbit-ring vx-home__orbit-ring--inner" />
+          <span className="vx-home__orbit-axis" />
+          <span className="vx-home__character-floor" />
+        </div>
+        {!previewUnavailable ? (
+          <CharacterCanvas
+            className="vx-home__character"
+            skinUrl={
+              onlineAccount ? accountAppearance.skinUrl : defaultSkin.dataUrl
+            }
+            capeUrl={onlineAccount ? accountAppearance.capeUrl : null}
+            model={onlineAccount ? accountAppearance.model : defaultSkin.model}
+            paused={staticScene}
+            animation={
+              running ? "run" : preparing || launchRequested ? "walk" : "idle"
+            }
+            label={previewLabel}
+          />
+        ) : (
+          characterFallback
+        )}
+        <p className="vx-home__preview-source">
+          <UserRound size={12} aria-hidden="true" />
+          {previewLabel}
+        </p>
+      </section>
+
+      <section className="vx-home__stage" aria-label={t("home:instance")}>
+        <GlassSurface
+          className="vx-home__glass-panel vx-home__console"
+          variant="dialog"
+        >
+          <span className="vx-home__console-glint" aria-hidden="true" />
+          <div className="vx-home__console-heading">
+            <div className="vx-home__identity">
+              <span className="vx-home__console-kicker">
+                <Box size={12} strokeWidth={1.5} aria-hidden="true" />
+                {t("home:instance")}
+              </span>
+              <p className="vx-home__console-name" title={stageTitle}>
+                {stageTitle}
+              </p>
+            </div>
+            <span className="vx-home__console-signal" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          </div>
+
+          <div className="vx-home__console-body">
             {versionLabel ? (
               <ul className="vx-home__meta" aria-label={t("home:instance")}>
                 {currentInstance ? (
@@ -207,59 +283,59 @@ export function HomePage() {
                 </li>
               </ul>
             ) : null}
+
+            {currentInstance || useVersionDirectory ? (
+              <LaunchConsole
+                instance={currentInstance}
+                instances={data.instances}
+                version={selectedVersion}
+                onSelectInstance={chooseInstance}
+                onLaunch={beginLaunch}
+                onStop={stop}
+                onCancel={cancelPreparation}
+                onOpenFolder={() =>
+                  void run("folder.open", () =>
+                    command("open_folder", { kind: "game" }),
+                  )
+                }
+                busy={busy}
+                running={running}
+                progress={currentProgress}
+              />
+            ) : (
+              <EmptyState
+                title={t("home:noInstance")}
+                description={t("home:noInstanceDescription")}
+                action={
+                  <div className="vx-empty__actions">
+                    <Button
+                      variant="primary"
+                      icon={<Plus size={16} />}
+                      onClick={() => setCreateOpen(true)}
+                    >
+                      {t("home:createInstance")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      icon={<Upload size={16} />}
+                      onClick={() => setImportOpen(true)}
+                    >
+                      {t("home:importPack")}
+                    </Button>
+                  </div>
+                }
+              />
+            )}
           </div>
 
-          {/* Launch console or empty state */}
-          {currentInstance || useVersionDirectory ? (
-            <LaunchConsole
-              instance={currentInstance}
+          <div className="vx-home__recent">
+            <RecentInstances
               instances={data.instances}
-              version={selectedVersion}
-              onSelectInstance={chooseInstance}
-              onLaunch={beginLaunch}
-              onStop={stop}
-              onCancel={cancelPreparation}
-              onOpenFolder={() =>
-                void run("folder.open", () => command("open_folder", { kind: "game" }))
-              }
-              busy={busy}
-              running={running}
-              progress={currentProgress}
+              selectedId={currentInstance?.id}
+              onSelect={chooseInstance}
             />
-          ) : (
-            <EmptyState
-              title={t("home:noInstance")}
-              description={t("home:noInstanceDescription")}
-              action={
-                <div className="vx-empty__actions">
-                  <Button
-                    variant="primary"
-                    icon={<Plus size={16} />}
-                    onClick={() => setCreateOpen(true)}
-                  >
-                    {t("home:createInstance")}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    icon={<Upload size={16} />}
-                    onClick={() => setImportOpen(true)}
-                  >
-                    {t("home:importPack")}
-                  </Button>
-                </div>
-              }
-            />
-          )}
+          </div>
         </GlassSurface>
-
-        {/* Recent instances strip */}
-        <div className="vx-home__recent">
-          <RecentInstances
-            instances={data.instances}
-            selectedId={currentInstance?.id}
-            onSelect={chooseInstance}
-          />
-        </div>
       </section>
 
       {notice ? (
@@ -270,7 +346,11 @@ export function HomePage() {
           closeLabel={t("common:actions.close")}
         />
       ) : null}
-      <CreateInstanceDialog open={createOpen} onOpenChange={setCreateOpen} onInstalled={installed} />
+      <CreateInstanceDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onInstalled={installed}
+      />
       <CreateInstanceDialog
         open={importOpen}
         onOpenChange={setImportOpen}

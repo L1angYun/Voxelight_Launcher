@@ -111,7 +111,6 @@
 .vx-window-chrome__controls { display: flex; align-items: center; justify-content: flex-end; gap: 1px; padding-left: 4px; }
 .vx-window-chrome__controls .vx-button { min-width: 31px; min-height: 34px; padding: 6px; border-radius: 8px; color: var(--text-secondary); }
 .vx-app-main { position: relative; z-index: 1; height: 100%; min-height: 0; padding-top: var(--shell-height); overflow-x: hidden; overflow-y: auto; scrollbar-gutter: auto; scroll-padding-top: 20px; }
-.vx-app-main:focus { outline: none; }
 
 @media (hover: hover) and (pointer: fine) {
   .vx-floating-nav__item.is-hovered:hover { color: var(--text-primary); background-color: color-mix(in srgb, var(--surface-hover) 68%, transparent); }
