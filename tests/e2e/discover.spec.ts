@@ -62,7 +62,7 @@ test("discovery shows real details, installs into the selected instance, and swi
   const calls = await page.evaluate(() => (window as unknown as { __appearanceFixtures: { calls: { name: string; args?: Record<string, unknown> }[] } }).__appearanceFixtures.calls);
   expect(calls.some((call) => call.name === "install_resource" && call.args?.projectId === "sodium" && call.args?.instanceId === "fixture-world")).toBe(true);
   await page.getByRole("dialog", { name: "Sodium", exact: true }).getByRole("button", { name: "关闭", exact: true }).click();
-  await page.locator("select").nth(1).selectOption("curseforge");
+  await page.locator('[data-testid="native-select-来源"]').selectOption("curseforge");
   await expect(page.getByText("Sodium", { exact: true }).first()).toBeVisible();
 });
 
