@@ -54,6 +54,6 @@ test("window controls and settings remain available at the minimum viewport", as
   await page.locator('[data-page="settings"]').click();
   await page.locator(".vx-settings-nav").getByRole("button", { name: "外观", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "特效级别", exact: true })).toBeVisible();
-  await expect(page.locator('select[aria-label="特效级别"] option')).toHaveCount(2);
+  await expect(page.locator('[data-testid="native-select-特效级别"] option')).toHaveCount(2);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
