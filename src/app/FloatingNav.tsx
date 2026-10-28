@@ -43,6 +43,11 @@ const icons: Record<string, typeof Play> = {
 
 type IndicatorRect = { x: number; y: number; width: number; height: number };
 
+function sameIndicatorRect(left: IndicatorRect | null, right: IndicatorRect): boolean {
+  return left !== null && Math.abs(left.x - right.x) < 0.5 && Math.abs(left.y - right.y) < 0.5
+    && Math.abs(left.width - right.width) < 0.5 && Math.abs(left.height - right.height) < 0.5;
+}
+
 function JellyNavigationIndicator({
   activeId,
   itemRefs,
@@ -64,6 +69,7 @@ function JellyNavigationIndicator({
   const snapNextMeasure = useRef(false);
   const previousTime = useRef(0);
   const initialized = useRef(false);
+  const measuredActiveId = useRef<string | null>(null);
   const angle = useRef(0);
   const springs = useMemo(() => ({
     x: new Spring(),
@@ -142,21 +148,35 @@ function JellyNavigationIndicator({
     };
   }, [paint, pressRef, springs, start, staticMotion]);
 
-  const measure = useCallback((snap = false) => {
+  const readRect = useCallback((): IndicatorRect | null => {
     const nav = navRef.current;
     const item = itemRefs.current.get(activeId);
-    if (!nav || !item) return;
+    if (!nav || !item) return null;
     const navBounds = nav.getBoundingClientRect();
     const bounds = item.getBoundingClientRect();
-    target.current = {
+    return {
       x: bounds.left - navBounds.left,
       y: bounds.top - navBounds.top,
       width: bounds.width,
       height: bounds.height,
     };
+  }, [activeId, itemRefs, navRef]);
+
+  const measure = useCallback((snap = false) => {
+    const rect = readRect();
+    if (!rect) return;
+    // Only a different selected item earns travel/stretch. Layout and preference
+    // updates must also clear velocity left over from an earlier navigation.
+    const navigating = measuredActiveId.current !== null && measuredActiveId.current !== activeId;
+    const snapToLayout = !initialized.current || staticMotion || snap || !navigating;
+    measuredActiveId.current = activeId;
+    target.current = rect;
     springs.x.target = target.current.x;
     springs.y.target = target.current.y;
-    if (!initialized.current || staticMotion || snap) {
+    if (snapToLayout) {
+      if (frame.current !== null && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(frame.current);
+      frame.current = null;
+      previousTime.current = 0;
       springs.x.snap(target.current.x);
       springs.y.snap(target.current.y);
       springs.press.snap(0);
@@ -167,9 +187,9 @@ function JellyNavigationIndicator({
     }
     if (indicatorRef.current) indicatorRef.current.style.opacity = "1";
     paint();
-    if (staticMotion || snap || typeof requestAnimationFrame === "undefined") setSettled(true);
+    if (snapToLayout || typeof requestAnimationFrame === "undefined") setSettled(true);
     else start();
-  }, [activeId, itemRefs, navRef, paint, setSettled, springs, start, staticMotion]);
+  }, [activeId, paint, readRect, setSettled, springs, start, staticMotion]);
 
   const measureRef = useRef(measure);
   measureRef.current = measure;
@@ -179,7 +199,7 @@ function JellyNavigationIndicator({
     measureFramesRemaining.current = NAV_LAYOUT_SETTLE_FRAMES;
     setSettled(false);
     if (typeof requestAnimationFrame === "undefined") {
-      measure(snapNextMeasure.current);
+      measureRef.current(snapNextMeasure.current);
       snapNextMeasure.current = false;
       return;
     }
@@ -199,36 +219,31 @@ function JellyNavigationIndicator({
 
   useLayoutEffect(() => {
     scheduleMeasure();
+  }, [activeId, scheduleMeasure, staticMotion]);
+
+  useEffect(() => {
+    // Without RAF, the first layout effect can precede sibling button refs.
+    if (typeof requestAnimationFrame === "undefined") scheduleMeasure(true);
+  }, [activeId, scheduleMeasure, staticMotion]);
+
+  useEffect(() => {
     const nav = navRef.current;
     if (!nav || typeof ResizeObserver === "undefined") return;
-    // Only observe the nav itself. Per-item observation fired on any page
-    // reflow (e.g. settings tab switches), triggering remeasure mid-transition
-    // and stretching the indicator. We additionally filter to nav-self size
-    // changes only, ignoring reflows that leave the nav bounds unchanged.
-    let lastWidth = nav.getBoundingClientRect().width;
-    let lastHeight = nav.getBoundingClientRect().height;
-    let debounceId: number | null = null;
+    // Item labels/counts can move the selected button without resizing the nav.
+    // Filter by its relative rect, so unrelated content reflows do no work.
+    let lastRect = readRect();
     const observer = new ResizeObserver(() => {
-      if (debounceId !== null && typeof cancelAnimationFrame !== "undefined") {
-        cancelAnimationFrame(debounceId);
-      }
-      debounceId = requestAnimationFrame(() => {
-        debounceId = null;
-        const next = nav.getBoundingClientRect();
-        if (Math.abs(next.width - lastWidth) < 0.5 && Math.abs(next.height - lastHeight) < 0.5) return;
-        lastWidth = next.width;
-        lastHeight = next.height;
-        // The nav itself was resized, so the layout moved the item, not navigation:
-        // jump to the new rect instead of springing, which reads as a stretch.
-        scheduleMeasure(true);
-      });
+      const next = readRect();
+      if (!next || sameIndicatorRect(lastRect, next)) return;
+      lastRect = next;
+      scheduleMeasure(true);
     });
     observer.observe(nav);
+    for (const item of itemRefs.current.values()) observer.observe(item);
     return () => {
-      if (debounceId !== null && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(debounceId);
       observer.disconnect();
     };
-  }, [activeId, itemRefs, navRef, scheduleMeasure]);
+  }, [itemRefs, navRef, readRect, scheduleMeasure]);
 
   useEffect(() => {
     // Window resizes move items with the layout; snap rather than spring.

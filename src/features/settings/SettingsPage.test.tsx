@@ -104,7 +104,10 @@ async function fill(label: string, value: string) {
 }
 
 async function select(label: string, value: string) {
-  const input = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
+  const input =
+    container.querySelector<HTMLSelectElement>(`[data-testid="native-select-${label}"]`) ??
+    container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`) ??
+    container.querySelector<HTMLSelectElement>(`select[aria-label="${label} (native)"]`);
   if (!input) throw new Error(`Missing select: ${label}`);
   await act(async () => {
     input.value = value;
@@ -144,7 +147,7 @@ describe("global settings", () => {
   it("previews appearance immediately, offers exactly two effect levels, and saves explicitly", async () => {
     await render();
     await click("Appearance");
-    const effects = container.querySelector<HTMLSelectElement>('select[aria-label="Effects level"]')!;
+    const effects = container.querySelector<HTMLSelectElement>('[data-testid="native-select-Effects level"]')!;
     expect(Array.from(effects.options).map((option) => option.value)).toEqual(["lite", "full"]);
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Sound effects"]')!.checked).toBe(false);
     await select("Effects level", "lite");
@@ -173,7 +176,7 @@ describe("global settings", () => {
     await click("Accent color #78ded5");
     expect(mockLauncher.config.accentSource).toBe("custom");
     expect(mockLauncher.config.accentColor).toBe("#78ded5");
-    expect(container.querySelectorAll('select[aria-label="Effects level"] option')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-testid="native-select-Effects level"] option')).toHaveLength(2);
   });
 
   it("owns game directory, isolation and window fields", async () => {
