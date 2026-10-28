@@ -74,7 +74,7 @@
 
 .world-scene__camera {
   position: absolute;
-  inset: -16px;
+  inset: -24px;
   transform: scale(var(--world-camera-scale));
   transform-origin: 72% 52%;
   transition: opacity 180ms ease-out;
@@ -94,7 +94,7 @@
 .world-scene[data-motion="reduced"] .world-scene__particle-canvas { opacity: 0; }
 .world-scene[data-paused="true"] .world-scene__camera { will-change: auto; }
 /* Paused during overture: freeze animations but keep scene visible */
-.world-scene[data-paused="true"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__world-aura, .world-scene__terrain) {
+.world-scene[data-paused="true"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) {
   animation-play-state: paused;
 }
 
@@ -118,6 +118,13 @@
 .world-scene__light-beams { mix-blend-mode: screen; }
 .world-scene__energy-trail { vector-effect: non-scaling-stroke; }
 .world-scene__beacon-progress { transition: stroke-dashoffset 240ms ease; }
+.world-scene__sun-sweep {
+  transform-box: view-box;
+  transform-origin: 956px 210px;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
 
 /* Stronger sun face highlights on voxel near-faces – top-edge strip on ground masses */
 .world-scene__landmass::after {
@@ -150,6 +157,14 @@
   0%, 100% { opacity: 0.46; }
   50% { opacity: 0.88; }
 }
+@keyframes world-sun-sweep {
+  0% { opacity: 0; transform: rotate(-8deg); }
+  3% { opacity: 0; }
+  9% { opacity: 0.28; }
+  20% { opacity: 0.58; }
+  26% { opacity: 0.16; }
+  30%, 100% { opacity: 0; transform: rotate(10deg); }
+}
 
 /* Sun corona pulse: adds a slow warm halo pulse around the light source */
 @keyframes world-sun-pulse {
@@ -165,29 +180,32 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .world-scene .world-scene__light-beams {
-    animation: world-light-cycle var(--world-light-cycle, 120s) ease-in-out infinite;
+    animation: world-light-cycle var(--world-light-cycle, 60s) ease-in-out infinite;
+  }
+  .world-scene .world-scene__sun-sweep {
+    animation: world-sun-sweep var(--world-light-cycle, 60s) cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
   .world-scene .world-scene__dawn-glow {
-    animation: world-dawn-cycle var(--world-light-cycle, 120s) ease-in-out -30s infinite;
+    animation: world-dawn-cycle var(--world-light-cycle, 60s) ease-in-out -30s infinite;
   }
   .world-scene .world-scene__world-aura {
-    animation: world-sun-pulse calc(var(--world-light-cycle, 120s) / 2) ease-in-out -8s infinite;
+    animation: world-sun-pulse calc(var(--world-light-cycle, 60s) / 2) ease-in-out -8s infinite;
   }
   .world-scene .world-scene__terrain {
-    animation: world-terrain-depth calc(var(--world-light-cycle, 120s) / 3) ease-in-out -12s infinite;
+    animation: world-terrain-depth calc(var(--world-light-cycle, 60s) / 3) ease-in-out -12s infinite;
   }
 }
 
 /* Pause ALL ambient animations during overture, interacting, or overriding effects */
-.world-scene[data-ambient="false"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__world-aura, .world-scene__terrain),
-.world-scene[data-paused="true"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__world-aura, .world-scene__terrain) {
+.world-scene[data-ambient="false"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain),
+.world-scene[data-paused="true"] :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) {
   animation-play-state: paused;
 }
 [data-effects="lite"] .world-scene__particle-canvas,
 [data-reduced-motion="true"] .world-scene__particle-canvas,
 [data-high-contrast="true"] .world-scene__particle-canvas { display: none; }
-[data-effects="lite"] .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__world-aura, .world-scene__terrain),
-[data-reduced-motion="true"] .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__world-aura, .world-scene__terrain) {
+[data-effects="lite"] .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain),
+[data-reduced-motion="true"] .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) {
   animation: none !important;
 }
 [data-effects="lite"] .world-scene__camera,
@@ -196,7 +214,7 @@
 [data-reduced-motion="true"] .world-scene__beacon-progress { transition: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__world-aura, .world-scene__terrain) { animation: none !important; }
+  .world-scene :is(.world-scene__dawn-glow, .world-scene__light-beams, .world-scene__sun-sweep, .world-scene__world-aura, .world-scene__terrain) { animation: none !important; }
   .world-scene__beacon-progress { transition: none; }
   .world-scene__camera { will-change: auto; }
 }

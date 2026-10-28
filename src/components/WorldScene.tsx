@@ -120,6 +120,7 @@ export function WorldScene({
   const waterId = `${id}-water`;
   const clipId = `${id}-clip`;
   const beamId = `${id}-beam`;
+  const sweepId = `${id}-sun-sweep`;
   const normalizedProgress = Math.min(100, Math.max(0, progress));
   const beaconProgress =
     state === "running" ? 100 : state === "idle" ? 0 : normalizedProgress;
@@ -360,6 +361,7 @@ export function WorldScene({
           <linearGradient id={earthId} x2=".4" y2="1"><stop stopColor="var(--world-earth-top)" /><stop offset="1" stopColor="var(--world-earth-bottom)" /></linearGradient>
           <linearGradient id={waterId} x2=".6" y2="1"><stop stopColor="var(--world-water-top)" /><stop offset=".4" stopColor="var(--world-water-mid)" /><stop offset="1" stopColor="var(--world-water-bottom)" /></linearGradient>
           <linearGradient id={beamId} x2="0" y2="1"><stop stopColor="var(--world-sun-core)" stopOpacity=".2" /><stop offset="1" stopColor="var(--world-sun-core)" stopOpacity="0" /></linearGradient>
+          <linearGradient id={sweepId} x1="1" y1="0" x2="0" y2="1"><stop stopColor="var(--world-sun-core)" stopOpacity=".62" /><stop offset=".38" stopColor="var(--world-sun-mid)" stopOpacity=".24" /><stop offset="1" stopColor="var(--world-sun-edge)" stopOpacity="0" /></linearGradient>
           <clipPath id={clipId}><rect width="1280" height="720" /></clipPath>
         </defs>
         <g clipPath={`url(#${clipId})`}>
@@ -413,6 +415,10 @@ export function WorldScene({
               <path d="M947 622h101v-26h94v-27h138v50h-130v24h-109v26H947z" fill="#5d6650" />
               <g className="world-scene__pixels" fill="#a5ad7d" opacity=".5"><path d="M1017 598v-11m-5 13v-8m9 6v-5M1108 575v-14m-5 17v-10m11 8v-6M1211 550v-15m-6 17v-9m12 8v-11" stroke="#a5ad7d" strokeWidth="3" /></g>
             </g>
+          </g>
+          <g className="world-scene__sun-sweep" fill={`url(#${sweepId})`} opacity="0">
+            <path d="M956 210 984 198 508 720 214 720z" />
+            <path d="M956 210 970 205 692 720 596 720z" opacity=".58" />
           </g>
           <g className="world-scene__world-aura" transform="translate(861 419)">
             <ellipse className="world-scene__beacon-halo" rx="36" ry="23" fill={`url(#${sunId})`} opacity=".3" />
