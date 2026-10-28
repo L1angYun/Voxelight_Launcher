@@ -46,8 +46,10 @@ Files: `src/app/FloatingNav.tsx`, `tests/unit/floating-nav.test.mjs`.
 - [x] Observe relevant item geometry with duplicate-notification filtering; retain the existing three-frame debounce and font hooks.
 - [x] Verify the new native tests, `node node_modules/typescript/bin/tsc --noEmit`, and `git diff --check`.
 
-Evidence: `node tests/unit/floating-nav.test.mjs` changed from 1 pass / 5 fail to 6 pass / 0 fail. Direct Node execution is required in this sandbox: `node --test` tries to spawn a child and fails with EPERM. TypeScript and whitespace checks exited 0. A separate read-only reviewer is checking the navigation patch.
+Evidence: `node tests/unit/floating-nav.test.mjs` changed from 1 pass / 5 fail to 6 pass / 0 fail. Direct Node execution is required in this sandbox: `node --test` tries to spawn a child and fails with EPERM. TypeScript and whitespace checks exited 0. A separate read-only reviewer accepted the navigation and character patches without confirmed findings.
 
 ## Delivery
 
-- [ ] Review the combined changes and report exact checks, root causes, modified files and remaining real-window verification.
+- [x] Review the combined changes and report exact checks, root causes, modified files and remaining real-window verification.
+
+Final integration: character 9/9, navigation 6/6, full-project TypeScript noEmit exit 0, scoped whitespace check exit 0. Report written to the requested `gpt-round4b.log`. No protected files, dependencies or visible copy changed. No Vite/Vitest/Playwright commands were run. Reviewer set aside real-window/WebGL rendering and unrelated concurrent work; the report explicitly carries those verification boundaries. No Critical, Important or Minor findings remain.
