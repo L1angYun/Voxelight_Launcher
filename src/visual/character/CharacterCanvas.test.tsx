@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PlayerObject, RunningAnimation, WalkingAnimation } from "skinview3d";
 import { CharacterCanvas } from "./CharacterCanvas";
 
 const { loadSkin, loadCape, viewers, MockViewer } = vi.hoisted(() => {
@@ -12,7 +13,7 @@ const { loadSkin, loadCape, viewers, MockViewer } = vi.hoisted(() => {
     disposed = false;
     renderPaused = false;
     autoRotate = false;
-    animation: unknown = null;
+    animation: import("skinview3d").PlayerAnimation | null = null;
     scene = { traverse: vi.fn() };
     controls = {
       enablePan: false,
@@ -45,12 +46,9 @@ const { loadSkin, loadCape, viewers, MockViewer } = vi.hoisted(() => {
 let rejectNextSkin = false;
 let rejectNextCape = false;
 
-vi.mock("skinview3d", () => ({
+vi.mock("skinview3d", async (importOriginal) => ({
+  ...await importOriginal<typeof import("skinview3d")>(),
   SkinViewer: MockViewer,
-  WebGLSkinViewer: MockViewer,
-  IdleAnimation: class {},
-  WalkingAnimation: class {},
-  RunningAnimation: class {},
 }));
 
 vi.mock("../../components/skinTexture", () => ({
@@ -67,6 +65,8 @@ vi.mock("../../components/skinTexture", () => ({
 let root: Root;
 let container: HTMLDivElement;
 let intersectionCallback: IntersectionObserverCallback | undefined;
+let pageHidden = false;
+let reducedMotion = false;
 
 async function render(props: Parameters<typeof CharacterCanvas>[0]) {
   await act(async () => {
@@ -83,6 +83,9 @@ beforeEach(() => {
   viewers.length = 0;
   rejectNextSkin = false;
   rejectNextCape = false;
+  pageHidden = false;
+  reducedMotion = false;
+  vi.spyOn(document, "hidden", "get").mockImplementation(() => pageHidden);
   loadSkin.mockReset();
   loadCape.mockReset();
   loadSkin.mockImplementation(async () => {
@@ -95,7 +98,7 @@ beforeEach(() => {
   });
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
-    value: vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })),
+    value: vi.fn(() => ({ matches: reducedMotion, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })),
   });
   intersectionCallback = undefined;
   Object.defineProperty(globalThis, "IntersectionObserver", {
@@ -117,9 +120,65 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("CharacterCanvas", () => {
+  it.each(["walk", "run"] as const)("resumes %s from its current stride after an overture pause", async (animation) => {
+    await render({ skinUrl: "skin.png", animation, label: "Preview" });
+    const viewer = viewers[0];
+    const stride = viewer.animation!;
+    const player = new PlayerObject();
+    expect(stride).toBeInstanceOf(animation === "walk" ? WalkingAnimation : RunningAnimation);
+    expect(viewer.renderPaused).toBe(false);
+    stride.update(player, 0.125);
+    const legRotation = player.skin.leftLeg.rotation.x;
+
+    await render({ skinUrl: "skin.png", animation, paused: true, label: "Preview" });
+    expect(viewer.renderPaused).toBe(true);
+    expect(viewer.animation).toBe(stride);
+    expect(viewer.animation?.progress).toBe(0.125);
+
+    await render({ skinUrl: "skin.png", animation, paused: false, label: "Preview" });
+    expect(viewer.renderPaused).toBe(false);
+    expect(viewer.animation).toBe(stride);
+    viewer.animation!.update(player, 0.125);
+    expect(viewer.animation?.progress).toBe(0.25);
+    expect(player.skin.leftLeg.rotation.x).not.toBe(legRotation);
+  });
+
+  it("preserves a walking stride across document and viewport visibility changes", async () => {
+    await render({ skinUrl: "skin.png", animation: "walk", label: "Preview" });
+    const viewer = viewers[0];
+    const stride = viewer.animation!;
+    stride.update(new PlayerObject(), 0.125);
+
+    pageHidden = true;
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(viewer.renderPaused).toBe(true);
+    expect(viewer.animation).toBe(stride);
+    expect(viewer.animation?.progress).toBe(0.125);
+
+    pageHidden = false;
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(viewer.renderPaused).toBe(false);
+    await act(async () => intersectionCallback?.([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver));
+    expect(viewer.renderPaused).toBe(true);
+    expect(viewer.animation).toBe(stride);
+    await act(async () => intersectionCallback?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    expect(viewer.renderPaused).toBe(false);
+    expect(viewer.animation).toBe(stride);
+    expect(viewer.animation?.progress).toBe(0.125);
+  });
+
+  it.each(["walk", "run"] as const)("keeps requested %s static with reduced motion", async (animation) => {
+    reducedMotion = true;
+    await render({ skinUrl: "skin.png", animation, interactive: true, autoRotate: true, label: "Preview" });
+    expect(viewers[0].animation).toBeNull();
+    expect(viewers[0].autoRotate).toBe(false);
+    expect(viewers[0].renderPaused).toBe(true);
+  });
+
   it("loads the selected skin and cape with accessible manual controls", async () => {
     await render({ skinUrl: "skin.png", capeUrl: "cape.png", model: "slim", interactive: true, label: "Account skin" });
     expect(loadSkin).toHaveBeenCalledWith("skin.png", "slim");

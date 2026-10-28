@@ -75,6 +75,7 @@ export function CharacterCanvas({
   const [visible, setVisible] = useState(!document.hidden);
   const inView = useRef(true);
   const reducedMotion = useReducedMotion();
+  const mode = reducedMotion ? "none" : animation;
 
   useEffect(() => {
     canvasRef.current?.setAttribute("aria-label", label);
@@ -284,12 +285,16 @@ export function CharacterCanvas({
 
   useEffect(() => {
     if (!viewer || viewer.disposed) return;
-    const mode = reducedMotion ? "none" : animation;
+    // Assigning animation resets the pose and clock; pause separately to retain the stride.
     viewer.animation = mode === "walk" ? new WalkingAnimation() : mode === "run" ? new RunningAnimation() : mode === "idle" ? new IdleAnimation() : null;
+  }, [viewer, mode]);
+
+  useEffect(() => {
+    if (!viewer || viewer.disposed) return;
     viewer.autoRotate = autoRotate && interactive && !reducedMotion;
     viewer.renderPaused = paused || !visible || (mode === "none" && !viewer.autoRotate);
     if (!viewer.renderPaused) viewer.render();
-  }, [viewer, animation, autoRotate, interactive, paused, reducedMotion, visible]);
+  }, [viewer, mode, autoRotate, interactive, paused, reducedMotion, visible]);
 
   useEffect(() => {
     if (!resetToken || !viewer || viewer.disposed) return;

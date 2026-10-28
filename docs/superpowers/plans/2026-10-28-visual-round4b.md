@@ -30,19 +30,23 @@
 
 Files: `src/visual/character/CharacterCanvas.tsx` and its existing regression tests; `OvertureScene.tsx` only if the investigation requires it.
 
-- [ ] Read WorldScene, OvertureScene, CharacterCanvas, their tests and relevant history; identify the failing boundary.
-- [ ] Add a regression for the observed lifecycle failure before changing production code.
-- [ ] Apply the smallest fix and review pause/restart/unmount behavior.
-- [ ] Run allowed native checks; explicitly record any tests requiring the prohibited runners as unrun.
+- [x] Read WorldScene, OvertureScene, CharacterCanvas, their tests and relevant history; identify the failing boundary.
+- [x] Add a regression for the observed lifecycle failure before changing production code.
+- [x] Apply the smallest fix and review pause/restart/unmount behavior.
+- [x] Run allowed native checks; explicitly record any tests requiring the prohibited runners as unrun.
+
+Evidence: `node tests/unit/character-animation.test.mjs` changed from 4 pass / 5 fail to 9 pass / 0 fail. The existing combined effect reset animation/joints/progress on pause, visibility and auto-rotation updates. The fix separates animation selection from playback control. Continuous baseline walk/run already worked in the harness; the broader permanently-static report was not reproduced and still needs real-window verification. No evidence attributes the existing defect to the round 3 color/CSS changes.
 
 ## Task 2: Floating navigation measurement lifecycle
 
 Files: `src/app/FloatingNav.tsx`, `tests/unit/floating-nav.test.mjs`.
 
-- [ ] Use a native Node/React/JSDOM regression test to reproduce effects-switch positioning and item-only layout changes.
-- [ ] Distinguish active-item changes from layout remeasurement; snap layout updates and clear any remaining spring motion.
-- [ ] Observe relevant item geometry with duplicate-notification filtering; retain the existing three-frame debounce and font hooks.
-- [ ] Verify the new native tests, `node node_modules/typescript/bin/tsc --noEmit`, and `git diff --check`.
+- [x] Use a native Node/React/JSDOM regression test to reproduce effects-switch positioning and item-only layout changes.
+- [x] Distinguish active-item changes from layout remeasurement; snap layout updates and clear any remaining spring motion.
+- [x] Observe relevant item geometry with duplicate-notification filtering; retain the existing three-frame debounce and font hooks.
+- [x] Verify the new native tests, `node node_modules/typescript/bin/tsc --noEmit`, and `git diff --check`.
+
+Evidence: `node tests/unit/floating-nav.test.mjs` changed from 1 pass / 5 fail to 6 pass / 0 fail. Direct Node execution is required in this sandbox: `node --test` tries to spawn a child and fails with EPERM. TypeScript and whitespace checks exited 0. A separate read-only reviewer is checking the navigation patch.
 
 ## Delivery
 
