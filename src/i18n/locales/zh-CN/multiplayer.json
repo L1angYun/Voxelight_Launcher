@@ -1,0 +1,133 @@
+{
+  "title": "联机",
+  "subtitle": "加入服务器，或管理本地服务端进程。",
+  "views": "多人联机视图",
+  "tab": {
+    "servers": "服务器",
+    "managed": "服务端管理"
+  },
+  "environment": "游戏环境",
+  "chooseEnvironment": "选择已安装游戏",
+  "environmentRequired": "保存或加入服务器前，先选择游戏环境。",
+  "refresh": "刷新",
+  "addServer": "添加服务器",
+  "saveServer": "保存服务器",
+  "removeServer": "移除服务器",
+  "confirmRemove": "从服务器列表移除“{{name}}”？原服务器列表会先备份。",
+  "hiddenAddress": "地址已隐藏",
+  "checkStatus": "查询状态",
+  "join": "加入",
+  "joinWorld": "加入世界",
+  "players": "{{online}} / {{max}} 人",
+  "latency": "{{value}} ms",
+  "status": {
+    "unknown": "尚未查询",
+    "online": "在线",
+    "offline": "离线或无法连接"
+  },
+  "emptyServers": {
+    "title": "还没有保存的服务器",
+    "description": "添加地址后，服务器会保存到当前环境的游戏多人列表中。"
+  },
+  "lanTitle": "局域网世界",
+  "discoverLan": "搜索局域网",
+  "lanHint": "让朋友在游戏中选择“对局域网开放”，然后搜索当前网络。",
+  "lanEmpty": "当前网络中没有发现局域网世界。",
+  "managedDescription": "独立安装、配置并检查本地服务端。",
+  "managedList": "受管服务端列表",
+  "managedBusy": "正在处理服务端任务…",
+  "defaultServerName": "我的原版服务端",
+  "createServer": "创建服务端",
+  "createTitle": "创建原版服务端",
+  "serverVersion": "Minecraft 版本",
+  "createNotice": "下载文件会经过校验；创建不会自动同意 EULA，也不会自动启动。",
+  "installServer": "安装服务端",
+  "noManaged": "尚未创建服务端。",
+  "javaAuto": "自动匹配",
+  "managedStatus": {
+    "stopped": "已停止",
+    "starting": "正在启动",
+    "running": "运行中",
+    "stopping": "正在保存并停止",
+    "error": "需要检查日志",
+    "unknown": "未知进程状态"
+  },
+  "eula": {
+    "accept": "同意 Minecraft EULA",
+    "consent": "我已阅读并同意"
+  },
+  "startServer": "启动服务端",
+  "installAndStart": "完成安装并启动",
+  "saveAndStop": "保存并停止",
+  "forceStop": "强制停止",
+  "serverSettings": "服务端设置",
+  "saveSettings": "保存设置",
+  "settingsWhileRunning": "停止服务端后可以修改这些设置。",
+  "console": "控制台",
+  "consoleLog": "服务端控制台日志",
+  "autoScroll": "自动滚动",
+  "consoleCommand": "服务端控制台命令",
+  "consolePlaceholder": "输入控制台命令，例如 list",
+  "sendCommand": "发送命令",
+  "playerAction": "玩家管理操作",
+  "playerName": "玩家名称",
+  "managePlayer": "执行玩家管理",
+  "playerActions": {
+    "whitelist add": "加入白名单",
+    "whitelist remove": "移出白名单",
+    "op": "给予管理员",
+    "deop": "移除管理员",
+    "ban": "封禁玩家",
+    "pardon": "解除封禁"
+  },
+  "emptyManaged": {
+    "title": "还没有选择服务端",
+    "description": "创建服务端后，可在这里管理控制台、设置和玩家。"
+  },
+  "fields": {
+    "serverName": "服务器名称",
+    "serverAddress": "服务器地址",
+    "port": "端口",
+    "maxPlayers": "最大玩家数",
+    "maxMemory": "最大内存 MB",
+    "viewDistance": "视距",
+    "gamemode": "游戏模式",
+    "difficulty": "难度",
+    "bindAddress": "监听 IP（留空使用所有网卡）",
+    "motd": "服务器简介 MOTD",
+    "onlineMode": "验证正版账号（online-mode）",
+    "whitelist": "仅允许白名单玩家加入"
+  },
+  "gamemode": {
+    "survival": "生存",
+    "creative": "创造",
+    "adventure": "冒险",
+    "spectator": "旁观"
+  },
+  "difficulty": {
+    "peaceful": "和平",
+    "easy": "简单",
+    "normal": "普通",
+    "hard": "困难"
+  },
+  "notice": {
+    "serverSaved": "服务器已保存到游戏列表。",
+    "serverRemoved": "服务器已移除，原列表已备份。",
+    "serverCreated": "服务端已安装；阅读并同意 EULA 后可手动启动。",
+    "settingsSaved": "服务端设置已保存。",
+    "forceStopRequested": "已请求强制停止。",
+    "stopRequested": "已请求保存世界并停止。",
+    "commandSent": "命令已发送，执行结果见控制台日志。"
+  },
+  "errors": {
+    "processFailed": "服务端进程发生错误，请检查控制台日志后再启动。",
+    "server": {
+      "eulaRequired": "启动前请阅读并明确同意 Minecraft EULA。",
+      "notFound": "服务端已不存在，请刷新列表。",
+      "busy": "另一个服务端或下载操作仍在执行。",
+      "addressInvalid": "请输入有效的主机名或 IP，可附端口。",
+      "portInUse": "另一个受管服务端已使用此端口。",
+      "processUnavailable": "服务端进程未运行，无法执行此操作。"
+    }
+  }
+}

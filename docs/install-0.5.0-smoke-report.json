@@ -1,0 +1,36 @@
+{
+  "product": "Voxelight Launcher",
+  "version": "0.5.0",
+  "scope": "Isolated current-user NSIS install, license resources, registration, executable integrity and uninstall",
+  "installer": "C:\\Users\\LiuYu\\AppData\\Local\\Temp\\VoxelightLauncherBuild-0.5.0-delivery\\Voxelight Launcher_0.5.0_x64-setup.exe",
+  "target": "C:\\Users\\LiuYu\\AppData\\Local\\Temp\\VoxelightLauncherSmoke-a10ae59e-f0ab-496d-9ff1-5d27fa5627e6",
+  "checks": [
+    "current-user silent install completed with the expected executable version",
+    "registered executable, version and normal integrity label",
+    "installed GPL and third-party notices; no excluded texture or UI source",
+    "asynchronous uninstall completed; owned fixture and real data directory preserved"
+  ],
+  "setupSha256": "1e3059f00ec69de5be3d1959b022304d302b38390cd08bd2d011713d99b458cd",
+  "program": {
+    "bytes": 10953216,
+    "sha256": "3481a7663cbe5af32b17048ba5b946ab1021191fe52bbfbb130a8215445f24bc",
+    "lowMandatoryLabel": false,
+    "signatureStatus": "NotSigned"
+  },
+  "registration": {
+    "displayName": "Voxelight Launcher",
+    "displayVersion": "0.5.0"
+  },
+  "verifiedNoticeFiles": 1126,
+  "installedFiles": 1132,
+  "licenseResourcesVerified": true,
+  "uninstall": {
+    "programRemoved": true,
+    "ownedInstallFixturePreserved": true,
+    "realDataDirectoryNamesPreserved": true,
+    "dataDirectoryContentsRead": false,
+    "testDataOverridesUsed": true
+  },
+  "success": true,
+  "finishedAt": "2026-10-25T14:00:14.699Z"
+}

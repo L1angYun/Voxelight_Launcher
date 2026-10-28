@@ -1,0 +1,40 @@
+{
+  "product": "Voxelight Launcher",
+  "version": "0.4.0",
+  "date": "2026-10-25",
+  "scope": "NSIS installation, registration, executable integrity and default uninstall. Game acceptance is reported separately.",
+  "installation": {
+    "installMode": "currentUser",
+    "installerExitCode": 0,
+    "programPath": "C:\\Users\\LiuYu\\AppData\\Local\\Voxelight Launcher\\voxelight-launcher.exe",
+    "programBytes": 10844160,
+    "programSha256": "15b98f39f6a63eea5d6f2c36328f33307fe702359cc5b92f541f2c6914d33211",
+    "setupBytes": 3692854,
+    "setupSha256": "d07d57716eecaaa2ca7297f231b55ac81305187e16c670f992d9ff30a82f60ea",
+    "lowMandatoryLabel": false,
+    "signatureStatus": "NotSigned",
+    "bundleMarker": {
+      "source": "UNK",
+      "installed": "NSS",
+      "otherBytesIdentical": true
+    },
+    "registration": {
+      "displayName": "Voxelight Launcher",
+      "displayVersion": "0.4.0",
+      "mainBinaryName": "voxelight-launcher.exe",
+      "desktopShortcutCreated": true
+    }
+  },
+  "dataDirectory": "%LOCALAPPDATA%\\dev.voxelight.launcher",
+  "defaultUninstall": {
+    "uninstallerExitCode": 0,
+    "deleteAppDataRequested": false,
+    "programRemoved": true,
+    "installDirectoryFixturePreserved": true,
+    "dataDirectoryFixturePreserved": true,
+    "ownedFixturesCleaned": true,
+    "usedOnlyOwnedFixtures": true,
+    "completionCheckedAfterWorkerFinished": true,
+    "note": "The asynchronous uninstall worker was allowed to finish before checking final state. No personal account, setting, instance or world was used."
+  }
+}

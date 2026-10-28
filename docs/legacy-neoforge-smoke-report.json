@@ -1,0 +1,34 @@
+{
+  "work": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a06429cc-dce3-45aa-84fb-ad47f42b0477",
+  "binary": "C:\\Users\\LiuYu\\AppData\\Local\\Temp\\VoxelightLauncher-native-check-4\\voxelight-launcher.exe",
+  "startedAt": "2026-10-25T03:37:48.409Z",
+  "checks": [
+    "official legacy NeoForge installer, real rendering and running-instance guards"
+  ],
+  "failures": [],
+  "fixtureOnlyChecks": [],
+  "realNetworkChecks": [
+    "official neoforge installation and real Java rendering; running-instance mutations rejected"
+  ],
+  "immutableCache": {
+    "copied": 3641,
+    "missing": 24,
+    "source": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-4593e9e4-f526-43c4-8e05-c5689ecb0549\\game",
+    "worldsCopied": 0,
+    "credentialsCopied": 0
+  },
+  "webRuntimeErrors": [],
+  "loaders": [
+    {
+      "loader": "neoforge",
+      "loaderVersion": "47.1.106",
+      "versionId": "1.20.1-forge-47.1.106",
+      "pid": 21568,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a06429cc-dce3-45aa-84fb-ad47f42b0477\\game\\instances\\c55ce986-c30e-4228-a873-49847bab519e",
+      "renderEvidence": "2026-10-25T03:41:34.619896100+00:00 [game] [11:41:34] [Render thread/INFO] [minecraft/Minecraft]: Backend library: LWJGL version 3.3.1 build 7",
+      "runningInstanceGuards": 5
+    }
+  ],
+  "success": true,
+  "finishedAt": "2026-10-25T03:41:40.859Z"
+}

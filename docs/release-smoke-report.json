@@ -1,0 +1,118 @@
+{
+  "work": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-af6beaa4-dc4c-4be9-b829-3963f2da1f45",
+  "binary": "C:\\Users\\LiuYu\\AppData\\Local\\Voxelight Launcher\\voxelight-launcher.exe",
+  "startedAt": "2026-10-25T03:47:14.883Z",
+  "checks": [
+    "native v0.4 configuration and DPAPI service secret remain private",
+    "instance clone copies fixture bytes without changing source",
+    "instance backup and reversible restoration recover fixture bytes",
+    "minimal mrpack export and import install real vanilla dependencies",
+    "world NBT, world ZIP backup/import and PNG preview use isolated fixture files",
+    "servers.dat preserves a real NBT entry and native TCP status talks to a local protocol fixture",
+    "official Fabric installation, real rendering and running-instance guards",
+    "official Quilt installation, real rendering and running-instance guards",
+    "official NeoForge installer, real rendering and running-instance guards",
+    "official legacy NeoForge installer, real rendering and running-instance guards",
+    "official Forge installer, real rendering and running-instance guards",
+    "real Modrinth dependency resolution, targeted UI update and reversible rollback",
+    "official managed server keeps eula=false and refuses to start without consent",
+    "pause/resume, queued cancellation and active cancellation allow the next job",
+    "managed-server UI never implicitly accepts the EULA",
+    "native home renders the WebGL skin without runtime errors"
+  ],
+  "failures": [],
+  "fixtureOnlyChecks": [
+    "instance clone",
+    "instance backup/restore",
+    "mrpack archive/overrides; vanilla dependency files are authentic Mojang files",
+    "world metadata/archive, screenshot and local resource fixture",
+    "local Minecraft status TCP fixture; no external game server"
+  ],
+  "realNetworkChecks": [
+    "official fabric installation and real Java rendering; running-instance mutations rejected",
+    "official quilt installation and real Java rendering; running-instance mutations rejected",
+    "official neoforge installation and real Java rendering; running-instance mutations rejected",
+    "official neoforge installation and real Java rendering; running-instance mutations rejected",
+    "official forge installation and real Java rendering; running-instance mutations rejected",
+    "UI-driven Modrinth hash identification, required dependencies, SHA-512, transaction commit and rollback",
+    "official Minecraft server JAR with SHA-1; no real EULA acceptance or server startup"
+  ],
+  "immutableCache": {
+    "copied": 3641,
+    "missing": 24,
+    "source": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a06429cc-dce3-45aa-84fb-ad47f42b0477\\game",
+    "worldsCopied": 0,
+    "credentialsCopied": 0
+  },
+  "webRuntimeErrors": [],
+  "loaders": [
+    {
+      "loader": "fabric",
+      "loaderVersion": "0.20.1",
+      "versionId": "fabric-loader-0.20.1-1.20.1",
+      "pid": 77828,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-af6beaa4-dc4c-4be9-b829-3963f2da1f45\\game\\instances\\9c316cdf-c29d-4241-8725-5586bb78cb85",
+      "renderEvidence": "2026-10-25T03:47:59.320836900+00:00 [game]     <log4j:Message><![CDATA[Backend library: LWJGL version 3.3.1 SNAPSHOT]]></log4j:Message>",
+      "runningInstanceGuards": 5
+    },
+    {
+      "loader": "quilt",
+      "loaderVersion": "0.30.1",
+      "versionId": "quilt-loader-0.30.1-1.20.1",
+      "pid": 5092,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-af6beaa4-dc4c-4be9-b829-3963f2da1f45\\game\\instances\\f3cfa47b-2270-40cf-a8ce-49f91b42b6d0",
+      "renderEvidence": "2026-10-25T03:48:42.647815500+00:00 [game]     <log4j:Message><![CDATA[Backend library: LWJGL version 3.3.1 SNAPSHOT]]></log4j:Message>",
+      "runningInstanceGuards": 5
+    },
+    {
+      "loader": "neoforge",
+      "loaderVersion": "21.1.264",
+      "versionId": "neoforge-21.1.264",
+      "pid": 80672,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-af6beaa4-dc4c-4be9-b829-3963f2da1f45\\game\\instances\\d2028ff5-8b5c-4890-9cb6-29d0a8c9acbf",
+      "renderEvidence": "2026-10-25T03:51:28.316426600+00:00 [game] [11:51:28] [Render thread/INFO] [minecraft/Minecraft]: Backend library: LWJGL version 3.3.3+5",
+      "runningInstanceGuards": 5
+    },
+    {
+      "loader": "neoforge",
+      "loaderVersion": "47.1.106",
+      "versionId": "1.20.1-forge-47.1.106",
+      "pid": 79880,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-af6beaa4-dc4c-4be9-b829-3963f2da1f45\\game\\instances\\ec59a65f-3a1d-4c0c-9130-6eab4c30170b",
+      "renderEvidence": "2026-10-25T03:53:50.475642200+00:00 [game] [11:53:50] [Render thread/INFO] [minecraft/Minecraft]: Backend library: LWJGL version 3.3.1 build 7",
+      "runningInstanceGuards": 5
+    },
+    {
+      "loader": "forge",
+      "loaderVersion": "47.4.28",
+      "versionId": "1.20.1-forge-47.4.28",
+      "pid": 44196,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-af6beaa4-dc4c-4be9-b829-3963f2da1f45\\game\\instances\\44f8e38c-a8d9-41d3-855a-64bb6b7fa2f5",
+      "renderEvidence": "2026-10-25T03:55:36.983729+00:00 [game] [11:55:36] [Render thread/INFO] [minecraft/Minecraft]: Backend library: LWJGL version 3.3.1 build 7",
+      "runningInstanceGuards": 5
+    }
+  ],
+  "resourceTransactions": {
+    "projectId": "PtjYWJkn",
+    "oldVersionId": "zw9MlqYI",
+    "newVersionId": "mDbF0LZT",
+    "requiredProjects": ["AANobbMI", "P7dR8mSH", "PtjYWJkn"],
+    "uiDriven": true,
+    "unknownFilesPreserved": true,
+    "laterChangesProtected": true
+  },
+  "managedServer": {
+    "officialJarVerified": true,
+    "defaultEula": false,
+    "startRejectedWithoutConsent": true,
+    "eulaAcceptedByTest": false
+  },
+  "downloadControls": {
+    "pausedAndResumed": "f3600c57-9b58-4da7-9d5c-c76ac83034d7",
+    "queuedCancellation": "1e28322f-d285-4f6c-8690-4c257ec4bbab",
+    "activeCancellation": "2a073e96-0ff8-45db-9525-259ce2449b90",
+    "nextAfterCancellation": "64fc6db6-3931-4e35-acaa-d24d96be15e1"
+  },
+  "success": true,
+  "finishedAt": "2026-10-25T03:56:42.295Z"
+}

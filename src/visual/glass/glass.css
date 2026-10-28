@@ -1,0 +1,51 @@
+.vx-glass-provider { position: relative; isolation: isolate; }
+.vx-glass-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.vx-glass-content { position: relative; z-index: 1; display: flex; flex: 1; flex-direction: column; min-height: 0; height: 100%; }
+.vx-glass-surface {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 12%, transparent);
+  background:
+    linear-gradient(132deg, rgb(183 216 238 / 10%), transparent 35%, rgb(238 194 164 / 5%) 85%),
+    color-mix(in srgb, var(--surface-glass) 76%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 28%), inset 0 -1px 0 rgb(0 0 0 / 15%),
+    0 8px 24px rgb(0 0 0 / 12%);
+  backdrop-filter: blur(22px) saturate(1.2);
+}
+.vx-glass-surface::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid transparent;
+  border-top-color: rgb(221 237 247 / 52%);
+  border-left-color: rgb(221 237 247 / 22%);
+  border-radius: inherit;
+  mask-image: linear-gradient(125deg, #000, transparent 48%);
+  pointer-events: none;
+}
+[data-theme="light"] .vx-glass-surface {
+  border-color: rgb(46 54 63 / 13%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 85%), inset 0 -1px 0 rgb(66 72 80 / 8%), 0 8px 24px rgb(25 33 47 / 7%);
+}
+.vx-glass-surface--nav { border-radius: 22px; }
+.vx-glass-surface--control { border-radius: var(--radius-pill); }
+.vx-glass-surface--dialog { border-radius: var(--radius-lg); }
+.vx-glass-surface--toast { border-radius: var(--radius-md); }
+[data-glass-mode="fallback"] .vx-glass-surface {
+  background: var(--surface-solid);
+  backdrop-filter: none;
+}
+[data-glass-mode="fallback"] .vx-glass-canvas { visibility: hidden; }
+[data-glass-mode="fallback"] .vx-glass-surface::before { display: none; }
+[data-glass-mode="lite"] .vx-glass-surface { backdrop-filter: blur(8px); }
+[data-glass-mode="full"] .vx-glass-surface { backdrop-filter: blur(28px) saturate(1.45) brightness(1.06); }
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .vx-glass-surface { background: var(--surface-solid); backdrop-filter: none; }
+}

@@ -1,0 +1,45 @@
+{
+  "work": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-f67ae089-92e2-4bcc-acd1-10d4a664f991",
+  "binary": "C:\\Users\\LiuYu\\AppData\\Local\\Temp\\VoxelightLauncher-native-check-3\\voxelight-launcher.exe",
+  "startedAt": "2026-10-25T03:09:16.622Z",
+  "checks": [
+    "real Modrinth dependency resolution, targeted UI update and reversible rollback",
+    "native home renders the WebGL skin without runtime errors"
+  ],
+  "failures": [],
+  "fixtureOnlyChecks": [],
+  "realNetworkChecks": [
+    "official fabric installation and real Java rendering; running-instance mutations rejected",
+    "UI-driven Modrinth hash identification, required dependencies, SHA-512, transaction commit and rollback"
+  ],
+  "immutableCache": {
+    "copied": 3641,
+    "missing": 24,
+    "source": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-4593e9e4-f526-43c4-8e05-c5689ecb0549\\game",
+    "worldsCopied": 0,
+    "credentialsCopied": 0
+  },
+  "webRuntimeErrors": [],
+  "loaders": [
+    {
+      "loader": "fabric",
+      "loaderVersion": "0.20.1",
+      "versionId": "fabric-loader-0.20.1-1.20.1",
+      "pid": 74128,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-f67ae089-92e2-4bcc-acd1-10d4a664f991\\game\\instances\\2db5ea60-0bb7-425e-9a35-d79ce165649e",
+      "renderEvidence": "2026-10-25T03:10:19.629409300+00:00 [game]     <log4j:Message><![CDATA[Backend library: LWJGL version 3.3.1 SNAPSHOT]]></log4j:Message>",
+      "runningInstanceGuards": 5
+    }
+  ],
+  "resourceTransactions": {
+    "projectId": "PtjYWJkn",
+    "oldVersionId": "zw9MlqYI",
+    "newVersionId": "mDbF0LZT",
+    "requiredProjects": ["AANobbMI", "P7dR8mSH", "PtjYWJkn"],
+    "uiDriven": true,
+    "unknownFilesPreserved": true,
+    "laterChangesProtected": true
+  },
+  "success": true,
+  "finishedAt": "2026-10-25T03:10:54.367Z"
+}

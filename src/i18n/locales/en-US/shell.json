@@ -1,0 +1,47 @@
+{
+  "a11y": {
+    "skipToContent": "Skip to main content"
+  },
+  "brand": {
+    "name": "Voxelight"
+  },
+  "notifications": {
+    "auth.required": "Choose a player before launching.",
+    "instance.required": "Choose or create an instance first.",
+    "game.launched": "Game launched.",
+    "game.stopped": "Game stopped.",
+    "game.stopRequested": "Stop requested. The process is still exiting.",
+    "game.notRunning": "No running game matches the current selection.",
+    "game.exited": "Game exited (code {{code}}).",
+    "preparation.cancelRequested": "Preparation cancellation requested.",
+    "settings.saved": "Settings saved.",
+    "versions.unavailable": "Version list unavailable. Check your connection and retry.",
+    "instance.installed": "Instance installed."
+  },
+  "operations": {
+    "game.prepare": "Preparing game",
+    "game.stop": "Stopping game",
+    "preparation.cancel": "Cancelling preparation",
+    "settings.save": "Saving settings",
+    "instance.install": "Installing game",
+    "folder.open": "Opening folder"
+  },
+  "errors": {
+    "instance.running": "This instance is already running. Do not launch it twice.",
+    "instance.notFound": "The instance no longer exists. Refresh the library.",
+    "backup.notFound": "No matching instance backup was found.",
+    "backup.invalid": "The backup manifest is invalid and cannot be used.",
+    "backup.path": "The backup path is invalid. Choose another location.",
+    "resource.pathUnsafe": "The resource path is unsafe. Choose another path.",
+    "resource.unavailable": "The resource directory cannot be read. Check access permissions.",
+    "auth.serviceKeyMissing": "Save your own CurseForge API key in Settings first.",
+    "auth.required": "Choose a player first.",
+    "instance.required": "Choose an instance first.",
+    "game.notRunning": "No running game matches the current selection.",
+    "versions.unavailable": "Version list unavailable.",
+    "desktop.required": "Use the desktop app for this action.",
+    "renderer.unavailable": "3D preview is unavailable. Check your graphics driver and hardware acceleration.",
+    "skin.loadFailed": "The skin could not be loaded. Try again.",
+    "cape.loadFailed": "The cape could not be loaded. Try again."
+  }
+}

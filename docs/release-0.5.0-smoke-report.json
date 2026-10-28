@@ -1,0 +1,166 @@
+{
+  "work": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a1bc95ed-f794-4d13-8305-5ac3efae653a",
+  "binary": "C:\\Users\\LiuYu\\AppData\\Local\\Temp\\VoxelightLauncherBuild-0.5.0-delivery\\installer-matched\\voxelight-launcher.exe",
+  "startedAt": "2026-10-25T23:29:49.328Z",
+  "checks": [
+    "native v0.5 configuration and DPAPI service secret remain private",
+    "Lumen, Steve and Alex use the selected verified client resources",
+    "BMCLAPI v2 metadata and verified client installation preserve official hashes",
+    "instance clone copies fixture bytes without changing source",
+    "instance backup and reversible restoration recover fixture bytes",
+    "minimal mrpack export and import install real vanilla dependencies",
+    "world NBT, world ZIP backup/import and PNG preview use isolated fixture files",
+    "servers.dat preserves a real NBT entry and native TCP status talks to a local protocol fixture",
+    "same-version independent instances can run concurrently without duplicate PIDs",
+    "official Fabric installation, real rendering and running-instance guards",
+    "official Quilt installation, real rendering and running-instance guards",
+    "official NeoForge installer, real rendering and running-instance guards",
+    "official legacy NeoForge installer, real rendering and running-instance guards",
+    "official Forge installer, real rendering and running-instance guards",
+    "real Modrinth dependency resolution, targeted UI update and reversible rollback",
+    "official managed server keeps eula=false and refuses to start without consent",
+    "pause/resume, queued cancellation and active cancellation allow the next job",
+    "managed-server UI never implicitly accepts the EULA",
+    "native home renders the animated world and skin page without runtime errors"
+  ],
+  "failures": [],
+  "fixtureOnlyChecks": [
+    "instance clone",
+    "instance backup/restore",
+    "mrpack archive/overrides; vanilla dependency files are authentic Mojang files",
+    "world metadata/archive, screenshot and local resource fixture",
+    "local Minecraft status TCP fixture; no external game server"
+  ],
+  "realNetworkChecks": [
+    "Steve/Alex runtime extraction from official hash-verified Minecraft client; no bundled proprietary texture",
+    "BMCLAPI v2 manifest and verified client installation with BMCLAPI preferred; official fallback retained",
+    "official fabric installation and real Java rendering; running-instance mutations rejected",
+    "official quilt installation and real Java rendering; running-instance mutations rejected",
+    "official neoforge installation and real Java rendering; running-instance mutations rejected",
+    "official neoforge installation and real Java rendering; running-instance mutations rejected",
+    "official forge installation and real Java rendering; running-instance mutations rejected",
+    "UI-driven Modrinth hash identification, required dependencies, SHA-512, transaction commit and rollback",
+    "official Minecraft server JAR with SHA-1; no real EULA acceptance or server startup"
+  ],
+  "version": "0.5.0",
+  "binarySha256": "3481a7663cbe5af32b17048ba5b946ab1021191fe52bbfbb130a8215445f24bc",
+  "suite": "full",
+  "filters": [],
+  "immutableCache": {
+    "copied": 3641,
+    "missing": 24,
+    "source": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-945c1e9b-aa69-4b67-aa10-15791116c39a\\game",
+    "worldsCopied": 0,
+    "credentialsCopied": 0
+  },
+  "webRuntimeErrors": [],
+  "defaultSkins": [
+    {
+      "id": "steve",
+      "model": "classic",
+      "sourceVersion": "1.20.1",
+      "sourceUrl": "https://piston-data.mojang.com/v1/objects/0c3ec587af28e5a785c0b4a7b8a30f9a8f78f838/client.jar",
+      "dimensions": "64x64"
+    },
+    {
+      "id": "alex",
+      "model": "slim",
+      "sourceVersion": "1.20.1",
+      "sourceUrl": "https://piston-data.mojang.com/v1/objects/0c3ec587af28e5a785c0b4a7b8a30f9a8f78f838/client.jar",
+      "dimensions": "64x64"
+    }
+  ],
+  "downloadSource": {
+    "requested": "bmclapi",
+    "manifest": "version_manifest_v2.json",
+    "versionId": "1.20.1",
+    "officialMetadataUrl": "https://piston-meta.mojang.com/v1/packages/38d412af3b247e485c7f7e50ac25febc4e79ab1d/1.20.1.json",
+    "expectedSha1": "0c3ec587af28e5a785c0b4a7b8a30f9a8f78f838",
+    "verifiedBytes": 23028853,
+    "officialFallbackRetained": true
+  },
+  "loaders": [
+    {
+      "loader": "fabric",
+      "loaderVersion": "0.20.1",
+      "versionId": "fabric-loader-0.20.1-1.20.1",
+      "pid": 8860,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a1bc95ed-f794-4d13-8305-5ac3efae653a\\game\\instances\\1d374d46-7927-4c7c-ae73-8c4b1828f840",
+      "renderEvidence": "2026-10-25T23:30:59.181441400+00:00 [game]     <log4j:Message><![CDATA[Backend library: LWJGL version 3.3.1 SNAPSHOT]]></log4j:Message>",
+      "runningInstanceGuards": 6,
+      "restartedAfterExit": true
+    },
+    {
+      "loader": "quilt",
+      "loaderVersion": "0.30.1",
+      "versionId": "quilt-loader-0.30.1-1.20.1",
+      "pid": 45884,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a1bc95ed-f794-4d13-8305-5ac3efae653a\\game\\instances\\ef69e8b2-30c7-49d8-93c1-2a7071d0572c",
+      "renderEvidence": "2026-10-25T23:31:32.677932400+00:00 [game]     <log4j:Message><![CDATA[Backend library: LWJGL version 3.3.1 SNAPSHOT]]></log4j:Message>",
+      "runningInstanceGuards": 6,
+      "restartedAfterExit": true
+    },
+    {
+      "loader": "neoforge",
+      "loaderVersion": "21.1.265",
+      "versionId": "neoforge-21.1.265",
+      "pid": 30224,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a1bc95ed-f794-4d13-8305-5ac3efae653a\\game\\instances\\6d0bb211-05fa-4081-b46a-fa096049ee1c",
+      "renderEvidence": "2026-10-25T23:33:55.837647500+00:00 [game] [07:33:55] [Render thread/INFO] [minecraft/Minecraft]: Backend library: LWJGL version 3.3.3+5",
+      "runningInstanceGuards": 6,
+      "restartedAfterExit": true
+    },
+    {
+      "loader": "neoforge",
+      "loaderVersion": "47.1.106",
+      "versionId": "1.20.1-forge-47.1.106",
+      "pid": 10428,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a1bc95ed-f794-4d13-8305-5ac3efae653a\\game\\instances\\012f1f29-74b8-4fad-9419-9b709f384b1e",
+      "renderEvidence": "2026-10-25T23:35:29.332600700+00:00 [game] [07:35:29] [Render thread/INFO] [minecraft/Minecraft]: Backend library: LWJGL version 3.3.1 build 7",
+      "runningInstanceGuards": 6,
+      "restartedAfterExit": true
+    },
+    {
+      "loader": "forge",
+      "loaderVersion": "47.4.28",
+      "versionId": "1.20.1-forge-47.4.28",
+      "pid": 25372,
+      "gameDirectory": "E:\\CodeX\\VoxelightLauncher\\src-tauri\\target\\native-a1bc95ed-f794-4d13-8305-5ac3efae653a\\game\\instances\\2bf92722-8d7b-46ec-8091-580cccb122b0",
+      "renderEvidence": "2026-10-25T23:37:00.524583200+00:00 [game] [07:37:00] [Render thread/INFO] [minecraft/Minecraft]: Backend library: LWJGL version 3.3.1 build 7",
+      "runningInstanceGuards": 6,
+      "restartedAfterExit": true
+    }
+  ],
+  "concurrentInstances": {
+    "versionId": "1.20.1",
+    "distinctPids": 2,
+    "independentDirectories": true
+  },
+  "resourceTransactions": {
+    "projectId": "PtjYWJkn",
+    "oldVersionId": "zw9MlqYI",
+    "newVersionId": "mDbF0LZT",
+    "requiredProjects": [
+      "AANobbMI",
+      "P7dR8mSH",
+      "PtjYWJkn"
+    ],
+    "uiDriven": true,
+    "unknownFilesPreserved": true,
+    "laterChangesProtected": true
+  },
+  "managedServer": {
+    "officialJarVerified": true,
+    "defaultEula": false,
+    "startRejectedWithoutConsent": true,
+    "eulaAcceptedByTest": false
+  },
+  "downloadControls": {
+    "pausedAndResumed": "2fcd63d2-a102-410b-87bd-1b28a7adf5b6",
+    "queuedCancellation": "eac3be68-5f8e-46a2-8fe2-fd5a37887aee",
+    "activeCancellation": "3061f838-7d9d-46c1-9dd1-f5cf2a532f45",
+    "nextAfterCancellation": "a2dc040b-ba4c-4adf-bf56-bcdd95e62bb7"
+  },
+  "success": true,
+  "finishedAt": "2026-10-25T23:37:48.292Z"
+}

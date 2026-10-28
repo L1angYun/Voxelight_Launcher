@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lattice-reference",
+      "url": "file:///E:/CodeX/design-systems-main/lattice/dist/lattice-showcase.html"
+    },
+    {
+      "name": "voxelight-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 1420
+    }
+  ]
+}
