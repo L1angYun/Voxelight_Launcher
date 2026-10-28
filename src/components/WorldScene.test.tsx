@@ -229,8 +229,8 @@ describe("WorldScene", () => {
       dust: 64,
       total: 96,
     });
-    expect(CUBE_SIZE_PX).toBe(3);
-    expect(CUBE_PITCH_PX).toBe(22);
+    expect(CUBE_SIZE_PX).toBe(8);
+    expect(CUBE_PITCH_PX).toBe(32);
     expect(CUBE_ACTIVE_BUDGET).toBe(50);
     expect(ACTIVE_BUDGET_ALIAS).toBe(CUBE_ACTIVE_BUDGET);
     expect(CUBE_FLIP_DURATION_MS).toBe(280);
@@ -240,7 +240,7 @@ describe("WorldScene", () => {
     expect(CUBE_TRIGGER_RADIUS_PX).toBe(120);
     expect(POINTER_SPRING).toEqual({ stiffness: 90, damping: 13 });
     expect(scene().dataset.particleBudget).toBe("96");
-    expect(scene().dataset.cubePitch).toBe("22");
+    expect(scene().dataset.cubePitch).toBe("32");
     expect(scene().dataset.cubeActiveBudget).toBe("50");
     expect(scene().dataset.cubeFlipDuration).toBe("280");
     expect(scene().dataset.cubeStayDuration).toBe("1800");
