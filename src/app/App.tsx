@@ -10,6 +10,7 @@ import { useDownloadTasks } from "../features/downloads/useDownloadTasks";
 import { AccountsPage } from "../features/accounts/AccountsPage";
 import { MultiplayerPage } from "../features/multiplayer/MultiplayerPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { WorldScene } from "../components/WorldScene";
 import { useLauncher } from "./controller/LauncherProvider";
 import "../design/global.css";
 import "./shell.css";
@@ -26,6 +27,12 @@ function AppShell() {
     <>
       <a className="vx-skip-link" href="#main-content">{t("shell:a11y.skipToContent")}</a>
       <div className="vx-app-body" data-current-page={page}>
+        {/* Global WorldScene background — runs on all pages for glass refraction */}
+        <WorldScene
+          className="vx-global-scene"
+          state="idle"
+          paused={false}
+        />
         <FloatingNav
           page={page}
           onNavigate={(nextPage) => {
