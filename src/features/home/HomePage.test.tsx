@@ -199,7 +199,7 @@ afterEach(() => {
 describe("HomePage", () => {
   it("puts the real instance and launch action first", async () => {
     await render();
-    expect(container.querySelector("h1")?.textContent).toBe("合成测试世界");
+    expect(container.querySelector(".vx-home__console-name")?.textContent).toBe("合成测试世界");
     expect(container.querySelector('[data-testid="character-canvas"]')).not.toBeNull();
     const launch = container.querySelector<HTMLButtonElement>('[data-launch-primary]')!;
     expect(launch.textContent).toContain("启动游戏");
@@ -235,7 +235,7 @@ describe("HomePage", () => {
     });
     mockLauncher.selectedInstance = undefined;
     await render();
-    expect(container.querySelector("h1")?.textContent).toBe("1.21.1");
+    expect(container.querySelector(".vx-home__console-name")?.textContent).toBe("1.21.1");
     expect(container.querySelector<HTMLSelectElement>('select[aria-label="当前实例"]')?.value).toBe("");
   });
 

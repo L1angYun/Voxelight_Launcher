@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Box, Plus, Upload, UserRound } from "lucide-react";
+import { Plus, Upload, UserRound } from "lucide-react";
 import { command } from "../../lib/launcher";
 import { useDefaultSkin } from "../../lib/defaultSkin";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useAppearance } from "../../app/AppearanceProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
-import { CharacterCanvas } from "../../visual/character/CharacterCanvas";
+import { CharacterCanvas, type CharacterAnimation } from "../../visual/character/CharacterCanvas";
 import { EmptyState, ToastRegion } from "../../components/ui/Feedback";
 import { Button } from "../../components/ui/Button";
 import { GlassSurface } from "../../visual/glass/GlassSystem";
@@ -44,6 +45,10 @@ export function HomePage() {
   const [importOpen, setImportOpen] = useState(false);
   const [useVersionDirectory, setUseVersionDirectory] = useState(false);
   const [launchRequested, setLaunchRequested] = useState(false);
+  const [manualAnimation, setManualAnimation] = useState<CharacterAnimation | null>(null);
+  const [charAreaHovered, setCharAreaHovered] = useState(false);
+  const [headPointer, setHeadPointer] = useState<{ x: number; y: number } | null>(null);
+  const characterAreaRef = useRef<HTMLDivElement>(null);
 
   const currentInstance = useMemo(
     () =>
@@ -122,6 +127,29 @@ export function HomePage() {
   const currentProgress =
     preparing && progress?.versionId === selectedVersionId ? progress : null;
 
+  // Animation: running/preparing take priority; then manual choice; then idle
+  const currentAnimation: CharacterAnimation =
+    running ? "run" :
+    preparing || launchRequested ? "walk" :
+    manualAnimation ?? "idle";
+
+  // Time-of-day greeting
+  const hour = new Date().getHours();
+  const greetingKey =
+    hour < 6 ? "home:greetingNight" :
+    hour < 12 ? "home:greetingMorning" :
+    hour < 18 ? "home:greetingAfternoon" :
+    "home:greetingEvening";
+
+  function onCharPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    const rect = characterAreaRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setHeadPointer({
+      x: ((e.clientX - rect.left) / rect.width)  * 2 - 1,
+      y: ((e.clientY - rect.top)  / rect.height) * 2 - 1,
+    });
+  }
+
   function chooseInstance(id?: string) {
     setUseVersionDirectory(!id);
     selectInstance(id);
@@ -172,9 +200,6 @@ export function HomePage() {
   ) : undefined;
 
   const stageTitle = currentInstance?.name ?? (versionLabel || t("home:title"));
-  const titleLength = Array.from(stageTitle).length;
-  const titleDensity =
-    titleLength > 48 ? "compact" : titleLength > 24 ? "wide" : "regular";
   const stageState = running
     ? "running"
     : preparing
@@ -190,155 +215,162 @@ export function HomePage() {
       data-motion={staticScene ? "reduced" : "full"}
       data-state={stageState}
     >
-      <div className="vx-home__atmosphere" aria-hidden="true">
-        <span className="vx-home__light-shaft" />
-        <span className="vx-home__stage-scan" />
-      </div>
-
-      <header className="vx-home__masthead">
-        <h1
-          key={stageTitle}
-          id="vx-home-instance-title"
-          className="vx-home__title"
-          data-title-density={titleDensity}
-          title={stageTitle}
+      <div className="vx-home__layout">
+        {/* ── Left column: character + animation picker ── */}
+        <div
+          className="vx-home__char-col"
+          ref={characterAreaRef}
+          onPointerEnter={() => setCharAreaHovered(true)}
+          onPointerLeave={() => { setCharAreaHovered(false); setHeadPointer(null); }}
+          onPointerMove={onCharPointerMove}
         >
-          {stageTitle}
-        </h1>
-        <span className="vx-home__title-rule" aria-hidden="true" />
-      </header>
+          <section className="vx-home__character-panel" aria-label={previewLabel}>
+            <div className="vx-home__character-orbit" aria-hidden="true">
+              <span className="vx-home__orbit-ring vx-home__orbit-ring--outer" />
+              <span className="vx-home__orbit-ring vx-home__orbit-ring--inner" />
+              <span className="vx-home__orbit-axis" />
+              <span className="vx-home__character-floor" />
+            </div>
+            {!previewUnavailable ? (
+              <CharacterCanvas
+                className="vx-home__character"
+                skinUrl={onlineAccount ? accountAppearance.skinUrl : defaultSkin.dataUrl}
+                capeUrl={onlineAccount ? accountAppearance.capeUrl : null}
+                model={onlineAccount ? accountAppearance.model : defaultSkin.model}
+                paused={staticScene}
+                animation={currentAnimation}
+                headPointer={headPointer}
+                label={previewLabel}
+              />
+            ) : (
+              characterFallback
+            )}
+          </section>
 
-      <section
-        className="vx-home__character-panel vx-home__scene"
-        aria-label={previewLabel}
-      >
-        <div className="vx-home__character-orbit" aria-hidden="true">
-          <span className="vx-home__orbit-ring vx-home__orbit-ring--outer" />
-          <span className="vx-home__orbit-ring vx-home__orbit-ring--inner" />
-          <span className="vx-home__orbit-axis" />
-          <span className="vx-home__character-floor" />
-        </div>
-        {!previewUnavailable ? (
-          <CharacterCanvas
-            className="vx-home__character"
-            skinUrl={
-              onlineAccount ? accountAppearance.skinUrl : defaultSkin.dataUrl
-            }
-            capeUrl={onlineAccount ? accountAppearance.capeUrl : null}
-            model={onlineAccount ? accountAppearance.model : defaultSkin.model}
-            paused={staticScene}
-            animation={
-              running ? "run" : preparing || launchRequested ? "walk" : "idle"
-            }
-            label={previewLabel}
-          />
-        ) : (
-          characterFallback
-        )}
-        <p className="vx-home__preview-source">
-          <UserRound size={12} aria-hidden="true" />
-          {previewLabel}
-        </p>
-      </section>
-
-      <section className="vx-home__stage" aria-label={t("home:instance")}>
-        <div className="vx-home__console-wrap">
-          <GlassSurface
-            className="vx-home__glass-panel vx-home__console"
-            variant="dialog"
+          {/* Animation mode picker — slides in on hover */}
+          <div
+            className="vx-home__anim-picker"
+            data-visible={charAreaHovered && !running && !preparing}
+            aria-label={t("home:animationMode")}
           >
-            <span className="vx-home__console-glint" aria-hidden="true" />
-            <div className="vx-home__console-heading">
-              <div className="vx-home__identity">
-                <span className="vx-home__console-kicker">
-                  <Box size={12} strokeWidth={1.5} aria-hidden="true" />
-                  {t("home:instance")}
+            {(["idle", "walk", "run"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className="vx-home__anim-btn"
+                aria-pressed={currentAnimation === m}
+                onClick={() => setManualAnimation(m)}
+              >
+                <span aria-hidden="true">{m === "idle" ? "🧍" : m === "walk" ? "🚶" : "🏃"}</span>
+                <span>{t(`home:anim.${m}`)}</span>
+              </button>
+            ))}
+          </div>
+
+          <p className="vx-home__preview-source">
+            <UserRound size={12} aria-hidden="true" />
+            {previewLabel}
+          </p>
+        </div>
+
+        {/* ── Right column: greeting + instance console + recent ── */}
+        <section className="vx-home__stage" aria-label={t("home:instance")}>
+          <p className="vx-home__greeting-line" aria-hidden="true">
+            {t(greetingKey)}
+          </p>
+
+          <div className="vx-home__console-wrap">
+            <GlassSurface
+              className="vx-home__glass-panel vx-home__console"
+              variant="dialog"
+            >
+              <span className="vx-home__console-glint" aria-hidden="true" />
+              <div className="vx-home__console-heading">
+                <div className="vx-home__identity">
+                  <p className="vx-home__console-name" title={stageTitle}>
+                    {stageTitle}
+                  </p>
+                </div>
+                <span className="vx-home__console-signal" aria-hidden="true">
+                  <i /><i /><i />
                 </span>
-                <p className="vx-home__console-name" title={stageTitle}>
-                  {stageTitle}
-                </p>
               </div>
-              <span className="vx-home__console-signal" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-              </span>
-            </div>
 
-            <div className="vx-home__console-body">
-              {versionLabel ? (
-                <ul className="vx-home__meta" aria-label={t("home:instance")}>
-                  {currentInstance ? (
+              <div className="vx-home__console-body">
+                {versionLabel ? (
+                  <ul className="vx-home__meta" aria-label={t("home:instance")}>
+                    {currentInstance ? (
+                      <li>
+                        <span className="vx-home__meta-dot" aria-hidden="true" />
+                        <span>{versionLabel}</span>
+                      </li>
+                    ) : null}
                     <li>
-                      <Box size={11} aria-hidden="true" />
-                      <span>{versionLabel}</span>
+                      <span className="vx-home__meta-dot" aria-hidden="true" />
+                      <span>{loaderLabel}</span>
                     </li>
-                  ) : null}
-                  <li>
-                    <span className="vx-home__meta-dot" />
-                    <span>{loaderLabel}</span>
-                  </li>
-                  <li>
-                    <span className="vx-home__meta-dot" />
-                    <span>{javaLabel}</span>
-                  </li>
-                </ul>
-              ) : null}
+                    <li>
+                      <span className="vx-home__meta-dot" aria-hidden="true" />
+                      <span>{javaLabel}</span>
+                    </li>
+                  </ul>
+                ) : null}
 
-              {currentInstance || useVersionDirectory ? (
-                <LaunchConsole
-                  instance={currentInstance}
-                  instances={data.instances}
-                  version={selectedVersion}
-                  onSelectInstance={chooseInstance}
-                  onLaunch={beginLaunch}
-                  onStop={stop}
-                  onCancel={cancelPreparation}
-                  onOpenFolder={() =>
-                    void run("folder.open", () =>
-                      command("open_folder", { kind: "game" }),
-                    )
-                  }
-                  busy={busy}
-                  running={running}
-                  progress={currentProgress}
-                />
-              ) : (
-                <EmptyState
-                  title={t("home:noInstance")}
-                  description={t("home:noInstanceDescription")}
-                  action={
-                    <div className="vx-empty__actions">
-                      <Button
-                        variant="primary"
-                        icon={<Plus size={16} />}
-                        onClick={() => setCreateOpen(true)}
-                      >
-                        {t("home:createInstance")}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        icon={<Upload size={16} />}
-                        onClick={() => setImportOpen(true)}
-                      >
-                        {t("home:importPack")}
-                      </Button>
-                    </div>
-                  }
-                />
-              )}
-            </div>
-          </GlassSurface>
-        </div>
+                {currentInstance || useVersionDirectory ? (
+                  <LaunchConsole
+                    instance={currentInstance}
+                    instances={data.instances}
+                    version={selectedVersion}
+                    onSelectInstance={chooseInstance}
+                    onLaunch={beginLaunch}
+                    onStop={stop}
+                    onCancel={cancelPreparation}
+                    onOpenFolder={() =>
+                      void run("folder.open", () =>
+                        command("open_folder", { kind: "game" }),
+                      )
+                    }
+                    busy={busy}
+                    running={running}
+                    progress={currentProgress}
+                  />
+                ) : (
+                  <EmptyState
+                    title={t("home:noInstance")}
+                    description={t("home:noInstanceDescription")}
+                    action={
+                      <div className="vx-empty__actions">
+                        <Button
+                          variant="primary"
+                          icon={<Plus size={16} />}
+                          onClick={() => setCreateOpen(true)}
+                        >
+                          {t("home:createInstance")}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          icon={<Upload size={16} />}
+                          onClick={() => setImportOpen(true)}
+                        >
+                          {t("home:importPack")}
+                        </Button>
+                      </div>
+                    }
+                  />
+                )}
+              </div>
+            </GlassSurface>
+          </div>
 
-        <div className="vx-home__recent">
-          <RecentInstances
-            instances={data.instances}
-            selectedId={currentInstance?.id}
-            onSelect={chooseInstance}
-          />
-        </div>
-      </section>
+          <div className="vx-home__recent">
+            <RecentInstances
+              instances={data.instances}
+              selectedId={currentInstance?.id}
+              onSelect={chooseInstance}
+            />
+          </div>
+        </section>
+      </div>
 
       {notice ? (
         <ToastRegion

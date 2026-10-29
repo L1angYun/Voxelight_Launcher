@@ -47,5 +47,13 @@
   "retryAppearance": "重试账号外观",
   "retryDefaultPreview": "重试默认预览",
   "emptyRecent": "暂无最近实例",
-  "retry": "重试"
+  "retry": "重试",
+  "greetingMorning": "早上好",
+  "greetingAfternoon": "下午好",
+  "greetingEvening": "晚上好",
+  "greetingNight": "还没睡呢",
+  "animationMode": "动画模式",
+  "anim.idle": "站立",
+  "anim.walk": "行走",
+  "anim.run": "奔跑"
 }
