@@ -4,7 +4,8 @@
   height: 100%;
   overflow: hidden;
   background: var(--bg-base);
-  pointer-events: auto;
+  /* Never intercept clicks — the scene is always behind content */
+  pointer-events: none;
 }
 
 .world-scene::before,
