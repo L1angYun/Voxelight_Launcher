@@ -53,6 +53,7 @@
     scale(var(--world-camera-scale, 1));
   transform-origin: 50% 50%;
   will-change: transform;
+  pointer-events: none;
 }
 
 .world-scene__cube-canvas {

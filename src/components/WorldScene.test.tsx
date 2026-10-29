@@ -11,8 +11,11 @@ import {
   CUBE_GLOW_DURATION_MS,
   CUBE_GLOW_RADIUS_PX,
   CUBE_PITCH_PX,
+  CUBE_SIDE_WIDTH,
   CUBE_SIZE_PX,
   CUBE_STAY_DURATION_MS,
+  CUBE_TOP_HEIGHT,
+  CUBE_TRIGGER_DISTANCE_PX,
   CUBE_TRIGGER_RADIUS_PX,
   POINTER_SPRING,
   WorldScene,
@@ -229,22 +232,28 @@ describe("WorldScene", () => {
       dust: 64,
       total: 96,
     });
-    expect(CUBE_SIZE_PX).toBe(20);
-    expect(CUBE_PITCH_PX).toBe(28);
+    expect(CUBE_SIZE_PX).toBe(24);
+    expect(CUBE_PITCH_PX).toBe(40);
+    expect(CUBE_PITCH_PX).toBeGreaterThan(
+      CUBE_SIZE_PX + CUBE_SIDE_WIDTH * 2 + 2,
+    );
+    expect(CUBE_PITCH_PX).toBeGreaterThan(CUBE_TOP_HEIGHT + CUBE_SIZE_PX + 2);
     expect(CUBE_ACTIVE_BUDGET).toBe(50);
     expect(ACTIVE_BUDGET_ALIAS).toBe(CUBE_ACTIVE_BUDGET);
     expect(CUBE_FLIP_DURATION_MS).toBe(280);
     expect(CUBE_STAY_DURATION_MS).toBe(1800);
     expect(CUBE_GLOW_RADIUS_PX).toBe(10);
     expect(CUBE_GLOW_DURATION_MS).toBe(800);
-    expect(CUBE_TRIGGER_RADIUS_PX).toBe(120);
+    expect(CUBE_TRIGGER_RADIUS_PX).toBe(72);
+    expect(CUBE_TRIGGER_DISTANCE_PX).toBe(8);
     expect(POINTER_SPRING).toEqual({ stiffness: 90, damping: 13 });
     expect(scene().dataset.particleBudget).toBe("96");
-    expect(scene().dataset.cubePitch).toBe("28");
+    expect(scene().dataset.cubePitch).toBe("40");
     expect(scene().dataset.cubeActiveBudget).toBe("50");
     expect(scene().dataset.cubeFlipDuration).toBe("280");
     expect(scene().dataset.cubeStayDuration).toBe("1800");
-    expect(scene().dataset.cubeTriggerRadius).toBe("120");
+    expect(scene().dataset.cubeTriggerRadius).toBe("72");
+    expect(scene().dataset.cubeTriggerDistance).toBe("8");
     expect(scene().dataset.cubeRotation).toBe("true");
     expect(scene().dataset.cubeRotationRpmMin).toBe("0.18");
     expect(scene().dataset.cubeRotationRpmMax).toBe("0.26");

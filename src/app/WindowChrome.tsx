@@ -1,4 +1,4 @@
-import { useEffect, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Box, Copy, Maximize2, Minus, X } from "lucide-react";
 import { IconButton } from "../components/ui/Button";
@@ -35,23 +35,17 @@ export function WindowChrome({ children }: { children?: ReactNode }) {
     document.documentElement.dataset.windowState = value ? "maximized" : "normal";
   }
 
-  function startDrag(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-    // Allow dragging from any part of the drag region, including child elements.
-    // Interactive children (buttons) stop propagation so they never reach here.
-    if (event.detail < 2) void getLauncherWindow()?.startDragging();
-  }
-
   return (
-    <header className="vx-window-chrome" data-window-state={maximized ? "maximized" : "normal"}>
+    <header
+      className="vx-window-chrome"
+      data-window-state={maximized ? "maximized" : "normal"}
+      data-tauri-drag-region="deep"
+    >
       <GlassSurface variant="nav" className="vx-window-chrome__bar">
         <div className="vx-window-chrome__identity">
           <div className="vx-window-chrome__brand" aria-label={t("shell:brand.name")}><Box size={23} strokeWidth={1.5} aria-hidden="true" /><span>Voxelight</span></div>
           <div
             className="vx-window-chrome__drag"
-            data-tauri-drag-region="true"
-            onPointerDown={startDrag}
-            onDoubleClick={() => void toggleMaximize()}
             aria-hidden="true"
           />
         </div>
