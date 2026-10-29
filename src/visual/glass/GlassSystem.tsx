@@ -19,8 +19,8 @@ import { cn } from "../../lib/utils";
 import "./glass.css";
 
 const presets: Record<GlassVariant, { radius: number; opacity: number }> = {
-  nav: { radius: 22, opacity: 0.48 },
-  control: { radius: 999, opacity: 0.42 },
+  nav: { radius: 22, opacity: 0.32 },
+  control: { radius: 999, opacity: 0.28 },
   dialog: { radius: 24, opacity: 0.7 },
   toast: { radius: 16, opacity: 0.56 },
 };

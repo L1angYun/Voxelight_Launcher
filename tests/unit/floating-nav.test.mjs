@@ -25,6 +25,7 @@ let frameId;
 let now;
 let observers;
 let geometry;
+let pointerCapture;
 const pageIds = ["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"];
 
 function loadSource(file, cache = new Map()) {
@@ -75,6 +76,19 @@ dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
 beforeEach(() => {
   appearance = { effects: "full", reducedMotion: false };
   geometry = { navWidth: 850, items: Object.fromEntries(pageIds.map((page, index) => [page, { x: index * 100, width: 72 }])) };
+  pointerCapture = { active: new Map(), set: 0, release: 0 };
+  dom.window.HTMLElement.prototype.setPointerCapture = function (pointerId) {
+    pointerCapture.active.set(this, pointerId);
+    pointerCapture.set += 1;
+  };
+  dom.window.HTMLElement.prototype.hasPointerCapture = function (pointerId) {
+    return pointerCapture.active.get(this) === pointerId;
+  };
+  dom.window.HTMLElement.prototype.releasePointerCapture = function (pointerId) {
+    if (pointerCapture.active.get(this) !== pointerId) return;
+    pointerCapture.active.delete(this);
+    pointerCapture.release += 1;
+  };
   frames = new Map();
   frameId = 0;
   now = 0;
@@ -133,7 +147,24 @@ function slot() { return container.querySelector(".vx-floating-nav__indicator-sl
 function nav() { return container.querySelector("nav"); }
 function item(page) { return container.querySelector(`[data-page="${page}"]`); }
 
-test("repositions a recreated indicator when full/lite/reduced-motion preferences change", async () => {
+function dispatchPointer(type, clientX, target = nav(), pointerId = 1) {
+  const event = new dom.window.MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    clientX,
+    clientY: 28,
+  });
+  Object.defineProperties(event, {
+    pointerId: { value: pointerId },
+    pointerType: { value: "mouse" },
+    isPrimary: { value: true },
+  });
+  act(() => target.dispatchEvent(event));
+  return event;
+}
+
+test("repositions the indicator when full/lite/reduced-motion preferences change", async () => {
   await render();
   flush();
   assert.equal(slot().style.width, "72px");
@@ -151,6 +182,65 @@ test("repositions a recreated indicator when full/lite/reduced-motion preference
     assert.equal(slot().style.getPropertyValue("--jelly-matrix"), "matrix(1.0000, 0.0000, 0.0000, 1.0000, 0, 0)");
     assert.equal(nav().dataset.motionSettled, "true");
   }
+});
+
+test("keeps one indicator node across navigation, hover, and static preference changes", async () => {
+  await render("home");
+  flush();
+  const indicator = slot();
+  await render("library");
+  flush();
+  assert.equal(slot(), indicator);
+  act(() => item("settings").dispatchEvent(new dom.window.MouseEvent("pointerover", { bubbles: true })));
+  await render("library", { activeTaskCount: 9 });
+  appearance = { effects: "lite", reducedMotion: false };
+  await render("library");
+  flush();
+  assert.equal(slot(), indicator);
+});
+
+test("drags the active indicator with pointer capture and navigates once on release", async () => {
+  const navigations = [];
+  await render("home", { onNavigate: (next) => navigations.push(next) });
+  flush();
+  const indicator = slot();
+  geometry.items.library.width = 104;
+
+  dispatchPointer("pointerdown", 236, item("home"));
+  assert.equal(nav().dataset.dragging, "true");
+  dispatchPointer("pointermove", 336);
+  assert.equal(item("library").classList.contains("is-drag-target"), true);
+  advance(6);
+  assert.equal(slot().dataset.activeId, "library");
+  assert.equal(slot().dataset.dragging, "true");
+  assert.equal(slot().style.width, "104px");
+  assert.notEqual(slot().style.transform, "translate3d(0px, 0px, 0)");
+
+  dispatchPointer("pointerup", 336);
+  assert.deepEqual(navigations, ["library"]);
+  assert.equal(nav().dataset.dragging, "false");
+  assert.equal(pointerCapture.set, 1);
+  assert.equal(pointerCapture.release, 1);
+  assert.equal(pointerCapture.active.size, 0);
+
+  act(() => item("home").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true })));
+  assert.deepEqual(navigations, ["library"], "the click synthesized after a drag must be ignored");
+  assert.equal(slot(), indicator);
+  flush();
+});
+
+test("cancels a dragged indicator without navigating", async () => {
+  const navigations = [];
+  await render("home", { onNavigate: (next) => navigations.push(next) });
+  flush();
+  dispatchPointer("pointerdown", 236, item("home"));
+  dispatchPointer("pointermove", 536);
+  dispatchPointer("pointercancel", 536);
+  assert.deepEqual(navigations, []);
+  assert.equal(nav().dataset.dragging, "false");
+  assert.equal(pointerCapture.active.size, 0);
+  flush();
+  assert.equal(slot().style.transform, "translate3d(0px, 0px, 0)");
 });
 
 test("ignores content reflows and follows active item resizing inside an unchanged nav", async () => {
