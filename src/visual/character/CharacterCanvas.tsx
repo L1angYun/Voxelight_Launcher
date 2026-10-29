@@ -37,6 +37,7 @@ export function CharacterCanvas({
   interactive = false,
   autoRotate = interactive,
   animation = "idle",
+  headPointer = null,
   label,
   className,
   onError,
@@ -51,6 +52,9 @@ export function CharacterCanvas({
   interactive?: boolean;
   autoRotate?: boolean;
   animation?: CharacterAnimation;
+  /** Normalized pointer within the canvas: x,y in [-1,1] relative to center.
+    Null returns the head to rest. Only drives head rotation; no re-render. */
+  headPointer?: { x: number; y: number } | null;
   label: string;
   className?: string;
   onError?: (message: string) => void;
@@ -67,6 +71,8 @@ export function CharacterCanvas({
   const cameraTouched = useRef(false);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const headPointerRef = useRef<{ x: number; y: number } | null | undefined>(null);
+  headPointerRef.current = headPointer;
   const [viewer, setViewer] = useState<WebGLSkinViewer | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -295,6 +301,26 @@ export function CharacterCanvas({
     viewer.renderPaused = paused || !visible || (mode === "none" && !viewer.autoRotate);
     if (!viewer.renderPaused) viewer.render();
   }, [viewer, mode, autoRotate, interactive, paused, reducedMotion, visible]);
+
+  // Head tracking: rotate the character's head toward the pointer without
+  // rebuilding the main setup effect.  headPointerRef stays current via the
+  // assignment above; we only re-render when headPointer actually changes.
+  useEffect(() => {
+    if (!viewer || viewer.disposed) return;
+    const head = viewer.playerObject?.skin?.head;
+    if (!head) return;
+    const MAX_PITCH = 0.35; // up/down
+    const MAX_YAW   = 0.55; // left/right
+    if (headPointer) {
+      head.rotation.x = -headPointer.y * MAX_PITCH;
+      head.rotation.y =  headPointer.x * MAX_YAW;
+    } else {
+      head.rotation.x = 0;
+      head.rotation.y = 0;
+    }
+    viewer.render();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewer, headPointer]);
 
   useEffect(() => {
     if (!resetToken || !viewer || viewer.disposed) return;

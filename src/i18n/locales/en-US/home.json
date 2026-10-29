@@ -47,5 +47,13 @@
   "retryAppearance": "Retry account appearance",
   "retryDefaultPreview": "Retry default preview",
   "emptyRecent": "No recent instances",
-  "retry": "Retry"
+  "retry": "Retry",
+  "greetingMorning": "Good morning",
+  "greetingAfternoon": "Good afternoon",
+  "greetingEvening": "Good evening",
+  "greetingNight": "Still up?",
+  "animationMode": "Animation mode",
+  "anim.idle": "Idle",
+  "anim.walk": "Walk",
+  "anim.run": "Run"
 }
