@@ -16,8 +16,8 @@ import "./WorldScene.css";
 
 export const CUBE_SIZE_PX = 20;
 export const CUBE_PITCH_PX = 28;
-export const CUBE_TOP_HEIGHT = 10;
-export const CUBE_SIDE_WIDTH = 10;
+export const CUBE_TOP_HEIGHT = 6;
+export const CUBE_SIDE_WIDTH = 6;
 export const CUBE_DEFAULT_OPACITY = 0.85;
 export const CUBE_PULSE_MIN = 0.72;
 export const CUBE_PULSE_MAX = 0.96;
@@ -281,11 +281,10 @@ function createCubeCells(width: number, height: number): CubeCell[] {
       const random = seededRandom(
         Math.imul(column + 1, 0x9e3779b1) ^ Math.imul(row + 1, 0x85ebca6b),
       );
-      // All cubes share the same slow rotation speed; direction and phase are
-      // offset by grid position so they form a diagonal wave rather than each
-      // spinning independently.
-      const rpm = 0.18 + random() * 0.08;        // tight band → uniform feel
-      const direction = (column + row) % 2 === 0 ? 1 : -1;  // checkerboard dirs
+      // All cubes rotate the same direction; wave effect comes solely from the
+      // diagonal phase offset, not alternating spin directions (which looked chaotic).
+      const rpm = 0.18 + random() * 0.08;
+      const direction = 1;
       // Diagonal wave: phase advances smoothly along column+row so the whole
       // field ripples from top-left to bottom-right like a single breathing skin.
       const diagonalIndex = column + row;

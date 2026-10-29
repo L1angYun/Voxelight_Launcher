@@ -36,7 +36,9 @@ export function WindowChrome({ children }: { children?: ReactNode }) {
   }
 
   function startDrag(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || event.target !== event.currentTarget) return;
+    if (event.button !== 0) return;
+    // Allow dragging from any part of the drag region, including child elements.
+    // Interactive children (buttons) stop propagation so they never reach here.
     if (event.detail < 2) void getLauncherWindow()?.startDragging();
   }
 
