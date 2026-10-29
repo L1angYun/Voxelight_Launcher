@@ -14,8 +14,8 @@ import {
 } from "../visual/overture/motion";
 import "./WorldScene.css";
 
-export const CUBE_SIZE_PX = 20;
-export const CUBE_PITCH_PX = 28;
+export const CUBE_SIZE_PX = 24;
+export const CUBE_PITCH_PX = 40;
 export const CUBE_TOP_HEIGHT = 6;
 export const CUBE_SIDE_WIDTH = 6;
 export const CUBE_DEFAULT_OPACITY = 0.85;
@@ -26,9 +26,15 @@ export const CUBE_FLIP_DURATION_MS = 280;
 export const CUBE_STAY_DURATION_MS = 1800;
 export const CUBE_GLOW_RADIUS_PX = 10;
 export const CUBE_GLOW_DURATION_MS = 800;
-export const CUBE_TRIGGER_RADIUS_PX = 120;
-export const CUBE_RIPPLE_FALLOFF_PX = 220;
+export const CUBE_TRIGGER_RADIUS_PX = 72;
+export const CUBE_RIPPLE_FALLOFF_PX = 108;
+export const CUBE_TRIGGER_DISTANCE_PX = 8;
+export const CUBE_RETRIGGER_DELAY_MS = 240;
 export const POINTER_SPRING: SpringTuning = { stiffness: 90, damping: 13 };
+
+const CUBE_IDLE_MIN_WIDTH_FACTOR = 0.72;
+const CUBE_ROTATION_RPM = 0.22;
+const CUBE_ROTATION_RADIANS_PER_SECOND = (CUBE_ROTATION_RPM / 60) * Math.PI * 2;
 
 export type WorldSceneState = "idle" | "preparing" | "running" | "error";
 
@@ -281,21 +287,17 @@ function createCubeCells(width: number, height: number): CubeCell[] {
       const random = seededRandom(
         Math.imul(column + 1, 0x9e3779b1) ^ Math.imul(row + 1, 0x85ebca6b),
       );
-      // All cubes rotate the same direction; wave effect comes solely from the
-      // diagonal phase offset, not alternating spin directions (which looked chaotic).
-      const rpm = 0.18 + random() * 0.08;
-      const direction = 1;
-      // Diagonal wave: phase advances smoothly along column+row so the whole
-      // field ripples from top-left to bottom-right like a single breathing skin.
+      // The grid shares one angular velocity. A small diagonal phase offset
+      // produces a coherent wave instead of independent random spinning.
       const diagonalIndex = column + row;
-      const wavePhase = diagonalIndex * 0.22;    // ~1.4 rad per diagonal step
+      const wavePhase = diagonalIndex * 0.22;
       cells.push({
         x: (column + 0.5) * CUBE_PITCH_PX,
         y: (row + 0.5) * CUBE_PITCH_PX,
-        rotation: wavePhase + random() * 0.15,   // tiny jitter, keeps alignment
-        rotationSpeed: direction * (rpm / 60) * TWO_PI,
-        phase: wavePhase + random() * 0.2,       // pulse phase tracks the wave
-        period: 10 + random() * 4,               // longer, calmer breathing
+        rotation: wavePhase + random() * 0.04,
+        rotationSpeed: CUBE_ROTATION_RADIANS_PER_SECOND,
+        phase: wavePhase + random() * 0.2,
+        period: 10 + random() * 4,
         cooldownUntil: 0,
         ripplePhase: 0,
         rippleAmplitude: 0,
@@ -394,12 +396,12 @@ function drawCubeFaces(
   const frontTop = cell.y - CUBE_SIZE_PX / 2;
   const frontRight = cell.x + half;
   const frontBottom = frontTop + CUBE_SIZE_PX;
-  const topHeight = CUBE_TOP_HEIGHT * (0.35 + ratio * 0.65);
+  const topHeight = CUBE_TOP_HEIGHT * (0.6 + ratio * 0.4);
   const sideDirection = Math.sin(rotation) >= 0 ? 1 : -1;
   const sideWidth =
     sideDirection *
     CUBE_SIDE_WIDTH *
-    (0.35 + Math.abs(Math.sin(rotation)) * 0.65);
+    (0.6 + Math.abs(Math.sin(rotation)) * 0.4);
   const backTop = frontTop - topHeight;
   const backBottom = frontBottom - topHeight;
 
@@ -438,9 +440,17 @@ function drawCubeFaces(
 }
 
 function clearCubeCell(context: CanvasRenderingContext2D, cell: CubeCell) {
-  // Derive the clear box from the cube footprint so larger cubes redraw cleanly.
-  const half = CUBE_SIZE_PX / 2 + Math.max(CUBE_SIDE_WIDTH, CUBE_TOP_HEIGHT) + 2;
-  context.clearRect(cell.x - half, cell.y - half, half * 2, half * 2);
+  // The clear box must stay inside the cell pitch. A larger box erases the
+  // neighbours that will not necessarily be repainted in the same dirty tile.
+  const halfWidth = CUBE_SIZE_PX / 2 + CUBE_SIDE_WIDTH + 1;
+  const top = CUBE_SIZE_PX / 2 + CUBE_TOP_HEIGHT + 1;
+  const bottom = CUBE_SIZE_PX / 2 + 1;
+  context.clearRect(
+    cell.x - halfWidth,
+    cell.y - top,
+    halfWidth * 2,
+    top + bottom,
+  );
 }
 
 function drawCubeCell(
@@ -470,7 +480,9 @@ function drawCubeCell(
     }
   }
 
-  const idleWidth = CUBE_SIZE_PX * (0.2 + facing * 0.8);
+  const idleWidth =
+    CUBE_SIZE_PX *
+    (CUBE_IDLE_MIN_WIDTH_FACTOR + facing * (1 - CUBE_IDLE_MIN_WIDTH_FACTOR));
   const pulse = cubePulse(cell, now);
   const opacity = pose.accent
     ? clamp(pulse + 0.16 + rippleBoost, CUBE_PULSE_MIN, 0.98)
@@ -918,6 +930,7 @@ export function WorldScene({
       for (const [cell, motion] of active) {
         if (now >= motion.finishAt) {
           active.delete(cell);
+          cell.cooldownUntil = now + CUBE_RETRIGGER_DELAY_MS;
           drawCubeCell(cubeContext, cell, palette, now, undefined, pointerX, pointerY);
         } else {
           drawCubeCell(cubeContext, cell, palette, now, motion, pointerX, pointerY);
@@ -943,6 +956,8 @@ export function WorldScene({
         now,
         active,
         pulseCursor,
+        pointerX,
+        pointerY,
       );
       scene.dataset.activeFlips = String(active.size);
     };
@@ -979,7 +994,7 @@ export function WorldScene({
       if (
         finePointerRef.current &&
         pointerGoal.current.active &&
-        (needsInitialTrigger || pointerDistance > 0.35)
+        (needsInitialTrigger || pointerDistance > CUBE_TRIGGER_DISTANCE_PX)
       ) {
         triggerCubes(now, smoothX, smoothY);
         triggerPoint = { x: smoothX, y: smoothY };
@@ -1100,6 +1115,8 @@ export function WorldScene({
       data-cube-glow-radius={CUBE_GLOW_RADIUS_PX}
       data-cube-glow-duration={CUBE_GLOW_DURATION_MS}
       data-cube-trigger-radius={CUBE_TRIGGER_RADIUS_PX}
+      data-cube-trigger-distance={CUBE_TRIGGER_DISTANCE_PX}
+      data-cube-retrigger-delay={CUBE_RETRIGGER_DELAY_MS}
       data-cube-rotation="true"
       data-cube-rotation-rpm-min="0.18"
       data-cube-rotation-rpm-max="0.26"
