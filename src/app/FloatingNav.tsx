@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
   type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -53,12 +54,14 @@ function JellyNavigationIndicator({
   itemRefs,
   navRef,
   staticMotion,
+  dragging,
   pressRef,
 }: {
   activeId: string;
   itemRefs: MutableRefObject<Map<string, HTMLButtonElement>>;
   navRef: RefObject<HTMLElement | null>;
   staticMotion: boolean;
+  dragging: boolean;
   pressRef: MutableRefObject<(pressed: boolean) => void>;
 }) {
   const indicatorRef = useRef<HTMLDivElement>(null);
@@ -185,7 +188,6 @@ function JellyNavigationIndicator({
       springs.bendY.snap(0);
       initialized.current = true;
     }
-    if (indicatorRef.current) indicatorRef.current.style.opacity = "1";
     paint();
     if (snapToLayout || typeof requestAnimationFrame === "undefined") setSettled(true);
     else start();
@@ -218,8 +220,14 @@ function JellyNavigationIndicator({
   }, [setSettled]);
 
   useLayoutEffect(() => {
-    scheduleMeasure();
-  }, [activeId, scheduleMeasure, staticMotion]);
+    if (!dragging) scheduleMeasure();
+  }, [activeId, dragging, scheduleMeasure, staticMotion]);
+
+  useEffect(() => {
+    // Button callback refs are reattached after child layout effects, so drag
+    // targets must be measured from the passive phase.
+    if (dragging) measureRef.current();
+  }, [activeId, dragging, staticMotion]);
 
   useEffect(() => {
     // Without RAF, the first layout effect can precede sibling button refs.
@@ -280,9 +288,10 @@ function JellyNavigationIndicator({
 
   return (
     <div
-      key={staticMotion ? `static-${activeId}` : "spring"}
       ref={indicatorRef}
       className={cn("vx-floating-nav__indicator-slot", staticMotion && "is-static")}
+      data-active-id={activeId}
+      data-dragging={dragging ? "true" : "false"}
       style={{ "--jelly-matrix": "matrix(1, 0, 0, 1, 0, 0)" } as CSSProperties}
       aria-hidden="true"
     >
@@ -312,9 +321,117 @@ export function FloatingNav({
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
   const pressRef = useRef<(pressed: boolean) => void>(() => {});
   const [hoveredPage, setHoveredPage] = useState<NavigationPage>();
+  const [dragPage, setDragPage] = useState<NavigationPage>();
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    target: NavigationPage;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
+  const suppressClickTimer = useRef<number | null>(null);
   const items = navigationRegistry.enabled({}).filter((item) => implemented.has(item.id as NavigationPage));
   const group = (placement: NavigationPlacement) => items.filter((item) => item.placement === placement);
   const staticMotion = reducedMotion || effects === "lite";
+
+  useEffect(() => () => {
+    if (suppressClickTimer.current !== null) window.clearTimeout(suppressClickTimer.current);
+  }, []);
+
+  function pageAtPointer(clientX: number, clientY: number): NavigationPage | undefined {
+    const nav = navRef.current;
+    if (!nav) return undefined;
+    const navBounds = nav.getBoundingClientRect();
+    if (clientY < navBounds.top - 18 || clientY > navBounds.bottom + 18) return undefined;
+    let closest: NavigationPage | undefined;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const [id, item] of itemRefs.current) {
+      const bounds = item.getBoundingClientRect();
+      const distance = Math.abs(clientX - (bounds.left + bounds.width / 2));
+      if (distance < closestDistance) {
+        closest = id as NavigationPage;
+        closestDistance = distance;
+      }
+    }
+    return closest;
+  }
+
+  function clearSuppressedClick() {
+    if (suppressClickTimer.current !== null) {
+      window.clearTimeout(suppressClickTimer.current);
+      suppressClickTimer.current = null;
+    }
+    suppressClickRef.current = false;
+  }
+
+  function suppressNextClick() {
+    suppressClickRef.current = true;
+    if (suppressClickTimer.current !== null) window.clearTimeout(suppressClickTimer.current);
+    suppressClickTimer.current = window.setTimeout(() => {
+      suppressClickRef.current = false;
+      suppressClickTimer.current = null;
+    }, 0);
+  }
+
+  function startPress(event: ReactPointerEvent<HTMLElement>) {
+    const target = event.target as Element;
+    const item = target.closest<HTMLButtonElement>(".vx-floating-nav__item[data-page]");
+    if (!item || !event.currentTarget.contains(item)) return;
+    clearSuppressedClick();
+    pressRef.current(true);
+    if (event.button !== 0 || !item.classList.contains("is-active") || dragRef.current) return;
+    const targetPage = item.dataset.page as NavigationPage;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      target: targetPage,
+      moved: false,
+    };
+    event.currentTarget.dataset.dragging = "true";
+    setDragPage(targetPage);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is an enhancement; the normal click path still works without it.
+    }
+  }
+
+  function movePress(event: ReactPointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.moved) {
+      if (Math.abs(event.clientX - drag.startX) < 4) return;
+      drag.moved = true;
+      event.preventDefault();
+    }
+    const next = pageAtPointer(event.clientX, event.clientY);
+    if (!next || next === drag.target) return;
+    drag.target = next;
+    setDragPage(next);
+  }
+
+  function finishPress(event: ReactPointerEvent<HTMLElement>, commit: boolean) {
+    const drag = dragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) {
+      pressRef.current(false);
+      return;
+    }
+    dragRef.current = null;
+    event.currentTarget.dataset.dragging = "false";
+    setDragPage(undefined);
+    pressRef.current(false);
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // The capture can already be gone when the pointer is cancelled by the OS.
+    }
+    if (!commit || !drag.moved) return;
+    suppressNextClick();
+    if (drag.target !== page) onNavigate(drag.target);
+  }
+
   const renderItem = (item: RegistryItem) => {
     const id = item.id as NavigationPage;
     const Icon = icons[item.id] ?? Play;
@@ -330,12 +447,25 @@ export function FloatingNav({
           else itemRefs.current.delete(item.id);
         }}
         type="button"
-        className={cn("vx-floating-nav__item", active && "is-active", hoveredPage === id && "is-hovered")}
+        className={cn(
+          "vx-floating-nav__item",
+          active && "is-active",
+          hoveredPage === id && "is-hovered",
+          dragPage === id && !active && "is-drag-target",
+        )}
         data-page={id}
         aria-current={active ? "page" : undefined}
         aria-label={`${t(item.labelKey)}${activityLabel}`}
         title={id === "accounts" && accountName ? `${t(item.labelKey)} · ${accountName}` : t(item.labelKey)}
-        onClick={() => onNavigate(id)}
+        onClick={(event) => {
+          if (suppressClickRef.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            clearSuppressedClick();
+            return;
+          }
+          onNavigate(id);
+        }}
         onPointerEnter={(event) => {
           if (event.pointerType !== "touch") setHoveredPage(id);
         }}
@@ -360,20 +490,33 @@ export function FloatingNav({
         ref={navRef}
         className="vx-floating-nav"
         data-motion-settled="false"
-        data-hover-other={hoveredPage !== undefined && hoveredPage !== page ? "true" : "false"}
+        data-hover-other={dragPage === undefined && hoveredPage !== undefined && hoveredPage !== page ? "true" : "false"}
+        data-dragging="false"
         aria-label={t("common:a11y.mainNavigation")}
-        onPointerDown={(event) => {
-          if ((event.target as Element).closest(".vx-floating-nav__item")) pressRef.current(true);
+        onPointerDown={startPress}
+        onPointerMove={movePress}
+        onPointerUp={(event) => finishPress(event, true)}
+        onPointerCancel={(event) => finishPress(event, false)}
+        onLostPointerCapture={(event) => {
+          if (dragRef.current?.pointerId === event.pointerId) finishPress(event, false);
         }}
-        onPointerUp={() => pressRef.current(false)}
-        onPointerCancel={() => pressRef.current(false)}
-        onPointerLeave={() => pressRef.current(false)}
+        onPointerLeave={(event) => {
+          if (!dragRef.current) {
+            pressRef.current(false);
+            return;
+          }
+          if (typeof event.currentTarget.hasPointerCapture === "function"
+            && !event.currentTarget.hasPointerCapture(event.pointerId)) {
+            finishPress(event, false);
+          }
+        }}
       >
         <JellyNavigationIndicator
-          activeId={page}
+          activeId={dragPage ?? page}
           itemRefs={itemRefs}
           navRef={navRef}
           staticMotion={staticMotion}
+          dragging={dragPage !== undefined}
           pressRef={pressRef}
         />
         <div className="vx-floating-nav__group">{group("primary").map(renderItem)}</div>
