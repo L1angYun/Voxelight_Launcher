@@ -1,103 +1,20 @@
 .world-scene {
   position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: var(--bg-base);
-  /* Never intercept clicks — the scene is always behind content */
+  width: 100%; height: 100%; overflow: hidden;
+  background-color: var(--world-ink, #07080b);
+  background-image: radial-gradient(circle, rgb(236 231 218 / 12%) .7px, transparent .9px);
+  background-size: 22px 22px;
   pointer-events: none;
 }
-
-.world-scene::before,
-.world-scene::after {
-  position: absolute;
-  top: -32%;
-  right: 8%;
-  z-index: 1;
-  width: 0.6vw;
-  min-width: 5px;
-  height: 172%;
-  border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    var(--accent) 0%,
-    color-mix(in srgb, var(--accent) 10%, transparent) 72%,
-    transparent 100%
-  );
-  content: "";
-  pointer-events: none;
-  transform: rotate(24deg);
-  transform-origin: 50% 0;
-  opacity: 0.045;
-  filter: blur(0.7px);
+/* The new scene owns its exposure; the old wall's global opacity is obsolete. */
+.vx-app-body > .world-scene.vx-global-scene[data-world-tier] { opacity: 1; filter: none; }
+.world-scene__canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
+.world-scene[data-world-tier="css"] .world-scene__canvas { visibility: hidden; }
+[data-theme="light"] .world-scene {
+  background-color: var(--bg-base);
+  background-image: radial-gradient(circle, rgb(36 37 34 / 12%) .7px, transparent .9px);
 }
-
-.world-scene::after {
-  right: 18%;
-  width: 1vw;
-  min-width: 7px;
-  transform: rotate(20deg);
-  opacity: 0.065;
-  filter: blur(1.2px);
-}
-
-.world-scene__cube-canvas,
-.world-scene__glow-canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  pointer-events: none;
-}
-
-.world-scene__cube-canvas {
-  z-index: 0;
-}
-
-.world-scene__glow-canvas {
-  z-index: 1;
-  pointer-events: none;
-}
-
-.world-scene__camera {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  transform-origin: 50% 50%;
-  will-change: transform;
-}
-
-.world-scene[data-motion="reduced"]
-  :is(
-    .world-scene__cube-canvas,
-    .world-scene__glow-canvas,
-    .world-scene__camera
-  ),
-.world-scene[data-paused="true"]
-  :is(
-    .world-scene__cube-canvas,
-    .world-scene__glow-canvas,
-    .world-scene__camera
-  ) {
-  will-change: auto;
-}
-
-[data-effects="lite"] .world-scene::before,
-[data-effects="lite"] .world-scene::after,
-[data-reduced-motion="true"] .world-scene::before,
-[data-reduced-motion="true"] .world-scene::after {
-  display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .world-scene
-    :is(
-      .world-scene__cube-canvas,
-      .world-scene__glow-canvas,
-      .world-scene__camera
-    ) {
-    will-change: auto;
-  }
+@media (forced-colors: active) {
+  .world-scene { background-color: Canvas; background-image: none; }
+  .world-scene__canvas { opacity: .12; }
 }

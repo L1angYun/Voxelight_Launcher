@@ -16,6 +16,8 @@ export interface WorldFrame {
 }
 export interface WorldDirector {
   setInputs(inputs: WorldInputs): void;
+  /** Resolve a static policy immediately, without advancing simulation time. */
+  snap(): WorldFrame;
   beginIntro(): void;
   endIntro(): void;
   /** All clock values use monotonic milliseconds, like performance.now(). */
@@ -62,7 +64,29 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
     frame.morph = { start: frame.simTime, dur: .001, toWord: false, fromWord: false, transit: 0 };
   }
 
+  function snapshot(): WorldFrame { return { ...frame, eye: [...frame.eye], at: [...frame.at], morph: { ...frame.morph } }; }
+
   return {
+    snap() {
+      endIntro();
+      const target = sceneValues(inputs);
+      if (inputs.phase === "running") { target.exposure = .3; target.bloom = .1; target.runDim = .3; }
+      for (const key of scalarKeys) frame[key] = target[key];
+      for (let index = 0; index < 3; index++) { cameraEye[index] = target.eye[index]; cameraAt[index] = target.at[index]; }
+      push = inputs.phase === "preparing" ? 1 : 0;
+      frame.eye = cameraEye.map((value, index) => value + (cameraAt[index] - value) * push * .09 * (index === 1 ? .4 : 1)) as Vec3;
+      frame.at = [...cameraAt];
+      if (inputs.phase === "preparing") {
+        if (inputs.fraction !== null && Number.isFinite(inputs.fraction)) preparationTarget = Math.max(preparationTarget, Math.max(0, Math.min(1, inputs.fraction)) * FRONT_MAX);
+        frame.front = preparationTarget; frame.cry = preparationTarget;
+      } else { frame.front = inputs.phase === "running" ? FRONT_MAX : 0; frame.cry = frame.front; }
+      frame.ring = inputs.phase === "preparing" ? frame.front : 0;
+      frame.charge = inputs.phase === "preparing" ? 1 : 0;
+      frame.timeScale = inputs.phase === "running" ? .12 : 1;
+      frame.active = false; frame.settled = inputs.phase === "running";
+      frame.morph = { start: frame.simTime, dur: .001, toWord: false, fromWord: false, transit: 0 };
+      return snapshot();
+    },
     setInputs(next) {
       const compositionChanged = inputs.scene !== next.scene || inputs.material !== next.material || inputs.page !== next.page;
       if (next.phase === "preparing" && inputs.phase !== "preparing") {
@@ -146,7 +170,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
         Math.abs(frame.exposure - .3) < .001 && Math.abs(frame.bloom - .1) < .001 && Math.abs(frame.runDim - .3) < .001 && frame.charge === 0;
       frame.active = inputs.phase === "running" ? !frame.settled : frame.introActive || inputs.phase === "preparing" ||
         clock - compositionAt < 2000 || clock - lastInteraction < 1000;
-      return { ...frame, eye: [...frame.eye], at: [...frame.at], morph: { ...frame.morph } };
+      return snapshot();
     },
   };
 }

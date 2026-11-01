@@ -1,9 +1,11 @@
-import { expect, test, type Page } from "@playwright/test";
-import { mkdir } from "node:fs/promises";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
+import { changedPixels, withWorldView } from "./helpers/world-image";
+import { encodePng, probeGlassRefraction } from "./helpers/glass-pixel-probe.mjs";
 
-const evidence = resolve(".superpowers/sdd/2026-11-01-global-glass/evidence/regressions");
+const evidence = resolve(process.env.VOXELIGHT_E2E_EVIDENCE ?? "test-results/world-regressions", "round6");
 
 async function capture(page: Page, name: string) {
   await mkdir(evidence, { recursive: true });
@@ -28,6 +30,25 @@ async function assertControlsAboveCanvas(page: Page) {
   }
 }
 
+async function assertCompleteLaunch(page: Page, button: Locator) {
+  await expect(button).toBeVisible();
+  const box = (await button.boundingBox())!;
+  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  // Rounded Lens clipping changes IntersectionObserver's area ratio even when
+  // every part of the launch operation fits in the window and remains operable.
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  const hits = await button.evaluate(element => [element, element.querySelector(".vx-button__label"), element.querySelector(".vx-button__icon")].map(part => {
+    if (!part) return false;
+    const rect = part.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+  }));
+  expect(hits).toEqual([true, true, true]);
+  await button.click({ trial: true });
+}
+
 for (const theme of ["dark", "light"] as const) {
   for (const [width, height] of [[1440, 930], [1050, 720]]) {
     test(`round6 ${theme} ${width}: launch dock, character controls and recent selection remain separate`, async ({ page }) => {
@@ -36,7 +57,7 @@ for (const theme of ["dark", "light"] as const) {
       await page.goto("/");
       await expect(page.locator(".vx-home__character")).toHaveAttribute("data-character-state", "ready");
       const launch = page.getByRole("button", { name: "启动游戏", exact: true });
-      await expect(launch).toBeInViewport({ ratio: 1 });
+      await assertCompleteLaunch(page, launch);
       const dock = (await page.locator(".vx-home__stage").boundingBox())!;
       const character = (await page.locator(".vx-home__char-col").boundingBox())!;
       expect(dock.x + dock.width).toBeLessThan(character.x);
@@ -60,7 +81,7 @@ test("round6 English long names at minimum size preserve the entire launch actio
   await page.setViewportSize({ width: 1050, height: 720 });
   await installLauncherFixture(page, { stress: true });
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Launch game", exact: true })).toBeInViewport({ ratio: 1 });
+  await assertCompleteLaunch(page, page.getByRole("button", { name: "Launch game", exact: true }));
   await page.getByRole("button", { name: "Run", exact: true }).focus();
   await expect(page.locator(".vx-home__anim-picker")).toHaveCSS("opacity", "1");
   await assertControlsAboveCanvas(page);
@@ -100,7 +121,7 @@ test("round6 unbroken version-directory names stay inside the launch dock", asyn
   const dock = (await page.locator(".vx-home__stage").boundingBox())!;
   const version = (await page.locator(".vx-home__meta li").first().boundingBox())!;
   expect(version.x + version.width).toBeLessThanOrEqual(dock.x + dock.width);
-  await expect(page.getByRole("button", { name: "启动游戏", exact: true })).toBeInViewport({ ratio: 1 });
+  await assertCompleteLaunch(page, page.getByRole("button", { name: "启动游戏", exact: true }));
 });
 
 test("round6 four recent instances fit the minimum viewport without decorative overflow", async ({ page }) => {
@@ -127,67 +148,79 @@ test("round6 four recent instances fit the minimum viewport without decorative o
   await capture(page, "after-four-instances-1050");
 });
 
-test("round6 system reduced motion overrides full and keeps idle cube pixels unchanged", async ({ page }) => {
+test("round6 system reduced motion draws one static world frame and preserves its visible pixels", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await installLauncherFixture(page, { effects: "full" });
   await page.goto("/");
   const scene = page.locator(".vx-global-scene");
   await expect(scene).toHaveAttribute("data-motion", "reduced");
   await expect(page.locator(".vx-home__character")).toHaveAttribute("data-character-paused", "true");
-  const canvas = scene.locator(".world-scene__cube-canvas");
-  const first = await canvas.evaluate(el => (el as HTMLCanvasElement).toDataURL());
-  await page.waitForTimeout(400);
-  await page.mouse.move(720, 350);
-  await page.mouse.move(1100, 550);
-  const second = await canvas.evaluate(el => (el as HTMLCanvasElement).toDataURL());
-  expect(second).toBe(first);
+  await expect(scene.locator(".world-scene__canvas")).toBeVisible();
+  await expect(scene).toHaveAttribute("data-world-tier", "static");
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(0);
+  await mkdir(evidence, { recursive: true });
+  await withWorldView(page, async capture => {
+    const first = await capture(resolve(evidence, "reduced-world-before.png"));
+    const frames = Number(await scene.getAttribute("data-world-frames"));
+    await page.waitForTimeout(400);
+    await page.mouse.move(720, 350);
+    await page.mouse.move(1100, 550);
+    const second = await capture(resolve(evidence, "reduced-world-after.png"));
+    const afterFrames = Number(await scene.getAttribute("data-world-frames"));
+    const changed = changedPixels(first, second, 0);
+    let bounds: { left: number; top: number; right: number; bottom: number } | null = null;
+    if (changed > 0) {
+      const pixels = Buffer.alloc(first.pixels.length);
+      bounds = { left: first.width, top: first.height, right: 0, bottom: 0 };
+      for (let at = 0; at < pixels.length; at += 4) {
+        let delta = 0;
+        for (let channel = 0; channel < 3; channel++) {
+          delta = Math.max(delta, Math.abs(first.pixels[at + channel] - second.pixels[at + channel]));
+          pixels[at + channel] = Math.min(255, Math.abs(first.pixels[at + channel] - second.pixels[at + channel]) * 4);
+        }
+        pixels[at + 3] = 255;
+        if (delta) {
+          const x = (at / 4) % first.width, y = Math.floor(at / 4 / first.width);
+          bounds.left = Math.min(bounds.left, x); bounds.right = Math.max(bounds.right, x);
+          bounds.top = Math.min(bounds.top, y); bounds.bottom = Math.max(bounds.bottom, y);
+        }
+      }
+      await writeFile(resolve(evidence, "reduced-world-difference-4x.png"), encodePng({ ...first, pixels }));
+    }
+    await writeFile(resolve(evidence, "reduced-world-pixels.json"), JSON.stringify({ frames, afterFrames, changedPixels: changed, bounds }, null, 2));
+    expect(afterFrames).toBe(frames);
+    expect(changed).toBe(0);
+  });
   await capture(page, "after-reduced-motion");
 });
 
-test("round6 full idle rotates and a one-event sweep reaches middle cubes beyond the old budget", async ({ page }) => {
+test("round6 full world changes visibly over time and keeps rendering through a pointer sweep", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await installLauncherFixture(page, { effects: "full" });
   await page.goto("/");
   const scene = page.locator(".vx-global-scene");
   await expect(scene).toHaveAttribute("data-motion", "full");
-  const canvas = scene.locator(".world-scene__cube-canvas");
-  const first = await canvas.evaluate(el => (el as HTMLCanvasElement).toDataURL());
-  await page.waitForTimeout(1200);
-  const second = await canvas.evaluate(el => (el as HTMLCanvasElement).toDataURL());
-  expect(second).not.toBe(first);
+  await expect(scene.locator(".world-scene__canvas")).toBeVisible();
+  await expect(scene).toHaveAttribute("data-world-tier", "animated");
+  await expect(scene).toHaveAttribute("data-paused", "false");
+  await withWorldView(page, async capture => {
+    const first = await capture();
+    const frames = Number(await scene.getAttribute("data-world-frames"));
+    await page.waitForTimeout(1200);
+    const second = await capture();
+    expect(Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(frames);
+    expect(changedPixels(first, second)).toBeGreaterThan(100);
+  });
   await page.mouse.move(120, 400);
   await page.mouse.move(1320, 400, { steps: 1 });
-  await expect.poll(async () => Number(await scene.getAttribute("data-active-flips"))).toBeGreaterThan(50);
+  const sweepFrames = Number(await scene.getAttribute("data-world-frames"));
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(sweepFrames);
   await capture(page, "after-fast-sweep");
-});
-
-test("round6 the actual cube canvas keeps all four edges clear through pointer parallax", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 930 });
-  await installLauncherFixture(page, { effects: "full" });
-  await page.goto("/");
-  await page.waitForTimeout(700);
-  const canvas = page.locator(".world-scene__cube-canvas");
-  for (const [x, y] of [[2, 2], [1438, 2], [1438, 928], [2, 928]]) {
-    await page.mouse.move(x, y);
-    await page.waitForTimeout(100);
-    const edgePixels = await canvas.evaluate(node => {
-      const element = node as HTMLCanvasElement;
-      const pixels = element.getContext("2d")!.getImageData(0, 0, element.width, element.height).data;
-      let count = 0;
-      for (let y = 0; y < element.height; y++) for (let x = 0; x < element.width; x++) {
-        if ((x < 2 || y < 2 || x >= element.width - 2 || y >= element.height - 2) && pixels[(y * element.width + x) * 4 + 3]) count++;
-      }
-      return count;
-    });
-    expect(edgePixels).toBe(0);
-  }
-  await capture(page, "after-cube-canvas-edges");
 });
 
 test("round6 real backdrop stripes bend only at curvature and follow live background movement", async ({ page }) => {
   await installLauncherFixture(page, { effects: "full" });
   await page.goto("/");
-  const { probeGlassRefraction } = await import("../../.superpowers/sdd/2026-11-01-global-glass/glass-pixel-probe.mjs");
   const result = await probeGlassRefraction(page, evidence);
   expect(result.maxEdgeShift).toBeGreaterThanOrEqual(2);
   expect(result.maxCenterShift).toBeLessThanOrEqual(1);
@@ -219,7 +252,7 @@ for (const mode of ["lite", "reduced-transparency", "high-contrast"] as const) {
       });
     }
     await page.goto("/");
-    await expect(page.getByRole("button", { name: "启动游戏", exact: true })).toBeInViewport({ ratio: 1 });
+    await assertCompleteLaunch(page, page.getByRole("button", { name: "启动游戏", exact: true }));
     await expect(page.locator(".vx-glass-provider")).toHaveAttribute("data-glass-mode", mode === "lite" ? "lite" : "fallback");
     if (mode === "lite") {
       await expect(page.locator(".vx-global-scene")).toHaveAttribute("data-motion", "reduced");

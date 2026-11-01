@@ -2,9 +2,10 @@ import { expect, test } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
-import { decodePng, probeGlassRefraction } from "../../.superpowers/sdd/2026-11-01-global-glass/glass-pixel-probe.mjs";
+import { decodePng, probeGlassRefraction } from "./helpers/glass-pixel-probe.mjs";
+import { captureWorld, worldStructure } from "./helpers/world-image";
 
-const evidence = resolve(".superpowers/sdd/2026-11-01-global-glass/evidence");
+const evidence = resolve(process.env.VOXELIGHT_E2E_EVIDENCE ?? "test-results/world-regressions", "global-glass");
 const pages = [
   ["home", ".vx-home"], ["library", ".vx-library-page"],
   ["discover", ".vx-discover-page"], ["multiplayer", ".vx-multiplayer-page"],
@@ -14,16 +15,25 @@ const pages = [
 
 for (const theme of ["dark", "light"] as const) {
   for (const [width, height] of [[1440, 930], [1050, 720]]) {
-    test(`global ${theme} ${width}: cube backdrop contributes visible pixels on every page`, async ({ page }) => {
+    test(`global ${theme} ${width}: crystal world contributes visible structure on every page`, async ({ page }) => {
       await page.setViewportSize({ width, height });
       await page.emulateMedia({ reducedMotion: "reduce" });
       await installLauncherFixture(page, { theme });
       await page.goto("/");
+      const scene = page.locator(".vx-global-scene");
+      await expect(scene.locator(".world-scene__canvas")).toBeVisible();
+      await expect(scene).toHaveAttribute("data-world-tier", "static");
+      await expect.poll(async () => Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(0);
       await mkdir(evidence, { recursive: true });
-      const measurements: Array<{ page: string; region: string; changedPixels: number }> = [];
+      const measurements: Array<{ page: string; region: string; changedPixels: number; range: number; edges: number }> = [];
       for (const [id, selector] of pages) {
         await page.locator(`button[data-page="${id}"]`).click();
         await expect(page.locator(selector)).toBeInViewport();
+        const structure = worldStructure(await captureWorld(page, resolve(evidence, `world-${theme}-${id}-${width}.png`)));
+        // An opaque CSS fill, a smooth sky gradient, or a blank WebGL draw cannot
+        // satisfy these real terrain-structure assertions by changing base color.
+        expect(structure.range, `${id}: terrain must have a visible tonal range`).toBeGreaterThanOrEqual(16);
+        expect(structure.edges, `${id}: terrain must contain actual spatial structure`).toBeGreaterThan(100);
         // Capture the real page once, then cover only the background plane.
         // Repeated visibility toggles can retain stale composited canvas tiles.
         const visible = decodePng(await page.screenshot({ path: resolve(evidence, `global-${theme}-${id}-${width}.png`) }));
@@ -38,14 +48,15 @@ for (const theme of ["dark", "light"] as const) {
         const hidden = decodePng(await page.screenshot());
         await page.locator("[data-background-comparison]").evaluate(el => el.remove());
         await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-        for (const [region, y] of [["below-navigation", 84], ["body", Math.round(height * .65)]] as const) {
+        // The confirmed horizon intentionally leaves the upper sky quiet.
+        for (const [region, y] of [["terrain", Math.round(height * .65)], ["foreground", Math.round(height * .85)]] as const) {
           let changedPixels = 0;
           for (let row = y; row < y + 18; row++) for (let column = 24; column < width - 24; column++) {
             const at = (row * visible.width + column) * 4;
             if (Math.max(...[0, 1, 2].map(c => Math.abs(visible.pixels[at + c] - hidden.pixels[at + c]))) > 3) changedPixels++;
           }
-          expect(changedPixels, `${id}/${region}: the shared scene must remain visible`).toBeGreaterThan(region === "body" ? 200 : 500);
-          measurements.push({ page: id, region, changedPixels });
+          expect(changedPixels, `${id}/${region}: the shared scene must remain visible`).toBeGreaterThan(200);
+          measurements.push({ page: id, region, changedPixels, ...structure });
         }
       }
       await writeFile(resolve(evidence, `background-pixels-${theme}-${width}.json`), JSON.stringify(measurements, null, 2));
@@ -83,11 +94,12 @@ for (const theme of ["dark", "light"] as const) {
       await trigger.click();
       const menu = page.getByRole("listbox", { name: "当前实例", exact: true });
       await expect(menu).toBeVisible();
-      const material = page.locator(".vx-instance-picker__menu");
-      await expect(material).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-      await expect(material).toHaveCSS("backdrop-filter", /blur\(8px\).*vx-liquid-refraction/);
-      await expect(material).toHaveCSS("opacity", "1");
       const popover = page.locator(".vx-instance-picker__popover");
+      const material = popover.locator(":scope > .vx-listbox-surface");
+      await expect(material).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      const menuBlur = await material.evaluate(element => getComputedStyle(element).getPropertyValue("--vx-lens-menu-blur").trim());
+      await expect(material).toHaveCSS("backdrop-filter", new RegExp(`blur\\(${menuBlur}\\).*vx-liquid-refraction`));
+      await expect(material).toHaveCSS("opacity", "1");
       await expect(popover).toHaveAttribute("data-placement", "top");
       const menuBox = (await popover.boundingBox())!;
       await expect(popover).toHaveCSS("opacity", "1");
@@ -164,15 +176,15 @@ test("picker long instance collections scroll within the menu and expose the las
   await expect(trigger).toContainText("使用版本目录");
 });
 
-test("the removed ambient particle channel stays absent in full and lite while data points remain", async ({ page }) => {
+test("one world canvas serves full and lite modes while real data points remain independent", async ({ page }) => {
   for (const effects of ["full", "lite"] as const) {
     const context = await page.context().browser()!.newContext();
     const current = await context.newPage();
     await installLauncherFixture(current, { effects });
     await current.goto("http://127.0.0.1:1420/");
-    await expect(current.locator(".vx-global-scene canvas")).toHaveCount(2);
-    await expect(current.locator(".world-scene__particle-canvas")).toHaveCount(0);
-    await expect(current.locator(".world-scene__cube-canvas")).toBeVisible();
+    await expect(current.locator(".vx-global-scene canvas")).toHaveCount(1);
+    await expect(current.locator(".world-scene__canvas")).toBeVisible();
+    await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", effects === "full" ? "animated" : "static");
     await expect(current.locator(".vx-recent-card .vx-lattice-frame")).toHaveCount(1);
     await context.close();
   }
@@ -217,8 +229,9 @@ for (const mode of ["lite", "reduced-motion", "reduced-transparency", "high-cont
     await expect(page.getByRole("listbox")).toBeVisible();
     await expect(page.locator(".vx-instance-picker__popover")).toHaveAttribute("data-animate", "false");
     if (mode === "reduced-transparency" || mode === "high-contrast") {
-      await expect(page.locator(".vx-instance-picker__menu")).toHaveCSS("backdrop-filter", "none");
-      await expect(page.locator(".vx-instance-picker__menu")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      const material = page.locator(".vx-instance-picker__popover > .vx-listbox-surface");
+      await expect(material).toHaveCSS("backdrop-filter", "none");
+      await expect(material).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     }
     await page.screenshot({ path: resolve(evidence, `picker-${mode}-1050.png`) });
     await trigger.press("Escape");
