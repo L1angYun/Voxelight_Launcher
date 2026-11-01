@@ -25,7 +25,7 @@ function AppShell() {
   const [page, setPage] = useState<NavigationPage>("home");
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
-  const { activeAccount, accountAppearance } = useLauncher();
+  const { activeAccount, accountAppearance, config } = useLauncher();
   const { effects, reducedMotion, highContrast } = useAppearance();
   const { playing } = useOverture();
   return (
@@ -35,7 +35,11 @@ function AppShell() {
         {/* Global WorldScene background — runs on all pages for glass refraction */}
         <WorldScene
           className="vx-global-scene"
-          state="idle"
+          phase="idle"
+          fraction={null}
+          page={page === "home" ? "home" : "content"}
+          scene={config.worldScene}
+          material={config.worldMaterial}
           paused={playing}
           effects={effects}
           reducedMotion={reducedMotion || highContrast}

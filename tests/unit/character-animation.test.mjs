@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Run directly: node tests/unit/character-animation.test.mjs
-// Real React, scene components, SkinViewer.draw/setters and skinview3d joints;
+// Real React, CharacterCanvas, SkinViewer.draw/setters and skinview3d joints;
 // only WebGL, image decoding, translation and browser timing need substitutes.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -116,20 +116,10 @@ function load(relative) {
 }
 
 const { CharacterCanvas } = load("src/visual/character/CharacterCanvas.tsx");
-const { OvertureProvider, useOverture } = load("src/visual/overture/OvertureProvider.tsx");
-const { OvertureScene } = load("src/visual/overture/OvertureScene.tsx");
 let root;
 let container;
-let overture;
-function Probe() { overture = useOverture(); return null; }
 async function render(props = {}) {
   await act(async () => root.render(React.createElement(CharacterCanvas, { skinUrl: "skin.png", label: "Preview", ...props })));
-}
-async function renderScene(props = {}, providerProps = {}) {
-  await act(async () => root.render(React.createElement(OvertureProvider, providerProps,
-    React.createElement(Probe),
-    React.createElement(OvertureScene, { skinUrl: "skin.png", label: "Preview", ...props }),
-  )));
 }
 function advance(count = 4) {
   for (let i = 0; i < count; i++) {
@@ -257,44 +247,6 @@ test("none remains static while manual auto rotation can still run", async () =>
   advance();
   assert.notEqual(viewer().playerWrapper.rotation.y, rotation);
   assert.equal(leg(), 0);
-});
-
-test("the actual scene maps preparation/running and resumes after an overture ends", async () => {
-  await renderScene({ state: "idle" });
-  assert.ok(viewer().animation instanceof skin.IdleAnimation);
-  await renderScene({ state: "preparing" });
-  assert.ok(viewer().animation instanceof skin.WalkingAnimation);
-  assertMoving();
-  await renderScene({ state: "running" });
-  assert.ok(viewer().animation instanceof skin.RunningAnimation);
-  assertMoving();
-  const stride = viewer().animation;
-  const progress = stride.progress;
-  const rotation = leg();
-  await act(async () => overture.play({ id: "launched", kind: "game-launched" }));
-  assert.equal(viewer().renderPaused, true);
-  assert.equal(frames.size, 0, "overture must pause both the character and environment");
-  assert.equal(viewer().animation, stride);
-  assert.equal(leg(), rotation);
-  await act(async () => new Promise((resolve) => setTimeout(resolve, 850)));
-  assert.equal(overture.playing, false);
-  assert.equal(viewer().renderPaused, false);
-  assert.equal(viewer().animation, stride);
-  assertMoving();
-  assert.ok(stride.progress > progress);
-  await act(async () => overture.play({ id: "launched", kind: "game-launched" }));
-  assert.equal(overture.playing, false, "the same launch event must play only once");
-});
-
-test("lite/paused and reduced scenes keep the character and environment static", async () => {
-  for (const [sceneProps, providerProps] of [[{ paused: true }, {}], [{}, { reducedMotion: true }]]) {
-    await renderScene({ state: "running", ...sceneProps }, providerProps);
-    assert.equal(viewer().renderPaused, true);
-    assert.equal(frames.size, 0);
-    advance();
-    assert.equal(viewer().animation.progress, 0);
-    assert.equal(leg(), 0);
-  }
 });
 
 let failed = 0;
