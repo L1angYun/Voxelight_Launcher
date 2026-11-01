@@ -1,0 +1,148 @@
+{
+  "title": "设置",
+  "subtitle": "外观可先预览，确认后再保存。",
+  "save": "保存设置",
+  "reset": "撤销更改",
+  "unsaved": "有未保存的更改；不保存离开时，外观预览会恢复。",
+  "sections": "设置分组",
+  "section": {
+    "general": "通用",
+    "appearance": "外观",
+    "game": "游戏",
+    "java": "Java",
+    "downloads": "下载",
+    "about": "关于"
+  },
+  "generalDescription": "服务接入与可迁移的启动器预设。",
+  "service": {
+    "title": "服务接入",
+    "description": "使用本项目自己的应用接入信息，登录令牌与平台密钥由系统加密保存。",
+    "clientId": "Microsoft 应用 Client ID",
+    "clientIdPlaceholder": "填写应用注册中获得的 Client ID",
+    "curseforgeKey": "CurseForge API Key",
+    "keyPlaceholder": "填写自己的 API Key",
+    "keyConfiguredPlaceholder": "已加密保存，留空不修改",
+    "saveKey": "保存密钥",
+    "configured": "已配置",
+    "clearKey": "清除已保存的密钥"
+  },
+  "preset": {
+    "title": "配置预设",
+    "description": "导出或导入启动器设置，不包含账号、登录令牌或平台密钥。",
+    "filter": "启动器预设",
+    "export": "导出设置预设",
+    "import": "导入设置预设"
+  },
+  "appearanceDescription": "语言与外观立即预览，保存后长期生效。",
+  "fields": {
+    "theme": "主题",
+    "language": "界面语言",
+    "effects": "特效级别",
+    "worldScene": "世界场景",
+    "worldMaterial": "世界材质",
+    "accentSource": "强调色来源",
+    "accentColor": "自定义强调色",
+    "sound": "声音效果",
+    "gameDirectory": "游戏目录",
+    "versionIsolation": "版本隔离",
+    "screenWidth": "游戏窗口宽度",
+    "screenHeight": "游戏窗口高度",
+    "javaPath": "Java 可执行文件",
+    "maxMemory": "最大内存（MB）",
+    "jvmArguments": "额外 JVM 参数",
+    "javaAutoDownload": "自动准备 Java",
+    "downloadSource": "游戏下载源",
+    "downloadConcurrency": "并发下载数",
+    "downloadLimit": "下载速度上限（KiB/s）"
+  },
+  "theme": {
+    "dark": "深色",
+    "light": "浅色",
+    "system": "跟随系统"
+  },
+  "language": {
+    "system": "跟随系统"
+  },
+  "effects": {
+    "lite": "精简 · 保留必要动态",
+    "full": "完全 · 启用全部特效"
+  },
+  "worldScene": {
+    "horizon": "地平线",
+    "massif": "山体"
+  },
+  "worldMaterial": {
+    "lattice": "点阵",
+    "solid": "实体"
+  },
+  "accent": {
+    "voxelight": "Voxelight 绿",
+    "system": "跟随系统强调色",
+    "custom": "自定义强调色",
+    "systemCurrent": "当前系统强调色：{{color}}",
+    "presets": "预设强调色",
+    "preset": "强调色 {{color}}"
+  },
+  "soundDescription": "默认关闭，仅用于少数重要过渡。",
+  "background": {
+    "title": "首页背景",
+    "description": "选择本地 PNG、JPEG 或 WebP 图片，文字区域保持稳定对比度。",
+    "picker": "选择首页背景",
+    "filter": "背景图片",
+    "choose": "选择首页背景",
+    "reset": "恢复默认背景"
+  },
+  "gameDescription": "共享游戏文件与窗口默认值，实例覆盖仍在实例设置中。",
+  "game": {
+    "directoryPicker": "选择 Minecraft 游戏目录",
+    "browse": "浏览",
+    "isolationDescription": "为每个游戏版本保存独立的存档、模组和设置。"
+  },
+  "javaDescription": "设置新实例共享的运行环境与启动默认值。",
+  "java": {
+    "auto": "自动选择兼容的 Java",
+    "detect": "自动检测",
+    "autoDescription": "需要时自动匹配官方运行时，校验后安装。"
+  },
+  "downloadDescription": "管理官方下载、社区镜像与任务并发。",
+  "downloadSource": {
+    "official": "仅官方源",
+    "auto": "自动回退 · 官方优先",
+    "bmclapi": "BMCLAPI 优先 · 官方兜底",
+    "officialDescription": "只从 Mojang / Minecraft 官方地址下载，保留文件大小与 SHA-1 校验。",
+    "autoDescription": "官方地址失败后尝试 BMCLAPI，适用于原版元数据、客户端、依赖库和资源文件。",
+    "bmclapiDescription": "优先使用 BMCLAPI 的 version_manifest_v2，失败后回退官方地址，校验要求不变。",
+    "mirrorNotice": "BMCLAPI 是社区镜像，不是 Mojang 官方服务。清单哈希只能证明文件与清单一致，不代表独立官方背书。",
+    "mirrorLink": "查看 BMCLAPI 来源说明",
+    "scopeNotice": "Quilt、Modrinth、CurseForge 和其它 Maven 服务不因此获得镜像支持，固定文件始终先校验再写入。"
+  },
+  "aboutDescription": "版本、许可、源代码与本地数据行为。",
+  "about": {
+    "version": "版本",
+    "license": "许可",
+    "source": "源代码",
+    "dataNotice": "卸载默认保留启动器数据；移除账号或实例注册不会删除游戏文件。",
+    "secretNotice": "预设不包含账号、登录令牌或平台密钥，服务凭据在通用分组中配置。",
+    "typeface": "字体",
+    "typefaceCredit": "MiSans · Xiaomi"
+  },
+  "notice": {
+    "secretSaved": "CurseForge 密钥已加密保存。",
+    "secretCleared": "已清除保存的 CurseForge 密钥。",
+    "presetExported": "配置预设已导出，不包含账号和平台密钥。",
+    "presetImported": "配置预设已导入。",
+    "backgroundUpdated": "首页背景已更新。",
+    "backgroundCleared": "已恢复默认首页背景。",
+    "javaDetected": "发现 {{count}} 个 Java 环境。",
+    "javaNotFound": "没有找到 Java，请安装后指定路径。"
+  },
+  "errors": {
+    "config": {
+      "backgroundInvalid": "请选择有效且不超过 12 MB 的 PNG、JPEG 或 WebP 背景图片。",
+      "presetInvalid": "请选择本启动器导出的有效配置预设。",
+      "busy": "请等待当前安装或启动准备完成后再修改设置。",
+      "gameDirectory": "游戏目录必须是绝对路径。",
+      "invalid": "部分设置无效，请检查输入后重试。"
+    }
+  }
+}
