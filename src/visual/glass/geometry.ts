@@ -1,4 +1,4 @@
-import type { GlassRect } from "./types";
+import type { GlassOptics, GlassRect } from "./types";
 
 export function intersectRects(first: GlassRect, second: GlassRect): GlassRect {
   const x = Math.max(first.x, second.x);
@@ -30,4 +30,131 @@ export function relativeRect(
     width: surface.width,
     height: surface.height,
   };
+}
+
+export interface CurvatureGeometry {
+  width: number;
+  height: number;
+  radius: number;
+  bevel?: number;
+  inset?: number;
+  optics?: GlassOptics;
+  refraction?: number;
+  dispersion?: number;
+}
+
+/** Original tuning: 14 CSS px bevel, at most 512 samples per map axis. */
+export const curvatureMapLimit = 512;
+export const curvatureDisplacementScale = 24;
+
+/** Public Thick normalized values; coefficients below are original tuning. */
+export const lensMaterial = { refraction: 0.9, frost: 0.24, dispersion: 0.65, elasticity: 0.7 } as const;
+
+export function lensChromaticScales(pressure = 0, stretch = 0, refraction: number = lensMaterial.refraction, dispersion: number = lensMaterial.dispersion): [number, number, number] {
+  const scale = 32 * Math.max(0.05, Math.min(1.4, refraction)) * (1 + Math.max(0, Math.min(1.16, pressure)) * 0.14 + Math.abs(stretch) * 0.28);
+  const split = Math.max(0, Math.min(1, dispersion)) * 0.025;
+  return [scale * (1 + split), scale, scale * (1 - split)];
+}
+
+function lensBody(shape: CurvatureGeometry) {
+  const width = positiveSize(shape.width), height = positiveSize(shape.height);
+  const inset = Math.max(0, Math.min(shape.inset ?? 0, width / 8, height / 8));
+  const pressure = Math.max(0, Math.min(1.16, shape.optics?.pressure ?? 0));
+  const radius = clampRadius((Number.isFinite(shape.radius) ? shape.radius : 0) * (1 + pressure * 0.08), width - 2 * inset, height - 2 * inset);
+  return { width, height, inset, pressure, radius,
+    bendX: Math.max(-8, Math.min(8, shape.optics?.bendX ?? 0)) * 0.32,
+    bendY: Math.max(-8, Math.min(8, shape.optics?.bendY ?? 0)) * 0.32 };
+}
+
+function lensDistance(shape: CurvatureGeometry, x: number, y: number): number {
+  const body = lensBody(shape);
+  const px = x - body.width / 2, py = y - body.height / 2;
+  let ux = px, uy = py;
+  // Invert the same smooth bow used to draw the contour. Bounded displacement
+  // makes three fixed-point steps accurate without moving the layout box.
+  for (let i = 0; i < 3; i++) {
+    const qx = Math.max(-1, Math.min(1, ux / (body.width / 2)));
+    const qy = Math.max(-1, Math.min(1, uy / (body.height / 2)));
+    ux = px - body.bendX * (1 - qy * qy);
+    uy = py - body.bendY * (1 - qx * qx);
+  }
+  const qx = Math.abs(ux) - body.width / 2 + body.inset + body.radius;
+  const qy = Math.abs(uy) - body.height / 2 + body.inset + body.radius;
+  return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(0, qx), Math.max(0, qy)) - body.radius;
+}
+
+/** The actual local silhouette, shared by clipping and directional reflection. */
+export function lensBoundaryPath(shape: CurvatureGeometry): string {
+  const body = lensBody(shape);
+  const points: string[] = [];
+  const corners = [[1, -1], [1, 1], [-1, 1], [-1, -1]];
+  for (let corner = 0; corner < 4; corner++) {
+    const [sx, sy] = corners[corner];
+    const cx = sx * (body.width / 2 - body.inset - body.radius);
+    const cy = sy * (body.height / 2 - body.inset - body.radius);
+    for (let step = 0; step <= 12; step++) {
+      const angle = -Math.PI / 2 + corner * Math.PI / 2 + step * Math.PI / 24;
+      const x = cx + Math.cos(angle) * body.radius, y = cy + Math.sin(angle) * body.radius;
+      const qx = x / (body.width / 2), qy = y / (body.height / 2);
+      const warpedX = x + body.bendX * (1 - qy * qy) + body.width / 2;
+      const warpedY = y + body.bendY * (1 - qx * qx) + body.height / 2;
+      points.push(`${points.length ? "L" : "M"}${warpedX.toFixed(2)},${warpedY.toFixed(2)}`);
+    }
+  }
+  return `${points.join(" ")} Z`;
+}
+
+function positiveSize(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, value) : 1;
+}
+
+/**
+ * A rounded lens has a flat center and a curved bevel. These normalized offsets
+ * encode an inward optical pull; they describe curvature, never backdrop color.
+ */
+export function sampleCurvatureDisplacement(
+  shape: CurvatureGeometry,
+  x: number,
+  y: number,
+): { x: number; y: number } {
+  const body = lensBody(shape);
+  const anisotropy = (shape.optics?.stretch ?? 0) * Math.cos(2 * (shape.optics?.heading ?? 0));
+  const bevel = Math.min(positiveSize(shape.bevel ?? 20) * (1 + body.pressure * 0.16 + anisotropy * 0.2),
+    (body.width - 2 * body.inset) * 0.44, (body.height - 2 * body.inset) * 0.44);
+  const distance = lensDistance(shape, x, y);
+  if (!Number.isFinite(distance) || distance > 0 || distance <= -bevel) return { x: 0, y: 0 };
+  const portion = 1 + distance / bevel;
+  const pull = portion * portion * (3 - 2 * portion) * 0.48;
+  const dx = lensDistance(shape, x + 0.25, y) - lensDistance(shape, x - 0.25, y);
+  const dy = lensDistance(shape, x, y + 0.25) - lensDistance(shape, x, y - 0.25);
+  const length = Math.hypot(dx, dy) || 1;
+  return {
+    x: dx === 0 ? 0 : -dx / length * pull,
+    y: dy === 0 ? 0 : -dy / length * pull,
+  };
+}
+
+/** Raster size is bounded independently from the optical dimensions in CSS px. */
+export function createCurvatureMap(shape: CurvatureGeometry): {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+} {
+  const sourceWidth = positiveSize(shape.width);
+  const sourceHeight = positiveSize(shape.height);
+  const resolution = Math.min(1, curvatureMapLimit / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * resolution));
+  const height = Math.max(1, Math.round(sourceHeight * resolution));
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let row = 0; row < height; row += 1) {
+    for (let column = 0; column < width; column += 1) {
+      const at = (row * width + column) * 4;
+      const offset = sampleCurvatureDisplacement(shape,
+        (column + 0.5) * sourceWidth / width, (row + 0.5) * sourceHeight / height);
+      data[at] = Math.round((0.5 + offset.x) * 255);
+      data[at + 1] = Math.round((0.5 + offset.y) * 255);
+      data[at + 3] = 255;
+    }
+  }
+  return { width, height, data };
 }

@@ -37,7 +37,7 @@ regex = "1"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 shell-words = "1"
-windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "System_UserProfile", "UI_ViewManagement"] }
+windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "System_UserProfile", "UI_ViewManagement", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 codegen-units = 1

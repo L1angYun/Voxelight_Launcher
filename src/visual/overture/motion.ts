@@ -2,12 +2,6 @@ export const OVERTURE_STAGE_MS = 830;
 export const OVERTURE_STATIC_MS = 450;
 export const OVERTURE_IRIS_BLADE_COUNT = 8;
 
-export const WORLD_PARTICLE_BUDGET = {
-  fireflies: 32,
-  dust: 64,
-  total: 96,
-} as const;
-
 export const WORLD_PARALLAX_DEPTHS = {
   far: 0.264,
   middle: 0.624,

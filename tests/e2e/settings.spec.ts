@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installLauncherFixture } from "./fixtures";
+import { selectValue } from "./select-helpers";
 
 function mockSettings(page: Page) {
   return page.addInitScript(() => {
@@ -65,14 +66,17 @@ test("appearance and language preview immediately and persist only on explicit s
   await openSettings(page);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.locator(".vx-settings-nav").getByRole("button", { name: "外观", exact: true }).click();
-  await expect(page.locator('select[aria-label="特效级别 (native)"] option')).toHaveCount(2);
-  await page.locator('[data-testid="native-select-特效级别"]').selectOption("lite");
+  const effects = page.getByRole("combobox", { name: "特效级别", exact: true });
+  await effects.click();
+  await expect(page.getByRole("listbox", { name: "特效级别", exact: true }).getByRole("option")).toHaveCount(2);
+  await effects.press("Escape");
+  await selectValue(page, "特效级别", "lite");
   await expect(page.locator("html")).toHaveAttribute("data-effects", "lite");
-  await page.locator('[data-testid="native-select-强调色来源"]').selectOption("system");
+  await selectValue(page, "强调色来源", "system");
   await expect(page.locator("html")).toHaveAttribute("data-accent-source", "system");
-  await page.locator('[data-testid="native-select-主题"]').selectOption("light");
+  await selectValue(page, "主题", "light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await page.locator('[data-testid="native-select-界面语言"]').selectOption("en-US");
+  await selectValue(page, "界面语言", "en-US");
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   expect((await calls(page)).some((call) => call.name === "save_config")).toBe(false);
   await page.getByRole("checkbox", { name: "Sound effects", exact: true }).check();
@@ -97,7 +101,7 @@ test("game, Java and download drafts survive section switches and save together"
   await page.getByRole("textbox", { name: "额外 JVM 参数", exact: true }).fill("-XX:+UseG1GC");
   await page.getByRole("checkbox", { name: "自动准备 Java", exact: true }).uncheck();
   await page.locator(".vx-settings-nav").getByRole("button", { name: "下载", exact: true }).click();
-  await page.getByRole("combobox", { name: "游戏下载源", exact: true }).selectOption("bmclapi");
+  await selectValue(page, "游戏下载源", "bmclapi");
   await page.getByRole("spinbutton", { name: "并发下载数", exact: true }).fill("8");
   await page.getByRole("spinbutton", { name: "下载速度上限（KiB/s）", exact: true }).fill("1024");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();

@@ -29,6 +29,9 @@ vi.mock("../../app/AppearanceProvider", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open, save: mocks.save }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
+vi.mock("../../visual/glass/GlassSystem", () => ({
+  GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => createElement("div", { className }, children),
+}));
 
 function fixture(): LauncherContextValue {
   const config: Config = {
@@ -104,15 +107,13 @@ async function fill(label: string, value: string) {
 }
 
 async function select(label: string, value: string) {
-  const input =
-    container.querySelector<HTMLSelectElement>(`[data-testid="native-select-${label}"]`) ??
-    container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`) ??
-    container.querySelector<HTMLSelectElement>(`select[aria-label="${label} (native)"]`);
-  if (!input) throw new Error(`Missing select: ${label}`);
-  await act(async () => {
-    input.value = value;
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  const trigger = container.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`);
+  if (!trigger) throw new Error(`Missing combobox: ${label}`);
+  await act(async () => trigger.click());
+  const option = [...document.querySelectorAll<HTMLElement>(`[role="option"][data-value="${value}"]`)]
+    .find((item) => !item.closest('[aria-hidden="true"]'));
+  if (!option) throw new Error(`Missing option: ${label} / ${value}`);
+  await act(async () => option.click());
 }
 
 beforeEach(() => {
@@ -132,6 +133,9 @@ beforeEach(() => {
   mocks.open.mockReset();
   mocks.save.mockReset();
   mocks.openUrl.mockReset();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.getAttribute("role") === "combobox" ? new DOMRect(24, 200, 320, 44) : new DOMRect();
+  });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -141,14 +145,16 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("global settings", () => {
   it("previews appearance immediately, offers exactly two effect levels, and saves explicitly", async () => {
     await render();
     await click("Appearance");
-    const effects = container.querySelector<HTMLSelectElement>('[data-testid="native-select-Effects level"]')!;
-    expect(Array.from(effects.options).map((option) => option.value)).toEqual(["lite", "full"]);
+    await click("Effects level");
+    expect([...document.querySelectorAll('[role="option"]')].map((option) => option.getAttribute("data-value"))).toEqual(["lite", "full"]);
+    await act(async () => button("Effects level").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Sound effects"]')!.checked).toBe(false);
     await select("Effects level", "lite");
     expect(appearance.effects).toBe("lite");
@@ -176,7 +182,8 @@ describe("global settings", () => {
     await click("Accent color #78ded5");
     expect(mockLauncher.config.accentSource).toBe("custom");
     expect(mockLauncher.config.accentColor).toBe("#78ded5");
-    expect(container.querySelectorAll('[data-testid="native-select-Effects level"] option')).toHaveLength(2);
+    await click("Effects level");
+    expect([...document.querySelectorAll('[role="option"]')].filter((option) => !option.closest('[aria-hidden="true"]'))).toHaveLength(2);
   });
 
   it("owns game directory, isolation and window fields", async () => {

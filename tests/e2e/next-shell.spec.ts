@@ -4,7 +4,8 @@ import { installLauncherFixture } from "./fixtures";
 test("new home keeps launch, preparation, cancellation and the minimum viewport usable", async ({ page }) => {
   await installLauncherFixture(page, { launchDelay: 6000 });
   await page.goto("/?next-ui");
-  await expect(page.getByRole("heading", { name: "合成测试世界" })).toBeVisible();
+  await expect(page.locator(".vx-home__console-name")).toHaveText("合成测试世界");
+  await expect(page.locator(".vx-home__console-name")).toBeInViewport();
   await expect(page.getByRole("button", { name: "启动游戏", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "启动游戏", exact: true }).click();
   await expect(page.getByText("37%", { exact: true }).first()).toBeVisible({ timeout: 8000 });
@@ -13,9 +14,9 @@ test("new home keeps launch, preparation, cancellation and the minimum viewport 
   expect(calls.some((call) => call.name === "cancel_download_task")).toBe(true);
   await page.setViewportSize({ width: 1050, height: 720 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  const sceneHeight = await page.locator(".vx-home__scene").evaluate((element) => element.getBoundingClientRect().height);
+  const sceneHeight = await page.locator(".vx-home").evaluate((element) => element.getBoundingClientRect().height);
   expect(sceneHeight).toBeLessThan(700);
-  expect(await page.getByRole("heading", { name: "合成测试世界", exact: true }).count()).toBe(1);
+  expect(await page.locator(".vx-home__console-name", { hasText: "合成测试世界" }).count()).toBe(1);
 });
 
 test("reduced motion is respected on initial render", async ({ page }) => {

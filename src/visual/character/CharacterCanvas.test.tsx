@@ -5,15 +5,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlayerObject, RunningAnimation, WalkingAnimation } from "skinview3d";
 import { CharacterCanvas } from "./CharacterCanvas";
 
-const { loadSkin, loadCape, viewers, MockViewer } = vi.hoisted(() => {
+const { loadSkin, loadCape, viewers, MockViewer, viewerBackend } = vi.hoisted(() => {
   const loadSkin = vi.fn();
   const loadCape = vi.fn();
   const viewers: MockViewer[] = [];
+  const viewerBackend = {
+    createPlayer: null as unknown as () => import("skinview3d").PlayerObject,
+    createClock: null as unknown as () => import("three").Clock,
+  };
   class MockViewer {
     disposed = false;
-    renderPaused = false;
+    _disposed = false;
+    _renderPaused = true;
+    _animation: import("skinview3d").PlayerAnimation | null = null;
+    animationID: number | null = null;
+    declare renderPaused: boolean;
     autoRotate = false;
-    animation: import("skinview3d").PlayerAnimation | null = null;
+    declare animation: import("skinview3d").PlayerAnimation | null;
+    declare draw: () => void;
+    playerObject: import("skinview3d").PlayerObject;
+    clock: import("three").Clock;
     scene = { traverse: vi.fn() };
     controls = {
       enablePan: false,
@@ -30,26 +41,36 @@ const { loadSkin, loadCape, viewers, MockViewer } = vi.hoisted(() => {
     camera = { position: { length: () => 60, multiplyScalar: vi.fn() } };
     composer = { dispose: vi.fn() };
     fxaaPass = { material: { dispose: vi.fn() } };
-    renderer = { forceContextLoss: vi.fn() };
+    renderer = { forceContextLoss: vi.fn(), getContext: () => ({ isContextLost: () => false }) };
     constructor(public options: unknown) {
+      this.playerObject = viewerBackend.createPlayer();
+      this.clock = viewerBackend.createClock();
       viewers.push(this);
     }
     setSize = vi.fn();
     render = vi.fn();
     dispose = vi.fn(() => {
       this.disposed = true;
+      this._disposed = true;
     });
     resetCameraPose = vi.fn();
   }
-  return { loadSkin, loadCape, viewers, MockViewer };
+  return { loadSkin, loadCape, viewers, MockViewer, viewerBackend };
 });
 let rejectNextSkin = false;
 let rejectNextCape = false;
 
-vi.mock("skinview3d", async (importOriginal) => ({
-  ...await importOriginal<typeof import("skinview3d")>(),
-  SkinViewer: MockViewer,
-}));
+vi.mock("skinview3d", async (importOriginal) => {
+  const upstream = await importOriginal<typeof import("skinview3d")>();
+  const { Clock } = await import("three");
+  viewerBackend.createPlayer = () => new upstream.PlayerObject();
+  viewerBackend.createClock = () => new Clock();
+  // Keep upstream time, pause, and pose reset behavior real; replace only WebGL.
+  for (const property of ["animation", "renderPaused", "draw"]) {
+    Object.defineProperty(MockViewer.prototype, property, Object.getOwnPropertyDescriptor(upstream.SkinViewer.prototype, property)!);
+  }
+  return { ...upstream, SkinViewer: MockViewer };
+});
 
 vi.mock("../../components/skinTexture", () => ({
   SkinTextureLoader: class {
@@ -67,6 +88,17 @@ let container: HTMLDivElement;
 let intersectionCallback: IntersectionObserverCallback | undefined;
 let pageHidden = false;
 let reducedMotion = false;
+let frameTime = 0;
+let nextFrameId = 0;
+const scheduledFrames = new Map<number, FrameRequestCallback>();
+
+function advanceFrame(milliseconds: number) {
+  frameTime += milliseconds;
+  const next = scheduledFrames.entries().next().value;
+  if (!next) throw new Error("No scheduled character frame");
+  scheduledFrames.delete(next[0]);
+  next[1](frameTime);
+}
 
 async function render(props: Parameters<typeof CharacterCanvas>[0]) {
   await act(async () => {
@@ -85,6 +117,16 @@ beforeEach(() => {
   rejectNextCape = false;
   pageHidden = false;
   reducedMotion = false;
+  frameTime = 0;
+  nextFrameId = 0;
+  scheduledFrames.clear();
+  vi.spyOn(performance, "now").mockImplementation(() => frameTime);
+  vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+    const id = ++nextFrameId;
+    scheduledFrames.set(id, callback);
+    return id;
+  }));
+  vi.stubGlobal("cancelAnimationFrame", vi.fn((id: number) => scheduledFrames.delete(id)));
   vi.spyOn(document, "hidden", "get").mockImplementation(() => pageHidden);
   loadSkin.mockReset();
   loadCape.mockReset();
@@ -121,9 +163,132 @@ afterEach(() => {
   container.remove();
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("CharacterCanvas", () => {
+  it("keeps the native running phase order with a stable forward-facing posture", async () => {
+    await render({ skinUrl: "skin.png", animation: "run", headPointer: { x: 1, y: 1 }, label: "Preview" });
+    const viewer = viewers[0];
+    const stride = viewer.animation!;
+    const player = viewer.playerObject;
+    expect(stride).toBeInstanceOf(RunningAnimation);
+    for (const [progress, leftLeg, rightLeg, leftArm, rightArm, jump] of [
+      [0, 0, 0, 0, 0, -1],
+      [Math.PI / 30, 1.3, -1.3, -1.5, 1.5, 1],
+      [Math.PI / 15, 0, 0, 0, 0, -1],
+      [Math.PI / 10, -1.3, 1.3, 1.5, -1.5, 1],
+    ]) {
+      stride.progress = progress;
+      stride.update(player, 0);
+      expect(player.skin.leftLeg.rotation.x).toBeCloseTo(leftLeg);
+      expect(player.skin.rightLeg.rotation.x).toBeCloseTo(rightLeg);
+      expect(player.skin.leftArm.rotation.x).toBeCloseTo(leftArm);
+      expect(player.skin.rightArm.rotation.x).toBeCloseTo(rightArm);
+      expect(player.position.y).toBeCloseTo(jump);
+      expect(player.rotation.x).toBeGreaterThan(0);
+      expect(player.rotation.x).toBeLessThan(0.2);
+      expect(player.skin.head.rotation.x + player.rotation.x).toBeCloseTo(0);
+      expect(player.skin.head.rotation.y).toBe(0);
+    }
+    const lean = player.rotation.x;
+    await render({ skinUrl: "skin.png", animation: "run", headPointer: { x: -1, y: -1 }, label: "Preview" });
+    stride.update(player, 0);
+    expect(player.rotation.x).toBe(lean);
+    expect(player.skin.head.rotation.x + lean).toBeCloseTo(0);
+    expect(player.skin.head.rotation.y).toBe(0);
+  });
+
+  it("applies walking pointer tracking after each native animation frame", async () => {
+    await render({ skinUrl: "skin.png", animation: "walk", headPointer: { x: 0.3, y: 0.5 }, label: "Preview" });
+    const viewer = viewers[0];
+    viewer.animation!.update(viewer.playerObject, 0.1);
+    viewer.animation!.update(viewer.playerObject, 0.1);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeCloseTo(-0.175);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeCloseTo(0.165);
+  });
+
+  it("samples the first native frame when the running mode is selected while paused", async () => {
+    await render({ skinUrl: "skin.png", animation: "idle", paused: true, label: "Preview" });
+    await render({ skinUrl: "skin.png", animation: "run", paused: true, label: "Preview" });
+    const viewer = viewers[0];
+    expect(viewer.playerObject.position.y).toBe(-1);
+    expect(viewer.playerObject.skin.leftLeg.rotation.x).toBeCloseTo(0);
+    expect(viewer.playerObject.skin.head.rotation.x + viewer.playerObject.rotation.x).toBeCloseTo(0);
+    expect(viewer.animation!.progress).toBe(0);
+    expect(scheduledFrames.size).toBe(0);
+  });
+
+  it("keeps the same native pose across different frame partitions at equal elapsed time", async () => {
+    for (const intervals of [[150], [25, 25, 50, 50]]) {
+      await render({ skinUrl: "skin.png", animation: "idle", label: "Preview" });
+      await render({ skinUrl: "skin.png", animation: "run", label: "Preview" });
+      const viewer = viewers[0];
+      advanceFrame(0);
+      for (const interval of intervals) advanceFrame(interval);
+      // Upstream evaluates the pose before adding delta; sample the resulting progress.
+      advanceFrame(0);
+      expect(viewer.animation!.progress).toBeCloseTo(0.15);
+      expect(viewer.playerObject.skin.leftLeg.rotation.x).toBeCloseTo(1.011495);
+      expect(viewer.playerObject.skin.rightLeg.rotation.x).toBeCloseTo(-1.011495);
+      expect(viewer.playerObject.skin.leftArm.rotation.x).toBeCloseTo(-1.16711);
+    }
+  });
+
+  it.each(["pause", "reduced motion"])("keeps the head still when pointer events arrive during %s", async (reason) => {
+    reducedMotion = reason === "reduced motion";
+    const props = { skinUrl: "skin.png", animation: "idle" as const, paused: reason === "pause", label: "Preview" };
+    await render({ ...props, headPointer: null });
+    const head = viewers[0].playerObject.skin.head;
+    const pitch = head.rotation.x;
+    const yaw = head.rotation.y;
+    await render({ ...props, headPointer: { x: 1, y: -1 } });
+    expect(head.rotation.x).toBe(pitch);
+    expect(head.rotation.y).toBe(yaw);
+    expect(scheduledFrames.size).toBe(0);
+  });
+
+  it("uses elapsed seconds and discards paused wall time without restarting the running stride", async () => {
+    await render({ skinUrl: "skin.png", animation: "run", label: "Preview" });
+    const viewer = viewers[0];
+    const stride = viewer.animation!;
+    advanceFrame(0);
+    advanceFrame(100);
+    advanceFrame(50);
+    expect(stride.progress).toBeCloseTo(0.15);
+
+    await render({ skinUrl: "skin.png", animation: "run", paused: true, label: "Preview" });
+    expect(scheduledFrames.size).toBe(0);
+    frameTime += 10_000;
+    await render({ skinUrl: "skin.png", animation: "run", paused: false, label: "Preview" });
+    advanceFrame(0);
+    expect(viewer.animation).toBe(stride);
+    expect(stride.progress).toBeCloseTo(0.15);
+    advanceFrame(100);
+    expect(stride.progress).toBeCloseTo(0.25);
+  });
+
+  it("clears running offsets when repeatedly switching to walking and idle", async () => {
+    for (let repeat = 0; repeat < 3; repeat += 1) {
+      await render({ skinUrl: "skin.png", animation: "run", label: "Preview" });
+      const viewer = viewers[0];
+      viewer.animation!.update(viewer.playerObject, 0.1);
+      viewer.animation!.update(viewer.playerObject, 0);
+      expect(Math.abs(viewer.playerObject.position.x)).toBeGreaterThan(0.1);
+      await render({ skinUrl: "skin.png", animation: "walk", label: "Preview" });
+      expect(viewer.animation).toBeInstanceOf(WalkingAnimation);
+      expect(viewer.animation!.progress).toBe(0);
+      expect(viewer.playerObject.position.length()).toBe(0);
+      expect(viewer.playerObject.rotation.x).toBe(0);
+      expect(viewer.playerObject.rotation.z).toBe(0);
+      expect(viewer.playerObject.skin.head.rotation.x).toBe(0);
+      await render({ skinUrl: "skin.png", animation: "idle", label: "Preview" });
+      expect(viewer.playerObject.skin.leftLeg.rotation.x).toBe(0);
+      expect(viewer.playerObject.skin.rightLeg.rotation.x).toBe(0);
+      expect(viewer.playerObject.position.length()).toBe(0);
+    }
+  });
+
   it.each(["walk", "run"] as const)("resumes %s from its current stride after an overture pause", async (animation) => {
     await render({ skinUrl: "skin.png", animation, label: "Preview" });
     const viewer = viewers[0];

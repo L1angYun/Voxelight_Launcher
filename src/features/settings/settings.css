@@ -5,8 +5,9 @@
 .vx-settings-dirty { max-width: 24ch; color: var(--text-secondary); font-size: var(--text-xs); }
 .vx-settings-error { margin: 0 0 18px; color: var(--danger); }
 .vx-settings-notice { margin: 0 0 18px; color: var(--success); }
-.vx-settings-layout { display: grid; gap: 0; min-width: 0; min-height: calc(100dvh - 260px); }
+.vx-settings-layout { display: grid; grid-template-rows: max-content minmax(0, 1fr); align-content: start; gap: 0; min-width: 0; min-height: calc(100dvh - 260px); }
 .vx-settings-nav {
+  align-self: start;
   display: flex; flex-wrap: wrap; gap: 0 4px; margin-bottom: 2px;
   border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--surface-solid) 38%, transparent);
@@ -26,12 +27,13 @@
 }
 .vx-settings-content {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0;
+  align-content: start;
   padding: 32px 32px 48px;
   border: 1px solid var(--border-subtle); border-top: 0;
   border-radius: 0 0 var(--radius-md) var(--radius-md);
   background: color-mix(in srgb, var(--surface-solid) 18%, transparent);
 }
-.vx-settings-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0; }
+.vx-settings-section { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 0; min-width: 0; }
 .vx-settings-section > header { min-width: 0; }
 .vx-settings-section > header h2 { margin: 0; font-size: var(--text-xl); }
 .vx-settings-section > header p { margin: 5px 0 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.55; }

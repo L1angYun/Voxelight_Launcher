@@ -6,7 +6,8 @@ test("the default entry is the complete new UI with every navigation owner", asy
   page.on("pageerror", (error) => errors.push(error.message));
   await installLauncherFixture(page);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "合成测试世界", exact: true })).toBeVisible();
+  await expect(page.locator(".vx-home__console-name")).toHaveText("合成测试世界");
+  await expect(page.locator(".vx-home__console-name")).toBeInViewport();
   for (const id of ["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]) {
     await expect(page.locator(`[data-page="${id}"]`)).toHaveCount(1);
   }
@@ -21,7 +22,8 @@ test("browser preview without native IPC fails honestly and keeps the empty stat
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
-  await expect(page.locator(".vx-empty")).toContainText("No instances yet");
+  await expect(page.getByRole("heading", { name: "No instances yet", exact: true })).toBeInViewport();
+  await expect(page.locator(".vx-home__empty > p")).toHaveText("Create an instance to start playing.");
   await expect(page.getByText("Use the desktop app for this action.", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Create instance", exact: true })).toBeVisible();
   expect(errors).toEqual([]);
@@ -54,6 +56,9 @@ test("window controls and settings remain available at the minimum viewport", as
   await page.locator('[data-page="settings"]').click();
   await page.locator(".vx-settings-nav").getByRole("button", { name: "外观", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "特效级别", exact: true })).toBeVisible();
-  await expect(page.locator('[data-testid="native-select-特效级别"] option, select[data-testid="native-select-特效级别"] option')).toHaveCount(2);
+  const effects = page.getByRole("combobox", { name: "特效级别", exact: true });
+  await effects.click();
+  await expect(page.getByRole("listbox", { name: "特效级别", exact: true }).getByRole("option")).toHaveCount(2);
+  await effects.press("Escape");
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

@@ -31,4 +31,8 @@ describe("sameSurface", () => {
   it("treats missing optics and resting optics as the same", () => {
     expect(sameSurface(base, { ...base, optics: { bendX: 0, bendY: 0, pressure: 0, energy: 0 } })).toBe(true);
   });
+
+  it("notices directional stretch even when position and pressure are unchanged", () => {
+    expect(sameSurface(base, { ...base, optics: { bendX: 0, bendY: 0, pressure: 0, energy: 0, stretch: 0.1, heading: 0.4 } })).toBe(false);
+  });
 });

@@ -21,16 +21,94 @@ mod server_manager;
 mod servers;
 mod storage;
 
+use std::{fs, path::Path};
 use tauri::{Emitter, Listener, Manager};
 
+fn show_startup_error(message: &str) {
+    eprintln!("[voxelight/fatal] {message}");
+    #[cfg(windows)]
+    {
+        use windows::{
+            core::HSTRING,
+            Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK},
+        };
+        let text = HSTRING::from(message);
+        let caption = HSTRING::from("Voxelight Launcher");
+        unsafe {
+            MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
+fn fail_startup(message: String) -> ! {
+    show_startup_error(&message);
+    std::process::exit(1);
+}
+
+fn quarantine_webview_profile(path: &Path) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f");
+    let backup = parent.join(format!("webview-old-{timestamp}"));
+    match fs::rename(path, &backup) {
+        Ok(()) => {
+            eprintln!(
+                "[voxelight/webview] moved locked profile {} to {}",
+                path.display(),
+                backup.display()
+            );
+            return true;
+        }
+        Err(error) => {
+            eprintln!(
+                "[voxelight/webview] could not move profile {}: {error}; deleting it",
+                path.display()
+            );
+        }
+    }
+    let removed = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    match removed {
+        Ok(()) => {
+            eprintln!(
+                "[voxelight/webview] deleted locked profile {}",
+                path.display()
+            );
+            true
+        }
+        Err(error) => {
+            eprintln!(
+                "[voxelight/webview] could not delete profile {}: {error}",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let state = storage::LauncherState::load()?;
+            let state = match storage::LauncherState::load() {
+                Ok(state) => state,
+                Err(error) => fail_startup(format!(
+                    "无法加载启动器数据目录。\n\n{error}\n\n请检查磁盘、目录权限和杀毒软件拦截。"
+                )),
+            };
             let webview_data = state.data_dir.join("webview");
-            let auth = std::sync::Arc::new(auth::AuthService::new(state.data_dir.clone())?);
+            let auth = match auth::AuthService::new(state.data_dir.clone()) {
+                Ok(auth) => std::sync::Arc::new(auth),
+                Err(error) => fail_startup(format!(
+                    "无法初始化认证服务。\n\n{error}"
+                )),
+            };
             let state = std::sync::Arc::new(state);
             let progress_state = state.clone();
             let progress_app = app.handle().clone();
@@ -46,12 +124,76 @@ pub fn run() {
             ));
             app.manage(state);
             app.manage(auth);
-            // Keep WebView2's writable profile beside this installation's state,
-            // including during isolated tests or portable data-directory overrides.
-            tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
-                .data_directory(webview_data)
-                .build()?;
-            platform::start_system_appearance_watcher(app.handle())?;
+            let window_config = match app.config().app.windows.first().cloned() {
+                Some(config) => config,
+                None => fail_startup(
+                    "启动器窗口配置缺失。请重新安装 Voxelight Launcher。".into(),
+                ),
+            };
+            let build_window = |profile: Option<&Path>| -> Result<(), String> {
+                let builder = tauri::WebviewWindowBuilder::from_config(
+                    app,
+                    &window_config,
+                )
+                .map_err(|error| format!("准备主窗口失败：{error}"))?;
+                let builder = match profile {
+                    Some(path) => builder.data_directory(path.to_path_buf()),
+                    None => builder,
+                };
+                builder
+                    .build()
+                    .map(|_| ())
+                    .map_err(|error| format!("创建主窗口失败：{error}"))
+            };
+            let destroy_partial_window = || {
+                if let Some(window) = app.get_webview_window(&window_config.label) {
+                    let _ = window.destroy();
+                }
+            };
+
+            eprintln!(
+                "[voxelight/setup] creating WebView2 profile at {}",
+                webview_data.display()
+            );
+            if let Err(first_error) = build_window(Some(&webview_data)) {
+                eprintln!(
+                    "[voxelight/setup] WebView2 profile attempt failed: {first_error}"
+                );
+                destroy_partial_window();
+                let local_profile_fresh = quarantine_webview_profile(&webview_data);
+                let retry_profile = if local_profile_fresh {
+                    webview_data.clone()
+                } else {
+                    webview_data.with_file_name(format!(
+                        "webview-recovery-{}",
+                        uuid::Uuid::new_v4()
+                    ))
+                };
+                eprintln!(
+                    "[voxelight/setup] retrying with fresh local WebView2 profile {}",
+                    retry_profile.display()
+                );
+                if let Err(retry_error) = build_window(Some(&retry_profile)) {
+                    eprintln!(
+                        "[voxelight/setup] fresh local profile failed: {retry_error}"
+                    );
+                    destroy_partial_window();
+                    eprintln!(
+                        "[voxelight/setup] retrying with the default WebView2 profile"
+                    );
+                    if let Err(default_error) = build_window(None) {
+                        destroy_partial_window();
+                        fail_startup(format!(
+                            "无法创建启动器窗口。\n\n本地配置：{first_error}\n重建配置：{retry_error}\n系统默认配置：{default_error}\n\n请关闭残留的 msedgewebview2.exe 进程，或重启 Windows 后重试。"
+                        ));
+                    }
+                }
+            }
+            if let Err(error) = platform::start_system_appearance_watcher(app.handle()) {
+                eprintln!(
+                    "[voxelight/setup] appearance watcher unavailable; continuing without live system appearance updates: {error}"
+                );
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -141,6 +283,40 @@ pub fn run() {
             appearance::import_launcher_config,
             platform::get_system_appearance,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start Voxelight Launcher");
+        .run(tauri::generate_context!());
+    if let Err(error) = result {
+        fail_startup(format!("Voxelight Launcher 启动失败。\n\n{error}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webview_profile_is_quarantined_before_retry() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/core-tests")
+            .join(format!("webview-recovery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let profile = root.join("webview");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(profile.join("locked"), b"synthetic").unwrap();
+
+        assert!(quarantine_webview_profile(&profile));
+        assert!(!profile.exists());
+        let backups = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("webview-old-")
+            })
+            .count();
+        assert_eq!(backups, 1);
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

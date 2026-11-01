@@ -5,6 +5,8 @@ const variables = {
   bendY: "--jelly-bend-y",
   pressure: "--jelly-press",
   energy: "--jelly-energy",
+  stretch: "--jelly-stretch",
+  heading: "--jelly-heading",
 } as const;
 
 type Channel = keyof typeof variables;
@@ -39,5 +41,7 @@ export function readGlassOptics(element: HTMLElement, reach = 4): GlassOptics | 
     bendY: bounded(raw.bendY, -24, 24),
     pressure: bounded(raw.pressure, 0, 1.16),
     energy: bounded(raw.energy, 0, 1),
+    ...(raw.stretch !== undefined ? { stretch: bounded(raw.stretch, -0.2, 0.34) } : {}),
+    ...(raw.heading !== undefined ? { heading: bounded(raw.heading, -Math.PI * 2, Math.PI * 2) } : {}),
   };
 }

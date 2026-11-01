@@ -32,6 +32,20 @@ pub(crate) fn data_directory() -> Result<PathBuf, String> {
     )
 }
 
+fn select_fallback_data_directory(local: Option<PathBuf>) -> Result<PathBuf, String> {
+    local
+        .map(|path| path.join("dev.voxelight.launcher-fallback"))
+        .ok_or_else(|| "无法定位用户数据回退目录".into())
+}
+
+fn fallback_data_directory() -> Result<PathBuf, String> {
+    select_fallback_data_directory(dirs::data_local_dir())
+}
+
+fn startup_error(message: String) -> Box<dyn std::error::Error> {
+    Box::new(std::io::Error::other(message))
+}
+
 pub(crate) fn migrate_state_json(mut value: Value) -> Result<Value, String> {
     let version = value
         .get("schemaVersion")
@@ -90,7 +104,53 @@ pub struct LauncherState {
 
 impl LauncherState {
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let data_dir = data_directory()?;
+        Self::load_with_fallback(data_directory(), fallback_data_directory)
+    }
+
+    fn load_with_fallback<F>(
+        primary_directory: Result<PathBuf, String>,
+        fallback_directory: F,
+    ) -> Result<Self, Box<dyn std::error::Error>>
+    where
+        F: FnOnce() -> Result<PathBuf, String>,
+    {
+        let primary_error = match primary_directory {
+            Ok(directory) => {
+                eprintln!(
+                    "[voxelight/storage] loading primary state from {}",
+                    directory.display()
+                );
+                match Self::load_from(directory.clone()) {
+                    Ok(state) => return Ok(state),
+                    Err(error) => {
+                        eprintln!(
+                            "[voxelight/storage] primary state at {} failed: {error}",
+                            directory.display()
+                        );
+                        error
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("[voxelight/storage] primary data directory unavailable: {error}");
+                startup_error(error)
+            }
+        };
+
+        let fallback_directory = fallback_directory().map_err(startup_error)?;
+        eprintln!(
+            "[voxelight/storage] falling back to {}",
+            fallback_directory.display()
+        );
+        Self::load_from(fallback_directory.clone()).map_err(|fallback_error| {
+            startup_error(format!(
+                "启动器数据目录不可用。primary: {primary_error}; fallback {}: {fallback_error}",
+                fallback_directory.display()
+            ))
+        })
+    }
+
+    fn load_from(data_dir: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         fs::create_dir_all(&data_dir)?;
         let file = data_dir.join("state.json");
         let mut data: Persisted = match fs::read(&file) {
@@ -328,6 +388,16 @@ mod tests {
     }
 
     #[test]
+    fn voxelight_storage_fallback_has_an_independent_product_directory() {
+        let local = PathBuf::from(r"C:\Users\Test\AppData\Local");
+        assert_eq!(
+            select_fallback_data_directory(Some(local.clone())).unwrap(),
+            local.join("dev.voxelight.launcher-fallback")
+        );
+        assert!(select_fallback_data_directory(None).is_err());
+    }
+
+    #[test]
     fn voxelight_game_directory_prefers_dedicated_override() {
         assert_eq!(
             select_game_directory(
@@ -439,6 +509,25 @@ mod tests {
         assert_eq!(state.snapshot().unwrap().config.max_memory_mb, 8192);
         fs::remove_file(directory.join("state.json")).unwrap();
         fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn unavailable_primary_storage_falls_back_without_panicking() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/core-tests")
+            .join(format!("storage-fallback-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let primary = root.join("primary-is-a-file");
+        fs::write(&primary, b"not a directory").unwrap();
+        let fallback = root.join("fallback");
+
+        let state =
+            LauncherState::load_with_fallback(Ok(primary), || Ok(fallback.clone())).unwrap();
+        assert_eq!(state.data_dir, fallback);
+        assert!(fallback.join("state.json").exists());
+
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

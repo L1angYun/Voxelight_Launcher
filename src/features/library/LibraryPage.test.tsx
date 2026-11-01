@@ -24,6 +24,12 @@ vi.mock("../../lib/launcher", async (importOriginal) => ({
 vi.mock("../../app/controller/LauncherProvider", () => ({
   useLauncher: () => mockLauncher,
 }));
+vi.mock("../../app/AppearanceProvider", () => ({
+  useAppearance: () => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }),
+}));
+vi.mock("../../visual/glass/GlassSystem", () => ({
+  GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => createElement("div", { className }, children),
+}));
 vi.mock("../../visual/overture/OvertureProvider", () => ({
   useOverture: () => ({ current: null, playing: false, reducedMotion: false, soundEnabled: false, play: vi.fn(), dismiss: vi.fn() }),
 }));

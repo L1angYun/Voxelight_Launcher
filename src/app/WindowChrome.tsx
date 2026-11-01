@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { Box, Copy, Maximize2, Minus, X } from "lucide-react";
 import { IconButton } from "../components/ui/Button";
 import { getLauncherWindow } from "../lib/window";
-import { GlassSurface } from "../visual/glass/GlassSystem";
 import "./shell.css";
 
 export function WindowChrome({ children }: { children?: ReactNode }) {
@@ -41,7 +40,7 @@ export function WindowChrome({ children }: { children?: ReactNode }) {
       data-window-state={maximized ? "maximized" : "normal"}
       data-tauri-drag-region="deep"
     >
-      <GlassSurface variant="nav" className="vx-window-chrome__bar">
+      <div className="vx-window-chrome__bar">
         <div className="vx-window-chrome__identity">
           <div className="vx-window-chrome__brand" aria-label={t("shell:brand.name")}><Box size={23} strokeWidth={1.5} aria-hidden="true" /><span>Voxelight</span></div>
           <div
@@ -59,7 +58,7 @@ export function WindowChrome({ children }: { children?: ReactNode }) {
           />
           <IconButton label={t("common:actions.close")} icon={<X size={17} />} onClick={() => void getLauncherWindow()?.close()} />
         </div>
-      </GlassSurface>
+      </div>
     </header>
   );
 }

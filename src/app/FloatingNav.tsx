@@ -100,6 +100,8 @@ function JellyNavigationIndicator({
     indicator.style.setProperty("--jelly-bend-y", `${springs.bendY.value}px`);
     indicator.style.setProperty("--jelly-energy", energy.toFixed(4));
     indicator.style.setProperty("--jelly-press", pressure.toFixed(4));
+    indicator.style.setProperty("--jelly-stretch", (staticMotion ? 0 : springs.stretch.value).toFixed(4));
+    indicator.style.setProperty("--jelly-heading", angle.current.toFixed(4));
     indicator.style.setProperty("--jelly-radius", `${22 + pressure * 6}px`);
   }, [springs, staticMotion]);
 
@@ -182,14 +184,17 @@ function JellyNavigationIndicator({
       previousTime.current = 0;
       springs.x.snap(target.current.x);
       springs.y.snap(target.current.y);
-      springs.press.snap(0);
+      // Drag entry and release can both measure the same selected item. Layout
+      // snapping must preserve its independent press/release spring; only an
+      // accessibility preference removes that deformation immediately.
+      if (staticMotion) springs.press.snap(0);
       springs.stretch.snap(0);
       springs.bendX.snap(0);
       springs.bendY.snap(0);
       initialized.current = true;
     }
     paint();
-    if (snapToLayout || typeof requestAnimationFrame === "undefined") setSettled(true);
+    if ((snapToLayout && !springs.press.moving) || typeof requestAnimationFrame === "undefined") setSettled(true);
     else start();
   }, [activeId, paint, readRect, setSettled, springs, start, staticMotion]);
 
@@ -316,7 +321,7 @@ export function FloatingNav({
   accountSkinUrl?: string;
 }) {
   const { t } = useTranslation();
-  const { effects, reducedMotion } = useAppearance();
+  const { effects, reducedMotion, reducedTransparency, highContrast } = useAppearance();
   const navRef = useRef<HTMLElement>(null);
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
   const pressRef = useRef<(pressed: boolean) => void>(() => {});
@@ -332,7 +337,7 @@ export function FloatingNav({
   const suppressClickTimer = useRef<number | null>(null);
   const items = navigationRegistry.enabled({}).filter((item) => implemented.has(item.id as NavigationPage));
   const group = (placement: NavigationPlacement) => items.filter((item) => item.placement === placement);
-  const staticMotion = reducedMotion || effects === "lite";
+  const staticMotion = reducedMotion || reducedTransparency || highContrast || effects === "lite";
 
   useEffect(() => () => {
     if (suppressClickTimer.current !== null) window.clearTimeout(suppressClickTimer.current);

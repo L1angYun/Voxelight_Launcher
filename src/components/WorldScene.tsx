@@ -10,31 +10,41 @@ import {
 import {
   WORLD_CAMERA,
   WORLD_CANVAS_PIXEL_RATIO_MAX,
-  WORLD_PARTICLE_BUDGET,
 } from "../visual/overture/motion";
+import {
+  CUBE_CELL_CLEAR_PX,
+  CUBE_CANVAS_EDGE_GUARD_PX,
+  CUBE_MAX_PROJECTION_HALF_PX,
+  CUBE_PITCH_PX,
+  CUBE_SIZE_PX,
+  cubeProjection,
+  cameraSweepToField,
+  cubeSweepIntersects,
+  paintCubeProjection,
+  type CubeProjection,
+  type Point2,
+  type PointerSweep,
+} from "./cubeGeometry";
 import "./WorldScene.css";
 
-export const CUBE_SIZE_PX = 24;
-export const CUBE_PITCH_PX = 40;
-export const CUBE_TOP_HEIGHT = 6;
-export const CUBE_SIDE_WIDTH = 6;
-export const CUBE_DEFAULT_OPACITY = 0.85;
-export const CUBE_PULSE_MIN = 0.72;
-export const CUBE_PULSE_MAX = 0.96;
-export const CUBE_ACTIVE_BUDGET = 50;
-export const CUBE_FLIP_DURATION_MS = 280;
+export { CUBE_SIZE_PX, CUBE_PITCH_PX, cubeProjection } from "./cubeGeometry";
+export const CUBE_DEFAULT_OPACITY = 0.74;
+export const CUBE_PULSE_MIN = 0.58;
+export const CUBE_PULSE_MAX = 0.84;
+export const CUBE_FLIP_DURATION_MS = 1200;
 export const CUBE_STAY_DURATION_MS = 1800;
+export const CUBE_RETURN_DURATION_MS = 280;
 export const CUBE_GLOW_RADIUS_PX = 10;
 export const CUBE_GLOW_DURATION_MS = 800;
 export const CUBE_TRIGGER_RADIUS_PX = 72;
-export const CUBE_RIPPLE_FALLOFF_PX = 108;
-export const CUBE_TRIGGER_DISTANCE_PX = 8;
+export const CUBE_RIPPLE_FALLOFF_PX = 180;
+export const CUBE_TRIGGER_DISTANCE_PX = 0;
 export const CUBE_RETRIGGER_DELAY_MS = 240;
 export const POINTER_SPRING: SpringTuning = { stiffness: 90, damping: 13 };
 
-const CUBE_IDLE_MIN_WIDTH_FACTOR = 0.72;
-const CUBE_ROTATION_RPM = 0.22;
+export const CUBE_ROTATION_RPM = 1.2;
 const CUBE_ROTATION_RADIANS_PER_SECOND = (CUBE_ROTATION_RPM / 60) * Math.PI * 2;
+export const CUBE_DIAGONAL_PHASE_RADIANS = 0.045;
 
 export type WorldSceneState = "idle" | "preparing" | "running" | "error";
 
@@ -43,6 +53,8 @@ type WorldSceneProps = {
   className?: string;
   progress?: number;
   paused?: boolean;
+  effects?: "full" | "lite";
+  reducedMotion?: boolean;
   onCameraFrame?: (pose: { x: number; y: number; scale: number }) => void;
 };
 
@@ -56,14 +68,8 @@ type Rgba = {
 type Palette = {
   light: boolean;
   base: Rgba;
-  top: Rgba;
-  side: Rgba;
-  line: Rgba;
   accent: Rgba;
   accentWhite: Rgba;
-  accentTop: Rgba;
-  accentSide: Rgba;
-  dust: Rgba;
 };
 
 type CubeCell = {
@@ -74,36 +80,26 @@ type CubeCell = {
   phase: number;
   period: number;
   cooldownUntil: number;
-  ripplePhase: number;
-  rippleAmplitude: number;
+  pointerInside: boolean;
 };
 
 type CubeMotion = {
   startedAt: number;
-  reverseAt: number;
+  fadeAt: number;
   finishAt: number;
   glowStart: number;
-};
-
-type Particle = {
-  baseX: number;
-  baseY: number;
-  driftX: number;
-  driftY: number;
-  frequencyX: number;
-  frequencyY: number;
-  phaseX: number;
-  phaseY: number;
-  brightnessPhase: number;
-  size: number;
-  opacity: number;
-  firefly: boolean;
+  accentFrom: number;
+  pendingTurn: boolean;
 };
 
 type PointerGoal = {
   x: number;
   y: number;
   active: boolean;
+};
+type FieldPointerSweep = PointerSweep & {
+  radius: number;
+  startsNewPath: boolean;
 };
 
 const TWO_PI = Math.PI * 2;
@@ -112,9 +108,9 @@ const DARK_BASE = "#08101a";
 const LIGHT_BASE = "#f0f2f6";
 const WHITE = "#ffffff";
 const BLACK = "#000000";
-const PARTICLE_SEED = 0x5eedf13e;
-const CUBE_TRIGGERS_PER_FRAME = 4;
-const CUBE_IDLE_REDRAW_CELLS = 160;
+const WHITE_COLOR = color(WHITE);
+const BLACK_COLOR = color(BLACK);
+const WORLD_CAMERA_VERTICAL_RATIO = 0.62;
 
 function useMediaQuery(query: string) {
   const [matches, setMatches] = useState(() =>
@@ -223,21 +219,13 @@ function readPalette(scene: HTMLElement): Palette {
     style.getPropertyValue("--accent").trim(),
     color(FALLBACK_ACCENT),
   );
-  const white = color(WHITE);
-  const black = color(BLACK);
-  const accentWhite = mixColor(accent, white, 0.1);
+  const accentWhite = mixColor(accent, WHITE_COLOR, 0.1);
 
   return {
     light,
     base,
-    top: mixColor(base, white, 0.25),
-    side: mixColor(base, black, 0.2),
-    line: mixColor(base, black, 0.38),
     accent,
     accentWhite,
-    accentTop: mixColor(accentWhite, white, 0.25),
-    accentSide: mixColor(accentWhite, black, 0.2),
-    dust: mixColor(accent, white, light ? 0.58 : 0.72),
   };
 }
 
@@ -252,55 +240,49 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-function createParticles(): Particle[] {
-  const random = seededRandom(PARTICLE_SEED);
-  return Array.from({ length: WORLD_PARTICLE_BUDGET.total }, (_, index) => {
-    const firefly = index < WORLD_PARTICLE_BUDGET.fireflies;
-    return {
-      baseX: 0.025 + random() * 0.95,
-      baseY: 0.03 + random() * 0.94,
-      driftX: 0.004 + random() * 0.024,
-      driftY: 0.003 + random() * 0.021,
-      frequencyX: 0.025 + random() * 0.06,
-      frequencyY: 0.021 + random() * 0.054,
-      phaseX: random() * TWO_PI,
-      phaseY: random() * TWO_PI,
-      brightnessPhase: random() * TWO_PI,
-      size: firefly ? 1.8 + random() * 1.4 : 0.8 + random() * 0.8,
-      opacity: firefly ? 0.48 + random() * 0.34 : 0.14 + random() * 0.2,
-      firefly,
-    };
-  });
-}
-
-const PARTICLES = createParticles();
-
 function createCubeCells(width: number, height: number): CubeCell[] {
-  const columns = Math.ceil(width / CUBE_PITCH_PX) + 1;
-  const rows = Math.ceil(height / CUBE_PITCH_PX) + 1;
+  const maxScale = WORLD_CAMERA.pushScale;
+  // Reserve the complete solid envelope even at the camera's worst push and
+  // translation. Remaining space is centered, so no partial edge cubes exist.
+  const inset = (length: number, offset: number) =>
+    CUBE_MAX_PROJECTION_HALF_PX +
+    (offset + (length * (maxScale - 1)) / 2 + CUBE_CANVAS_EDGE_GUARD_PX) /
+      maxScale;
+  const safeX = inset(width, WORLD_CAMERA.maxOffsetPx);
+  const safeY = inset(
+    height,
+    WORLD_CAMERA.maxOffsetPx * WORLD_CAMERA_VERTICAL_RATIO,
+  );
+  const columns = Math.max(
+    0,
+    Math.floor((width - safeX * 2) / CUBE_PITCH_PX) + 1,
+  );
+  const rows = Math.max(
+    0,
+    Math.floor((height - safeY * 2) / CUBE_PITCH_PX) + 1,
+  );
+  const firstX = (width - (columns - 1) * CUBE_PITCH_PX) / 2;
+  const firstY = (height - (rows - 1) * CUBE_PITCH_PX) / 2;
   const cells: CubeCell[] = [];
 
   for (let row = 0; row < rows; row += 1) {
     for (let column = 0; column < columns; column += 1) {
-      const noise = Math.sin(column * 12.9898 + row * 78.233) * 43758.5453;
-      const seed = noise - Math.floor(noise);
       const random = seededRandom(
         Math.imul(column + 1, 0x9e3779b1) ^ Math.imul(row + 1, 0x85ebca6b),
       );
       // The grid shares one angular velocity. A small diagonal phase offset
       // produces a coherent wave instead of independent random spinning.
       const diagonalIndex = column + row;
-      const wavePhase = diagonalIndex * 0.22;
+      const wavePhase = diagonalIndex * CUBE_DIAGONAL_PHASE_RADIANS;
       cells.push({
-        x: (column + 0.5) * CUBE_PITCH_PX,
-        y: (row + 0.5) * CUBE_PITCH_PX,
-        rotation: wavePhase + random() * 0.04,
+        x: firstX + column * CUBE_PITCH_PX,
+        y: firstY + row * CUBE_PITCH_PX,
+        rotation: Math.PI / 6 + wavePhase,
         rotationSpeed: CUBE_ROTATION_RADIANS_PER_SECOND,
         phase: wavePhase + random() * 0.2,
         period: 10 + random() * 4,
         cooldownUntil: 0,
-        ripplePhase: 0,
-        rippleAmplitude: 0,
+        pointerInside: false,
       });
     }
   }
@@ -316,60 +298,50 @@ function cubePulse(cell: CubeCell, now: number): number {
 
 function cubicBezierEase(progress: number): number {
   const x = clamp(progress, 0, 1);
+  if (x === 0 || x === 1) return x;
   let low = 0;
   let high = 1;
-  let middle = x;
-
-  for (let index = 0; index < 9; index += 1) {
-    middle = (low + high) / 2;
-    const inverse = 1 - middle;
+  let parameter = x;
+  // Existing --ease-in-out token: cubic-bezier(0.77, 0, 0.175, 1).
+  for (let index = 0; index < 16; index += 1) {
+    parameter = (low + high) / 2;
+    const inverse = 1 - parameter;
     const curveX =
-      3 * inverse * inverse * middle * 0.25 +
-      3 * inverse * middle * middle * 0.5 +
-      middle * middle * middle;
-    if (curveX < x) low = middle;
-    else high = middle;
+      3 * inverse * inverse * parameter * 0.77 +
+      3 * inverse * parameter * parameter * 0.175 +
+      parameter ** 3;
+    if (curveX < x) low = parameter;
+    else high = parameter;
   }
-
-  const inverse = 1 - middle;
-  return (
-    3 * inverse * inverse * middle +
-    3 * inverse * middle * middle +
-    middle * middle * middle
-  );
+  return 3 * (1 - parameter) * parameter ** 2 + parameter ** 3;
 }
 
-function cubePose(
-  motion: CubeMotion | undefined,
-  now: number,
-): { widthFactor: number; accent: boolean } {
-  if (!motion) return { widthFactor: 1, accent: false };
+export function cubeTurnOffset(elapsed: number): number {
+  return TWO_PI * cubicBezierEase(elapsed / CUBE_FLIP_DURATION_MS);
+}
 
-  const halfFlip = CUBE_FLIP_DURATION_MS / 2;
-  if (now < motion.reverseAt) {
-    const elapsed = Math.max(0, now - motion.startedAt);
-    if (elapsed < halfFlip) {
-      return {
-        widthFactor: 1 - cubicBezierEase(elapsed / halfFlip),
-        accent: false,
-      };
-    }
-    return {
-      widthFactor: cubicBezierEase((elapsed - halfFlip) / halfFlip),
-      accent: true,
-    };
-  }
-
-  const reverseElapsed = Math.max(0, now - motion.reverseAt);
-  if (reverseElapsed < halfFlip) {
-    return {
-      widthFactor: 1 - cubicBezierEase(reverseElapsed / halfFlip),
-      accent: true,
-    };
-  }
+function cubePose(motion: CubeMotion | undefined, now: number) {
+  if (!motion) return { rotationOffset: 0, accent: 0 };
+  const elapsed = Math.max(0, now - motion.startedAt);
   return {
-    widthFactor: cubicBezierEase((reverseElapsed - halfFlip) / halfFlip),
-    accent: false,
+    rotationOffset: cubeTurnOffset(elapsed),
+    accent:
+      now < motion.fadeAt
+        ? motion.accentFrom +
+          (1 - motion.accentFrom) * clamp(elapsed / 160, 0, 1)
+        : 1 - clamp((now - motion.fadeAt) / CUBE_RETURN_DURATION_MS, 0, 1),
+  };
+}
+
+function createCubeMotion(now: number, accentFrom = 0): CubeMotion {
+  const fadeAt = now + CUBE_FLIP_DURATION_MS + CUBE_STAY_DURATION_MS;
+  return {
+    startedAt: now,
+    fadeAt,
+    finishAt: fadeAt + CUBE_RETURN_DURATION_MS,
+    glowStart: now + CUBE_FLIP_DURATION_MS,
+    accentFrom,
+    pendingTurn: false,
   };
 }
 
@@ -377,79 +349,13 @@ function cubeRotation(cell: CubeCell, now: number): number {
   return cell.rotation + cell.rotationSpeed * (now / 1000);
 }
 
-function drawCubeFaces(
-  context: CanvasRenderingContext2D,
-  cell: CubeCell,
-  width: number,
-  rotation: number,
-  front: Rgba,
-  top: Rgba,
-  side: Rgba,
-  edge: Rgba,
-  accentFace: boolean,
-) {
-  if (width <= 0.04) return;
-
-  const ratio = clamp(width / CUBE_SIZE_PX, 0, 1);
-  const half = width / 2;
-  const frontLeft = cell.x - half;
-  const frontTop = cell.y - CUBE_SIZE_PX / 2;
-  const frontRight = cell.x + half;
-  const frontBottom = frontTop + CUBE_SIZE_PX;
-  const topHeight = CUBE_TOP_HEIGHT * (0.6 + ratio * 0.4);
-  const sideDirection = Math.sin(rotation) >= 0 ? 1 : -1;
-  const sideWidth =
-    sideDirection *
-    CUBE_SIDE_WIDTH *
-    (0.6 + Math.abs(Math.sin(rotation)) * 0.4);
-  const backTop = frontTop - topHeight;
-  const backBottom = frontBottom - topHeight;
-
-  context.strokeStyle = rgba(edge, accentFace ? 0.55 : 0.12);
-  context.lineWidth = accentFace ? 0.55 : 0.3;
-
-  context.beginPath();
-  context.moveTo(frontRight, frontTop);
-  context.lineTo(frontRight + sideWidth, backTop);
-  context.lineTo(frontRight + sideWidth, backBottom);
-  context.lineTo(frontRight, frontBottom);
-  context.closePath();
-  context.stroke();
-  context.fillStyle = rgba(side);
-  context.fill();
-
-  context.beginPath();
-  context.moveTo(frontLeft, frontTop);
-  context.lineTo(frontRight, frontTop);
-  context.lineTo(frontRight + sideWidth, backTop);
-  context.lineTo(frontLeft + sideWidth, backTop);
-  context.closePath();
-  context.stroke();
-  context.fillStyle = rgba(top);
-  context.fill();
-
-  context.beginPath();
-  context.moveTo(frontLeft, frontTop);
-  context.lineTo(frontRight, frontTop);
-  context.lineTo(frontRight, frontBottom);
-  context.lineTo(frontLeft, frontBottom);
-  context.closePath();
-  context.stroke();
-  context.fillStyle = rgba(front);
-  context.fillRect(frontLeft, frontTop, width, CUBE_SIZE_PX);
-}
-
 function clearCubeCell(context: CanvasRenderingContext2D, cell: CubeCell) {
-  // The clear box must stay inside the cell pitch. A larger box erases the
-  // neighbours that will not necessarily be repainted in the same dirty tile.
-  const halfWidth = CUBE_SIZE_PX / 2 + CUBE_SIDE_WIDTH + 1;
-  const top = CUBE_SIZE_PX / 2 + CUBE_TOP_HEIGHT + 1;
-  const bottom = CUBE_SIZE_PX / 2 + 1;
+  const half = CUBE_CELL_CLEAR_PX / 2;
   context.clearRect(
-    cell.x - halfWidth,
-    cell.y - top,
-    halfWidth * 2,
-    top + bottom,
+    cell.x - half,
+    cell.y - half,
+    CUBE_CELL_CLEAR_PX,
+    CUBE_CELL_CLEAR_PX,
   );
 }
 
@@ -461,106 +367,81 @@ function drawCubeCell(
   motion?: CubeMotion,
   pointerX?: number,
   pointerY?: number,
+  pointerStrength = 1,
+  projection?: CubeProjection,
 ) {
   clearCubeCell(context, cell);
   const pose = cubePose(motion, now);
-  const rotation = cubeRotation(cell, now);
+  const rotation = cubeRotation(cell, now) + pose.rotationOffset;
   const facing = Math.abs(Math.cos(rotation));
 
   let rippleBoost = 0;
-  let rippleTilt = 0;
-  if (pointerX !== undefined && pointerY !== undefined) {
+  if (pointerStrength > 0 && pointerX !== undefined && pointerY !== undefined) {
     const deltaX = cell.x - pointerX;
     const deltaY = cell.y - pointerY;
     const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
     if (distance < CUBE_RIPPLE_FALLOFF_PX) {
-      const falloff = 1 - distance / CUBE_RIPPLE_FALLOFF_PX;
+      const falloff =
+        (1 - distance / CUBE_RIPPLE_FALLOFF_PX) * clamp(pointerStrength, 0, 1);
       rippleBoost = falloff * falloff * 0.68;
-      rippleTilt = falloff * 0.3;
     }
   }
 
-  const idleWidth =
-    CUBE_SIZE_PX *
-    (CUBE_IDLE_MIN_WIDTH_FACTOR + facing * (1 - CUBE_IDLE_MIN_WIDTH_FACTOR));
   const pulse = cubePulse(cell, now);
-  const opacity = pose.accent
-    ? clamp(pulse + 0.16 + rippleBoost, CUBE_PULSE_MIN, 0.98)
-    : clamp(pulse + rippleBoost, CUBE_PULSE_MIN, CUBE_PULSE_MAX);
-  const tint = 0.08 + facing * 0.06 + rippleBoost * 0.24;
+  const opacity = clamp(
+    pulse + pose.accent * 0.2 + rippleBoost * (0.55 + pose.accent * 0.45),
+    CUBE_PULSE_MIN,
+    0.98 + pose.accent * 0.02,
+  );
+  const tint = 0.06 + facing * 0.16 + rippleBoost * 0.45;
   const idleFront = mixColor(palette.base, palette.accent, tint);
-  const idleTop = mixColor(idleFront, color(WHITE), 0.25);
-  const idleSide = mixColor(idleFront, color(BLACK), 0.2);
+  const front = mixColor(idleFront, palette.accentWhite, pose.accent);
+  const top = mixColor(front, WHITE_COLOR, 0.34);
+  const side = mixColor(front, BLACK_COLOR, 0.32);
 
   context.save();
   context.globalAlpha = opacity;
-  drawCubeFaces(
+  paintCubeProjection(
     context,
+    projection ?? cubeProjection(rotation),
     cell,
-    idleWidth * pose.widthFactor * (1 + rippleTilt),
-    rotation,
-    pose.accent ? palette.accentWhite : idleFront,
-    pose.accent ? palette.accentTop : idleTop,
-    pose.accent ? palette.accentSide : idleSide,
-    palette.accent,
-    pose.accent,
-  );
-
-  context.globalAlpha = opacity * 0.22;
-  context.fillStyle = rgba(palette.line);
-  const sideDirection = Math.sin(rotation) >= 0 ? 1 : -1;
-  context.fillRect(
-    cell.x + CUBE_SIZE_PX / 2 + sideDirection * (CUBE_SIDE_WIDTH + 0.8),
-    cell.y - CUBE_SIZE_PX / 2,
-    1,
-    CUBE_SIZE_PX + CUBE_TOP_HEIGHT,
+    (light) => rgba(mixColor(side, top, light)),
   );
   context.restore();
 }
 
 function drawCubeLayer(
   context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
   cells: CubeCell[],
   palette: Palette,
   now: number,
-) {
-  context.clearRect(0, 0, width, height);
-  for (const cell of cells) drawCubeCell(context, cell, palette, now);
-}
-
-function drawPulseShard(
-  context: CanvasRenderingContext2D,
-  cells: CubeCell[],
-  palette: Palette,
-  now: number,
-  active: Map<CubeCell, CubeMotion>,
-  cursor: number,
+  active: Map<CubeCell, CubeMotion> = new Map(),
   pointerX?: number,
   pointerY?: number,
+  pointerStrength = 0,
 ) {
-  if (cells.length === 0) return cursor;
-  let index = cursor % cells.length;
-  let drawn = 0;
-
-  while (drawn < CUBE_IDLE_REDRAW_CELLS && drawn < cells.length) {
-    const cell = cells[index];
-    if (!active.has(cell)) {
-      let inRipple = false;
-      if (pointerX !== undefined && pointerY !== undefined) {
-        const deltaX = cell.x - pointerX;
-        const deltaY = cell.y - pointerY;
-        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-        if (distance < CUBE_RIPPLE_FALLOFF_PX) inRipple = true;
-      }
-      if (!inRipple) drawCubeCell(context, cell, palette, now, undefined, pointerX, pointerY);
+  const projections = new Map<number, CubeProjection>();
+  for (const cell of cells) {
+    const motion = active.get(cell);
+    const angle =
+      cubeRotation(cell, now) + cubePose(motion, now).rotationOffset;
+    let projection = projections.get(angle);
+    if (!projection) {
+      projection = cubeProjection(angle);
+      projections.set(angle, projection);
     }
-    index = (index + 1) % cells.length;
-    drawn += 1;
+    drawCubeCell(
+      context,
+      cell,
+      palette,
+      now,
+      motion,
+      pointerX,
+      pointerY,
+      pointerStrength,
+      projection,
+    );
   }
-
-  return index;
 }
 
 function drawGlowLayer(
@@ -597,108 +478,45 @@ function drawGlowLayer(
   }
 }
 
-function drawParticles(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  palette: Palette,
-  now: number,
-) {
-  context.clearRect(0, 0, width, height);
-  const seconds = now / 1000;
-  const themeScale = palette.light ? 0.64 : 1;
-
-  context.save();
-  context.fillStyle = rgba(palette.accent);
-  context.shadowColor = rgba(palette.accent, 0.68);
-  context.shadowBlur = 8;
-  for (const particle of PARTICLES) {
-    if (!particle.firefly) continue;
-    const x =
-      particle.baseX * width +
-      Math.sin(seconds * particle.frequencyX + particle.phaseX) *
-        particle.driftX *
-        width;
-    const y =
-      particle.baseY * height +
-      Math.cos(seconds * particle.frequencyY + particle.phaseY) *
-        particle.driftY *
-        height;
-    context.globalAlpha =
-      clamp(
-        particle.opacity +
-          Math.sin(seconds * 0.78 + particle.brightnessPhase) * 0.09,
-        0.45,
-        0.86,
-      ) * themeScale;
-    context.beginPath();
-    context.arc(x, y, particle.size / 2, 0, TWO_PI);
-    context.fill();
-  }
-  context.restore();
-
-  context.save();
-  context.fillStyle = rgba(palette.dust);
-  for (const particle of PARTICLES) {
-    if (particle.firefly) continue;
-    const x =
-      particle.baseX * width +
-      Math.sin(seconds * particle.frequencyX + particle.phaseX) *
-        particle.driftX *
-        width;
-    const y =
-      particle.baseY * height +
-      Math.cos(seconds * particle.frequencyY + particle.phaseY) *
-        particle.driftY *
-        height;
-    context.globalAlpha =
-      clamp(
-        particle.opacity +
-          Math.cos(seconds * 0.54 + particle.brightnessPhase) * 0.045,
-        0.12,
-        0.36,
-      ) * themeScale;
-    context.fillRect(
-      x - particle.size / 2,
-      y - particle.size / 2,
-      particle.size,
-      particle.size,
-    );
-  }
-  context.globalAlpha = 1;
-  context.restore();
-}
-
 export function WorldScene({
   state = "idle",
   className = "",
   progress = 0,
   paused: userPaused = false,
+  effects,
+  reducedMotion: requestedReducedMotion = false,
   onCameraFrame,
 }: WorldSceneProps) {
   const sceneRef = useRef<HTMLDivElement>(null);
   const cameraRef = useRef<HTMLDivElement>(null);
   const cubeCanvasRef = useRef<HTMLCanvasElement>(null);
   const glowCanvasRef = useRef<HTMLCanvasElement>(null);
-  const particleCanvasRef = useRef<HTMLCanvasElement>(null);
   const pointerGoal = useRef<PointerGoal>({ x: 0, y: 0, active: false });
   const pointerSpring = useRef({
     x: createSpring(0.5),
     y: createSpring(0.5),
   });
+  const pointerInfluence = useRef(createSpring());
   const cameraSpring = useRef({
     x: createSpring(),
     y: createSpring(),
   });
   const cameraScaleSpring = useRef(createSpring(1));
+  const cameraPoseRef = useRef({ x: 0, y: 0, scale: 1 });
+  const pointerPathRef = useRef<{
+    last: Point2 | null;
+    sweeps: FieldPointerSweep[];
+  }>({ last: null, sweeps: [] });
   const onCameraFrameRef = useRef(onCameraFrame);
   const animationTimeRef = useRef(0);
   const previousAnimationFrameRef = useRef<number | null>(null);
   const cubeCellsRef = useRef<CubeCell[]>([]);
   const activeCubeMotionsRef = useRef(new Map<CubeCell, CubeMotion>());
   const cubeFieldSizeRef = useRef({ width: 0, height: 0 });
-  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const finePointer = useMediaQuery("(pointer: fine)");
+  const systemReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const reducedMotion =
+    requestedReducedMotion || systemReducedMotion || effects === "lite";
+  const finePointer = useMediaQuery("(any-pointer: fine)");
   const finePointerRef = useRef(finePointer);
   const [pageVisible, setPageVisible] = useState(() =>
     typeof document === "undefined" ? true : !document.hidden,
@@ -744,9 +562,33 @@ export function WorldScene({
     const scene = sceneRef.current;
     if (!scene || !finePointer) return;
 
+    const seenEvents = new WeakSet<PointerEvent>();
     const movePointer = (event: PointerEvent) => {
       if (event.pointerType === "touch") return;
+      if (seenEvents.has(event)) return;
+      seenEvents.add(event);
       const bounds = scene.getBoundingClientRect();
+      const path = pointerPathRef.current;
+      const samples = event.getCoalescedEvents?.() ?? [];
+      for (const sample of [...samples, event]) {
+        const local = {
+          x: sample.clientX - bounds.left,
+          y: sample.clientY - bounds.top,
+        };
+        const camera = cameraPoseRef.current;
+        if (!reducedMotion && !paused) {
+          path.sweeps.push({
+            ...cameraSweepToField(
+              { from: path.last ?? local, to: local },
+              bounds,
+              camera,
+              CUBE_TRIGGER_RADIUS_PX,
+            ),
+            startsNewPath: path.last === null,
+          });
+        }
+        if (!reducedMotion && !paused) path.last = local;
+      }
       const inside =
         bounds.width > 0 &&
         bounds.height > 0 &&
@@ -764,56 +606,44 @@ export function WorldScene({
 
     const leavePointer = () => {
       pointerGoal.current = { ...pointerGoal.current, active: false };
+      pointerPathRef.current.last = null;
+      for (const cell of cubeCellsRef.current) cell.pointerInside = false;
       scene.dataset.pointerActive = "false";
     };
 
     const documentRoot = document.documentElement;
-    let lastSceneEventAt = -Infinity;
-    const sceneMove = (event: PointerEvent) => {
-      lastSceneEventAt = performance.now();
-      movePointer(event);
-    };
-    const windowMove = (event: PointerEvent) => {
-      if (performance.now() - lastSceneEventAt < 1) return;
-      movePointer(event);
-    };
-
-    scene.addEventListener("pointermove", sceneMove, { passive: true });
+    scene.addEventListener("pointermove", movePointer, { passive: true });
     scene.addEventListener("pointerleave", leavePointer, { passive: true });
     scene.addEventListener("pointercancel", leavePointer, { passive: true });
-    window.addEventListener("pointermove", windowMove, { passive: true });
+    window.addEventListener("pointermove", movePointer, { passive: true });
     window.addEventListener("blur", leavePointer);
     documentRoot.addEventListener("pointerleave", leavePointer, {
       passive: true,
     });
     return () => {
-      scene.removeEventListener("pointermove", sceneMove);
+      scene.removeEventListener("pointermove", movePointer);
       scene.removeEventListener("pointerleave", leavePointer);
       scene.removeEventListener("pointercancel", leavePointer);
-      window.removeEventListener("pointermove", windowMove);
+      window.removeEventListener("pointermove", movePointer);
       window.removeEventListener("blur", leavePointer);
       documentRoot.removeEventListener("pointerleave", leavePointer);
     };
-  }, [finePointer]);
+  }, [finePointer, reducedMotion, paused]);
 
   useEffect(() => {
     const scene = sceneRef.current;
     const cubeCanvas = cubeCanvasRef.current;
     const glowCanvas = glowCanvasRef.current;
-    const particleCanvas = particleCanvasRef.current;
-    if (!scene || !cubeCanvas || !glowCanvas || !particleCanvas) return;
+    if (!scene || !cubeCanvas || !glowCanvas) return;
 
     let cubeContext: CanvasRenderingContext2D | null = null;
     let glowContext: CanvasRenderingContext2D | null = null;
-    let particleContext: CanvasRenderingContext2D | null = null;
     try {
       cubeContext = cubeCanvas.getContext("2d");
       glowContext = glowCanvas.getContext("2d");
-      particleContext = particleCanvas.getContext("2d");
     } catch {
       cubeContext = null;
       glowContext = null;
-      particleContext = null;
     }
 
     let width = 1;
@@ -821,12 +651,15 @@ export function WorldScene({
     let cells = cubeCellsRef.current;
     let palette = readPalette(scene);
     let frame: number | null = null;
-    let pulseCursor = 0;
-    let pointerWasActive = false;
-    let triggerPoint = { x: 0, y: 0 };
-    let needsInitialTrigger = false;
+    let pointerWasActive = pointerGoal.current.active;
     const active = activeCubeMotionsRef.current;
     const motionEnabled = !paused && !reducedMotion;
+    if (!motionEnabled) {
+      pointerPathRef.current.last = null;
+      pointerPathRef.current.sweeps.length = 0;
+      for (const cell of cells) cell.pointerInside = false;
+    }
+    if (reducedMotion) active.clear();
     const scaleGoal =
       state === "preparing" || state === "running" ? WORLD_CAMERA.pushScale : 1;
 
@@ -845,11 +678,11 @@ export function WorldScene({
         WORLD_CANVAS_PIXEL_RATIO_MAX,
       );
 
-      for (const canvas of [cubeCanvas, glowCanvas, particleCanvas]) {
+      for (const canvas of [cubeCanvas, glowCanvas]) {
         canvas.width = Math.max(1, Math.round(width * ratio));
         canvas.height = Math.max(1, Math.round(height * ratio));
       }
-      for (const context of [cubeContext, glowContext, particleContext]) {
+      for (const context of [cubeContext, glowContext]) {
         context?.setTransform(ratio, 0, 0, ratio, 0, 0);
       }
 
@@ -861,105 +694,141 @@ export function WorldScene({
         cubeCellsRef.current = cells;
         cubeFieldSizeRef.current = { width, height };
         active.clear();
-        pulseCursor = 0;
       }
       scene.dataset.cubeCount = String(cells.length);
       scene.dataset.activeFlips = String(active.size);
+      // Natural bound: every rendered cell may respond to the same sweep.
+      scene.dataset.cubeActiveBudget = String(cells.length);
+      scene.dataset.cubeBudget = String(cells.length);
       cubeCanvas.dataset.rendered = "true";
       glowCanvas.dataset.rendered = "true";
-      particleCanvas.dataset.rendered = "true";
     };
 
     const updateCamera = (x: number, y: number, scale: number) => {
       const cameraX = clamp(x, -1, 1);
       const cameraY = clamp(y, -1, 1);
+      const cameraScale = clamp(scale, 1, WORLD_CAMERA.pushScale);
+      cameraPoseRef.current = {
+        x: cameraX * WORLD_CAMERA.maxOffsetPx,
+        y: cameraY * WORLD_CAMERA.maxOffsetPx * WORLD_CAMERA_VERTICAL_RATIO,
+        scale: cameraScale,
+      };
       if (cameraRef.current) {
-        cameraRef.current.style.transform = `translate3d(${(cameraX * WORLD_CAMERA.maxOffsetPx).toFixed(2)}px, ${(cameraY * WORLD_CAMERA.maxOffsetPx * 0.62).toFixed(2)}px, 0) scale(${scale.toFixed(4)})`;
+        cameraRef.current.style.transform = `translate3d(${cameraPoseRef.current.x.toFixed(2)}px, ${cameraPoseRef.current.y.toFixed(2)}px, 0) scale(${cameraScale.toFixed(4)})`;
       }
-      onCameraFrameRef.current?.({ x: cameraX, y: cameraY, scale });
+      onCameraFrameRef.current?.({
+        x: cameraX,
+        y: cameraY,
+        scale: cameraScale,
+      });
     };
 
     const paintFull = (now: number) => {
       if (cubeContext) {
-        drawCubeLayer(cubeContext, width, height, cells, palette, now);
+        const showRipple =
+          !reducedMotion &&
+          finePointerRef.current &&
+          pointerInfluence.current.position > 0.01;
+        drawCubeLayer(
+          cubeContext,
+          cells,
+          palette,
+          now,
+          active,
+          showRipple ? pointerSpring.current.x.position * width : undefined,
+          showRipple ? pointerSpring.current.y.position * height : undefined,
+          showRipple ? pointerInfluence.current.position : 0,
+        );
       }
       if (glowContext) {
         drawGlowLayer(glowContext, width, height, palette, now, active);
       }
-      if (particleContext) {
-        drawParticles(particleContext, width, height, palette, now);
-      }
       scene.dataset.light = String(palette.light);
     };
 
-    const triggerCubes = (now: number, x: number, y: number) => {
-      const room = CUBE_ACTIVE_BUDGET - active.size;
-      if (room <= 0) return;
-
-      const radiusSquared = CUBE_TRIGGER_RADIUS_PX ** 2;
-      const candidates: Array<{ cell: CubeCell; distance: number }> = [];
+    const triggerCubes = (now: number, sweeps: FieldPointerSweep[]) => {
+      if (sweeps.length === 0 || !finePointerRef.current) return;
+      const projections = new Map<number, CubeProjection>();
       for (const cell of cells) {
-        if (active.has(cell) || now < cell.cooldownUntil) continue;
-        const deltaX = cell.x - x;
-        const deltaY = cell.y - y;
-        const distance = deltaX * deltaX + deltaY * deltaY;
-        if (distance <= radiusSquared) {
-          candidates.push({ cell, distance });
+        const current = active.get(cell);
+        const angle =
+          cubeRotation(cell, now) + cubePose(current, now).rotationOffset;
+        let projection = projections.get(angle);
+        if (!projection) {
+          projection = cubeProjection(angle);
+          projections.set(angle, projection);
         }
-      }
-      candidates.sort((left, right) => left.distance - right.distance);
-
-      const count = Math.min(room, CUBE_TRIGGERS_PER_FRAME);
-      for (
-        let index = 0;
-        index < count && index < candidates.length;
-        index += 1
-      ) {
-        const cell = candidates[index].cell;
-        active.set(cell, {
-          startedAt: now,
-          reverseAt: now + CUBE_FLIP_DURATION_MS + CUBE_STAY_DURATION_MS,
-          finishAt: now + CUBE_FLIP_DURATION_MS * 2 + CUBE_STAY_DURATION_MS,
-          glowStart: now + CUBE_FLIP_DURATION_MS,
-        });
+        for (const sweep of sweeps) {
+          if (sweep.startsNewPath) cell.pointerInside = false;
+          const crossed = cubeSweepIntersects(
+            sweep,
+            cell,
+            projection,
+            sweep.radius,
+          );
+          const entered = crossed && !cell.pointerInside;
+          cell.pointerInside = cubeSweepIntersects(
+            { from: sweep.to, to: sweep.to },
+            cell,
+            projection,
+            sweep.radius,
+          );
+          if (!entered || now < cell.cooldownUntil) continue;
+          const motion = active.get(cell);
+          if (motion && now < motion.startedAt + CUBE_FLIP_DURATION_MS) {
+            // One pending revolution is enough to preserve a fresh entry while
+            // preventing a stationary pointer or rapid samples from looping.
+            if (motion.pendingTurn) continue;
+            motion.pendingTurn = true;
+          } else {
+            active.set(
+              cell,
+              createCubeMotion(now, cubePose(motion, now).accent),
+            );
+          }
+          cell.cooldownUntil = now + CUBE_RETRIGGER_DELAY_MS;
+        }
+        if (!pointerGoal.current.active) cell.pointerInside = false;
       }
     };
 
-    const updateCubes = (now: number, pointerX?: number, pointerY?: number) => {
-      if (!cubeContext) return;
-      for (const [cell, motion] of active) {
-        if (now >= motion.finishAt) {
-          active.delete(cell);
-          cell.cooldownUntil = now + CUBE_RETRIGGER_DELAY_MS;
-          drawCubeCell(cubeContext, cell, palette, now, undefined, pointerX, pointerY);
-        } else {
-          drawCubeCell(cubeContext, cell, palette, now, motion, pointerX, pointerY);
+    const updateCubes = (
+      now: number,
+      pointerX?: number,
+      pointerY?: number,
+      pointerStrength = 1,
+    ) => {
+      for (const [cell, previousMotion] of active) {
+        let motion = previousMotion;
+        if (
+          motion.pendingTurn &&
+          now >= motion.startedAt + CUBE_FLIP_DURATION_MS
+        ) {
+          const nextStart = motion.startedAt + CUBE_FLIP_DURATION_MS;
+          motion = createCubeMotion(
+            nextStart,
+            cubePose(motion, nextStart).accent,
+          );
+          active.set(cell, motion);
         }
+        if (now >= motion.finishAt) active.delete(cell);
       }
-
-      if (pointerX !== undefined && pointerY !== undefined) {
-        for (const cell of cells) {
-          if (active.has(cell)) continue;
-          const deltaX = cell.x - pointerX;
-          const deltaY = cell.y - pointerY;
-          const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-          if (distance < CUBE_RIPPLE_FALLOFF_PX) {
-            drawCubeCell(cubeContext, cell, palette, now, undefined, pointerX, pointerY);
-          }
-        }
+      const sweeps = pointerPathRef.current.sweeps.splice(0);
+      triggerCubes(now, sweeps);
+      if (cubeContext) {
+        drawCubeLayer(
+          cubeContext,
+          cells,
+          palette,
+          now,
+          active,
+          pointerX,
+          pointerY,
+          pointerStrength,
+        );
       }
-
-      pulseCursor = drawPulseShard(
-        cubeContext,
-        cells,
-        palette,
-        now,
-        active,
-        pulseCursor,
-        pointerX,
-        pointerY,
-      );
       scene.dataset.activeFlips = String(active.size);
+      scene.dataset.cubeFrameTime = String(now);
     };
 
     const paintAnimated = (now: number, deltaSeconds: number) => {
@@ -977,30 +846,22 @@ export function WorldScene({
         pointerSpring.current.y.goal = targetY;
         snapSpring(pointerSpring.current.x, targetX);
         snapSpring(pointerSpring.current.y, targetY);
-        needsInitialTrigger = true;
+        snapSpring(pointerInfluence.current, 1);
       } else {
-        pointerSpring.current.x.goal = targetX;
-        pointerSpring.current.y.goal = targetY;
+        pointerSpring.current.x.goal = pointerGoal.current.active
+          ? targetX
+          : pointerSpring.current.x.position;
+        pointerSpring.current.y.goal = pointerGoal.current.active
+          ? targetY
+          : pointerSpring.current.y.position;
         advanceSpring(pointerSpring.current.x, deltaSeconds, POINTER_SPRING);
         advanceSpring(pointerSpring.current.y, deltaSeconds, POINTER_SPRING);
+        pointerInfluence.current.goal = pointerGoal.current.active ? 1 : 0;
+        advanceSpring(pointerInfluence.current, deltaSeconds, POINTER_SPRING);
       }
 
       const smoothX = pointerSpring.current.x.position * width;
       const smoothY = pointerSpring.current.y.position * height;
-      const pointerDistance = Math.hypot(
-        smoothX - triggerPoint.x,
-        smoothY - triggerPoint.y,
-      );
-      if (
-        finePointerRef.current &&
-        pointerGoal.current.active &&
-        (needsInitialTrigger || pointerDistance > CUBE_TRIGGER_DISTANCE_PX)
-      ) {
-        triggerCubes(now, smoothX, smoothY);
-        triggerPoint = { x: smoothX, y: smoothY };
-        needsInitialTrigger = false;
-      }
-
       cameraSpring.current.x.goal = pointerGoal.current.active
         ? clamp((pointerGoal.current.x / width - 0.5) * 2, -1, 1)
         : 0;
@@ -1016,32 +877,32 @@ export function WorldScene({
         WORLD_CAMERA.spring,
       );
 
-      const rippleX = finePointerRef.current && pointerGoal.current.active ? smoothX : undefined;
-      const rippleY = finePointerRef.current && pointerGoal.current.active ? smoothY : undefined;
-      updateCubes(now, rippleX, rippleY);
+      const pointerStrength = pointerInfluence.current.position;
+      const rippleVisible = finePointerRef.current && pointerStrength > 0.01;
+      const rippleX = rippleVisible ? smoothX : undefined;
+      const rippleY = rippleVisible ? smoothY : undefined;
+      updateCubes(now, rippleX, rippleY, pointerStrength);
       if (glowContext) {
         drawGlowLayer(glowContext, width, height, palette, now, active);
-      }
-      if (particleContext) {
-        drawParticles(particleContext, width, height, palette, now);
       }
       updateCamera(
         cameraSpring.current.x.position,
         cameraSpring.current.y.position,
         cameraScaleSpring.current.position,
       );
-      scene.dataset.rippleActive = String(rippleX !== undefined && rippleY !== undefined);
+      scene.dataset.rippleActive = String(
+        rippleX !== undefined && rippleY !== undefined,
+      );
     };
 
     const tick = (now: number) => {
       const previousFrame = previousAnimationFrameRef.current;
-      const deltaSeconds =
-        previousFrame === null
-          ? 0
-          : clamp((now - previousFrame) / 1000, 0, 0.08);
+      const elapsedSeconds =
+        previousFrame === null ? 0 : Math.max(0, (now - previousFrame) / 1000);
+      const physicsDelta = clamp(elapsedSeconds, 0, 0.08);
       previousAnimationFrameRef.current = now;
-      animationTimeRef.current += deltaSeconds * 1000;
-      paintAnimated(animationTimeRef.current, deltaSeconds);
+      animationTimeRef.current += elapsedSeconds * 1000;
+      paintAnimated(animationTimeRef.current, physicsDelta);
       frame =
         typeof requestAnimationFrame === "function"
           ? requestAnimationFrame(tick)
@@ -1050,15 +911,20 @@ export function WorldScene({
 
     resize();
     paintFull(animationTimeRef.current);
-    updateCamera(0, 0, scaleGoal);
+    updateCamera(
+      cameraSpring.current.x.position,
+      cameraSpring.current.y.position,
+      cameraScaleSpring.current.position,
+    );
 
     if (motionEnabled) {
       if (typeof requestAnimationFrame === "function") {
         frame = requestAnimationFrame(tick);
       }
-    } else {
+    } else if (reducedMotion) {
       snapSpring(pointerSpring.current.x, 0.5);
       snapSpring(pointerSpring.current.y, 0.5);
+      snapSpring(pointerInfluence.current, 0);
       snapSpring(cameraSpring.current.x, 0);
       snapSpring(cameraSpring.current.y, 0);
       snapSpring(cameraScaleSpring.current, 1);
@@ -1105,21 +971,21 @@ export function WorldScene({
       data-paused={paused ? "true" : "false"}
       data-scene-state={state}
       data-scene-progress={normalizedProgress}
-      data-particle-budget={WORLD_PARTICLE_BUDGET.total}
       data-cube-pitch={CUBE_PITCH_PX}
       data-cube-size={CUBE_SIZE_PX}
-      data-cube-budget={CUBE_ACTIVE_BUDGET}
-      data-cube-active-budget={CUBE_ACTIVE_BUDGET}
       data-cube-flip-duration={CUBE_FLIP_DURATION_MS}
       data-cube-stay-duration={CUBE_STAY_DURATION_MS}
+      data-cube-return-duration={CUBE_RETURN_DURATION_MS}
       data-cube-glow-radius={CUBE_GLOW_RADIUS_PX}
       data-cube-glow-duration={CUBE_GLOW_DURATION_MS}
       data-cube-trigger-radius={CUBE_TRIGGER_RADIUS_PX}
+      data-cube-ripple-falloff={CUBE_RIPPLE_FALLOFF_PX}
       data-cube-trigger-distance={CUBE_TRIGGER_DISTANCE_PX}
       data-cube-retrigger-delay={CUBE_RETRIGGER_DELAY_MS}
       data-cube-rotation="true"
-      data-cube-rotation-rpm-min="0.18"
-      data-cube-rotation-rpm-max="0.26"
+      data-cube-rotation-rpm={CUBE_ROTATION_RPM}
+      data-cube-rotation-rpm-min={CUBE_ROTATION_RPM}
+      data-cube-rotation-rpm-max={CUBE_ROTATION_RPM}
       data-pointer-fine={finePointer}
       data-pointer-active="false"
     >
@@ -1132,11 +998,6 @@ export function WorldScene({
         <canvas
           ref={glowCanvasRef}
           className="world-scene__glow-canvas"
-          aria-hidden="true"
-        />
-        <canvas
-          ref={particleCanvasRef}
-          className="world-scene__particle-canvas"
           aria-hidden="true"
         />
       </div>

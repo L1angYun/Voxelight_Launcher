@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installLauncherFixture } from "./fixtures";
+import { selectValue } from "./select-helpers";
 
 const device = {
   sessionId: "device-e2e-fixture",
@@ -110,7 +111,7 @@ test("online skin, reset and cape changes happen only after explicit actions", a
   await page.getByRole("button", { name: "上传正版皮肤", exact: true }).click();
   await expect(page.getByText("正版皮肤已更新。", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "恢复默认皮肤", exact: true }).click();
-  await page.getByRole("combobox", { name: "正版披风", exact: true }).selectOption("");
+  await selectValue(page, "正版披风", "");
   await expect(page.getByText("披风已隐藏。", { exact: true })).toBeVisible();
   calls = await internals(page);
   expect(calls.some((call) => call.name === "upload_account_skin" && call.args?.path === "E:\\SyntheticFixture\\skin.png" && call.args?.model === "slim")).toBe(true);

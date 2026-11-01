@@ -29,6 +29,9 @@ vi.mock("../../lib/launcher", async (importOriginal) => ({
 vi.mock("../../app/controller/LauncherProvider", () => ({
   useLauncher: () => mockLauncher,
 }));
+vi.mock("../../app/AppearanceProvider", () => ({
+  useAppearance: () => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }),
+}));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 
 const account: Account = {

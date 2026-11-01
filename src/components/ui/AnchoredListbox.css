@@ -1,0 +1,33 @@
+.vx-select { display: inline-block; min-width: 0; width: 100%; }
+.vx-select__surface { width: 100%; border-radius: var(--vx-lens-radius-control, 14px); transform: var(--jelly-matrix, matrix(1,0,0,1,0,0)); }
+.vx-select__button { display: grid; grid-template-columns: minmax(0,1fr) 16px; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 0; border-radius: inherit; background: transparent; color: var(--text-primary); font-family: var(--font-ui); font-size: 14px; text-align: start; }
+.vx-select__button[data-has-icon="true"] { grid-template-columns: 18px minmax(0,1fr) 16px; padding-block: 6px; min-height: 48px; }
+.vx-select__button:focus-visible { outline: none; }
+.vx-select:has(.vx-select__button:focus-visible),
+.vx-jelly-control:has(> .vx-glass-surface .vx-select__button:focus-visible) {
+  outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--vx-lens-radius-control,14px);
+}
+.vx-jelly-control > .vx-glass-surface .vx-select--embedded:has(.vx-select__button:focus-visible) { outline: none; }
+.vx-select__button:disabled { opacity: .5; cursor: not-allowed; }
+.vx-select__button[aria-expanded="true"] .vx-select__chevron { transform: rotate(180deg); }
+.vx-select__text { display: grid; gap: 2px; min-width: 0; }
+.vx-select__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 550; line-height: 18px; }
+.vx-select__metadata { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; line-height: 14px; font-variant-numeric: tabular-nums; }
+.vx-select__chevron, .vx-select__button > svg { color: var(--text-secondary); }
+.vx-listbox-popover { inset: auto; z-index: 60; margin: 0; padding: 0; border: 0; overflow: visible; background: transparent; isolation: isolate; color: var(--text-primary); font-family: var(--font-ui); }
+.vx-listbox-popover::backdrop { background: transparent; pointer-events: none; }
+.vx-listbox-surface.vx-glass-surface { padding: 6px; border-radius: var(--vx-lens-radius-menu,20px); opacity: 1; transition: none; }
+/* Fade the filter owner itself; its positioning ancestor stays opaque. */
+.vx-listbox-popover[data-animate="true"] > .vx-listbox-surface { transition: opacity 150ms var(--ease-out); }
+.vx-listbox-popover[data-present="false"] > .vx-listbox-surface { opacity: 0; transition-duration: 100ms; }
+@starting-style { .vx-listbox-popover[data-animate="true"] > .vx-listbox-surface { opacity: 0; } }
+.vx-select__listbox { position: relative; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; list-style: none; }
+.vx-select__option { display: grid; grid-template-columns: minmax(0,1fr) 16px; align-items: center; gap: 12px; min-width: 0; min-height: 44px; padding: 10px 12px; border-radius: var(--vx-lens-radius-control,14px); color: var(--text-primary); cursor: pointer; }
+.vx-select__option[data-has-icon="true"] { grid-template-columns: 18px minmax(0,1fr) 16px; min-height: 60px; }
+.vx-select__option > svg { color: var(--text-secondary); }
+.vx-select__option[data-active="true"] { background: var(--surface-hover); }
+.vx-select__option[aria-selected="true"] { background: var(--accent-soft); }
+.vx-select__option[aria-selected="true"] > [data-selected-mark] { color: var(--accent); }
+.vx-select__option[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.vx-select__option[data-version-directory] { margin-top: 4px; }
+@media (forced-colors: active) { .vx-select__option[data-active="true"] { outline: 2px solid Highlight; outline-offset: -2px; } .vx-select__option[aria-selected="true"] > [data-selected-mark] { color: Highlight; } }

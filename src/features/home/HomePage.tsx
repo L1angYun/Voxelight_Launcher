@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Upload, UserRound } from "lucide-react";
+import { Plus, Upload, UserRound, PersonStanding, Footprints, Timer } from "lucide-react";
 import { command } from "../../lib/launcher";
 import { useDefaultSkin } from "../../lib/defaultSkin";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useAppearance } from "../../app/AppearanceProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
 import { CharacterCanvas, type CharacterAnimation } from "../../visual/character/CharacterCanvas";
-import { EmptyState, ToastRegion } from "../../components/ui/Feedback";
+import { ToastRegion } from "../../components/ui/Feedback";
 import { Button } from "../../components/ui/Button";
-import { GlassSurface } from "../../visual/glass/GlassSystem";
 import { CreateInstanceDialog } from "../library/CreateInstanceDialog";
 import { LaunchConsole } from "./LaunchConsole";
 import { RecentInstances } from "./RecentInstances";
@@ -39,7 +38,7 @@ export function HomePage() {
     reload,
     dismissNotice,
   } = useLauncher();
-  const { effects, reducedMotion } = useAppearance();
+  const { effects, reducedMotion, highContrast } = useAppearance();
   const { play } = useOverture();
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -106,7 +105,7 @@ export function HomePage() {
       ? currentInstance.loader
       : t("home:vanilla");
   const javaLabel = selectedVersion?.javaMajor
-    ? `Java ${selectedVersion.javaMajor}`
+    ? t("home:javaVersion", { major: selectedVersion.javaMajor })
     : t("home:javaUnknown");
 
   const noticeText = notice
@@ -121,7 +120,7 @@ export function HomePage() {
     ? t("home:accountPreview", { username: activeAccount?.username })
     : t("home:defaultPreview");
 
-  const staticScene = reducedMotion || effects === "lite";
+  const staticScene = reducedMotion || highContrast || effects === "lite";
   const preparing = busy === "game.prepare";
   const running = Boolean(selectedRunningGame || gamePid);
   const currentProgress =
@@ -133,15 +132,8 @@ export function HomePage() {
     preparing || launchRequested ? "walk" :
     manualAnimation ?? "idle";
 
-  // Time-of-day greeting
-  const hour = new Date().getHours();
-  const greetingKey =
-    hour < 6 ? "home:greetingNight" :
-    hour < 12 ? "home:greetingMorning" :
-    hour < 18 ? "home:greetingAfternoon" :
-    "home:greetingEvening";
-
   function onCharPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (staticScene) return;
     const rect = characterAreaRef.current?.getBoundingClientRect();
     if (!rect) return;
     setHeadPointer({
@@ -216,7 +208,50 @@ export function HomePage() {
       data-state={stageState}
     >
       <div className="vx-home__layout">
-        {/* ── Left column: character + animation picker ── */}
+        <section className="vx-home__stage" aria-labelledby="home-instance-title">
+          <div className="vx-home__identity">
+            <h1 id="home-instance-title" className="vx-home__console-name" title={stageTitle}>
+              {currentInstance || useVersionDirectory ? stageTitle : t("home:noInstance")}
+            </h1>
+            {(currentInstance || useVersionDirectory) && versionLabel ? (
+              <ul className="vx-home__meta" aria-label={t("home:instance")}>
+                <li>{versionLabel}</li>
+                <li>{loaderLabel}</li>
+                <li>{javaLabel}</li>
+              </ul>
+            ) : null}
+          </div>
+          <div className="vx-home__console-wrap">
+            {currentInstance || useVersionDirectory ? (
+              <LaunchConsole
+                instance={currentInstance}
+                instances={data.instances}
+                version={selectedVersion}
+                onSelectInstance={chooseInstance}
+                onLaunch={beginLaunch}
+                onStop={stop}
+                onCancel={cancelPreparation}
+                onOpenFolder={() => void run("folder.open", () => command("open_folder", { kind: "game" }))}
+                busy={busy}
+                running={running}
+                progress={currentProgress}
+              />
+            ) : (
+              <div className="vx-home__empty vx-empty">
+                <p>{t("home:noInstanceDescription")}</p>
+                <div className="vx-empty__actions">
+                  <Button variant="primary" icon={<Plus size={16} />} onClick={() => setCreateOpen(true)}>
+                    {t("home:createInstance")}
+                  </Button>
+                  <Button variant="ghost" icon={<Upload size={16} />} onClick={() => setImportOpen(true)}>
+                    {t("home:importPack")}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
         <div
           className="vx-home__char-col"
           ref={characterAreaRef}
@@ -224,11 +259,31 @@ export function HomePage() {
           onPointerLeave={() => { setCharAreaHovered(false); setHeadPointer(null); }}
           onPointerMove={onCharPointerMove}
         >
+          <div
+            className="vx-home__anim-picker"
+            role="group"
+            data-visible={charAreaHovered && !running && !preparing}
+            aria-label={t("home:animationMode")}
+          >
+            {(["idle", "walk", "run"] as const).map((mode) => {
+              const Icon = mode === "idle" ? PersonStanding : mode === "walk" ? Footprints : Timer;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  className="vx-home__anim-btn"
+                  aria-pressed={currentAnimation === mode}
+                  disabled={running || preparing}
+                  onClick={() => setManualAnimation(mode)}
+                >
+                  <Icon size={16} aria-hidden="true" />
+                  <span>{t(`home:anim.${mode}`)}</span>
+                </button>
+              );
+            })}
+          </div>
           <section className="vx-home__character-panel" aria-label={previewLabel}>
             <div className="vx-home__character-orbit" aria-hidden="true">
-              <span className="vx-home__orbit-ring vx-home__orbit-ring--outer" />
-              <span className="vx-home__orbit-ring vx-home__orbit-ring--inner" />
-              <span className="vx-home__orbit-axis" />
               <span className="vx-home__character-floor" />
             </div>
             {!previewUnavailable ? (
@@ -242,134 +297,21 @@ export function HomePage() {
                 headPointer={headPointer}
                 label={previewLabel}
               />
-            ) : (
-              characterFallback
-            )}
+            ) : characterFallback}
           </section>
-
-          {/* Animation mode picker — slides in on hover */}
-          <div
-            className="vx-home__anim-picker"
-            data-visible={charAreaHovered && !running && !preparing}
-            aria-label={t("home:animationMode")}
-          >
-            {(["idle", "walk", "run"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                className="vx-home__anim-btn"
-                aria-pressed={currentAnimation === m}
-                onClick={() => setManualAnimation(m)}
-              >
-                <span aria-hidden="true">{m === "idle" ? "🧍" : m === "walk" ? "🚶" : "🏃"}</span>
-                <span>{t(`home:anim.${m}`)}</span>
-              </button>
-            ))}
-          </div>
-
           <p className="vx-home__preview-source">
-            <UserRound size={12} aria-hidden="true" />
+            <UserRound size={14} aria-hidden="true" />
             {previewLabel}
           </p>
         </div>
 
-        {/* ── Right column: greeting + instance console + recent ── */}
-        <section className="vx-home__stage" aria-label={t("home:instance")}>
-          <p className="vx-home__greeting-line" aria-hidden="true">
-            {t(greetingKey)}
-          </p>
-
-          <div className="vx-home__console-wrap">
-            <GlassSurface
-              className="vx-home__glass-panel vx-home__console"
-              variant="dialog"
-            >
-              <span className="vx-home__console-glint" aria-hidden="true" />
-              <div className="vx-home__console-heading">
-                <div className="vx-home__identity">
-                  <p className="vx-home__console-name" title={stageTitle}>
-                    {stageTitle}
-                  </p>
-                </div>
-                <span className="vx-home__console-signal" aria-hidden="true">
-                  <i /><i /><i />
-                </span>
-              </div>
-
-              <div className="vx-home__console-body">
-                {versionLabel ? (
-                  <ul className="vx-home__meta" aria-label={t("home:instance")}>
-                    {currentInstance ? (
-                      <li>
-                        <span className="vx-home__meta-dot" aria-hidden="true" />
-                        <span>{versionLabel}</span>
-                      </li>
-                    ) : null}
-                    <li>
-                      <span className="vx-home__meta-dot" aria-hidden="true" />
-                      <span>{loaderLabel}</span>
-                    </li>
-                    <li>
-                      <span className="vx-home__meta-dot" aria-hidden="true" />
-                      <span>{javaLabel}</span>
-                    </li>
-                  </ul>
-                ) : null}
-
-                {currentInstance || useVersionDirectory ? (
-                  <LaunchConsole
-                    instance={currentInstance}
-                    instances={data.instances}
-                    version={selectedVersion}
-                    onSelectInstance={chooseInstance}
-                    onLaunch={beginLaunch}
-                    onStop={stop}
-                    onCancel={cancelPreparation}
-                    onOpenFolder={() =>
-                      void run("folder.open", () =>
-                        command("open_folder", { kind: "game" }),
-                      )
-                    }
-                    busy={busy}
-                    running={running}
-                    progress={currentProgress}
-                  />
-                ) : (
-                  <EmptyState
-                    title={t("home:noInstance")}
-                    description={t("home:noInstanceDescription")}
-                    action={
-                      <div className="vx-empty__actions">
-                        <Button
-                          variant="primary"
-                          icon={<Plus size={16} />}
-                          onClick={() => setCreateOpen(true)}
-                        >
-                          {t("home:createInstance")}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          icon={<Upload size={16} />}
-                          onClick={() => setImportOpen(true)}
-                        >
-                          {t("home:importPack")}
-                        </Button>
-                      </div>
-                    }
-                  />
-                )}
-              </div>
-            </GlassSurface>
-          </div>
-
-          <div className="vx-home__recent">
-            <RecentInstances
-              instances={data.instances}
-              selectedId={currentInstance?.id}
-              onSelect={chooseInstance}
-            />
-          </div>
-        </section>
+        <div className="vx-home__recent">
+          <RecentInstances
+            instances={data.instances}
+            selectedId={currentInstance?.id}
+            onSelect={chooseInstance}
+          />
+        </div>
       </div>
 
       {notice ? (

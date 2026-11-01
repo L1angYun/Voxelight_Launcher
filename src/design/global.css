@@ -19,44 +19,7 @@ button, input, select, textarea { font: inherit; }
 button { min-width: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 
-/* Custom Select component — replaces native <select> for WebView2 compatibility */
-.vx-select { position: relative; display: inline-block; min-width: 0; width: 100%; }
-.vx-select__button {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  width: 100%; min-height: 36px; padding: 0 10px; cursor: pointer;
-  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg-raised); color: var(--text-primary);
-  font: inherit; font-size: var(--text-sm);
-  transition: border-color 120ms ease, background-color 120ms ease;
-}
-.vx-select__button:hover:not(:disabled) { border-color: var(--accent-border); background: var(--surface-hover); }
-.vx-select__button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.vx-select--disabled .vx-select__button { opacity: 0.5; cursor: not-allowed; }
-.vx-select__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; text-align: left; }
-.vx-select__chevron { flex: 0 0 auto; color: var(--text-secondary); transition: transform 160ms ease; }
-.vx-select--open .vx-select__chevron { transform: rotate(180deg); }
-.vx-select__listbox {
-  position: absolute; z-index: 200; top: calc(100% + 4px); left: 0; right: 0;
-  margin: 0; padding: 4px; list-style: none;
-  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  box-shadow: 0 8px 24px -4px rgba(0,0,0,0.32), 0 2px 6px -2px rgba(0,0,0,0.18);
-  max-height: 280px; overflow-y: auto; outline: none;
-  animation: vx-select-appear 120ms ease;
-}
-@keyframes vx-select-appear { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-.vx-select__option {
-  display: flex; align-items: center; min-height: 34px; padding: 0 10px;
-  border-radius: calc(var(--radius-sm) - 2px); cursor: pointer;
-  font-size: var(--text-sm); color: var(--text-primary);
-  transition: background-color 80ms ease;
-}
-.vx-select__option:hover { background: var(--surface-hover); }
-.vx-select__option--active { background: var(--surface-hover); }
-.vx-select__option--selected { color: var(--accent); font-weight: 560; }
-.vx-select__option--selected::after { content: "✓"; margin-left: auto; padding-left: 8px; }
-.vx-select__option--disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
-[data-reduced-transparency="true"] .vx-select__listbox { background: var(--surface-solid); }
+/* Shared Select/listbox styling lives in components/ui/AnchoredListbox.css. */
 
 button svg, a svg { flex-shrink: 0; }
 button, input, select, textarea { outline-offset: 3px; }

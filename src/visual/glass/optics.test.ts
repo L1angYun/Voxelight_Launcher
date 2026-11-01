@@ -58,4 +58,9 @@ describe("glass optics", () => {
     expect(readGlassOptics(node)).toBeUndefined();
     expect(readGlassOptics(top)?.energy).toBe(0.5);
   });
+
+  it("forwards directional stretch from the same control pose as pressure and bend", () => {
+    const surface = wrapped({ "--jelly-stretch": "0.16", "--jelly-heading": "1.2", "--jelly-press": "0.8" });
+    expect(readGlassOptics(surface)).toMatchObject({ pressure: 0.8, stretch: 0.16, heading: 1.2 });
+  });
 });

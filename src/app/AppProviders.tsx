@@ -51,41 +51,43 @@ function useGlassBackdrop(): HTMLCanvasElement | null {
   return backdrop;
 }
 
-function useCursorHalo(effects: string, reducedMotion: boolean) {
+export function useCursorHalo(effects: string, reducedMotion: boolean, highContrast = false) {
   const haloRef = useRef<ReturnType<typeof mountCursorHalo>>(null);
 
   useEffect(() => {
-    if (effects !== "full" || reducedMotion) return;
     const root = document.documentElement;
-    const halo = mountCursorHalo(root);
-    haloRef.current = halo;
-    if (!halo) return;
-    root.dataset.cursorHalo = "true";
-
-    // Disable cursor halo on home page — WorldScene has its own particle system.
-    const sync = () => {
-      const page = (document.querySelector(".vx-app-body") as HTMLElement | null)?.dataset.currentPage;
-      haloRef.current?.setEnabled(page !== "home");
-    };
-    // Run once immediately and whenever the page attribute changes.
-    sync();
-    const observer = new MutationObserver(sync);
-    observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["data-current-page"] });
-
-    return () => {
-      observer.disconnect();
-      halo.dispose();
+    const fine = typeof window.matchMedia === "function"
+      ? window.matchMedia("(any-pointer: fine)") : null;
+    const dispose = () => {
+      haloRef.current?.dispose();
       haloRef.current = null;
       delete root.dataset.cursorHalo;
     };
-  }, [effects, reducedMotion]);
+    const sync = () => {
+      if (effects !== "full" || reducedMotion || highContrast || !fine?.matches) {
+        dispose();
+        return;
+      }
+      if (haloRef.current) return;
+      const halo = mountCursorHalo(root);
+      if (!halo) return;
+      haloRef.current = halo;
+      root.dataset.cursorHalo = "true";
+    };
+    sync();
+    fine?.addEventListener?.("change", sync);
+    return () => {
+      fine?.removeEventListener?.("change", sync);
+      dispose();
+    };
+  }, [effects, reducedMotion, highContrast]);
 }
 
 function VisualProviders({ children }: { children?: ReactNode }) {
   const { config } = useLauncher();
   const glassBackdrop = useGlassBackdrop();
   const { effects, reducedMotion, reducedTransparency, highContrast, systemLocale } = useAppearance();
-  useCursorHalo(effects, reducedMotion);
+  useCursorHalo(effects, reducedMotion, highContrast);
   const pseudoLocale = import.meta.env.DEV && new URLSearchParams(window.location.search).has("stress-locale");
   const i18n = useMemo(
     () => createLauncherI18n(config.language, systemLocale, pseudoLocale),

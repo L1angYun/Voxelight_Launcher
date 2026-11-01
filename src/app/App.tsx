@@ -12,6 +12,9 @@ import { MultiplayerPage } from "../features/multiplayer/MultiplayerPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { WorldScene } from "../components/WorldScene";
 import { useLauncher } from "./controller/LauncherProvider";
+import { useAppearance } from "./AppearanceProvider";
+import { useOverture } from "../visual/overture/OvertureProvider";
+import { PageErrorBoundary } from "./PageErrorBoundary";
 import "../design/global.css";
 import "./shell.css";
 
@@ -23,6 +26,8 @@ function AppShell() {
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
   const { activeAccount, accountAppearance } = useLauncher();
+  const { effects, reducedMotion, highContrast } = useAppearance();
+  const { playing } = useOverture();
   return (
     <>
       <a className="vx-skip-link" href="#main-content">{t("shell:a11y.skipToContent")}</a>
@@ -31,13 +36,15 @@ function AppShell() {
         <WorldScene
           className="vx-global-scene"
           state="idle"
-          paused={false}
+          paused={playing}
+          effects={effects}
+          reducedMotion={reducedMotion || highContrast}
         />
         <FloatingNav
           page={page}
           onNavigate={(nextPage) => {
             setPage(nextPage);
-            mainRef.current?.scrollTo({ top: 0, behavior: "instant" });
+            mainRef.current?.scrollTo({ top: 0, behavior: "auto" });
           }}
           implemented={implementedPages}
           activeTaskCount={downloadTasks.activeCount}
@@ -45,13 +52,21 @@ function AppShell() {
           accountSkinUrl={accountAppearance.skinUrl}
         />
         <main ref={mainRef} id="main-content" className="vx-app-main" data-current-page={page} tabIndex={-1}>
-          {page === "home" ? <HomePage /> : null}
-          {page === "library" ? <LibraryPage /> : null}
-          {page === "discover" ? <DiscoverPage /> : null}
-          {page === "multiplayer" ? <MultiplayerPage /> : null}
-          {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
-          {page === "accounts" ? <AccountsPage /> : null}
-          {page === "settings" ? <SettingsPage /> : null}
+          <PageErrorBoundary
+            key={page}
+            page={page}
+            title={t("common:errors.internalUnexpected")}
+            description={t("common:errors.missing")}
+            retryLabel={t("common:actions.retry")}
+          >
+            {page === "home" ? <HomePage /> : null}
+            {page === "library" ? <LibraryPage /> : null}
+            {page === "discover" ? <DiscoverPage /> : null}
+            {page === "multiplayer" ? <MultiplayerPage /> : null}
+            {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
+            {page === "accounts" ? <AccountsPage /> : null}
+            {page === "settings" ? <SettingsPage /> : null}
+          </PageErrorBoundary>
         </main>
       </div>
     </>
