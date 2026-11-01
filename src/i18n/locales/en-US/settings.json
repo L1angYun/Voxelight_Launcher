@@ -1,0 +1,149 @@
+{
+  "title": "Settings",
+  "subtitle": "Preview appearance changes, then save when you are ready.",
+  "save": "Save settings",
+  "reset": "Reset changes",
+  "unsaved": "You have unsaved changes. Appearance preview reverts if you leave without saving.",
+  "sections": "Settings sections",
+  "section": {
+    "general": "General",
+    "appearance": "Appearance",
+    "game": "Game",
+    "java": "Java",
+    "downloads": "Downloads",
+    "about": "About"
+  },
+  "generalDescription": "Service credentials and portable launcher presets.",
+  "service": {
+    "title": "Service connections",
+    "description": "Use credentials registered for this project. Tokens and service keys are encrypted by the system.",
+    "clientId": "Microsoft application Client ID",
+    "clientIdPlaceholder": "Client ID from your app registration",
+    "curseforgeKey": "CurseForge API Key",
+    "keyPlaceholder": "Enter your own API key",
+    "keyConfiguredPlaceholder": "Encrypted key saved; leave blank to keep it",
+    "saveKey": "Save key",
+    "configured": "Configured",
+    "clearKey": "Clear saved key"
+  },
+  "preset": {
+    "title": "Configuration presets",
+    "description": "Export or import launcher settings. Accounts, login tokens, and service keys are never included.",
+    "filter": "Voxelight preset",
+    "export": "Export preset",
+    "import": "Import preset"
+  },
+  "appearanceDescription": "Language and appearance preview immediately. Save to keep them.",
+  "fields": {
+    "theme": "Theme",
+    "language": "Language",
+    "effects": "Effects level",
+    "worldScene": "World scene",
+    "worldMaterial": "World material",
+    "accentSource": "Accent source",
+    "accentColor": "Accent color",
+    "sound": "Sound effects",
+    "gameDirectory": "Game directory",
+    "versionIsolation": "Version isolation",
+    "screenWidth": "Game window width",
+    "screenHeight": "Game window height",
+    "javaPath": "Java executable",
+    "maxMemory": "Maximum memory (MB)",
+    "jvmArguments": "JVM arguments",
+    "javaAutoDownload": "Prepare Java automatically",
+    "downloadSource": "Download source",
+    "downloadConcurrency": "Download concurrency",
+    "downloadLimit": "Download limit (KiB/s)"
+  },
+  "theme": {
+    "dark": "Dark",
+    "light": "Light",
+    "system": "Follow system"
+  },
+  "language": {
+    "system": "Follow system"
+  },
+  "effects": {
+    "lite": "Lite · essential motion",
+    "full": "Full · all effects"
+  },
+  "worldScene": {
+    "horizon": "Horizon",
+    "massif": "Massif"
+  },
+  "worldMaterial": {
+    "lattice": "Lattice",
+    "solid": "Solid"
+  },
+  "accent": {
+    "voxelight": "Voxelight green",
+    "system": "System accent",
+    "custom": "Custom accent",
+    "systemCurrent": "Current system accent: {{color}}",
+    "presets": "Accent presets",
+    "preset": "Accent color {{color}}"
+  },
+  "soundDescription": "Off by default. Used only for important transitions.",
+  "background": {
+    "title": "Home background",
+    "description": "Choose a local PNG, JPEG, or WebP image. Content above it keeps a stable contrast layer.",
+    "picker": "Choose a home background",
+    "filter": "Background image",
+    "choose": "Choose background",
+    "reset": "Reset background"
+  },
+  "gameDescription": "Shared game files and window defaults. Instance overrides stay in instance settings.",
+  "game": {
+    "directoryPicker": "Choose the Minecraft game directory",
+    "browse": "Browse",
+    "isolationDescription": "Keep saves, mods, and settings separate for each game version."
+  },
+  "javaDescription": "Choose the shared runtime and launch defaults for new instances.",
+  "java": {
+    "auto": "Choose a compatible Java automatically",
+    "detect": "Detect Java",
+    "autoDescription": "Download and verify the matching official runtime when needed."
+  },
+  "downloadDescription": "Control official downloads, mirrors, and task throughput.",
+  "downloadSource": {
+    "official": "Official only",
+    "auto": "Automatic fallback · official first",
+    "bmclapi": "BMCLAPI first · official fallback",
+    "officialDescription": "Download only from Mojang/Minecraft addresses, with size and SHA-1 verification.",
+    "autoDescription": "Try official addresses first, then BMCLAPI for vanilla metadata, clients, libraries, and assets.",
+    "bmclapiDescription": "Try BMCLAPI's version_manifest_v2 first, then official addresses. Verification requirements stay the same.",
+    "mirrorNotice": "BMCLAPI is a community mirror, not an official Mojang service. A manifest hash proves file consistency, not independent official endorsement.",
+    "mirrorLink": "Read about BMCLAPI",
+    "scopeNotice": "This does not add mirrors for Quilt, Modrinth, CurseForge, or other Maven services. Fixed files are verified before writing."
+  },
+  "aboutDescription": "Version, license, source code, and local-data behavior.",
+  "about": {
+    "version": "Version",
+    "license": "License",
+    "source": "Source code",
+    "dataNotice": "Uninstall keeps launcher data by default. Removing an account or instance registration does not delete game files.",
+    "secretNotice": "Presets exclude accounts, login tokens, and service keys. Service credentials are configured in General.",
+    "typeface": "Typeface",
+    "typefaceCredit": "MiSans · Xiaomi"
+  },
+  "notice": {
+    "secretSaved": "CurseForge key saved with system encryption.",
+    "secretCleared": "Saved CurseForge key cleared.",
+    "presetExported": "Preset exported without accounts or service keys.",
+    "presetImported": "Preset imported.",
+    "backgroundUpdated": "Home background updated.",
+    "backgroundCleared": "Default home background restored.",
+    "javaDetected_one": "Found {{count}} Java environment.",
+    "javaDetected_other": "Found {{count}} Java environments.",
+    "javaNotFound": "No Java environment found. Install one or enter its path."
+  },
+  "errors": {
+    "config": {
+      "backgroundInvalid": "Choose a valid PNG, JPEG, or WebP background no larger than 12 MB.",
+      "presetInvalid": "Choose a valid preset exported by this launcher.",
+      "busy": "Wait for the current installation or launch preparation to finish before changing settings.",
+      "gameDirectory": "The game directory must be an absolute path.",
+      "invalid": "Some settings are invalid. Review the highlighted values and try again."
+    }
+  }
+}

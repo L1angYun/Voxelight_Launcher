@@ -77,6 +77,30 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
             />
           </label>
           <label>
+            {t("settings:fields.worldScene")}
+            <Select
+              aria-label={t("settings:fields.worldScene")}
+              value={config.worldScene}
+              onChange={(v) => onChange({ ...config, worldScene: v as Config["worldScene"] })}
+              options={[
+                { value: "horizon", label: t("settings:worldScene.horizon") },
+                { value: "massif", label: t("settings:worldScene.massif") },
+              ]}
+            />
+          </label>
+          <label>
+            {t("settings:fields.worldMaterial")}
+            <Select
+              aria-label={t("settings:fields.worldMaterial")}
+              value={config.worldMaterial}
+              onChange={(v) => onChange({ ...config, worldMaterial: v as Config["worldMaterial"] })}
+              options={[
+                { value: "lattice", label: t("settings:worldMaterial.lattice") },
+                { value: "solid", label: t("settings:worldMaterial.solid") },
+              ]}
+            />
+          </label>
+          <label>
             {t("settings:fields.accentSource")}
             <Select
               aria-label={t("settings:fields.accentSource")}

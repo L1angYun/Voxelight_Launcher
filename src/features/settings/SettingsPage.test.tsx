@@ -149,6 +149,20 @@ afterEach(async () => {
 });
 
 describe("global settings", () => {
+  it("previews world scene and material immediately and saves both choices explicitly", async () => {
+    await render();
+    await click("Appearance");
+    expect(button("World scene").textContent).toContain("Horizon");
+    expect(button("World material").textContent).toContain("Lattice");
+    await select("World scene", "massif");
+    expect(mockLauncher.setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "lattice" }));
+    await select("World material", "solid");
+    expect(mockLauncher.setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }));
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }));
+  });
+
   it("previews appearance immediately, offers exactly two effect levels, and saves explicitly", async () => {
     await render();
     await click("Appearance");

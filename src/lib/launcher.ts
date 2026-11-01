@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { DefaultSkinId } from "./defaultSkin";
+import type { WorldMaterial, WorldSceneId } from "../components/world/types";
 import { LauncherError, normalizeError } from "./errors";
 
 export type EffectsLevel = "lite" | "full";
@@ -29,6 +30,8 @@ export interface Config {
   language: string;
   accentColor: string;
   effects: EffectsLevel;
+  worldScene: WorldSceneId;
+  worldMaterial: WorldMaterial;
   accentSource: AccentSource;
   soundEnabled: boolean;
   customBackground?: string | null;
@@ -157,6 +160,8 @@ export const defaults: Config = {
   language: "system",
   accentColor: "#b4f17a",
   effects: "full",
+  worldScene: "horizon",
+  worldMaterial: "lattice",
   accentSource: "system",
   soundEnabled: false,
   customBackground: null,

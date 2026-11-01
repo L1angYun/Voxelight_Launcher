@@ -66,6 +66,12 @@ pub(crate) fn migrate_state_json(mut value: Value) -> Result<Value, String> {
         config
             .entry("effects")
             .or_insert_with(|| Value::String("full".into()));
+        config
+            .entry("worldScene")
+            .or_insert_with(|| Value::String("horizon".into()));
+        config
+            .entry("worldMaterial")
+            .or_insert_with(|| Value::String("lattice".into()));
         if !config.contains_key("accentSource") {
             let branded = config
                 .get("accentColor")
@@ -552,12 +558,21 @@ mod tests {
             .and_then(Value::as_object_mut)
             .unwrap();
         config.insert("accentColor".into(), Value::String("#112233".into()));
-        for field in ["effects", "accentSource", "language", "soundEnabled"] {
+        for field in [
+            "effects",
+            "accentSource",
+            "language",
+            "soundEnabled",
+            "worldScene",
+            "worldMaterial",
+        ] {
             config.remove(field);
         }
         config.insert("futureVisualSetting".into(), serde_json::json!("kept"));
 
         let migrated = migrate_state_json(old).unwrap();
+        assert_eq!(migrated["config"]["worldScene"], "horizon");
+        assert_eq!(migrated["config"]["worldMaterial"], "lattice");
         let decoded: Persisted = serde_json::from_value(migrated).unwrap();
         assert_eq!(decoded.schema_version, 1);
         assert_eq!(decoded.config.effects, "full");
@@ -576,6 +591,18 @@ mod tests {
         let branded: Persisted =
             serde_json::from_value(migrate_state_json(branded).unwrap()).unwrap();
         assert_eq!(branded.config.accent_source, "system");
+    }
+
+    #[test]
+    fn crystal_world_config_choices_survive_migration_and_round_trip() {
+        let old = serde_json::json!({
+            "config": { "worldScene": "massif", "worldMaterial": "solid" },
+            "accounts": [], "instances": []
+        });
+        let decoded: Persisted = serde_json::from_value(migrate_state_json(old).unwrap()).unwrap();
+        let saved = serde_json::to_value(decoded).unwrap();
+        assert_eq!(saved["config"]["worldScene"], "massif");
+        assert_eq!(saved["config"]["worldMaterial"], "solid");
     }
 
     #[test]

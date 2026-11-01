@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import type { WorldMaterial, WorldSceneId } from "../../src/components/world/types";
 
 export async function installLauncherFixture(
   page: Page,
@@ -11,6 +12,8 @@ export async function installLauncherFixture(
     defaultModel?: "classic" | "slim";
     theme?: "dark" | "light" | "system";
     effects?: "lite" | "full";
+    worldScene?: WorldSceneId;
+    worldMaterial?: WorldMaterial;
     stress?: boolean;
     launchDelay?: number;
   } = {},
@@ -89,6 +92,8 @@ export async function installLauncherFixture(
       language: options.stress ? "en-US" : "zh-CN",
       accentColor: "#b4f17a",
       effects: options.effects ?? "full",
+      worldScene: options.worldScene ?? "horizon",
+      worldMaterial: options.worldMaterial ?? "lattice",
       accentSource: "system",
       soundEnabled: false,
       customBackground: null,
