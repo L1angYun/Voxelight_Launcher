@@ -53,7 +53,7 @@ export function CharacterCanvas({
   autoRotate?: boolean;
   animation?: CharacterAnimation;
   /** Normalized pointer within the canvas: x,y in [-1,1] relative to center.
-    Null returns the head to rest. Only drives head rotation; no re-render. */
+    Null returns the head to the native animation. Running keeps looking forward. */
   headPointer?: { x: number; y: number } | null;
   label: string;
   className?: string;
@@ -71,7 +71,7 @@ export function CharacterCanvas({
   const cameraTouched = useRef(false);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
-  const headPointerRef = useRef<{ x: number; y: number } | null | undefined>(null);
+  const headPointerRef = useRef<{ x: number; y: number } | null>(null);
   headPointerRef.current = headPointer;
   const [viewer, setViewer] = useState<WebGLSkinViewer | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -82,6 +82,8 @@ export function CharacterCanvas({
   const inView = useRef(true);
   const reducedMotion = useReducedMotion();
   const mode = reducedMotion ? "none" : animation;
+  const shouldAutoRotate = autoRotate && interactive && !reducedMotion;
+  const playbackPaused = paused || !visible || (mode === "none" && !shouldAutoRotate);
 
   useEffect(() => {
     canvasRef.current?.setAttribute("aria-label", label);
@@ -292,35 +294,40 @@ export function CharacterCanvas({
   useEffect(() => {
     if (!viewer || viewer.disposed) return;
     // Assigning animation resets the pose and clock; pause separately to retain the stride.
-    viewer.animation = mode === "walk" ? new WalkingAnimation() : mode === "run" ? new RunningAnimation() : mode === "idle" ? new IdleAnimation() : null;
+    const next = mode === "walk" ? new WalkingAnimation() : mode === "run" ? new RunningAnimation() : mode === "idle" ? new IdleAnimation() : null;
+    next?.addAnimation((player) => {
+      const head = player.skin.head;
+      if (mode === "run") {
+        // Keep the native stride, jumping and roll; pitch is an absolute pose,
+        // so repeated frames never accumulate lean or retain pointer angles.
+        player.rotation.x = Math.PI / 24;
+        head.rotation.x = -player.rotation.x;
+        head.rotation.y = 0;
+        return;
+      }
+      const pointer = headPointerRef.current;
+      if (pointer) {
+        // Applied after the native frame, with no competing pointer effect.
+        head.rotation.x = -Math.max(-1, Math.min(1, pointer.y)) * 0.35;
+        head.rotation.y = Math.max(-1, Math.min(1, pointer.x)) * 0.55;
+      } else if (mode === "idle") {
+        head.rotation.x = 0;
+        head.rotation.y = 0;
+      }
+    });
+    viewer.animation = next;
+    // Show the selected mode immediately, including a static native frame in
+    // lite mode. A zero delta neither starts a clock nor advances the stride.
+    next?.update(viewer.playerObject, 0);
+    viewer.render();
   }, [viewer, mode]);
 
   useEffect(() => {
     if (!viewer || viewer.disposed) return;
-    viewer.autoRotate = autoRotate && interactive && !reducedMotion;
-    viewer.renderPaused = paused || !visible || (mode === "none" && !viewer.autoRotate);
+    viewer.autoRotate = shouldAutoRotate;
+    viewer.renderPaused = playbackPaused;
     if (!viewer.renderPaused) viewer.render();
-  }, [viewer, mode, autoRotate, interactive, paused, reducedMotion, visible]);
-
-  // Head tracking: rotate the character's head toward the pointer without
-  // rebuilding the main setup effect.  headPointerRef stays current via the
-  // assignment above; we only re-render when headPointer actually changes.
-  useEffect(() => {
-    if (!viewer || viewer.disposed) return;
-    const head = viewer.playerObject?.skin?.head;
-    if (!head) return;
-    const MAX_PITCH = 0.35; // up/down
-    const MAX_YAW   = 0.55; // left/right
-    if (headPointer) {
-      head.rotation.x = -headPointer.y * MAX_PITCH;
-      head.rotation.y =  headPointer.x * MAX_YAW;
-    } else {
-      head.rotation.x = 0;
-      head.rotation.y = 0;
-    }
-    viewer.render();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewer, headPointer]);
+  }, [viewer, shouldAutoRotate, playbackPaused]);
 
   useEffect(() => {
     if (!resetToken || !viewer || viewer.disposed) return;
@@ -341,6 +348,8 @@ export function CharacterCanvas({
       data-skin-model={model}
       data-cape-url={capeUrl ?? ""}
       data-visible={visible}
+      data-character-animation={mode}
+      data-character-paused={playbackPaused}
     >
       <div className="vx-character-canvas__mount" ref={mountRef} aria-busy={loading} />
       {error || capeError ? (

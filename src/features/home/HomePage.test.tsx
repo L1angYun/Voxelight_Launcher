@@ -13,6 +13,8 @@ let mockLauncher: LauncherContextValue;
 let root: Root;
 let container: HTMLDivElement;
 let mockEffects: "lite" | "full" = "full";
+let mockReducedMotion = false;
+let mockHighContrast = false;
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/launcher")>()),
@@ -24,9 +26,9 @@ vi.mock("../../app/controller/LauncherProvider", () => ({
 vi.mock("../../app/AppearanceProvider", () => ({
   useAppearance: () => ({
     effects: mockEffects,
-    reducedMotion: false,
+    reducedMotion: mockReducedMotion,
     reducedTransparency: false,
-    highContrast: false,
+    highContrast: mockHighContrast,
   }),
 }));
 vi.mock("../../visual/overture/OvertureProvider", () => ({
@@ -153,16 +155,23 @@ async function render() {
   });
 }
 
-function changeSelect(select: HTMLSelectElement, value: string) {
-  select.value = value;
-  select.dispatchEvent(new Event("input", { bubbles: true }));
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+async function chooseHomeInstance(id?: string) {
+  const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="当前实例"]');
+  expect(trigger).not.toBeNull();
+  await act(async () => trigger!.click());
+  const option = document.querySelector<HTMLElement>(id
+    ? `[role="option"][data-instance-id="${id}"]`
+    : '[role="option"][data-version-directory]');
+  expect(option).not.toBeNull();
+  await act(async () => option!.click());
 }
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockLauncher = fixture();
   mockEffects = "full";
+  mockReducedMotion = false;
+  mockHighContrast = false;
   defaultSkinMock.mockReset();
   defaultSkinMock.mockReturnValue({
     skin: { id: "steve", name: "Steve", dataUrl: "steve.png", model: "classic" },
@@ -172,6 +181,9 @@ beforeEach(() => {
   });
   commandMock.mockReset();
   commandMock.mockResolvedValue(null);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.getAttribute("role") === "combobox" ? new DOMRect(24, 600, 208, 48) : new DOMRect();
+  });
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
     configurable: true,
     value: function () {
@@ -194,9 +206,34 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("HomePage", () => {
+  it("puts the instance heading before the character and reserves its own animation controls", async () => {
+    await render();
+    const heading = container.querySelector("h1");
+    const character = container.querySelector(".vx-home__char-col")!;
+    expect(heading?.textContent).toBe("合成测试世界");
+    expect(Boolean(heading!.compareDocumentPosition(character) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(container.querySelector('.vx-home__anim-picker[role="group"]')).not.toBeNull();
+    expect(container.querySelector(".vx-home__greeting-line")).toBeNull();
+  });
+
+  it("honors system reduced motion even when full effects are selected", async () => {
+    mockReducedMotion = true;
+    await render();
+    expect(container.querySelector('.vx-home')?.getAttribute('data-motion')).toBe('reduced');
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute('data-paused')).toBe('true');
+  });
+
+  it("keeps the character static when high contrast takes priority over full effects", async () => {
+    mockHighContrast = true;
+    await render();
+    expect(container.querySelector('.vx-home')?.getAttribute('data-motion')).toBe('reduced');
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute('data-paused')).toBe('true');
+  });
+
   it("puts the real instance and launch action first", async () => {
     await render();
     expect(container.querySelector(".vx-home__console-name")?.textContent).toBe("合成测试世界");
@@ -229,14 +266,11 @@ describe("HomePage", () => {
 
   it("keeps version-directory selection after clearing the instance", async () => {
     await render();
-    const select = container.querySelector<HTMLSelectElement>('select[aria-label="当前实例"]')!;
-    await act(async () => {
-      changeSelect(select, "");
-    });
+    await chooseHomeInstance();
     mockLauncher.selectedInstance = undefined;
     await render();
     expect(container.querySelector(".vx-home__console-name")?.textContent).toBe("1.21.1");
-    expect(container.querySelector<HTMLSelectElement>('select[aria-label="当前实例"]')?.value).toBe("");
+    expect(container.querySelector('[role="combobox"][aria-label="当前实例"]')?.textContent).toContain("使用版本目录");
   });
 
   it("does not show a completed or unrelated transfer as game preparation", async () => {
@@ -257,9 +291,8 @@ describe("HomePage", () => {
     await render();
     expect(container.querySelector(".vx-recent")).not.toBeNull();
     expect(container.querySelectorAll(".vx-recent-card")).toHaveLength(2);
-    expect(container.querySelectorAll("select#home-instance")).toHaveLength(1);
-    const select = container.querySelector<HTMLSelectElement>("select#home-instance")!;
-    await act(async () => changeSelect(select, "fixture-second"));
+    expect(container.querySelectorAll('[role="combobox"][aria-label="当前实例"]')).toHaveLength(1);
+    await chooseHomeInstance("fixture-second");
     expect(mockLauncher.selectInstance).toHaveBeenCalledWith("fixture-second");
   });
 

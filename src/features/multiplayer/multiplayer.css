@@ -118,6 +118,7 @@
 .vx-managed-command { display: flex; gap: 8px; margin-top: 10px; }
 .vx-managed-command input { min-width: 0; flex: 1; }
 .vx-managed-player { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.vx-managed-player > .vx-managed-player__action { width: min(100%, 220px); flex: 0 1 220px; }
 .vx-managed-player input { min-width: 120px; flex: 1; }
 
 @media (max-width: 960px) {

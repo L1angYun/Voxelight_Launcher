@@ -1607,16 +1607,6 @@
   flex: 0 0 142px;
 }
 
-.vx-library-commandbar__tools > .vx-library-sort-select .vx-select__button {
-  min-height: 36px;
-  padding: 6px 9px;
-  border: 0;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-raised) 24%, transparent);
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-}
-
 .vx-toolbar > .vx-resource-kind-select {
   width: 180px;
   max-width: 100%;

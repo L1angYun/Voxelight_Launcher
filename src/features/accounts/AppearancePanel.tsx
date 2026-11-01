@@ -10,6 +10,7 @@ import type { PlayerProfile } from "../../lib/playerProfile";
 import { CharacterCanvas, type CharacterAnimation } from "../../visual/character/CharacterCanvas";
 import type { SkinModel } from "../../components/skinTexture";
 import { Button } from "../../components/ui/Button";
+import { Select } from "../../components/ui/Select";
 import { GlassSurface } from "../../visual/glass/GlassSystem";
 import { accountErrorCodeText, accountErrorText } from "./utils";
 
@@ -261,10 +262,9 @@ export function AppearancePanel({
             <>
               <label>
                 {t("accounts:appearance.uploadModel")}
-                <select aria-label={t("accounts:appearance.uploadModel")} value={uploadModel} disabled={busy} onChange={(event) => setUploadModel(event.target.value as "classic" | "slim")}>
-                  <option value="classic">{t("accounts:model.classic")}</option>
-                  <option value="slim">{t("accounts:model.slim")}</option>
-                </select>
+                <Select aria-label={t("accounts:appearance.uploadModel")} value={uploadModel} disabled={busy}
+                  onChange={(value) => setUploadModel(value as "classic" | "slim")}
+                  options={["classic", "slim"].map((value) => ({ value, label: t(`accounts:model.${value}`) }))} />
               </label>
               <div className="vx-action-row">
                 <Button variant="primary" icon={<Upload size={15} />} loading={busy} onClick={() => void upload()}>{t("accounts:appearance.upload")}</Button>
@@ -273,15 +273,13 @@ export function AppearancePanel({
               {profile?.capes.length ? (
                 <label>
                   {t("accounts:appearance.cape")}
-                  <select
+                  <Select
                     aria-label={t("accounts:appearance.cape")}
                     disabled={busy}
                     value={activeCape}
-                    onChange={(event) => void change("select_account_cape", { capeId: event.target.value || null }, event.target.value ? "capeShown" : "capeHidden")}
-                  >
-                    <option value="">{t("accounts:appearance.noCape")}</option>
-                    {profile.capes.map((cape) => <option key={cape.id} value={cape.id}>{cape.alias || cape.id}</option>)}
-                  </select>
+                    onChange={(value) => void change("select_account_cape", { capeId: value || null }, value ? "capeShown" : "capeHidden")}
+                    options={[{ value: "", label: t("accounts:appearance.noCape") },
+                      ...profile.capes.map((cape) => ({ value: cape.id, label: cape.alias || cape.id }))]} />
                 </label>
               ) : <p className="vx-appearance-muted">{t("accounts:appearance.noCapes")}</p>}
             </>
@@ -310,17 +308,14 @@ export function AppearancePanel({
           <div className="vx-preview-control-grid">
             <label>
               {t("accounts:preview.model")}
-              <select aria-label={t("accounts:preview.model")} value={localModel} onChange={(event) => setLocalModel(event.target.value as SkinModel)}>
-                <option value="auto">{t("accounts:model.auto")}</option>
-                <option value="classic">{t("accounts:model.classic")}</option>
-                <option value="slim">{t("accounts:model.slim")}</option>
-              </select>
+              <Select aria-label={t("accounts:preview.model")} value={localModel} onChange={(value) => setLocalModel(value as SkinModel)}
+                options={["auto", "classic", "slim"].map((value) => ({ value, label: t(`accounts:model.${value}`) }))} />
             </label>
             <label>
               {t("accounts:preview.animation")}
-              <select aria-label={t("accounts:preview.animation")} value={reducedMotion ? "none" : animation} disabled={reducedMotion} onChange={(event) => setAnimation(event.target.value as CharacterAnimation)}>
-                {(["idle", "walk", "run", "none"] as const).map((mode) => <option key={mode} value={mode}>{t(`accounts:animation.${mode}`)}</option>)}
-              </select>
+              <Select aria-label={t("accounts:preview.animation")} value={reducedMotion ? "none" : animation} disabled={reducedMotion}
+                onChange={(value) => setAnimation(value as CharacterAnimation)}
+                options={["idle", "walk", "run", "none"].map((value) => ({ value, label: t(`accounts:animation.${value}`) }))} />
             </label>
             <Button variant="secondary" aria-pressed={rotating && !reducedMotion} disabled={reducedMotion} onClick={() => setRotating((value) => !value)}>{t("accounts:preview.autoRotate")}</Button>
           </div>

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Play, Plus, RefreshCw, Square } from "lucide-react";
 import { Button } from "../../components/ui/Button";
+import { Select } from "../../components/ui/Select";
 import { EmptyState } from "../../components/ui/Feedback";
 import { formatDate } from "../../i18n/format";
 import { defaultServerSettings, type ServerSettings, type useMultiplayer } from "./useMultiplayer";
@@ -87,9 +88,8 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
           <label>
             {t("multiplayer:serverVersion")}
             {versions.length ? (
-              <select aria-label={t("multiplayer:serverVersion")} value={versionId} onChange={(event) => setVersionId(event.target.value)}>
-                {versions.map((version) => <option key={version}>{version}</option>)}
-              </select>
+              <Select aria-label={t("multiplayer:serverVersion")} value={versionId} onChange={setVersionId}
+                options={versions.map((value) => ({ value, label: value }))} />
             ) : <input aria-label={t("multiplayer:serverVersion")} value={versionId} required onChange={(event) => setVersionId(event.target.value)} />}
           </label>
           <p>{t("multiplayer:createNotice")}</p>
@@ -151,8 +151,8 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
                     <label>{t("multiplayer:fields.maxPlayers")}<input aria-label={t("multiplayer:fields.maxPlayers")} type="number" min={1} max={10000} value={settings.maxPlayers} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, maxPlayers: Number(event.target.value) })} /></label>
                     <label>{t("multiplayer:fields.maxMemory")}<input aria-label={t("multiplayer:fields.maxMemory")} type="number" min={512} max={65536} step={512} value={settings.maxMemoryMb} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, maxMemoryMb: Number(event.target.value) })} /></label>
                     <label>{t("multiplayer:fields.viewDistance")}<input aria-label={t("multiplayer:fields.viewDistance")} type="number" min={2} max={32} value={settings.viewDistance} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, viewDistance: Number(event.target.value) })} /></label>
-                    <label>{t("multiplayer:fields.gamemode")}<select aria-label={t("multiplayer:fields.gamemode")} value={settings.gamemode} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, gamemode: event.target.value })}>{["survival", "creative", "adventure", "spectator"].map((value) => <option key={value} value={value}>{t(`multiplayer:gamemode.${value}`)}</option>)}</select></label>
-                    <label>{t("multiplayer:fields.difficulty")}<select aria-label={t("multiplayer:fields.difficulty")} value={settings.difficulty} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, difficulty: event.target.value })}>{["peaceful", "easy", "normal", "hard"].map((value) => <option key={value} value={value}>{t(`multiplayer:difficulty.${value}`)}</option>)}</select></label>
+                    <label>{t("multiplayer:fields.gamemode")}<Select aria-label={t("multiplayer:fields.gamemode")} value={settings.gamemode} disabled={alive || Boolean(busy)} onChange={(gamemode) => setSettings({ ...settings, gamemode })} options={["survival", "creative", "adventure", "spectator"].map((value) => ({ value, label: t(`multiplayer:gamemode.${value}`) }))} /></label>
+                    <label>{t("multiplayer:fields.difficulty")}<Select aria-label={t("multiplayer:fields.difficulty")} value={settings.difficulty} disabled={alive || Boolean(busy)} onChange={(difficulty) => setSettings({ ...settings, difficulty })} options={["peaceful", "easy", "normal", "hard"].map((value) => ({ value, label: t(`multiplayer:difficulty.${value}`) }))} /></label>
                     <label>{t("multiplayer:fields.bindAddress")}<input aria-label={t("multiplayer:fields.bindAddress")} value={settings.bindAddress} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, bindAddress: event.target.value })} placeholder="127.0.0.1" /></label>
                     <label>{t("multiplayer:fields.motd")}<input aria-label={t("multiplayer:fields.motd")} value={settings.motd} maxLength={256} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, motd: event.target.value })} /></label>
                     <label className="vx-managed-checkbox"><input type="checkbox" checked={settings.onlineMode} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, onlineMode: event.target.checked })} />{t("multiplayer:fields.onlineMode")}</label>
@@ -188,9 +188,8 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
                 <Button variant="primary" type="submit" disabled={!alive || Boolean(busy) || !consoleInput.trim()}>{t("multiplayer:sendCommand")}</Button>
               </form>
               <div className="vx-managed-player">
-                <select aria-label={t("multiplayer:playerAction")} value={playerAction} onChange={(event) => setPlayerAction(event.target.value)} disabled={!alive || Boolean(busy)}>
-                  {["whitelist add", "whitelist remove", "op", "deop", "ban", "pardon"].map((value) => <option key={value} value={value}>{t(`multiplayer:playerActions.${value}`)}</option>)}
-                </select>
+                <Select className="vx-managed-player__action" aria-label={t("multiplayer:playerAction")} value={playerAction} onChange={setPlayerAction} disabled={!alive || Boolean(busy)}
+                  options={["whitelist add", "whitelist remove", "op", "deop", "ban", "pardon"].map((value) => ({ value, label: t(`multiplayer:playerActions.${value}`) }))} />
                 <input aria-label={t("multiplayer:playerName")} value={player} onChange={(event) => setPlayer(event.target.value)} disabled={!alive || Boolean(busy)} maxLength={16} />
                 <Button variant="secondary" disabled={!alive || Boolean(busy) || !/^[A-Za-z0-9_]{3,16}$/.test(player)} onClick={() => void send(`${playerAction} ${player}`, () => setPlayer(""))}>{t("multiplayer:managePlayer")}</Button>
               </div>

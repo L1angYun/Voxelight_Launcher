@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { SettingsSectionProps } from "./types";
+import { Select } from "../../components/ui/Select";
 
 export function DownloadSettings({ config, onChange, onError }: SettingsSectionProps) {
   const { t } = useTranslation();
@@ -10,11 +11,9 @@ export function DownloadSettings({ config, onChange, onError }: SettingsSectionP
       <section className="vx-settings-group">
         <label>
           {t("settings:fields.downloadSource")}
-          <select aria-label={t("settings:fields.downloadSource")} value={config.downloadSource} onChange={(event) => onChange({ ...config, downloadSource: event.target.value })}>
-            <option value="official">{t("settings:downloadSource.official")}</option>
-            <option value="auto">{t("settings:downloadSource.auto")}</option>
-            <option value="bmclapi">{t("settings:downloadSource.bmclapi")}</option>
-          </select>
+          <Select aria-label={t("settings:fields.downloadSource")} value={config.downloadSource}
+            onChange={(downloadSource) => onChange({ ...config, downloadSource })}
+            options={["official", "auto", "bmclapi"].map((value) => ({ value, label: t(`settings:downloadSource.${value}`) }))} />
         </label>
         <p>{t(`settings:downloadSource.${config.downloadSource}Description`)}</p>
         {config.downloadSource !== "official" ? (

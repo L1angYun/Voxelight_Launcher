@@ -171,6 +171,9 @@ async function fill(label: string, value: string) {
 
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.getAttribute("role") === "combobox" ? new DOMRect(24, 200, 280, 44) : new DOMRect();
+  });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockLauncher = fixture();
   reducedMotion = false;
@@ -308,7 +311,7 @@ describe("accounts and appearance", () => {
     await render();
     expect(container.textContent).toContain("No account skin is available");
     expect(container.textContent).toContain("No capes are available");
-    expect(container.querySelector('select[aria-label="Cape"]')).toBeNull();
+    expect(container.querySelector('[role="combobox"][aria-label="Cape"]')).toBeNull();
     expect(mocks.character).not.toHaveBeenCalled();
   });
 
@@ -321,11 +324,9 @@ describe("accounts and appearance", () => {
     expect(container.textContent).toContain("Microsoft skin updated");
     await click("Reset skin");
     expect(commandMock).toHaveBeenCalledWith("reset_account_skin", { accountId: microsoft.id });
-    const cape = container.querySelector<HTMLSelectElement>('select[aria-label="Cape"]')!;
-    await act(async () => {
-      cape.value = "";
-      cape.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const cape = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Cape"]')!;
+    await act(async () => cape.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value=""]')!.click());
     expect(commandMock).toHaveBeenCalledWith("select_account_cape", { accountId: microsoft.id, capeId: null });
     expect(mockLauncher.accountAppearance.setProfile).toHaveBeenCalledWith(profile);
   });
@@ -388,8 +389,8 @@ describe("accounts and appearance", () => {
     const rotate = button("Auto-rotate");
     expect(rotate.disabled).toBe(true);
     expect(rotate.getAttribute("aria-pressed")).toBe("false");
-    const animation = container.querySelector<HTMLSelectElement>('select[aria-label="Preview animation"]')!;
-    expect(animation.value).toBe("none");
+    const animation = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Preview animation"]')!;
+    expect(animation.textContent).toContain("Still");
     expect(animation.disabled).toBe(true);
     expect(container.textContent).toContain("Reduced motion is enabled");
   });

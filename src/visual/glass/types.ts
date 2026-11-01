@@ -15,6 +15,8 @@ export interface GlassOptics {
   bendY: number;
   pressure: number;
   energy: number;
+  stretch?: number;
+  heading?: number;
 }
 
 export interface GlassSurfaceModel {

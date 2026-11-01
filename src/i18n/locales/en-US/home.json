@@ -9,6 +9,7 @@
   "versionDirectory": "Use version directory",
   "vanilla": "Vanilla",
   "javaUnknown": "Java unknown",
+  "javaVersion": "Java {{major}}",
   "preparing": "Preparing",
   "totalUnknown": "Total unknown",
   "running": "Running",

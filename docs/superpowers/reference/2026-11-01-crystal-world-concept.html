@@ -1,0 +1,703 @@
+<meta charset="utf-8">
+<title>Voxelight 世界背景</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Doto:wght@900&display=swap">
+<style>
+/* Layout: one full-width stage with the launcher mocked on top; controls and notes sit under it. */
+:root {
+  color-scheme: dark;
+  --ink: #07080b;
+  --raised: #111317;
+  --bone: #ece7da;
+  --dim: #9d988c;
+  --hair: rgb(236 231 218 / .14);
+  --hair-strong: rgb(236 231 218 / .3);
+  --accent: #b4f17a;
+  --on-accent: #10140b;
+  --ui: "MiSans", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --matrix: "Doto", "Cascadia Code", Consolas, monospace;
+}
+body { background: var(--ink); color: var(--bone); font: 15px/1.6 var(--ui); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 16px 48px; }
+.wrap { max-width: 1280px; margin-inline: auto; display: grid; gap: 16px; }
+.stage { position: relative; aspect-ratio: 16 / 9; width: 100%; overflow: hidden; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--hair); container-type: inline-size; background: var(--ink); touch-action: none; user-select: none; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.mock { position: absolute; inset: 0; pointer-events: none; font-size: clamp(8px, 1.15cqw, 15px); }
+.nav { position: absolute; top: 1.6em; left: 1.6em; right: 1.6em; display: flex; gap: 1.6em; align-items: center; padding: .7em 1.2em; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--hair); background: rgb(7 8 11 / .34); backdrop-filter: blur(10px); }
+.nav b { font-weight: 600; }
+.nav span { color: var(--dim); }
+.nav .on { color: var(--bone); }
+.nav i { margin-left: auto; font-style: normal; color: var(--dim); }
+.home, .list { position: absolute; inset: 0; transition: opacity .4s; }
+.home h2 { position: absolute; top: 15%; left: 4.2%; margin: 0; font-size: 3.1em; line-height: 1.1; font-weight: 600; letter-spacing: -.02em; text-wrap: balance; }
+.home p { position: absolute; top: 25.5%; left: 4.2%; margin: 0; color: var(--dim); font-size: 1.05em; }
+.figure { position: absolute; right: 13%; bottom: 17%; width: 8.5%; }
+.figure svg { display: block; width: 100%; height: auto; }
+.status { position: absolute; left: 4.2%; bottom: 20%; font: 900 max(15px, 1.25em) var(--matrix); letter-spacing: .06em; color: var(--bone); }
+.launch { position: absolute; left: 4.2%; bottom: 7%; pointer-events: auto; font: 600 1.15em var(--ui); height: 3.2em; padding: 0 1.9em; border: 0; border-radius: 999px; background: var(--accent); color: var(--on-accent); cursor: pointer; }
+.launch:active { transform: scale(.96); }
+.launch:focus-visible, .ctl button:focus-visible { outline: 2px solid var(--bone); outline-offset: 3px; }
+.list { top: 15%; left: 4.2%; right: 4.2%; bottom: 6%; inset-block-end: 6%; position: absolute; display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 1.2em; opacity: 0; }
+.list div { padding: 1.4em; border-radius: .9em; background: rgb(7 8 11 / .62); backdrop-filter: blur(10px); box-shadow: inset 0 0 0 1px var(--hair); }
+.list b { display: block; font-weight: 600; }
+.list span { color: var(--dim); }
+.mock[data-page="list"] .home, .mock[data-intro="on"] .home { opacity: 0; }
+.mock[data-intro="on"] .launch { opacity: 0; pointer-events: none; }
+.launch { transition: opacity .4s; }
+.mock[data-page="list"] .launch { pointer-events: none; }
+.mock[data-page="list"] .list { opacity: 1; }
+.fps { position: absolute; right: 1.2em; bottom: .8em; font: 900 max(15px, 1.05em) var(--matrix); letter-spacing: .06em; color: var(--dim); }
+.ctl { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+.group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.group > span { color: var(--dim); font-size: 13px; margin-right: 4px; }
+.ctl button { min-height: 40px; padding: 0 16px; border: 0; border-radius: 999px; background: transparent; color: var(--dim); font: 500 14px var(--ui); box-shadow: inset 0 0 0 1px var(--hair); cursor: pointer; }
+.ctl button:hover { box-shadow: inset 0 0 0 1px var(--hair-strong); color: var(--bone); }
+.ctl button[aria-pressed="true"] { background: var(--bone); color: var(--ink); box-shadow: none; }
+.note { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px 48px; padding-top: 16px; border-top: 1px solid var(--hair); }
+.note h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; font-weight: 600; letter-spacing: -.02em; text-wrap: balance; }
+.note .why { margin: 0; color: var(--dim); max-width: 62ch; }
+.note dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; }
+.note dt { color: var(--dim); font-size: 13px; padding-top: 2px; }
+.note dd { margin: 0; }
+.hint { color: var(--dim); font-size: 13px; margin: 0; }
+@media (max-width: 760px) { .note { grid-template-columns: minmax(0, 1fr); } .nav span:not(.on), .nav i { display: none; } .list { grid-template-columns: repeat(2, 1fr); } .list div:nth-child(n+5) { display: none; } }
+</style>
+
+<div class="wrap">
+  <div class="stage" id="stage">
+    <canvas id="gl"></canvas>
+    <div class="mock" id="mock" aria-hidden="false">
+      <div class="nav"><b>Voxelight</b><span class="on">开始</span><span>库</span><span>发现</span><span>联机</span><i>下载 · 设置</i></div>
+      <div class="home">
+        <h2>Fabulously Optimized</h2>
+        <p>1.21.4 · Fabric · Java 21</p>
+        <div class="figure" title="角色预览位">
+          <svg viewBox="0 0 16 32" role="img" aria-label="角色预览占位">
+            <rect x="4" y="0" width="8" height="8" fill="#c9a07f"/><rect x="4" y="0" width="8" height="2.5" fill="#3b2a20"/>
+            <rect x="4" y="8" width="8" height="12" fill="#3f8f8f"/><rect x="0" y="8" width="4" height="12" fill="#357a7a"/><rect x="12" y="8" width="4" height="12" fill="#2c6767"/>
+            <rect x="4" y="20" width="4" height="12" fill="#35407f"/><rect x="8" y="20" width="4" height="12" fill="#2b3468"/>
+          </svg>
+        </div>
+        <div class="status" id="status" role="status">IDLE</div>
+      </div>
+      <div class="list" aria-hidden="true">
+        <div><b>Fabulously Optimized</b><span>1.21.4 · Fabric</span></div>
+        <div><b>Create: Above & Beyond</b><span>1.16.5 · Forge</span></div>
+        <div><b>原版生存</b><span>1.21.4</span></div>
+        <div><b>Better MC</b><span>1.20.1 · Fabric</span></div>
+        <div><b>GTNH</b><span>1.7.10 · Forge</span></div>
+        <div><b>测试实例</b><span>26.1 快照</span></div>
+      </div>
+      <button class="launch" id="launch" type="button">启动游戏</button>
+      <div class="fps" id="fps"></div>
+    </div>
+  </div>
+
+  <div class="ctl">
+    <div class="group" id="modes"><span>方向</span></div>
+    <div class="group"><button type="button" id="replay">重播开场</button></div>
+    <div class="group" id="pages"><span>页面</span></div>
+    <div class="group" id="accents"><span>信号色</span></div>
+  </div>
+  <p class="hint">移动鼠标拨动光点；在画面上单击产生冲击波，按住不放让局部融化；按“启动游戏”看结晶过程。界面和实例名都是示例，角色是占位图。</p>
+
+  <div class="note">
+    <div><h1 id="n-title"></h1></div>
+    <div>
+      <p class="why" id="n-why"></p>
+      <dl style="margin-top:12px">
+        <dt>压迫感</dt><dd id="n-a"></dd>
+        <dt>震撼来源</dt><dd id="n-b"></dd>
+        <dt>代价</dt><dd id="n-c"></dd>
+      </dl>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const NOTES = {
+  now: { name: "现状", label: "现状", why: "按 WorldScene 现有参数重绘：21 × 11 个等大立方体，正交视角，平铺满屏。", a: "铺满整个窗口，文字和面板都压在方块上。", b: "只有划过时的绿色翻转。", c: "无。" },
+  horizon: { name: "A 地平线", label: "A 地平线", why: "把方块墙放倒成一片伸向远方的体素大地。上半屏是空气，角色站在世界里。", a: "天空就是留白；低角度的日光让左侧自然变暗，不用遮罩。", b: "透视纵深、远山层次和启动时奔向地平线的光波。", c: "改用 WebGL2 实例化，重写渲染层和对应测试。" },
+  massif: { name: "B 山体消散", label: "B 山体消散", why: "体素山体只立在右侧角色身后，向左逐渐缩小成点，最后消散。", a: "左侧只剩细小的暗点，完整的方块只出现在没有文字的区域。", b: "一座巨大的单体轮廓，加上方块到点的尺度变化。", c: "渲染成本同 A。构图依赖右侧角色，内容页要另外处理。" },
+  hlat: { name: "A · 点阵版", label: "A · 点阵", why: "同一片地形，静止时由 65,536 个光点构成，只有角色脚下结晶成实体方块。启动游戏时，结晶从脚下推向地平线，世界随下载进度变成实心。", a: "光点几乎没有体量，天空只有淡淡的点阵，比 A 更轻。", b: "开场时点汇聚成字标再落成大地；进度条就是整个世界的结晶。", c: "在 A 的基础上增加粒子模拟，需要浮点渲染目标，核显要专门压预算。" },
+  mlat: { name: "B · 点阵版", label: "B · 点阵", why: "山体核心是实体方块，向外依次变成小方块、光点、再到稀疏的地面点阵。方块和点是同一个世界的两种状态。", a: "实体只占右侧一块，其余全是点，文字区只有很暗的点阵。", b: "最接近 Lattice 的单张画面：一座从点阵中凝结出来的山。", c: "同 A · 点阵版。内容页同样要另外处理构图。" },
+};
+const ACCENTS = { green: { label: "绿（现有）", c: [0.706, 0.945, 0.478], css: "#b4f17a", on: "#10140b" }, orange: { label: "橙（Lattice）", c: [1, 0.353, 0.122], css: "#ff5a1f", on: "#07080b" } };
+const N = 160;
+const stage = document.getElementById("stage"), canvas = document.getElementById("gl"), mock = document.getElementById("mock");
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+
+const CUBE = (() => {
+  const faces = [
+    [[0, 1, 0], [[-.5, .5, -.5], [-.5, .5, .5], [.5, .5, .5], [.5, .5, -.5]]],
+    [[0, 0, 1], [[-.5, -.5, .5], [.5, -.5, .5], [.5, .5, .5], [-.5, .5, .5]]],
+    [[0, 0, -1], [[.5, -.5, -.5], [-.5, -.5, -.5], [-.5, .5, -.5], [.5, .5, -.5]]],
+    [[1, 0, 0], [[.5, -.5, .5], [.5, -.5, -.5], [.5, .5, -.5], [.5, .5, .5]]],
+    [[-1, 0, 0], [[-.5, -.5, -.5], [-.5, -.5, .5], [-.5, .5, .5], [-.5, .5, -.5]]],
+  ];
+  const data = [];
+  for (const [n, v] of faces) for (const i of [0, 1, 2, 0, 2, 3]) data.push(...v[i], ...n);
+  return new Float32Array(data);
+})();
+
+const NOISE = `
+float hash(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
+float vn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);}
+float fbm(vec2 p){float a=.5,s=0.;for(int i=0;i<4;i++){s+=a*vn(p);p=p*2.03+vec2(17.,9.);a*=.5;}return s;}`;
+const QUAD_VS = `#version 300 es
+out vec2 vUv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);vUv=p;gl_Position=vec4(p*2.-1.,0,1);}`;
+const FIELD_FS = `#version 300 es
+precision highp float;in vec2 vUv;out vec4 o;
+uniform sampler2D uPrev;uniform float uT,uProfile,uFront,uPtrOn,uDecay;uniform vec2 uPtr,uOrigin,uOffset,uSunXZ;uniform float uN;
+${NOISE}
+float H(vec2 p){
+  float n=fbm(p*.035+vec2(uT*.006,0.));
+  float ridge=1.-abs(2.*n-1.);
+  float far=1.-smoothstep(-122.,-48.,p.y);
+  float a=1.+9.*n*n+far*ridge*ridge*25.+.5*sin(dot(p,vec2(.13,.09))+uT*.5);
+  float m=1.-smoothstep(8.,60.,length((p-vec2(24.,-16.))*vec2(1.,.8)));
+  float b=m*m*(4.+pow(fbm(p*.05+vec2(uT*.005,3.)),1.4)*52.)+.25*sin(dot(p,vec2(.1,.14))+uT*.5)*m;
+  float raw=mix(a,b,uProfile);
+  float fl=floor(raw);
+  return fl+smoothstep(.82,1.,raw-fl);
+}
+void main(){
+  vec2 p=(floor(vUv*uN)+.5-uN*.5)+uOffset;
+  float h=H(p);
+  float s=0.;
+  for(int i=1;i<=8;i++){float d=float(i)*2.6;s=max(s,smoothstep(0.,1.6,H(p+uSunXZ*d)-(h+d*.42)));}
+  float dP=length(p-uPtr);
+  float pulse=exp(-pow(dP/4.5,2.))*uPtrOn;
+  h+=pulse*1.5;
+  float d0=length(p-uOrigin);
+  float ring=uFront>0.?exp(-pow((d0-uFront)/3.2,2.)):0.;
+  h+=ring*3.2;
+  float id=hash(floor(p*1.)+.5);
+  float ember=id>.994?pow(max(0.,sin(uT*.3+id*900.)),60.)*.5:0.;
+  float prev=texture(uPrev,vUv).a;
+  float heat=max(max(0.,prev*uDecay-2./255.),max(pulse*.72,ember));
+  float v=clamp(h/40.,0.,1.)*65535.;
+  float cloud=.42+.58*smoothstep(.36,.58,fbm(p*.022+vec2(-uT*.022,uT*.008)+4.));
+  cloud*=mix(.5,1.,smoothstep(-34.,26.,p.x));
+  o=vec4(floor(v/256.)/255.,mod(floor(v),256.)/255.,(1.-s)*cloud,heat);
+}`;
+const CRYSTAL = `
+uniform float uLat,uCry,uIsland,uMelt,uMask;uniform vec2 uOrigin,uMeltAt;
+float maskM(vec2 c){return clamp(1.-uMask*(1.-smoothstep(0.,1.,1.-(length((c-vec2(24.,-16.))*vec2(1.,.8))-14.)/64.)),0.,1.);}
+float crystal(vec2 c,float heat,float m){
+  float d=length(c-uOrigin);
+  float island=1.-smoothstep(uIsland,uIsland+18.,d);
+  float front=uCry>0.?1.-smoothstep(uCry-16.,uCry,d):0.;
+  float trail=smoothstep(.56,.7,heat)*.8;
+  float core=uMask*m*m;
+  float melt=uMelt*exp(-pow(length(c-uMeltAt)/9.,2.));
+  return mix(1.,max(max(island,front),max(trail,core))*(1.-melt),uLat);
+}`;
+const SIM_FS = `#version 300 es
+precision highp float;layout(location=0) out vec4 oP;layout(location=1) out vec4 oV;
+uniform sampler2D uPos,uVel,uField,uWord;
+uniform float uN,uS,uTime,uDt,uMorphStart,uMorphDur,uToWord,uFromWord,uTransit,uMeltP,uPtrOn,uShockT,uRing;
+uniform vec2 uOffset,uPtr,uPtrVel,uMeltAtP,uShockAt,uOriginP;
+float rnd(vec2 p){p=fract(p*vec2(443.897,441.423));p+=dot(p,p.yx+19.19);return fract((p.x+p.y)*p.x);}
+vec3 abc(vec3 p,float t){return vec3(sin(p.z+t*.13)+.43*cos(p.y-t*.11),.7*sin(p.x+t*.07)+cos(p.z+t*.05),.43*sin(p.y-t*.09)+.7*cos(p.x+t*.12));}
+void main(){
+  ivec2 id=ivec2(gl_FragCoord.xy);
+  vec4 P=texelFetch(uPos,id,0),V=texelFetch(uVel,id,0),W=texelFetch(uWord,id,0);
+  vec2 uv=(vec2(id)+.5)/uS;
+  vec2 site=(uv-.5)*uN+uOffset;
+  vec4 f=texelFetch(uField,clamp(ivec2(uv*uN),ivec2(0),ivec2(int(uN)-1)),0);
+  float h=(f.r*255.*256.+f.g*255.)/65535.*40.;
+  vec3 ter=vec3(site.x,h+.62,site.y);
+  float s1=rnd(uv),s2=rnd(uv+.37);
+  float rel=uMorphStart+(s1*.45+uv.x*.55)*uMorphDur;
+  float since=uTime-rel;bool after=since>=0.;
+  bool word=W.w>.5&&(uToWord>.5?after:(uFromWord>.5&&!after));
+  vec3 goal=word?W.xyz:ter;
+  float k=(after?38.*smoothstep(.05,.75,since):38.);
+  float flow=after?uTransit*(1.-smoothstep(0.,1.,since)):0.;
+  float dm=length(P.xz-uMeltAtP);
+  float hf=uMeltP*exp(-dm*dm/81.);
+  k*=1.-.97*hf;flow+=hf*42.;
+  vec3 acc=(goal-P.xyz)*k;
+  acc+=abc(P.xyz*.16+vec3(s1,s2,s1+s2)*6.2831,uTime)*flow;
+  acc+=vec3(-(P.z-uMeltAtP.y),0.,P.x-uMeltAtP.x)*hf*3.;
+  acc.y+=hf*14.;
+  vec2 dp=P.xz-uPtr;float dd=length(dp);float fp=exp(-dd*dd/30.)*uPtrOn;
+  vec2 n=dp/max(dd,.001);
+  acc.xz+=(n*150.+vec2(-n.y,n.x)*70.+uPtrVel*5.)*fp;
+  acc.y+=fp*80.;
+  float st=uTime-uShockT;
+  if(st>0.&&st<1.8){vec2 ds=P.xz-uShockAt;float l=length(ds);float e=exp(-pow((l-st*42.)/4.5,2.))*(1.-st/1.8);acc.xz+=ds/max(l,.001)*e*520.;acc.y+=e*520.;}
+  if(uRing>0.){float e=exp(-pow((length(site-uOriginP)-uRing)/3.2,2.));acc.y+=e*360.*(.4+s1);}
+  vec3 v=V.xyz+acc*uDt;v*=exp(-6.5*uDt);
+  P.xyz+=v*uDt;
+  P.w+=((word?1.:0.)-P.w)*min(1.,uDt*(word?3.:6.));
+  oP=P;oV=vec4(v,hf);
+}`;
+const PT_VS = `#version 300 es
+uniform sampler2D uPos,uVel,uField;uniform mat4 uVP;uniform vec3 uEye;uniform vec2 uOffset;uniform float uN,uS,uDpr,uFogD,uGain,uRunDim;
+${CRYSTAL}
+out float vA,vHot;
+void main(){
+  ivec2 id=ivec2(gl_VertexID%int(uS),gl_VertexID/int(uS));
+  vec4 P=texelFetch(uPos,id,0),V=texelFetch(uVel,id,0);
+  vec2 uv=(vec2(id)+.5)/uS;vec2 c=(uv-.5)*uN+uOffset;
+  vec4 f=texelFetch(uField,clamp(ivec2(uv*uN),ivec2(0),ivec2(int(uN)-1)),0);
+  float h=(f.r*255.*256.+f.g*255.)/65535.*40.;
+  float cr=crystal(c,f.a,maskM(c));
+  float spd=length(V.xyz);
+  float dist=length(P.xyz-uEye);
+  float fog=exp(-pow(dist/(uFogD*1.12),3.));
+  float flying=smoothstep(.6,3.5,length(P.xz-c));
+  float a=(.13+.62*f.b*(.55+.45*smoothstep(3.,20.,h)))*(1.-smoothstep(.35,.9,cr));
+  a=max(a,flying*.55)*fog*uRunDim;
+  vA=mix(a,.95,P.w)*uLat*uGain;
+  vHot=clamp((spd-7.)*.035+V.w*1.2,0.,1.);
+  gl_Position=uVP*vec4(P.xyz,1.);
+  gl_PointSize=uDpr*(1.15+P.w*.9+min(spd,30.)*.035)*clamp(58./dist,.72,2.7);
+}`;
+const PT_FS = `#version 300 es
+precision highp float;in float vA,vHot;out vec4 o;uniform vec3 uAccent;
+void main(){float r=length(gl_PointCoord-.5);float d=1.-smoothstep(.3,.5,r);if(d<=0.||vA<.004)discard;
+vec3 c=mix(vec3(.925,.906,.855),uAccent,vHot);o=vec4(c*d*vA*(1.+vHot),1.);}`;
+const VOX_VS = `#version 300 es
+layout(location=0) in vec3 aPos;layout(location=1) in vec3 aNor;
+uniform sampler2D uField;uniform mat4 uVP;uniform vec3 uEye;uniform vec2 uOffset;uniform float uN,uFront,uCharge;
+${CRYSTAL}
+out vec3 vN,vW,vL;out float vH,vM,vHeat,vLit,vChg;
+void main(){
+  ivec2 id=ivec2(gl_InstanceID%int(uN),gl_InstanceID/int(uN));
+  vec4 f=texelFetch(uField,id,0);
+  float h=(f.r*255.*256.+f.g*255.)/65535.*40.;
+  vec2 c=vec2(id)+.5-uN*.5+uOffset;
+  float m=maskM(c);
+  float cr=crystal(c,f.a,m);
+  float crE=cr*cr*(3.-2.*cr);
+  float s=mix(.13,.97,m*m)*mix(1.,step(.03,cr)*mix(.16,1.,crE),uLat);
+  float depth=mix(s,9.,m*mix(1.,crE,uLat));
+  vec3 p=vec3(c.x+aPos.x*s,aPos.y>0.?h:h-depth,c.y+aPos.z*s);
+  vN=aNor;vW=p;vL=aPos;vH=h;vM=m;vHeat=f.a;vLit=f.b;
+  float dO=length(c-uOrigin);
+  vChg=uCharge*(1.-smoothstep(uFront-30.,uFront,dO));
+  if(uFront>0.)vHeat=max(vHeat,uCharge*exp(-pow((dO-uFront)/2.4,2.)));
+  gl_Position=uVP*vec4(p,1.);
+}`;
+const VOX_FS = `#version 300 es
+precision highp float;in vec3 vN,vW,vL;in float vH,vM,vHeat,vLit,vChg;out vec4 o;
+uniform vec3 uEye,uAccent,uSun,uHaze;uniform float uExposure,uFogD,uDim;
+void main(){
+  float diff=max(dot(vN,uSun),0.)*vLit;
+  vec3 alb=mix(vec3(.26,.27,.28),vec3(1.,.97,.9),smoothstep(4.,17.,vH));
+  alb=mix(vec3(.93,.905,.85)*.62,alb,smoothstep(.0,.35,vM));
+  vec3 col=alb*(vec3(.05,.06,.085)+vec3(2.5,2.1,1.62)*diff);
+  col+=alb*vec3(.03,.05,.08)*max(vN.z,0.);
+  if(vN.y>.5){float e=max(abs(vL.x),abs(vL.z));col+=smoothstep(.45,.5,e)*.035*(.2+vLit);}
+  col*=uExposure;
+  col=mix(col,col*.55+uAccent*.3*(.25+vLit),vChg*.55);
+  col=mix(col,uAccent*(1.+vHeat*1.2),clamp(vHeat*1.05,0.,1.)*uDim);
+  float d=length(vW-uEye);
+  float fog=(1.-exp(-pow(d/uFogD,2.4)))*.96;
+  o=vec4(mix(col,uHaze,fog),1.);
+}`;
+const SKY_FS = `#version 300 es
+precision highp float;in vec2 vUv;out vec4 o;uniform vec3 uHaze,uInk;uniform float uHorizon,uDots,uDotPx;
+void main(){float t=smoothstep(0.,.5,vUv.y-uHorizon);vec3 c=mix(uHaze,uInk,pow(t,.55));vec2 g=fract(gl_FragCoord.xy/uDotPx)-.5;float d=1.-smoothstep(.07,.13,length(g));c+=vec3(.925,.906,.855)*d*.2*uDots*smoothstep(.0,.2,vUv.y-.38);o=vec4(c,1.);}`;
+const FLAT_VS = `#version 300 es
+layout(location=0) in vec3 aPos;layout(location=1) in vec3 aNor;layout(location=2) in float aHeat;
+uniform vec2 uRes,uPtr;uniform float uT,uScale,uPitch,uSize,uCalm,uCols,uRows,uPtrOn,uFrontX;
+out vec3 vN;out float vLight,vHeat,vOp,vPool,vPtr;
+void main(){
+  float col=mod(float(gl_InstanceID),uCols),row=floor(float(gl_InstanceID)/uCols);
+  vec2 c=(vec2(col,row)-vec2(uCols-1.,uRows-1.)*.5)*uPitch*uScale+uRes*.5;
+  vec2 q=c/uRes;
+  float mask=mix(1.,smoothstep(.34,.72,q.x),uCalm);
+  float yaw=uT*.1257+.5236+(col+row)*.045;
+  float cy=cos(yaw),sy=sin(yaw);
+  float size=uSize*uScale*mix(1.,mix(.2,1.,mask),uCalm);
+  vec3 p=aPos;p=vec3(p.x*cy+p.z*sy,p.y,-p.x*sy+p.z*cy);
+  vec3 n=vec3(aNor.x*cy+aNor.z*sy,aNor.y,-aNor.x*sy+aNor.z*cy);
+  float el=.3398;float ce=cos(el),se=sin(el);
+  p=vec3(p.x,p.y*ce-p.z*se,p.y*se+p.z*ce);
+  n=vec3(n.x,n.y*ce-n.z*se,n.y*se+n.z*ce);
+  vN=n;vLight=clamp(-n.x*.38+n.y*.76+n.z*.52,0.,1.);
+  vHeat=aHeat;vOp=mask;
+  vPool=exp(-pow(length((q-vec2(.76,.42))*vec2(1.6,1.))/.34,2.));
+  float dp=length(c-uPtr);float f=max(0.,1.-dp/(180.*uScale))*uPtrOn;vPtr=f*f*.68;
+  vec2 s=c+p.xy*size;
+  gl_Position=vec4(s/uRes*2.-1.,-p.z*.2,1.);
+}`;
+const FLAT_FS = `#version 300 es
+precision highp float;in vec3 vN;in float vLight,vHeat,vOp,vPool,vPtr;out vec4 o;
+uniform vec3 uAccent,uBase;uniform float uCalm;
+void main(){
+  vec3 f=mix(uBase,uAccent,.09+.07*abs(vN.z)+vPtr*.45);
+  vec3 top=mix(f,vec3(1),.34),side=mix(f,vec3(0),.32);
+  vec3 c=mix(side,top,vLight);
+  float op=.72;
+  vec3 now=mix(uBase,c,op);
+  now=mix(now,mix(uAccent,vec3(1),.1)*mix(.55,1.,vLight),vHeat);
+  vec3 calm=mix(vec3(.13,.135,.14),vec3(.93,.905,.85),vLight*(.06+vPool*.62));
+  calm=mix(uBase,calm,vOp*vOp);
+  calm=mix(calm,uAccent*mix(.6,1.1,vLight),max(vHeat,vPtr*.7));
+  o=vec4(mix(now,calm,uCalm),1.);
+}`;
+const THRESH_FS = `#version 300 es
+precision highp float;in vec2 vUv;out vec4 o;uniform sampler2D uTex;uniform float uT;
+void main(){vec3 c=texture(uTex,vUv).rgb;float l=max(c.r,max(c.g,c.b));o=vec4(c*smoothstep(uT,uT+.22,l),1.);}`;
+const BLUR_FS = `#version 300 es
+precision highp float;in vec2 vUv;out vec4 o;uniform sampler2D uTex;uniform vec2 uDir;
+void main(){vec3 c=texture(uTex,vUv).rgb*.227;c+=(texture(uTex,vUv+uDir*1.38).rgb+texture(uTex,vUv-uDir*1.38).rgb)*.316;c+=(texture(uTex,vUv+uDir*3.23).rgb+texture(uTex,vUv-uDir*3.23).rgb)*.07;o=vec4(c,1.);}`;
+const COMP_FS = `#version 300 es
+precision highp float;in vec2 vUv;out vec4 o;uniform sampler2D uTex,uBloom;uniform float uAmt;
+float h(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
+void main(){vec3 c=texture(uTex,vUv).rgb+texture(uBloom,vUv).rgb*uAmt;c+=(h(gl_FragCoord.xy)-.5)/255.;o=vec4(c,1.);}`;
+
+function program(vs, fs) {
+  const compile = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const count = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < count; i++) { const n = gl.getActiveUniform(p, i).name; u[n] = gl.getUniformLocation(p, n); }
+  return { p, u };
+}
+function target(w, h, filter = gl.LINEAR) {
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, filter], [gl.TEXTURE_MAG_FILTER, filter], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fb, w, h };
+}
+const v3 = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  norm: (a) => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+};
+function camera(eye, at, fov, aspect) {
+  const f = v3.norm(v3.sub(at, eye)), r = v3.norm(v3.cross(f, [0, 1, 0])), u = v3.cross(r, f);
+  const t = Math.tan(fov * Math.PI / 360), near = .5, far = 400;
+  const a = 1 / (t * aspect), b = 1 / t, c = (far + near) / (near - far), d = 2 * far * near / (near - far);
+  const ex = -v3.dot(r, eye), ey = -v3.dot(u, eye), ez = v3.dot(f, eye);
+  return {
+    f, r, u, t,
+    vp: new Float32Array([
+      a * r[0], b * u[0], c * -f[0], f[0],
+      a * r[1], b * u[1], c * -f[1], f[1],
+      a * r[2], b * u[2], c * -f[2], f[2],
+      a * ex, b * ey, c * ez + d, -ez,
+    ]),
+  };
+}
+
+const PRESETS = {
+  horizon: { kind: "field", eye: [-6, 14, 37], at: [2, 18.5, -40], fov: 36, profile: 0, mask: 0, exposure: 1, fogD: 150, bloom: .6, horizon: .6, lat: 0, island: 0 },
+  massif: { kind: "field", eye: [-22, 33, 62], at: [-3, 8, -12], fov: 34, profile: 1, mask: 1, exposure: .95, fogD: 190, bloom: .7, horizon: -1, lat: 0, island: 0 },
+  hlat: { kind: "field", eye: [-6, 14, 37], at: [2, 18.5, -40], fov: 36, profile: 0, mask: 0, exposure: 1, fogD: 150, bloom: .8, horizon: -1, lat: 1, island: 9 },
+  mlat: { kind: "field", eye: [-22, 33, 62], at: [-3, 8, -12], fov: 34, profile: 1, mask: 1, exposure: .95, fogD: 190, bloom: .8, horizon: -1, lat: 1, island: 5 },
+  now: { kind: "flat", calm: 0, cols: 21, rows: 11, pitch: 56, size: 32 },
+};
+const LIST_CAM = { horizon: { eye: [-6, 34, 40], at: [0, 2, -46], exposure: .42, bloom: .25, horizon: -1 }, massif: { eye: [-22, 46, 66], at: [-3, 6, -14], exposure: .42, bloom: .25, horizon: -1 } };
+LIST_CAM.hlat = { ...LIST_CAM.horizon, bloom: .4 }; LIST_CAM.mlat = { ...LIST_CAM.massif, bloom: .4 };
+
+const state = { mode: "hlat", cry: 0, simT: 0, hold: false, holdT: 0, melt: 0, shockT: -9, shockReq: false, morph: { start: -9, dur: 1.4, toWord: 0, fromWord: 0, transit: 0 }, intro: 0, page: "home", accent: "green", phase: "idle", phaseT: 0, front: 0, charge: 0, t: 0, ptr: { on: 0, goal: 0, px: 0, py: 0, moved: 0 }, flatReset: false };
+const cam = { eye: [...PRESETS.hlat.eye], at: [...PRESETS.hlat.at], fov: 36, profile: 0, mask: 0, exposure: 1, fogD: 150, bloom: .8, horizon: -1, push: 0, dim: 1, lat: 1, island: 0, runDim: 1 };
+function burst() { state.morph = { start: state.simT, dur: 1.2, toWord: 0, fromWord: 0, transit: 26 }; }
+let replayIntro = () => {};
+
+function bootGL() {
+  const prog = {
+    field: program(QUAD_VS, FIELD_FS), vox: program(VOX_VS, VOX_FS), sky: program(QUAD_VS, SKY_FS), flat: program(FLAT_VS, FLAT_FS),
+    sim: program(QUAD_VS, SIM_FS), pts: program(PT_VS, PT_FS), thresh: program(QUAD_VS, THRESH_FS), blur: program(QUAD_VS, BLUR_FS), comp: program(QUAD_VS, COMP_FS),
+  };
+  const empty = gl.createVertexArray();
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, CUBE, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+  const heatBuf = gl.createBuffer(); const flatHeat = new Float32Array(21 * 11); const flatHold = new Float32Array(21 * 11);
+  gl.bindBuffer(gl.ARRAY_BUFFER, heatBuf); gl.bufferData(gl.ARRAY_BUFFER, flatHeat, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(2, 1);
+
+  let field = [target(N, N, gl.NEAREST), target(N, N, gl.NEAREST)];
+  for (const f of field) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fb); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); }
+  gl.bindTexture(gl.TEXTURE_2D, field[0].tex);
+  gl.getExtension("EXT_color_buffer_float");
+  const S = 256;
+  const floatTex = (data) => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, S, S, 0, gl.RGBA, gl.FLOAT, data); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); return t; };
+  const scatter = new Float32Array(S * S * 4);
+  const seedScatter = () => { for (let i = 0; i < S * S; i++) { scatter[i * 4] = (Math.random() - .5) * 170; scatter[i * 4 + 1] = Math.random() * 70; scatter[i * 4 + 2] = -46 + (Math.random() - .5) * 170; scatter[i * 4 + 3] = 0; } };
+  seedScatter();
+  const simPair = () => { const P = floatTex(scatter), V = floatTex(null), fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, P, 0); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, V, 0); gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]); return { P, V, fb }; };
+  let sim = [simPair(), simPair()];
+  const wordData = new Float32Array(S * S * 4);
+  const wordTex = floatTex(wordData);
+  const GLYPH = { V: "10001 10001 10001 10001 10001 01010 00100", O: "01110 10001 10001 10001 10001 10001 01110", X: "10001 10001 01010 00100 01010 10001 10001", E: "11111 10000 10000 11110 10000 10000 11111", L: "10000 10000 10000 10000 10000 10000 11111", I: "01110 00100 00100 00100 00100 00100 01110", G: "01110 10001 10000 10111 10001 10001 01111", H: "10001 10001 10001 11111 10001 10001 10001", T: "11111 00100 00100 00100 00100 00100 00100" };
+  function buildWord(c, eye, aspect) {
+    const cells = [];
+    [..."VOXELIGHT"].forEach((ch, ci) => GLYPH[ch].split(" ").forEach((row, y) => [...row].forEach((b, x) => { if (b === "1") cells.push([ci * 6 + x, y]); })));
+    const D = 70, width = 2 * D * c.t * aspect * .62, cell = width / 53;
+    const center = [0, 1, 2].map((i) => eye[i] + c.f[i] * D + c.u[i] * D * c.t * .36);
+    wordData.fill(0);
+    let k = 0;
+    for (let i = 0; i < S * S; i += 9) {
+      const [cx, cy] = cells[k++ % cells.length];
+      const x = (cx - 26) * cell + (Math.random() - .5) * cell * .62, y = (3 - cy) * cell + (Math.random() - .5) * cell * .62;
+      for (let a = 0; a < 3; a++) wordData[i * 4 + a] = center[a] + c.r[a] * x + c.u[a] * y;
+      wordData[i * 4 + 3] = 1;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, wordTex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, S, S, gl.RGBA, gl.FLOAT, wordData);
+  }
+  let introPhase = reduce ? 3 : 0, introAt = 0;
+  replayIntro = () => {
+    if (reduce) return;
+    seedScatter();
+    for (const pair of sim) { gl.bindTexture(gl.TEXTURE_2D, pair.P); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, S, S, gl.RGBA, gl.FLOAT, scatter); }
+    introPhase = 0; state.intro = 0;
+  };
+  let lastHit = null;
+  let scene, msFb, msColor, msDepth, bloom, W = 0, H = 0;
+  const samples = Math.min(4, gl.getParameter(gl.MAX_SAMPLES));
+
+  function resize() {
+    const rect = stage.getBoundingClientRect();
+    const dpr = Math.min(devicePixelRatio || 1, 1.5);
+    const w = Math.max(2, Math.round(rect.width * dpr)), h = Math.max(2, Math.round(rect.height * dpr));
+    if (w === W && h === H) return;
+    W = w; H = h; canvas.width = w; canvas.height = h;
+    scene = target(w, h);
+    bloom = [target(w >> 2, h >> 2), target(w >> 2, h >> 2)];
+    msFb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, msFb);
+    msColor = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, msColor);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA8, w, h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, msColor);
+    msDepth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, msDepth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, w, h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, msDepth);
+  }
+  const lerp = (a, b, k) => a + (b - a) * k;
+  const OFFSET = [0, -46];
+  let ORIGIN = [16, 6];
+  const SUN = v3.norm([.72, .4, .16]);
+  const sunXZ = (() => { const l = Math.hypot(SUN[0], SUN[2]); return [SUN[0] / l, SUN[2] / l]; })();
+  const HAZE = [.25, .27, .32], INK = [.027, .031, .043];
+
+  let last = performance.now(), frames = 0, fpsAt = last;
+  const fpsEl = document.getElementById("fps");
+  function frame(now) {
+    const dt = Math.min(.05, (now - last) / 1000); last = now;
+    resize();
+    const p = PRESETS[state.mode];
+    const list = state.page === "list" ? LIST_CAM[state.mode] : null;
+    const k = 1 - Math.exp(-dt * 2.4);
+    if (p.kind === "field") {
+      const eyeG = list ? list.eye : p.eye, atG = list ? list.at : p.at;
+      for (let i = 0; i < 3; i++) { cam.eye[i] = lerp(cam.eye[i], eyeG[i], k); cam.at[i] = lerp(cam.at[i], atG[i], k); }
+      cam.fov = lerp(cam.fov, p.fov, k); cam.profile = lerp(cam.profile, p.profile, k); cam.mask = lerp(cam.mask, p.mask, k);
+      cam.fogD = lerp(cam.fogD, p.fogD, k);
+      const running = state.phase === "running";
+      cam.exposure = lerp(cam.exposure, running ? .3 : (list ? list.exposure : p.exposure), k);
+      cam.bloom = lerp(cam.bloom, running ? .1 : (list ? list.bloom : p.bloom), k);
+      cam.horizon = lerp(cam.horizon, list ? list.horizon : p.horizon, k);
+      cam.push = lerp(cam.push, state.phase === "preparing" ? 1 : 0, 1 - Math.exp(-dt * 1.3));
+      cam.dim = lerp(cam.dim, list ? .55 : 1, k);
+      cam.lat = lerp(cam.lat, p.lat, k);
+      cam.island = lerp(cam.island, introPhase >= 3 ? p.island : 0, 1 - Math.exp(-dt * 1.4));
+      cam.runDim = lerp(cam.runDim, running ? .3 : (list ? .5 : 1), k);
+    }
+    const timeScale = reduce ? 0 : state.phase === "running" ? .12 : 1;
+    state.t += dt * timeScale;
+    if (state.phase === "preparing") {
+      state.phaseT += dt;
+      const q = Math.min(1, state.phaseT / 3.8);
+      state.front = (q * q * (3 - 2 * q)) * 165; state.charge = Math.min(1, state.charge + dt * 2);
+      statusEl.textContent = "PREPARING " + String(Math.round(q * 100)).padStart(2, "0") + "%";
+      if (q >= 1) { state.phase = "running"; statusEl.textContent = "RUNNING"; launchBtn.textContent = "结束游戏"; }
+    } else {
+      state.charge = Math.max(0, state.charge - dt * (state.phase === "running" ? .5 : 1.2));
+      if (state.charge <= 0 && state.phase === "idle") state.front = 0;
+    }
+    if (now - state.ptr.moved > 260) state.ptr.goal = 0;
+    if (state.phase === "preparing" || state.phase === "running") state.cry = Math.max(state.cry, state.front);
+    else state.cry = Math.max(0, state.cry - dt * 75);
+    state.simT += dt;
+    if (state.hold) state.holdT += dt;
+    const meltGoal = state.hold && state.holdT > .22 ? Math.min(1, (state.holdT - .22) / .9) : 0;
+    state.melt += (meltGoal - state.melt) * Math.min(1, dt * (meltGoal > state.melt ? 5 : 3));
+    state.ptr.on += (state.ptr.goal - state.ptr.on) * (1 - Math.exp(-dt * 8));
+
+    if (p.kind === "field") drawField(dt); else drawFlat(p, dt);
+
+    gl.bindVertexArray(empty); gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msFb); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, scene.fb);
+    gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    const bloomAmt = p.kind === "field" ? cam.bloom : (p.calm ? .4 : 0);
+    gl.viewport(0, 0, bloom[0].w, bloom[0].h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bloom[0].fb); gl.useProgram(prog.thresh.p);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, scene.tex); gl.uniform1i(prog.thresh.u.uTex, 0); gl.uniform1f(prog.thresh.u.uT, .6);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.useProgram(prog.blur.p); gl.uniform1i(prog.blur.u.uTex, 0);
+    for (let i = 0; i < 4; i++) {
+      const horiz = i % 2 === 0, spread = 1 + (i >> 1);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, bloom[horiz ? 1 : 0].fb);
+      gl.bindTexture(gl.TEXTURE_2D, bloom[horiz ? 0 : 1].tex);
+      gl.uniform2f(prog.blur.u.uDir, horiz ? spread / bloom[0].w : 0, horiz ? 0 : spread / bloom[0].h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H); gl.useProgram(prog.comp.p);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, scene.tex); gl.uniform1i(prog.comp.u.uTex, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, bloom[0].tex); gl.uniform1i(prog.comp.u.uBloom, 1);
+    gl.uniform1f(prog.comp.u.uAmt, bloomAmt);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE0);
+
+    frames++;
+    if (now - fpsAt > 500) {
+      const count = p.kind === "field" ? (N * N).toLocaleString("en-US") : String(p.cols * p.rows);
+      fpsEl.textContent = Math.round(frames * 1000 / (now - fpsAt)) + " FPS / " + count + " VOXELS";
+      window.__fps = Math.round(frames * 1000 / (now - fpsAt));
+      frames = 0; fpsAt = now;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function drawField(dt) {
+    const aspect = W / H;
+    const push = cam.push * .09;
+    const eye = [lerp(cam.eye[0], cam.at[0], push), lerp(cam.eye[1], cam.at[1], push * .4), lerp(cam.eye[2], cam.at[2], push)];
+    const c = camera(eye, cam.at, cam.fov, aspect);
+    const nx = state.ptr.px * 2 - 1, ny = 1 - state.ptr.py * 2;
+    const dir = v3.norm([0, 1, 2].map((i) => c.f[i] + c.r[i] * nx * c.t * aspect + c.u[i] * ny * c.t));
+    let hit = [99999, 99999];
+    if (dir[1] < -.01) { const t = (eye[1] - 3) / -dir[1]; hit = [eye[0] + dir[0] * t, eye[2] + dir[2] * t]; }
+
+    const haze = HAZE.map((v, i) => lerp(lerp(v, INK[i], cam.profile * .8), INK[i], cam.lat));
+    const onx = .62, ony = -.66;
+    const odir = v3.norm([0, 1, 2].map((i) => c.f[i] + c.r[i] * onx * c.t * aspect + c.u[i] * ony * c.t));
+    if (odir[1] < -.01) { const t = (eye[1] - 3) / -odir[1]; ORIGIN = [eye[0] + odir[0] * t, eye[2] + odir[2] * t]; }
+    const sdt = Math.min(dt, 1 / 30);
+    if (introPhase === 0) { buildWord(c, eye, aspect); state.morph = { start: state.simT, dur: 1.5, toWord: 1, fromWord: 0, transit: 10 }; introAt = state.simT; introPhase = 1; state.intro = 1; mock.dataset.intro = "on"; }
+    else if (introPhase === 1 && state.simT - introAt > 3.9) { state.morph = { start: state.simT, dur: 2.1, toWord: 0, fromWord: 1, transit: 16 }; introPhase = 2; }
+    else if (introPhase === 2 && state.simT - introAt > 6.6) { introPhase = 3; mock.dataset.intro = "off"; state.morph.fromWord = 0; state.morph.dur = .001; state.morph.transit = 0; }
+    const pv = lastHit && hit[0] < 9999 ? [(hit[0] - lastHit[0]) / Math.max(dt, .008), (hit[1] - lastHit[1]) / Math.max(dt, .008)] : [0, 0];
+    const pvLen = Math.hypot(pv[0], pv[1]); if (pvLen > 60) { pv[0] *= 60 / pvLen; pv[1] *= 60 / pvLen; }
+    lastHit = hit[0] < 9999 ? hit : null;
+    if (state.hold && hit[0] < 9999) state.meltAt = hit;
+    if (state.shockReq) { state.shockReq = false; state.shockT = state.simT; state.shockAt = hit; }
+    const meltAt = state.meltAt || [9999, 9999], shockAt = state.shockAt || [9999, 9999];
+    const setCrystal = (u) => { gl.uniform1f(u.uLat, cam.lat); gl.uniform1f(u.uCry, state.cry); gl.uniform1f(u.uIsland, cam.island); gl.uniform1f(u.uMelt, state.melt); gl.uniform1f(u.uMask, cam.mask); gl.uniform2f(u.uOrigin, ORIGIN[0], ORIGIN[1]); gl.uniform2f(u.uMeltAt, meltAt[0], meltAt[1]); };
+    const [src, dst] = field;
+    gl.bindVertexArray(empty); gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb); gl.viewport(0, 0, N, N); gl.useProgram(prog.field.p);
+    let u = prog.field.u;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex); gl.uniform1i(u.uPrev, 0);
+    gl.uniform1f(u.uT, state.t); gl.uniform1f(u.uProfile, cam.profile); gl.uniform1f(u.uFront, state.phase === "preparing" ? state.front : 0);
+    gl.uniform1f(u.uPtrOn, state.ptr.on); gl.uniform1f(u.uDecay, Math.pow(.16, dt)); gl.uniform1f(u.uN, N);
+    gl.uniform2f(u.uPtr, hit[0], hit[1]); gl.uniform2f(u.uOrigin, ORIGIN[0], ORIGIN[1]); gl.uniform2f(u.uOffset, OFFSET[0], OFFSET[1]); gl.uniform2f(u.uSunXZ, sunXZ[0], sunXZ[1]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    field = [dst, src];
+
+    if (cam.lat > .01) {
+      const [from, to] = sim;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, to.fb); gl.viewport(0, 0, S, S); gl.useProgram(prog.sim.p); u = prog.sim.u;
+      const bind = (unit, tex, loc) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(loc, unit); };
+      bind(0, from.P, u.uPos); bind(1, from.V, u.uVel); bind(2, dst.tex, u.uField); bind(3, wordTex, u.uWord);
+      gl.uniform1f(u.uN, N); gl.uniform1f(u.uS, S); gl.uniform1f(u.uTime, state.simT); gl.uniform1f(u.uDt, sdt);
+      gl.uniform1f(u.uMorphStart, state.morph.start); gl.uniform1f(u.uMorphDur, state.morph.dur); gl.uniform1f(u.uToWord, state.morph.toWord); gl.uniform1f(u.uFromWord, state.morph.fromWord); gl.uniform1f(u.uTransit, state.morph.transit);
+      gl.uniform1f(u.uMeltP, state.melt); gl.uniform1f(u.uPtrOn, reduce ? 0 : state.ptr.on); gl.uniform1f(u.uShockT, state.shockT); gl.uniform1f(u.uRing, state.phase === "preparing" ? state.front : 0);
+      gl.uniform2f(u.uOffset, OFFSET[0], OFFSET[1]); gl.uniform2f(u.uPtr, hit[0], hit[1]); gl.uniform2f(u.uPtrVel, pv[0], pv[1]); gl.uniform2f(u.uMeltAtP, meltAt[0], meltAt[1]); gl.uniform2f(u.uShockAt, shockAt[0], shockAt[1]); gl.uniform2f(u.uOriginP, ORIGIN[0], ORIGIN[1]);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      sim = [to, from];
+      gl.activeTexture(gl.TEXTURE0);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, msFb); gl.viewport(0, 0, W, H);
+    gl.useProgram(prog.sky.p); u = prog.sky.u;
+    gl.uniform3fv(u.uHaze, haze); gl.uniform3fv(u.uInk, INK); gl.uniform1f(u.uHorizon, cam.horizon); gl.uniform1f(u.uDots, cam.lat * cam.runDim); gl.uniform1f(u.uDotPx, Math.round(W / 62));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
+    gl.bindVertexArray(vao); gl.useProgram(prog.vox.p); u = prog.vox.u;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, dst.tex); gl.uniform1i(u.uField, 0);
+    gl.uniformMatrix4fv(u.uVP, false, c.vp); gl.uniform1f(u.uN, N); setCrystal(u); gl.uniform1f(u.uFront, state.front); gl.uniform1f(u.uCharge, state.charge);
+    gl.uniform2f(u.uOffset, OFFSET[0], OFFSET[1]);
+    gl.uniform3fv(u.uEye, eye); gl.uniform3fv(u.uAccent, ACCENTS[state.accent].c); gl.uniform3fv(u.uSun, SUN); gl.uniform3fv(u.uHaze, haze);
+    gl.uniform1f(u.uExposure, cam.exposure); gl.uniform1f(u.uFogD, cam.fogD); gl.uniform1f(u.uDim, cam.dim * (1 - .7 * cam.lat));
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 30, N * N);
+    if (cam.lat > .01) {
+      gl.bindVertexArray(empty); gl.disable(gl.CULL_FACE); gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+      gl.useProgram(prog.pts.p); u = prog.pts.u;
+      const bindP = (unit, tex, loc) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(loc, unit); };
+      bindP(0, sim[0].P, u.uPos); bindP(1, sim[0].V, u.uVel); bindP(2, dst.tex, u.uField);
+      gl.uniformMatrix4fv(u.uVP, false, c.vp); gl.uniform3fv(u.uEye, eye); gl.uniform2f(u.uOffset, OFFSET[0], OFFSET[1]);
+      gl.uniform1f(u.uN, N); gl.uniform1f(u.uS, S); gl.uniform1f(u.uDpr, W / stage.getBoundingClientRect().width); gl.uniform1f(u.uFogD, cam.fogD); gl.uniform1f(u.uGain, 1); gl.uniform1f(u.uRunDim, cam.runDim);
+      gl.uniform3fv(u.uAccent, ACCENTS[state.accent].c); setCrystal(u);
+      gl.drawArrays(gl.POINTS, 0, S * S);
+      gl.disable(gl.BLEND); gl.depthMask(true); gl.activeTexture(gl.TEXTURE0);
+    }
+  }
+
+  function drawFlat(p, dt) {
+    if (state.flatReset) { flatHeat.fill(0); flatHold.fill(0); state.flatReset = false; }
+    const scale = W / 1280, ptrX = state.ptr.px * W, ptrY = (1 - state.ptr.py) * H;
+    for (let i = 0; i < flatHeat.length; i++) {
+      const col = i % p.cols, row = Math.floor(i / p.cols);
+      const cx = (col - (p.cols - 1) / 2) * p.pitch * scale + W / 2, cy = (row - (p.rows - 1) / 2) * p.pitch * scale + H / 2;
+      const near = state.ptr.goal && Math.hypot(cx - ptrX, cy - ptrY) < 72 * scale;
+      const wave = p.calm && state.phase === "preparing" && Math.abs(cx - (1 - state.front / 165) * W) < 60 * scale;
+      if (near || wave) { flatHeat[i] = 1; flatHold[i] = 1.8; }
+      else if (flatHold[i] > 0) flatHold[i] -= dt;
+      else flatHeat[i] = Math.max(0, flatHeat[i] - dt / .28);
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, heatBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, flatHeat);
+    const base = p.calm ? [.027, .031, .043] : [.078, .082, .086];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, msFb); gl.viewport(0, 0, W, H);
+    gl.clearColor(base[0], base[1], base[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.frontFace(gl.CCW);
+    gl.bindVertexArray(vao); gl.useProgram(prog.flat.p);
+    const u = prog.flat.u;
+    gl.uniform2f(u.uRes, W, H); gl.uniform2f(u.uPtr, ptrX, ptrY); gl.uniform1f(u.uT, state.t); gl.uniform1f(u.uScale, scale);
+    gl.uniform1f(u.uPitch, p.pitch); gl.uniform1f(u.uSize, p.size); gl.uniform1f(u.uCalm, p.calm); gl.uniform1f(u.uCols, p.cols); gl.uniform1f(u.uRows, p.rows);
+    gl.uniform1f(u.uPtrOn, state.ptr.on); gl.uniform3fv(u.uAccent, ACCENTS[state.accent].c); gl.uniform3fv(u.uBase, base);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 30, p.cols * p.rows);
+  }
+  requestAnimationFrame(frame);
+}
+
+const statusEl = document.getElementById("status"), launchBtn = document.getElementById("launch");
+function pressed(group, value) { for (const b of group.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.v === value)); }
+function makeGroup(id, entries, onPick, initial) {
+  const g = document.getElementById(id);
+  for (const [v, label] of entries) { const b = document.createElement("button"); b.type = "button"; b.dataset.v = v; b.textContent = label; b.addEventListener("click", () => { pressed(g, v); onPick(v); }); g.appendChild(b); }
+  pressed(g, initial);
+  return g;
+}
+function showNote() {
+  const n = NOTES[state.mode];
+  document.getElementById("n-title").textContent = n.name;
+  document.getElementById("n-why").textContent = n.why;
+  document.getElementById("n-a").textContent = n.a;
+  document.getElementById("n-b").textContent = n.b;
+  document.getElementById("n-c").textContent = n.c;
+}
+function resetLaunch() { state.phase = "idle"; state.phaseT = 0; statusEl.textContent = "IDLE"; launchBtn.textContent = "启动游戏"; }
+makeGroup("modes", Object.entries(NOTES).map(([k, v]) => [k, v.label]), (v) => { state.mode = v; state.flatReset = true; resetLaunch(); showNote(); burst(); }, state.mode);
+makeGroup("pages", [["home", "首页"], ["list", "内容页"]], (v) => { state.page = v; mock.dataset.page = v; burst(); }, state.page);
+makeGroup("accents", Object.entries(ACCENTS).map(([k, v]) => [k, v.label]), (v) => {
+  state.accent = v; document.documentElement.style.setProperty("--accent", ACCENTS[v].css); document.documentElement.style.setProperty("--on-accent", ACCENTS[v].on);
+}, state.accent);
+launchBtn.addEventListener("click", () => {
+  if (state.phase === "idle") { state.phase = "preparing"; state.phaseT = 0; state.front = 0; launchBtn.textContent = "取消"; }
+  else resetLaunch();
+});
+stage.addEventListener("pointermove", (e) => { const r = stage.getBoundingClientRect(); state.ptr.px = (e.clientX - r.left) / r.width; state.ptr.py = (e.clientY - r.top) / r.height; state.ptr.goal = 1; state.ptr.moved = performance.now(); });
+stage.addEventListener("pointerleave", () => { state.ptr.goal = 0; state.hold = false; });
+stage.addEventListener("pointerdown", (e) => { if (e.target.closest("button")) return; state.hold = true; state.holdT = 0; });
+addEventListener("pointerup", () => { if (state.hold && state.melt < .3 && state.holdT < .3) state.shockReq = true; state.hold = false; });
+document.getElementById("replay").addEventListener("click", () => replayIntro());
+showNote();
+if (gl) bootGL(); else { statusEl.textContent = "NO WEBGL2"; document.getElementById("fps").textContent = "此浏览器不支持 WebGL2"; }
+</script>

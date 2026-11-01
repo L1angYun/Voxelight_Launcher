@@ -5,6 +5,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { command, type Instance } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
+import { Select } from "../../components/ui/Select";
 import { useInstanceBackups } from "./useInstanceContent";
 import { errorText, loaderText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
@@ -155,23 +156,13 @@ export function InstanceOverview({
             <p role="alert">{errorText(backupsError, t)}</p>
           ) : null}
           <div className="vx-action-row">
-            <select
+            <Select
               aria-label={t("library:backupToRestore")}
               value={selectedBackup}
-              onChange={(event) => setSelectedBackup(event.target.value)}
-            >
-              <option value="">
-                {backupsBusy
-                  ? t("common:status.loading")
-                  : t("library:selectBackup")}
-              </option>
-              {backups.map((backup) => (
-                <option key={backup.id} value={backup.id}>
-                  {formatDate(backup.createdAt, i18n.language)} ·{" "}
-                  {sizeText(backup.size, i18n.language)}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedBackup}
+              options={[{ value: "", label: backupsBusy ? t("common:status.loading") : t("library:selectBackup") },
+                ...backups.map((backup) => ({ value: backup.id,
+                  label: `${formatDate(backup.createdAt, i18n.language)} · ${sizeText(backup.size, i18n.language)}` }))]} />
             <Button
               variant="secondary"
               disabled={!selectedBackup || backupsBusy}

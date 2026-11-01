@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installLauncherFixture } from "./fixtures";
+import { selectValue } from "./select-helpers";
 
 async function fixtureSkins(page: Page) {
   return page.evaluate(() => (window as unknown as {
@@ -18,7 +19,7 @@ test("home renders the ACTIVE account skin and cape, disposes on navigation, and
   await installLauncherFixture(page, { defaultModel: "slim" });
   await page.goto("/");
   const skins = await fixtureSkins(page);
-  const character = page.locator(".vx-home__scene .vx-character-canvas");
+  const character = page.locator(".vx-home__char-col .vx-character-canvas");
   await expect(character).toHaveAttribute("data-character-state", "ready");
   await expect(character).toHaveAttribute("data-skin-url", skins.classic);
   await expect(character).toHaveAttribute("data-skin-model", "classic");
@@ -26,7 +27,7 @@ test("home renders the ACTIVE account skin and cape, disposes on navigation, and
   await expect(page.locator(".vx-home__preview-source")).toHaveText("CyanFixture 的角色预览");
   for (let cycle = 0; cycle < 2; cycle++) {
     await page.locator('[data-page="library"]').click();
-    await expect(page.locator(".vx-home__scene canvas")).toHaveCount(0);
+    await expect(page.locator(".vx-home__char-col canvas")).toHaveCount(0);
     await page.locator('[data-page="home"]').click();
     await expect(character).toHaveAttribute("data-character-state", "ready");
   }
@@ -38,7 +39,7 @@ test("home renders the ACTIVE account skin and cape, disposes on navigation, and
   await openAccounts(page);
   await page.getByRole("button", { name: "选择 UnavailableFixture", exact: true }).click();
   await page.locator('[data-page="home"]').click();
-  await expect(page.locator(".vx-home__scene .vx-character-canvas")).toHaveCount(0);
+  await expect(page.locator(".vx-home__char-col .vx-character-canvas")).toHaveCount(0);
   await expect(page.locator(".vx-character-placeholder")).toContainText("账号外观暂不可用");
   expect(errors).toEqual([]);
 });
@@ -48,26 +49,26 @@ test("profile failure exposes a retry state and no default character", async ({ 
   await page.goto("/");
   await expect(page.locator(".vx-character-placeholder")).toContainText("正在读取账号外观");
   await expect(page.locator(".vx-character-placeholder")).toContainText("账号外观暂不可用");
-  await expect(page.locator(".vx-home__scene .vx-character-canvas")).toHaveCount(0);
+  await expect(page.locator(".vx-home__char-col .vx-character-canvas")).toHaveCount(0);
   await page.getByRole("button", { name: "重试账号外观", exact: true }).click();
   await expect.poll(async () => page.evaluate(() => (window as unknown as {
     __appearanceFixtures: { calls: { name: string }[] };
   }).__appearanceFixtures.calls.filter((call) => call.name === "get_player_profile").length)).toBeGreaterThanOrEqual(2);
-  await expect(page.locator(".vx-home__scene .vx-character-canvas")).toHaveCount(0);
+  await expect(page.locator(".vx-home__char-col .vx-character-canvas")).toHaveCount(0);
 });
 
 test("a successful empty profile and a no-account home keep distinct honest previews", async ({ page }) => {
   await installLauncherFixture(page, { emptyProfile: true });
   await page.goto("/");
   await expect(page.locator(".vx-character-placeholder")).toContainText("尚未取得当前账号的皮肤");
-  await expect(page.locator(".vx-home__scene .vx-character-canvas")).toHaveCount(0);
+  await expect(page.locator(".vx-home__char-col .vx-character-canvas")).toHaveCount(0);
 });
 
 test("an account-free home labels and renders the chosen default preview", async ({ page }) => {
   await installLauncherFixture(page, { noAccount: true });
   await page.goto("/");
   await expect(page.locator(".vx-home__preview-source")).toHaveText("默认角色预览");
-  await expect(page.locator(".vx-home__scene .vx-character-canvas")).toHaveAttribute("data-character-state", "ready");
+  await expect(page.locator(".vx-home__char-col .vx-character-canvas")).toHaveAttribute("data-character-state", "ready");
   await expect(page.locator(".vx-home__preview-source")).not.toContainText("CyanFixture");
 });
 
@@ -98,7 +99,7 @@ test("local previews expose their source and pause offscreen without changing ac
   await page.setViewportSize({ width: 1050, height: 650 });
   await page.goto("/");
   const skins = await fixtureSkins(page);
-  await expect(page.locator(".vx-home__scene .vx-character-canvas")).toHaveAttribute("data-skin-url", skins.classic);
+  await expect(page.locator(".vx-home__char-col .vx-character-canvas")).toHaveAttribute("data-skin-url", skins.classic);
   await openAccounts(page);
   await page.getByRole("tab", { name: "本地预览", exact: true }).click();
   await page.locator('input[aria-label="导入本地 PNG"]').setInputFiles({
@@ -111,7 +112,7 @@ test("local previews expose their source and pause offscreen without changing ac
   await expect(preview).toHaveAttribute("data-skin-model", "auto");
   await expect(page.locator(".vx-appearance-preview__source")).toContainText("local-amber.png");
   await expect(page.locator(".vx-appearance-preview__source")).toContainText("仅用于本地预览");
-  await page.getByRole("combobox", { name: "人物动画", exact: true }).selectOption("none");
+  await selectValue(page, "人物动画", "none");
   await page.getByRole("button", { name: "自动旋转", exact: true }).click();
   await expect(page.getByRole("button", { name: "自动旋转", exact: true })).toHaveAttribute("aria-pressed", "false");
   await page.setViewportSize({ width: 1050, height: 300 });
@@ -130,7 +131,7 @@ test("local previews expose their source and pause offscreen without changing ac
   });
   await expect(preview).toHaveAttribute("data-visible", "true");
   await page.locator('[data-page="home"]').click();
-  await expect(page.locator(".vx-home__scene .vx-character-canvas")).toHaveAttribute("data-skin-url", skins.classic);
+  await expect(page.locator(".vx-home__char-col .vx-character-canvas")).toHaveAttribute("data-skin-url", skins.classic);
   const mutations = await page.evaluate(() => (window as unknown as {
     __appearanceFixtures: { calls: { name: string }[] };
   }).__appearanceFixtures.calls.filter((call) => ["upload_account_skin", "reset_account_skin", "select_account_cape"].includes(call.name)));
@@ -145,7 +146,7 @@ test("reduced motion disables automatic animation while keeping manual camera co
   await page.getByRole("tab", { name: "本地预览", exact: true }).click();
   await expect(page.getByRole("button", { name: "自动旋转", exact: true })).toBeDisabled();
   await expect(page.getByRole("combobox", { name: "人物动画", exact: true })).toBeDisabled();
-  await expect(page.getByRole("combobox", { name: "人物动画", exact: true })).toHaveValue("none");
+  await expect(page.getByRole("combobox", { name: "人物动画", exact: true })).toContainText("静止");
   const canvas = page.locator(".vx-appearance-preview canvas");
   await canvas.focus();
   await page.keyboard.press("ArrowLeft");

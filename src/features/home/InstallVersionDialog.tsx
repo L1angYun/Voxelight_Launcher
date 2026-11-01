@@ -5,6 +5,7 @@ import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Field } from "../../components/ui/Field";
+import { Select } from "../../components/ui/Select";
 
 export function InstallVersionDialog({
   open,
@@ -56,13 +57,11 @@ export function InstallVersionDialog({
     >
       <form id="install-version-form" onSubmit={install} className="vx-form-stack">
         <Field label={t("home:version")} htmlFor="install-version">
-          <select id="install-version" value={versionId} onChange={(event) => setVersionId(event.target.value)} required>
-            <option value="" disabled>{t("home:noVersions")}</option>
-            {manifest?.latestRelease ? <option value={manifest.latestRelease}>{manifest.latestRelease}</option> : null}
-            {manifest?.versions.filter((version) => version.id !== manifest.latestRelease).map((version) => (
-              <option key={version.id} value={version.id}>{version.id}</option>
-            ))}
-          </select>
+          <Select id="install-version" aria-label={t("home:version")} value={versionId} onChange={setVersionId} required options={[
+            { value: "", label: t("home:noVersions"), disabled: true },
+            ...(manifest?.latestRelease ? [{ value: manifest.latestRelease, label: manifest.latestRelease }] : []),
+            ...(manifest?.versions.filter((version) => version.id !== manifest.latestRelease).map((version) => ({ value: version.id, label: version.id })) ?? []),
+          ]} />
         </Field>
         <Field label={t("home:instanceNameOptional")} htmlFor="install-instance-name">
           <input id="install-instance-name" value={name} onChange={(event) => setName(event.target.value)} placeholder={t("home:instanceNamePlaceholder")} maxLength={80} />

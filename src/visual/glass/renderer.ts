@@ -13,12 +13,15 @@ import type {
 interface SchedulerOptions {
   requestFrame: (callback: (time: number) => void) => number;
   cancelFrame: (id: number) => void;
+  continuous?: boolean;
 }
 
 export interface GlassRendererOptions {
   onModeChange?: (mode: GlassMode) => void;
   /** Runs before every frame so live surfaces can publish their latest geometry and optics. */
   beforeFrame?: () => void;
+  /** Local SVG optics owns its exact deformed contour instead of the GPU rim. */
+  drawSurfaces?: boolean;
 }
 
 const restingOptics: GlassOptics = { bendX: 0, bendY: 0, pressure: 0, energy: 0 };
@@ -41,7 +44,9 @@ export function sameSurface(first: GlassSurfaceModel, second: GlassSurfaceModel)
     a.bendX === b.bendX &&
     a.bendY === b.bendY &&
     a.pressure === b.pressure &&
-    a.energy === b.energy
+    a.energy === b.energy &&
+    (a.stretch ?? 0) === (b.stretch ?? 0) &&
+    (a.heading ?? 0) === (b.heading ?? 0)
   );
 }
 
@@ -65,7 +70,7 @@ export function createGlassScheduler(
       if (disposed || paused) return;
       frames += 1;
       onFrame(time);
-      if (quality === "full") request();
+      if (quality === "full" && options.continuous !== false) request();
     });
   };
 
@@ -153,15 +158,11 @@ precision highp float;
 uniform vec2 u_resolution;
 uniform vec4 u_rect;
 uniform float u_radius;
-uniform float u_time;
 uniform float u_opacity;
 uniform float u_quality;
 uniform float u_active;
 uniform float u_scale;
 uniform vec3 u_accent;
-uniform sampler2D u_background;
-uniform float u_hasBackground;
-uniform float u_light;
 uniform vec2 u_pointer;
 uniform vec2 u_bend;
 uniform float u_pressure;
@@ -190,8 +191,6 @@ void main() {
   if (shape <= 0.001) discard;
 
   vec2 uv = gl_FragCoord.xy / u_resolution;
-  vec2 local = (gl_FragCoord.xy - u_rect.xy) / max(u_rect.zw, vec2(1.0));
-  float time = u_time * 0.00012;
 
   vec2 slope = vec2(
     surfaceDistance(p + vec2(1.0, 0.0)) - surfaceDistance(p - vec2(1.0, 0.0)),
@@ -199,67 +198,33 @@ void main() {
   );
   vec2 outward = normalize(slope + vec2(0.00001));
 
-  float bevel = max(min(min(u_rect.z, u_rect.w) * 0.5, 18.0 * u_scale), 1.0);
-  float edge = clamp(1.0 + d / bevel, 0.0, 1.0);
-  float rim = exp(-abs(d) / (1.5 * u_scale));
-  float inner = exp(-abs(d + 9.0 * u_scale) / (8.0 * u_scale));
-
-  // Near the rim the background is sampled along the surface normal, so a
-  // moving or pressed surface visibly bends what lies behind it.
-  float lean = (1.0 + u_pressure * 0.25 + u_energy * 0.6) * mix(0.55, 1.0, u_quality);
-  vec2 pull = -outward * pow(edge, 1.7) * 12.0 * u_scale * lean / u_resolution;
-  vec2 wave = vec2(sin(uv.y * 8.0 + time), cos(uv.x * 6.0 - time)) * 0.002 * u_quality;
-  vec2 split = outward * pow(edge, 2.4) * 2.6 * u_scale * (0.4 + u_quality) / u_resolution;
-  vec2 at = uv + pull + wave;
-  vec3 sampled = vec3(
-    texture(u_background, at + split).r,
-    texture(u_background, at).g,
-    texture(u_background, at - split).b
-  );
-
-  // Without a supplied image an analytic light environment stands in; it is a
-  // material reflection, not a capture of the page.
-  vec3 environment = mix(vec3(0.085, 0.10, 0.12), vec3(0.91, 0.92, 0.93), u_light);
-  float blueLight = exp(-pow((local.x + local.y * 0.4 - 0.3 + wave.x * 18.0) * 2.2, 2.0));
-  float warmLight = exp(-pow((local.x - local.y * 0.5 - 0.75) * 3.0, 2.0));
-  environment += vec3(0.10, 0.18, 0.25) * blueLight * (0.15 + inner * 0.5);
-  environment += vec3(0.24, 0.14, 0.09) * warmLight * (0.1 + inner * 0.4);
-  vec3 optical = mix(environment, sampled, u_hasBackground);
-
+  // The GPU pass owns only a narrow luminous rim. The actual background is
+  // displaced by the browser's backdrop-filter; no synthetic image or tint is
+  // painted over the flat interior, and no lower dark band is manufactured.
+  float rim = 1.0 - smoothstep(0.5 * u_scale, 3.0 * u_scale, abs(d));
+  if (rim <= 0.001) discard;
   vec2 lightDirection = normalize(vec2(-0.45, 0.89));
   float sheen = pow(max(dot(outward, lightDirection), 0.0), 3.0);
-  float underside = pow(max(dot(outward, -lightDirection), 0.0), 3.0) * 0.5;
-  optical += rim * (sheen * vec3(0.46, 0.53, 0.56) + underside * vec3(0.12, 0.14, 0.17));
-  optical += u_accent * inner * u_active * 0.018;
-
   float interaction = exp(-length((uv - u_pointer) * vec2(1.0, 0.7)) * 10.0) * u_quality;
-  optical += vec3(0.42, 0.53, 0.64) * interaction * inner * 0.3;
-
-  float surge = u_energy * (0.35 + 0.65 * rim);
-  optical += vec3(0.5, 0.58, 0.66) * surge * 0.55;
-
-  float coverage = 0.1 + inner * 0.3 + rim * 0.6 + u_energy * 0.25;
-  outColor = vec4(optical, min(1.0, shape * u_opacity * coverage));
+  vec3 light = mix(vec3(0.75, 0.86, 0.93), vec3(1.0), sheen);
+  light = mix(light, u_accent, u_active * 0.025);
+  float coverage = rim * (0.3 + sheen * 0.7 + interaction * 0.2 + u_energy * 0.12);
+  outColor = vec4(light, min(1.0, shape * u_opacity * coverage));
 }
 `;
 
 interface GLResources {
   program: WebGLProgram;
   buffer: WebGLBuffer;
-  texture: WebGLTexture;
   position: number;
   resolution: WebGLUniformLocation | null;
   rect: WebGLUniformLocation | null;
   radius: WebGLUniformLocation | null;
-  time: WebGLUniformLocation | null;
   opacity: WebGLUniformLocation | null;
   quality: WebGLUniformLocation | null;
   active: WebGLUniformLocation | null;
   scale: WebGLUniformLocation | null;
   accent: WebGLUniformLocation | null;
-  background: WebGLUniformLocation | null;
-  hasBackground: WebGLUniformLocation | null;
-  light: WebGLUniformLocation | null;
   pointer: WebGLUniformLocation | null;
   bend: WebGLUniformLocation | null;
   pressure: WebGLUniformLocation | null;
@@ -294,33 +259,21 @@ function createResources(gl: WebGL2RenderingContext): GLResources {
     throw new Error(`Glass program link failed: ${log}`);
   }
   const buffer = gl.createBuffer();
-  const texture = gl.createTexture();
-  if (!buffer || !texture) throw new Error("Unable to allocate glass resources");
+  if (!buffer) throw new Error("Unable to allocate glass resources");
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
   return {
     program,
     buffer,
-    texture,
     position: gl.getAttribLocation(program, "a_position"),
     resolution: gl.getUniformLocation(program, "u_resolution"),
     rect: gl.getUniformLocation(program, "u_rect"),
     radius: gl.getUniformLocation(program, "u_radius"),
-    time: gl.getUniformLocation(program, "u_time"),
     opacity: gl.getUniformLocation(program, "u_opacity"),
     quality: gl.getUniformLocation(program, "u_quality"),
     active: gl.getUniformLocation(program, "u_active"),
     scale: gl.getUniformLocation(program, "u_scale"),
     accent: gl.getUniformLocation(program, "u_accent"),
-    background: gl.getUniformLocation(program, "u_background"),
-    hasBackground: gl.getUniformLocation(program, "u_hasBackground"),
-    light: gl.getUniformLocation(program, "u_light"),
     pointer: gl.getUniformLocation(program, "u_pointer"),
     bend: gl.getUniformLocation(program, "u_bend"),
     pressure: gl.getUniformLocation(program, "u_pressure"),
@@ -350,7 +303,6 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
   let frame: GlassFrame = { time: 0, accent: "#b4f17a", motion: true };
   let disposed = false;
   let drawing = false;
-  let background: TexImageSource | null = null;
   let paused = false;
 
   const emitMode = (next: GlassMode) => {
@@ -371,6 +323,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
     context.disable(context.SCISSOR_TEST);
     context.clearColor(0, 0, 0, 0);
     context.clear(context.COLOR_BUFFER_BIT);
+    if (options.drawSurfaces === false) return;
     context.useProgram(current.program);
     context.bindBuffer(context.ARRAY_BUFFER, current.buffer);
     context.enableVertexAttribArray(current.position);
@@ -380,15 +333,9 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
     context.blendFunc(context.SRC_ALPHA, context.ONE_MINUS_SRC_ALPHA);
     context.enable(context.SCISSOR_TEST);
     context.uniform2f(current.resolution, canvas.width, canvas.height);
-    context.uniform1f(current.time, frame.motion ? frame.time : 0);
     context.uniform1f(current.quality, quality === "full" ? 1 : 0);
     context.uniform1f(current.scale, dpr);
     context.uniform3fv(current.accent, accentChannels(frame.accent));
-    context.activeTexture(context.TEXTURE0);
-    context.bindTexture(context.TEXTURE_2D, current.texture);
-    context.uniform1i(current.background, 0);
-    context.uniform1f(current.hasBackground, background ? 1 : 0);
-    context.uniform1f(current.light, frame.light ? 1 : 0);
     context.uniform2f(current.pointer, frame.pointer?.x ?? -1, frame.pointer?.y ?? -1);
     for (const surface of surfaces.values()) {
       const rect = normalizeRect(surface.rect, dpr);
@@ -409,17 +356,14 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
       context.drawArrays(context.TRIANGLE_STRIP, 0, 4);
     }
   };
-  const scheduler = createGlassScheduler(render);
+  const scheduler = createGlassScheduler(render, {
+    requestFrame: callback => requestAnimationFrame(callback),
+    cancelFrame: id => cancelAnimationFrame(id),
+    continuous: options.drawSurfaces !== false,
+  });
   const requestPaint = () => {
     if (!frame.motion) render(frame.time);
     else scheduler.request();
-  };
-  const uploadBackground = () => {
-    if (!resources || !gl) return;
-    gl.bindTexture(gl.TEXTURE_2D, resources.texture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
-    if (background) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, background);
-    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
   };
 
   try {
@@ -441,7 +385,6 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
     if (disposed || !gl) return;
     try {
       resources = createResources(gl);
-      uploadBackground();
       emitMode(quality);
       scheduler.pause(paused);
       if (!frame.motion) render(frame.time);
@@ -486,13 +429,14 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
     setQuality(next) {
       quality = next;
       if (mode !== "fallback") emitMode(next);
+      // Local DOM optics redraw only when a shared spring publishes a pose.
+      // Full quality still controls the material/capability mode, not an idle
+      // GPU loop once those controls have settled.
       scheduler.setQuality(next);
     },
-    setBackground(source) {
-      background = source;
-      uploadBackground();
-      requestPaint();
-    },
+    // Kept as a compatibility boundary for existing providers. Only the live
+    // browser backdrop is a source for refraction now.
+    setBackground() {},
     pause(next) {
       paused = next;
       scheduler.pause(next);
@@ -504,7 +448,6 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
       canvas.removeEventListener("webglcontextrestored", onRestored);
       if (resources && gl) {
         gl.deleteBuffer(resources.buffer);
-        gl.deleteTexture(resources.texture);
         gl.deleteProgram(resources.program);
       }
       resources = null;

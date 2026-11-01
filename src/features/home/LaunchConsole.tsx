@@ -1,4 +1,4 @@
-import { ChevronDown, FolderOpen, LoaderCircle, Play, Square, X } from "lucide-react";
+import { FolderOpen, LoaderCircle, Play, Square, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Instance, InstalledVersion, Progress } from "../../lib/launcher";
 import { Button, IconButton } from "../../components/ui/Button";
@@ -6,9 +6,10 @@ import { GlassSurface } from "../../visual/glass/GlassSystem";
 import { LatticeProgress } from "../../visual/lattice/LatticeProgress";
 import { useAppearance } from "../../app/AppearanceProvider";
 import { useJellyControl } from "./useJellyControl";
+import { InstancePicker } from "./InstancePicker";
 
 export function LaunchConsole({
-  instance, instances, onSelectInstance, onLaunch, onStop, onCancel, onOpenFolder, busy, running, progress,
+  instance, instances, version, onSelectInstance, onLaunch, onStop, onCancel, onOpenFolder, busy, running, progress,
 }: {
   instance?: Instance;
   instances: Instance[];
@@ -23,8 +24,8 @@ export function LaunchConsole({
   progress: Progress | null;
 }) {
   const { t, i18n } = useTranslation();
-  const { effects, reducedMotion } = useAppearance();
-  const staticMotion = reducedMotion || effects === "lite";
+  const { effects, reducedMotion, reducedTransparency, highContrast } = useAppearance();
+  const staticMotion = reducedMotion || reducedTransparency || highContrast || effects === "lite";
   const selectorJelly = useJellyControl<HTMLDivElement>(staticMotion);
   const launchJelly = useJellyControl<HTMLDivElement>(staticMotion);
   const preparing = busy === "game.prepare";
@@ -36,17 +37,10 @@ export function LaunchConsole({
   return (
     <div className="vx-launch-console" data-state={running ? "running" : preparing ? "preparing" : "idle"}>
       <div className="vx-launch-console__context">
-        <label htmlFor="home-instance">{t("home:instance")}</label>
         <div className="vx-launch-console__instance">
           <div ref={selectorJelly.ref} className="vx-jelly-control vx-launch-console__selector-wrap" {...selectorJelly.handlers}>
             <GlassSurface variant="control" className="vx-launch-console__selector">
-              <select id="home-instance" className="vx-launch-console__select"
-                aria-label={t("home:instance")} value={instance?.id ?? ""}
-                onChange={(event) => onSelectInstance(event.target.value || undefined)}>
-                <option value="">{t("home:versionDirectory")}</option>
-                {instances.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-              </select>
-              <ChevronDown size={16} aria-hidden="true" />
+              <InstancePicker instance={instance} instances={instances} versionId={version?.id} onSelectInstance={onSelectInstance} />
             </GlassSurface>
           </div>
           <IconButton label={t("home:openFolder")} icon={<FolderOpen size={18} />} onClick={onOpenFolder} />

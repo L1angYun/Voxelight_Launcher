@@ -6,6 +6,7 @@ import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Field } from "../../components/ui/Field";
+import { Select } from "../../components/ui/Select";
 import type { Loader, LoaderResult, LoaderVersion, ModpackVersion, PackResult } from "./types";
 
 export function CreateInstanceDialog({
@@ -145,18 +146,21 @@ export function CreateInstanceDialog({
             {["release", "snapshot"].map((value) => <button key={value} type="button" aria-pressed={channel === value} className={channel === value ? "is-selected" : ""} onClick={() => { setChannel(value); setGameVersion(manifest?.versions.find((version) => version.type === value)?.id ?? manifest?.latestRelease ?? ""); }}>{t(`library:${value}`)}</button>)}
           </div>
           <Field label={t("library:version")} htmlFor="create-game-version">
-            <select id="create-game-version" value={gameVersion} onChange={(event) => setGameVersion(event.target.value)} required>
-              <option value="">{t("library:selectVersion")}</option>
-              {manifest?.latestRelease ? <option value={manifest.latestRelease}>{manifest.latestRelease}</option> : null}
-              {manifest?.versions.filter((version) => version.type === channel && version.id !== manifest.latestRelease).map((version) => <option key={version.id} value={version.id}>{version.id}</option>)}
-            </select>
+            <Select id="create-game-version" aria-label={t("library:version")} value={gameVersion} onChange={setGameVersion} required options={[
+              { value: "", label: t("library:selectVersion") },
+              ...(manifest?.latestRelease ? [{ value: manifest.latestRelease, label: manifest.latestRelease }] : []),
+              ...(manifest?.versions.filter((version) => version.type === channel && version.id !== manifest.latestRelease).map((version) => ({ value: version.id, label: version.id })) ?? []),
+            ]} />
           </Field>
           <Field label={t("library:loader")}>
             <div className="vx-segmented" role="group" aria-label={t("library:loader")}>
               {(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => <button key={value} type="button" aria-pressed={loader === value} className={loader === value ? "is-selected" : ""} onClick={() => setLoader(value)}>{value === "vanilla" ? t("library:vanilla") : value === "neoforge" ? "NeoForge" : value[0].toUpperCase() + value.slice(1)}</button>)}
             </div>
           </Field>
-          {loader !== "vanilla" ? <Field label={t("library:loaderVersion")} htmlFor="create-loader-version"><select id="create-loader-version" value={loaderVersion} onChange={(event) => setLoaderVersion(event.target.value)} disabled={loaderLoading || !loaderVersions.length} required><option value="">{loaderLoading ? t("common:status.loading") : t("library:noLoaderVersions")}</option>{loaderVersions.map((version) => <option key={version.id} value={version.id}>{version.id}{version.recommended ? ` / ${t("library:recommended")}` : ""}</option>)}</select></Field> : null}
+          {loader !== "vanilla" ? <Field label={t("library:loaderVersion")} htmlFor="create-loader-version"><Select id="create-loader-version" aria-label={t("library:loaderVersion")} value={loaderVersion} onChange={setLoaderVersion} disabled={loaderLoading || !loaderVersions.length} required options={[
+            { value: "", label: loaderLoading ? t("common:status.loading") : t("library:noLoaderVersions") },
+            ...loaderVersions.map((version) => ({ value: version.id, label: `${version.id}${version.recommended ? ` / ${t("library:recommended")}` : ""}` })),
+          ]} /></Field> : null}
           <Field label={t("library:instanceNameOptional")} htmlFor="create-instance-name"><input id="create-instance-name" maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
         </form>
       ) : null}
@@ -169,7 +173,7 @@ export function CreateInstanceDialog({
       ) : null}
       {mode === "modpack" && project ? (
         <form id="create-modpack-form" className="vx-form-stack" onSubmit={installModpack}>
-          <Field label={t("library:modpackVersion")} htmlFor="create-pack-version"><select id="create-pack-version" value={packVersion} onChange={(event) => setPackVersion(event.target.value)} required>{packVersions.map((version) => <option key={version.id} value={version.id}>{version.name || version.versionNumber} / {version.gameVersions.join(", ")}</option>)}</select></Field>
+          <Field label={t("library:modpackVersion")} htmlFor="create-pack-version"><Select id="create-pack-version" aria-label={t("library:modpackVersion")} value={packVersion} onChange={setPackVersion} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
           <Field label={t("library:instanceName")} htmlFor="create-instance-name"><input id="create-instance-name" required maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} /></Field>
           <label className="vx-check-row"><input type="checkbox" checked={includeOptional} onChange={(event) => setIncludeOptional(event.target.checked)} /> {t("library:includeOptional")}</label>
         </form>

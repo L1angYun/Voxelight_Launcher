@@ -199,6 +199,48 @@ test("keeps one indicator node across navigation, hover, and static preference c
   assert.equal(slot(), indicator);
 });
 
+for (const preference of ["reducedTransparency", "highContrast"]) {
+  test(`keeps optical navigation static when ${preference} is requested`, async () => {
+    await render("home");
+    flush();
+    appearance = { effects: "full", reducedMotion: false, [preference]: true };
+    await render("settings");
+    advance(4);
+    assert.equal(slot().style.transform, "translate3d(600px, 0px, 0)");
+    assert.equal(slot().style.getPropertyValue("--jelly-energy"), "0.0000");
+    assert.equal(slot().style.getPropertyValue("--jelly-press"), "0.0000");
+    flush();
+    assert.equal(nav().dataset.motionSettled, "true");
+  });
+}
+
+test("keeps one elastic capsule while dragging from primary to utility navigation", async () => {
+  const navigations = [];
+  await render("home", { onNavigate: (next) => navigations.push(next) });
+  flush();
+  const indicator = slot();
+  dispatchPointer("pointerdown", 236, item("home"));
+  dispatchPointer("pointermove", 836);
+  advance(6);
+  assert.equal(slot(), indicator);
+  assert.equal(slot().dataset.activeId, "settings");
+  assert.equal(item("settings").classList.contains("is-drag-target"), true);
+  assert.ok(Number(slot().style.getPropertyValue("--jelly-press")) > 0);
+  assert.ok(Number(slot().style.getPropertyValue("--jelly-energy")) > 0);
+  assert.notEqual(slot().style.getPropertyValue("--jelly-bend-x"), "0px");
+  const heldPressure = Number(slot().style.getPropertyValue("--jelly-press"));
+  dispatchPointer("pointerup", 836);
+  assert.deepEqual(navigations, ["settings"]);
+  assert.equal(pointerCapture.active.size, 0);
+  await render("settings", { onNavigate: (next) => navigations.push(next) });
+  advance(4);
+  const releasedPressure = Number(slot().style.getPropertyValue("--jelly-press"));
+  assert.ok(releasedPressure > 0 && releasedPressure < heldPressure,
+    "committing the selected page must let pressure spring back rather than snapping it away");
+  flush();
+  assert.equal(slot().style.getPropertyValue("--jelly-press"), "0.0000");
+});
+
 test("drags the active indicator with pointer capture and navigates once on release", async () => {
   const navigations = [];
   await render("home", { onNavigate: (next) => navigations.push(next) });

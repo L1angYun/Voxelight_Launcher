@@ -1,235 +1,543 @@
-/**
- * Lattice cursor halo — 30 points that follow the pointer and re-form along a
- * control's rounded outline when the pointer enters one. On fine-pointer devices
- * only; touch screens and reduced-motion skip this entirely.
- *
- * GPL-3.0-only, original implementation.
- */
-
+// SPDX-License-Identifier: GPL-3.0-only
+// One foreground point pool: pointer orbit, rounded control outline, then back.
 import { DotField, seededRandom } from "./dots";
 
-const HALO_COUNT = 30;
+export const CURSOR_HALO_POINT_COUNT = 30;
+export const CURSOR_HALO_RADIUS_PX = 12;
+export const CURSOR_HALO_OUTSET_PX = 6;
 const HALO_STIFFNESS = 140;
 const HALO_DAMPING = 12;
-
-const TARGETS = [
+const TWO_PI = Math.PI * 2;
+const CONTROLS = [
   "a[href]",
   "button:not([disabled])",
   "[role='tab']",
   "[role='switch']",
   "[role='option']",
+  "[role='combobox']",
   "input:not([disabled])",
   "select:not([disabled])",
   "textarea:not([disabled])",
   "[data-halo]",
 ].join(",");
+const BLOCKED = "[data-no-halo],[inert]";
 
-function roundRectPoint(
-  bx: number, by: number, bw: number, bh: number,
-  r: number, s: number,
-): [number, number] {
-  const rr = Math.min(r, bw / 2, bh / 2);
-  const sw = bw - 2 * rr;
-  const sh = bh - 2 * rr;
-  const arc = (Math.PI / 2) * rr;
-  const total = 2 * sw + 2 * sh + 4 * arc;
-  let d = (((s % 1) + 1) % 1) * total;
-  const segments: [number, (u: number) => [number, number]][] = [
-    [sw, (u) => [bx + rr + u, by]],
-    [arc, (u) => { const a = -Math.PI / 2 + u / rr; return [bx + bw - rr + Math.cos(a) * rr, by + rr + Math.sin(a) * rr]; }],
-    [sh, (u) => [bx + bw, by + rr + u]],
-    [arc, (u) => { const a = u / rr; return [bx + bw - rr + Math.cos(a) * rr, by + bh - rr + Math.sin(a) * rr]; }],
-    [sw, (u) => [bx + bw - rr - u, by + bh]],
-    [arc, (u) => { const a = Math.PI / 2 + u / rr; return [bx + rr + Math.cos(a) * rr, by + bh - rr + Math.sin(a) * rr]; }],
-    [sh, (u) => [bx, by + bh - rr - u]],
-    [arc, (u) => { const a = Math.PI + u / rr; return [bx + rr + Math.cos(a) * rr, by + rr + Math.sin(a) * rr]; }],
-  ];
-  for (const [len, f] of segments) {
-    if (d <= len) return f(d);
-    d -= len;
+type SavedStyle = {
+  element: HTMLElement;
+  property: string;
+  value: string;
+  priority: string;
+};
+
+function saveStyle(element: HTMLElement, property: string): SavedStyle {
+  return {
+    element,
+    property,
+    value: element.style.getPropertyValue(property),
+    priority: element.style.getPropertyPriority(property),
+  };
+}
+
+function restoreStyle(saved: SavedStyle | null) {
+  if (!saved) return;
+  if (saved.value)
+    saved.element.style.setProperty(
+      saved.property,
+      saved.value,
+      saved.priority,
+    );
+  else saved.element.style.removeProperty(saved.property);
+}
+
+function frameOf(element: Element): HTMLElement | null {
+  for (const child of element.children) {
+    if (
+      child instanceof HTMLElement &&
+      child.classList.contains("vx-lattice-frame")
+    )
+      return child;
   }
-  return [bx + rr, by];
+  return null;
+}
+
+function nativeLayer(source: EventTarget | null): boolean {
+  // A document canvas cannot paint above native top-layer surfaces. Keep their
+  // own focus/frame intact rather than claim a contour the user cannot see.
+  return (
+    source instanceof Element &&
+    Boolean(source.closest("dialog[open],[popover]"))
+  );
+}
+
+function usable(element: Element): boolean {
+  if (
+    element.closest(`${BLOCKED},[aria-hidden='true'],[aria-disabled='true']`) ||
+    element.matches(":disabled")
+  )
+    return false;
+  const style = getComputedStyle(element);
+  const bounds = element.getBoundingClientRect();
+  return (
+    style.display !== "none" &&
+    style.visibility !== "hidden" &&
+    bounds.width > 0 &&
+    bounds.height > 0
+  );
+}
+
+function resolveTarget(source: EventTarget | null): HTMLElement | null {
+  const element = source instanceof Element ? source : null;
+  if (
+    !element ||
+    nativeLayer(element) ||
+    element.closest(BLOCKED) ||
+    element.closest("iframe")
+  )
+    return null;
+  // A card is the interaction surface even when its inner icon/button is hit.
+  for (
+    let parent: Element | null = element;
+    parent;
+    parent = parent.parentElement
+  ) {
+    if (
+      parent instanceof HTMLElement &&
+      parent.dataset.visualOwner === "lattice" &&
+      frameOf(parent) &&
+      usable(parent)
+    )
+      return parent;
+  }
+  // Standalone Lens surfaces keep their glass response as the main effect.
+  if (element.closest("[data-visual-owner='lens'],.vx-glass-surface"))
+    return null;
+  const control = element.closest(CONTROLS);
+  return control instanceof HTMLElement && usable(control) ? control : null;
+}
+
+/** Equal arc-length samples, including all four rounded corners. */
+function contourPoint(
+  width: number,
+  height: number,
+  radius: number,
+  phase: number,
+): [number, number] {
+  const r = Math.max(0.01, Math.min(radius, width / 2, height / 2));
+  const horizontal = Math.max(0, width - r * 2);
+  const vertical = Math.max(0, height - r * 2);
+  const quarter = (Math.PI * r) / 2;
+  let distance =
+    (((phase % 1) + 1) % 1) * (horizontal * 2 + vertical * 2 + quarter * 4);
+  const lengths = [
+    horizontal,
+    quarter,
+    vertical,
+    quarter,
+    horizontal,
+    quarter,
+    vertical,
+    quarter,
+  ];
+  for (let segment = 0; segment < lengths.length; segment += 1) {
+    if (distance > lengths[segment]) {
+      distance -= lengths[segment];
+      continue;
+    }
+    if (segment === 0) return [r + distance, 0];
+    if (segment === 2) return [width, r + distance];
+    if (segment === 4) return [width - r - distance, height];
+    if (segment === 6) return [0, height - r - distance];
+    const corner = (segment - 1) / 2;
+    const angle = -Math.PI / 2 + (corner * Math.PI) / 2 + distance / r;
+    const cx = corner === 0 || corner === 1 ? width - r : r;
+    const cy = corner === 0 || corner === 3 ? r : height - r;
+    return [cx + Math.cos(angle) * r, cy + Math.sin(angle) * r];
+  }
+  return [r, 0];
 }
 
 export interface CursorHalo {
-  dispose: () => void;
-  setEnabled: (enabled: boolean) => void;
+  dispose(): void;
+  setEnabled(enabled: boolean): void;
 }
 
 export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
-  if (typeof window === "undefined") return null;
-  if (!window.matchMedia("(pointer: fine)").matches) return null;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function")
+    return null;
+  const fine = window.matchMedia("(any-pointer: fine)");
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const contrast = window.matchMedia("(prefers-contrast: more)");
+  const forced = window.matchMedia("(forced-colors: active)");
+  if (!fine.matches || reduced.matches || contrast.matches || forced.matches)
+    return null;
 
   const canvas = document.createElement("canvas");
-  canvas.style.cssText = "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999";
+  canvas.className = "vx-cursor-halo";
   canvas.setAttribute("aria-hidden", "true");
-  container.appendChild(canvas);
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) { canvas.remove(); return null; }
-
-  // Keep a stable reference so the tick function never sees null
-  const g = ctx;
-
-  let dpr = Math.min(2, devicePixelRatio || 1);
-  const fit = () => {
-    dpr = Math.min(2, devicePixelRatio || 1);
-    canvas.width = innerWidth * dpr;
-    canvas.height = innerHeight * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  };
-  fit();
-  window.addEventListener("resize", fit);
-
-  const dots = new DotField(HALO_COUNT, seededRandom(42));
+  canvas.dataset.haloPoints = String(CURSOR_HALO_POINT_COUNT);
+  canvas.dataset.haloState = "inactive";
+  canvas.style.cssText =
+    "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999";
+  let context: CanvasRenderingContext2D | null;
+  try {
+    context = canvas.getContext("2d");
+  } catch {
+    return null;
+  }
+  if (!context) return null;
+  const g = context;
+  container.append(canvas);
+  const dots = new DotField(CURSOR_HALO_POINT_COUNT, seededRandom(42));
   dots.stiffness = HALO_STIFFNESS;
   dots.damping = HALO_DAMPING;
 
-  let px = -200;
-  let py = -200;
+  let enabled = true;
+  let disposed = false;
+  let initialized = false;
   let inside = false;
-  let target: Element | null = null;
-  let lastTarget: Element | null = null;
+  let px = 0;
+  let py = 0;
   let spin = 0;
-  let rafId: number | null = null;
-  let prevTime = 0;
+  let previousTime: number | null = null;
+  let frame: number | null = null;
+  let target: HTMLElement | null = null;
+  let pointerElement: Element | null = null;
+  let keyboardElement: HTMLElement | null = null;
+  let keyboardNavigation = false;
+  let ownedCard: HTMLElement | null = null;
+  let savedFrame: SavedStyle | null = null;
+  let savedOutline: SavedStyle | null = null;
+  let savedOwnership: string | null = null;
 
-  // Resolve accent and secondary colors from CSS custom properties
-  function resolveColors(): { hot: string; cold: string } {
-    const style = getComputedStyle(document.documentElement);
-    const accent = style.getPropertyValue("--accent").trim() || "rgba(132,240,104,0.85)";
-    const cold = style.getPropertyValue("--optical-cold").trim() || "rgba(140,200,255,0.72)";
-    return { hot: accent, cold };
-  }
+  const allowed = () => {
+    const root = document.documentElement;
+    return (
+      enabled &&
+      !disposed &&
+      !document.hidden &&
+      fine.matches &&
+      !reduced.matches &&
+      !contrast.matches &&
+      !forced.matches &&
+      root.dataset.effects !== "lite" &&
+      root.dataset.reducedMotion !== "true" &&
+      root.dataset.highContrast !== "true" &&
+      !document.querySelector(".vx-overture-root[data-overture-playing='true']")
+    );
+  };
 
-  function onPointerMove(event: PointerEvent) {
-    if (event.pointerType === "touch") return;
-    const prevInside = inside;
-    px = event.clientX;
-    py = event.clientY;
-    inside = true;
-    if (!prevInside) {
-      for (let i = 0; i < HALO_COUNT; i++) dots.place(i, px, py);
+  function releaseOwnership() {
+    restoreStyle(savedFrame);
+    restoreStyle(savedOutline);
+    if (ownedCard) {
+      if (savedOwnership === null) delete ownedCard.dataset.haloOwned;
+      else ownedCard.dataset.haloOwned = savedOwnership;
     }
-    const t = (event.target as Element).closest?.(TARGETS) as Element | null;
-    target = t && !t.closest("[aria-hidden='true']") ? t : null;
-    if (!rafId) schedule();
+    savedFrame = null;
+    savedOutline = null;
+    ownedCard = null;
+    savedOwnership = null;
   }
 
-  function onPointerLeave() {
+  function setTarget(next: HTMLElement | null) {
+    if (target === next) return;
+    releaseOwnership();
+    target = next;
+    if (!next) return;
+    const outline = frameOf(next);
+    if (outline) {
+      ownedCard = next;
+      savedOwnership = next.getAttribute("data-halo-owned");
+      next.dataset.haloOwned = "true";
+      savedFrame = saveStyle(outline, "visibility");
+      outline.style.setProperty("visibility", "hidden");
+    }
+    dots.stagger(0.14, (index) =>
+      Math.hypot(dots.x[index] - px, dots.y[index] - py),
+    );
+  }
+
+  function clear() {
+    if (frame !== null) cancelAnimationFrame(frame);
+    frame = null;
+    previousTime = null;
     inside = false;
-    target = null;
+    initialized = false;
+    pointerElement = null;
+    keyboardElement = null;
+    setTarget(null);
+    releaseOwnership();
+    g.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    canvas.dataset.haloState = "inactive";
   }
 
-  function onPointerDown() {
-    if (!inside) return;
-    dots.burst(px, py, 180);
-  }
-
-  function onFocusIn(event: FocusEvent) {
-    const el = event.target as Element;
-    if (!el.matches?.(":focus-visible")) return;
-    if (!el.matches?.(TARGETS)) return;
-    target = el;
-    if (!rafId) schedule();
-  }
-
-  function onFocusOut() {
-    setTimeout(() => {
-      if (document.activeElement === document.body) target = null;
-    }, 0);
+  function initialize(x: number, y: number) {
+    if (initialized) return;
+    initialized = true;
+    for (let index = 0; index < dots.count; index += 1) {
+      const angle = (index / dots.count) * TWO_PI;
+      dots.place(
+        index,
+        x + Math.cos(angle) * CURSOR_HALO_RADIUS_PX,
+        y + Math.sin(angle) * CURSOR_HALO_RADIUS_PX,
+      );
+      dots.alpha[index] = 0.9;
+      dots.delay[index] = 0;
+    }
   }
 
   function schedule() {
-    rafId = requestAnimationFrame(tick);
+    if (frame === null && allowed() && (inside || target))
+      frame = requestAnimationFrame(tick);
   }
 
   function tick(now: number) {
-    rafId = null;
-    const dt = prevTime ? Math.min(0.05, (now - prevTime) / 1000) : 1 / 60;
-    prevTime = now;
+    frame = null;
+    if (!allowed()) {
+      clear();
+      return;
+    }
+    if (target && nativeLayer(target)) {
+      clear();
+      return;
+    }
+    if (target && (!target.isConnected || !usable(target))) setTarget(null);
+    if (!inside && !target) {
+      clear();
+      return;
+    }
+    const dt =
+      previousTime === null
+        ? 1 / 60
+        : Math.max(0, Math.min(0.05, (now - previousTime) / 1000));
+    previousTime = now;
     spin += dt;
-
-    const { hot, cold } = resolveColors();
-
-    if (target && target.isConnected) {
-      const r = target.getBoundingClientRect();
-      const pad = 6;
-      const bx = r.left - pad;
-      const by = r.top - pad;
-      const bw = r.width + pad * 2;
-      const bh = r.height + pad * 2;
-      const radius = (parseFloat(getComputedStyle(target as HTMLElement).borderRadius) || 0) + pad;
-
-      if (lastTarget !== target) {
-        dots.stagger(0.14, (i) => {
-          const cx = bx + bw / 2;
-          const cy = by + bh / 2;
-          return Math.hypot(dots.x[i] - cx, dots.y[i] - cy);
-        });
-        lastTarget = target;
-      }
-      for (let i = 0; i < HALO_COUNT; i++) {
-        const [x, y] = roundRectPoint(bx, by, bw, bh, radius, i / HALO_COUNT + spin * 0.035);
-        dots.setHome(i, x, y, 0.95);
+    if (target) {
+      const bounds = target.getBoundingClientRect();
+      const pad = CURSOR_HALO_OUTSET_PX;
+      const radius =
+        (parseFloat(getComputedStyle(target).borderTopLeftRadius) ||
+          parseFloat(getComputedStyle(target).borderRadius) ||
+          0) + pad;
+      for (let index = 0; index < dots.count; index += 1) {
+        const [x, y] = contourPoint(
+          bounds.width + pad * 2,
+          bounds.height + pad * 2,
+          radius,
+          index / dots.count + spin * 0.035,
+        );
+        dots.setHome(index, bounds.left - pad + x, bounds.top - pad + y, 0.95);
       }
     } else {
-      lastTarget = null;
-      const R = 12;
-      for (let i = 0; i < HALO_COUNT; i++) {
-        const a = (i / HALO_COUNT) * Math.PI * 2 + spin * 0.6;
-        dots.setHome(i, px + Math.cos(a) * R, py + Math.sin(a) * R, i % 3 === 0 ? 0.8 : 0);
+      for (let index = 0; index < dots.count; index += 1) {
+        const angle = (index / dots.count) * TWO_PI + spin * 0.6;
+        dots.setHome(
+          index,
+          px + Math.cos(angle) * CURSOR_HALO_RADIUS_PX,
+          py + Math.sin(angle) * CURSOR_HALO_RADIUS_PX,
+          0.9,
+        );
       }
     }
-
     dots.step(dt);
-
-    g.clearRect(0, 0, innerWidth, innerHeight);
-    if (!inside && !target) { prevTime = 0; return; }
-
-    const useColor = target ? cold : hot;
-    for (let i = 0; i < HALO_COUNT; i++) {
-      const alpha = Math.min(1, dots.alpha[i]);
-      if (alpha < 0.02) continue;
-      g.globalAlpha = alpha;
-      g.fillStyle = useColor;
-      const radius = (1.25 + dots.heat[i] * 0.4) * (1 + dots.heat[i] * 0.6);
+    const style = getComputedStyle(document.documentElement);
+    const accent = style.getPropertyValue("--accent").trim() || "#b4f17a";
+    const cold = style.getPropertyValue("--optical-cold").trim() || accent;
+    g.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    g.fillStyle = target ? cold : accent;
+    for (let index = 0; index < dots.count; index += 1) {
+      g.globalAlpha = dots.alpha[index];
       g.beginPath();
-      g.arc(dots.x[i], dots.y[i], radius, 0, Math.PI * 2);
+      g.arc(
+        dots.x[index],
+        dots.y[index],
+        1.25 + dots.heat[index] * 0.8,
+        0,
+        TWO_PI,
+      );
       g.fill();
     }
-
-    // Center dot while free-floating
     if (inside && !target) {
       g.globalAlpha = 0.9;
-      g.fillStyle = hot;
       g.beginPath();
-      g.arc(px, py, 2.2, 0, Math.PI * 2);
+      g.arc(px, py, 2.2, 0, TWO_PI);
       g.fill();
     }
     g.globalAlpha = 1;
-
-    if (inside || target) schedule();
-    else prevTime = 0;
+    if (
+      keyboardElement &&
+      target &&
+      !savedOutline &&
+      dots.x.every(
+        (x, index) =>
+          Math.hypot(x - dots.homeX[index], dots.y[index] - dots.homeY[index]) <
+          6,
+      )
+    ) {
+      savedOutline = saveStyle(keyboardElement, "outline");
+      keyboardElement.style.setProperty("outline", "none");
+    }
+    canvas.dataset.haloState = target
+      ? keyboardElement
+        ? "focus"
+        : "target"
+      : "pointer";
+    schedule();
   }
 
-  return {
-    dispose() {
-      document.removeEventListener("pointermove", onPointerMove);
-      document.removeEventListener("pointerleave", onPointerLeave);
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("focusin", onFocusIn);
-      document.removeEventListener("focusout", onFocusOut);
-      window.removeEventListener("resize", fit);
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      canvas.remove();
-    },
-    setEnabled(enabled: boolean) {
-      canvas.style.opacity = enabled ? "1" : "0";
-      if (!enabled) {
-        inside = false;
-        target = null;
+  function move(event: PointerEvent) {
+    if (event.pointerType === "touch" || !allowed()) return;
+    if (
+      nativeLayer(event.target) ||
+      (event.target instanceof Element && event.target.closest("iframe"))
+    ) {
+      clear();
+      return;
+    }
+    px = event.clientX;
+    py = event.clientY;
+    inside = true;
+    pointerElement = event.target instanceof Element ? event.target : null;
+    keyboardNavigation = false;
+    keyboardElement = null;
+    restoreStyle(savedOutline);
+    savedOutline = null;
+    initialize(px, py);
+    setTarget(resolveTarget(pointerElement));
+    schedule();
+  }
+
+  function press(event: PointerEvent) {
+    if (nativeLayer(event.target)) {
+      clear();
+      return;
+    }
+    if (event.pointerType === "touch" || !allowed() || (!inside && !target))
+      return;
+    const bounds = target?.getBoundingClientRect();
+    dots.burst(
+      bounds ? bounds.left + bounds.width / 2 : px,
+      bounds ? bounds.top + bounds.height / 2 : py,
+      180,
+    );
+    schedule();
+  }
+
+  function focusIn(event: FocusEvent) {
+    const element = event.target;
+    if (nativeLayer(element)) {
+      clear();
+      return;
+    }
+    if (!(element instanceof HTMLElement) || !allowed()) return;
+    if (!keyboardNavigation && !element.matches(":focus-visible")) return;
+    const next = resolveTarget(element);
+    if (!next) return;
+    restoreStyle(savedOutline);
+    savedOutline = null;
+    keyboardElement = element;
+    const bounds = next.getBoundingClientRect();
+    initialize(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    setTarget(next);
+    schedule();
+  }
+
+  function focusOut(event: FocusEvent) {
+    if (event.target !== keyboardElement) return;
+    keyboardElement = null;
+    restoreStyle(savedOutline);
+    savedOutline = null;
+    const next = event.relatedTarget;
+    if (next instanceof HTMLElement && allowed()) {
+      const nextTarget = resolveTarget(next);
+      if (
+        nextTarget &&
+        (keyboardNavigation || next.matches(":focus-visible"))
+      ) {
+        keyboardElement = next;
+        setTarget(nextTarget);
+        schedule();
+        return;
       }
+    }
+    setTarget(inside ? resolveTarget(pointerElement) : null);
+    if (inside) schedule();
+    else clear();
+  }
+
+  function keyDown(event: KeyboardEvent) {
+    if (event.key === "Tab" || event.key.startsWith("Arrow"))
+      keyboardNavigation = true;
+  }
+  function pointerOver(event: PointerEvent) {
+    if (
+      nativeLayer(event.target) ||
+      (event.target instanceof Element && event.target.closest("iframe"))
+    )
+      clear();
+  }
+  function pointerOut(event: PointerEvent) {
+    if (event.relatedTarget === null) clear();
+  }
+  function policyChanged() {
+    if (!allowed()) clear();
+  }
+  function fit() {
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.max(1, Math.round(window.innerWidth * ratio));
+    canvas.height = Math.max(1, Math.round(window.innerHeight * ratio));
+    g.setTransform(ratio, 0, 0, ratio, 0, 0);
+    schedule();
+  }
+
+  const listeners: Array<[string, EventListener]> = [
+    ["pointermove", move as EventListener],
+    ["pointerdown", press as EventListener],
+    ["pointerover", pointerOver as EventListener],
+    ["pointerout", pointerOut as EventListener],
+    ["pointerleave", clear],
+    ["focusin", focusIn as EventListener],
+    ["focusout", focusOut as EventListener],
+    ["keydown", keyDown as EventListener],
+    ["visibilitychange", policyChanged],
+  ];
+  for (const [event, callback] of listeners)
+    document.addEventListener(event, callback);
+  window.addEventListener("blur", clear);
+  window.addEventListener("resize", fit);
+  const queries = [fine, reduced, contrast, forced];
+  queries.forEach((query) => query.addEventListener?.("change", policyChanged));
+  const observer = new MutationObserver(policyChanged);
+  observer.observe(document.documentElement, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: [
+      "data-effects",
+      "data-reduced-motion",
+      "data-high-contrast",
+      "data-overture-playing",
+    ],
+  });
+  fit();
+
+  return {
+    setEnabled(next) {
+      enabled = next;
+      if (!next) clear();
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clear();
+      observer.disconnect();
+      for (const [event, callback] of listeners)
+        document.removeEventListener(event, callback);
+      queries.forEach((query) =>
+        query.removeEventListener?.("change", policyChanged),
+      );
+      window.removeEventListener("blur", clear);
+      window.removeEventListener("resize", fit);
+      canvas.remove();
     },
   };
 }

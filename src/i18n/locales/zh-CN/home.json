@@ -9,6 +9,7 @@
   "versionDirectory": "使用版本目录",
   "vanilla": "原版",
   "javaUnknown": "Java 未确定",
+  "javaVersion": "Java {{major}}",
   "preparing": "准备中",
   "totalUnknown": "总量未知",
   "running": "正在运行",

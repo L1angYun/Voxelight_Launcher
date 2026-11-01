@@ -57,14 +57,13 @@ export function DiscoverPage() {
           <GlassSurface className="vx-discover-destination" variant="control">
             <label className="vx-discover-target">
               <span><ArrowDownToLine size={15} aria-hidden="true" />{t("discover:target")}</span>
-              <select aria-label={t("discover:target")} value={selectedInstance?.id ?? ""} onChange={(event) => {
-                const id = event.target.value;
+              <Select embedded aria-label={t("discover:target")} value={selectedInstance?.id ?? ""} onChange={(id) => {
                 if (id) selectInstance(id);
                 else selectVersion(selectedVersionId);
-              }}>
-                <option value="">{t("discover:versionDirectory")}{selectedVersionId ? " · " + selectedVersionId : ""}</option>
-                {data.instances.map((instance) => <option key={instance.id} value={instance.id}>{instance.name} · {instance.versionId}</option>)}
-              </select>
+              }} options={[
+                { value: "", label: t("discover:versionDirectory"), metadata: selectedVersionId },
+                ...data.instances.map((instance) => ({ value: instance.id, label: instance.name, metadata: instance.versionId })),
+              ]} />
             </label>
             <dl className="vx-discover-context">
               <div><dt>{t("library:version")}</dt><dd>{selectedVersionId || "—"}</dd></div>

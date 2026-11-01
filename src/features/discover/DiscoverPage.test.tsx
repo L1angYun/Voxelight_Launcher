@@ -24,6 +24,9 @@ vi.mock("../../lib/launcher", async (importOriginal) => ({
 vi.mock("../../app/controller/LauncherProvider", () => ({
   useLauncher: () => mockLauncher,
 }));
+vi.mock("../../app/AppearanceProvider", () => ({
+  useAppearance: () => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }),
+}));
 vi.mock("../../visual/overture/OvertureProvider", () => ({
   useOverture: () => ({ current: null, playing: false, reducedMotion: false, soundEnabled: false, play: vi.fn(), dismiss: vi.fn() }),
 }));
@@ -111,6 +114,9 @@ async function render() {
 
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.getAttribute("role") === "combobox" ? new DOMRect(24, 200, 260, 44) : new DOMRect();
+  });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockLauncher = fixture();
   commandMock.mockReset();
@@ -148,14 +154,12 @@ describe("DiscoverPage", () => {
 
   it("switches source without losing the selected instance", async () => {
     await render();
-    const source = container.querySelectorAll<HTMLSelectElement>("select")[1]!;
-    await act(async () => {
-      source.value = "curseforge";
-      source.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const source = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="来源"]')!;
+    await act(async () => source.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="curseforge"]')!.click());
     expect(commandMock).toHaveBeenCalledWith("search_curseforge", { query: "", resourceType: "mod", gameVersion: "1.21.1", loader: "vanilla" });
-    const target = container.querySelectorAll("select")[0];
-    expect(target.value).toBe("fixture-world");
+    const target = container.querySelector('[role="combobox"][aria-label="安装到"]');
+    expect(target?.textContent).toContain("合成测试世界");
   });
 
   it("installs the selected project into the selected instance", async () => {

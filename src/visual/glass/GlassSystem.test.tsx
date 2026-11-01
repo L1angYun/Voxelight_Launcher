@@ -67,6 +67,29 @@ describe("glass capability and scheduling", () => {
     scheduler.dispose();
     expect(callbacks.size).toBe(0);
   });
+
+  it("renders full local optics on demand and stops after every published pose", () => {
+    const callbacks = new Map<number, (time: number) => void>();
+    let id = 0;
+    const scheduler = createGlassScheduler(() => {}, {
+      requestFrame: callback => { callbacks.set(++id, callback); return id; },
+      cancelFrame: frame => { callbacks.delete(frame); },
+      continuous: false,
+    });
+    const advance = () => {
+      const [frame, callback] = [...callbacks][0]; callbacks.delete(frame); callback(16);
+    };
+    scheduler.setQuality("full");
+    advance();
+    expect(scheduler.frameCount).toBe(1);
+    expect(scheduler.pending).toBe(false);
+    scheduler.request(); scheduler.request();
+    expect(callbacks.size).toBe(1);
+    advance();
+    expect(scheduler.frameCount).toBe(2);
+    expect(scheduler.pending).toBe(false);
+    scheduler.dispose();
+  });
 });
 
 describe("glass provider surfaces", () => {
@@ -75,6 +98,7 @@ describe("glass provider surfaces", () => {
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
+    vi.mocked(createGlassRenderer).mockReturnValue(renderer);
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -83,6 +107,118 @@ describe("glass provider surfaces", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("gives measured surfaces independent curvature maps instead of shared noise", async () => {
+    vi.mocked(createGlassRenderer).mockReturnValue({ ...renderer, mode: "full" });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 220, bottom: 100, width: 220, height: 100, toJSON() {},
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      createImageData: (width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData() {},
+    } as never);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,curvature");
+    await act(async () => {
+      root.render(
+        createElement(
+          GlassProvider,
+          null,
+          createElement(GlassSurface, { variant: "nav", id: "main-nav" }, "Navigation"),
+          createElement(GlassSurface, { id: "second" }, "Launch"),
+        ),
+      );
+    });
+    const surfaces = Array.from(container.querySelectorAll<HTMLElement>("[data-glass-refraction='curvature']"));
+    expect(surfaces).toHaveLength(2);
+    const firstFilter = surfaces[0].querySelector("filter")!;
+    const secondFilter = surfaces[1].querySelector("filter")!;
+    expect(firstFilter.id).not.toBe(secondFilter.id);
+    expect(firstFilter.getAttribute("width")).toBe("220");
+    expect(firstFilter.getAttribute("height")).toBe("100");
+    expect(surfaces[0].style.getPropertyValue("--vx-glass-refraction")).toBe(`url("#${firstFilter.id}")`);
+    expect(firstFilter.querySelector("feImage")?.getAttribute("href")).toBe("data:image/png;base64,curvature");
+    expect(firstFilter.querySelector("feDisplacementMap")?.getAttribute("in")).toBe("SourceGraphic");
+    expect(container.querySelector("feTurbulence")).toBeNull();
+  });
+
+  it("does not present a supplied procedural image as the actual page backdrop", async () => {
+    const procedural = document.createElement("canvas");
+    await act(async () => root.render(createElement(GlassProvider, { background: procedural },
+      createElement(GlassSurface, { id: "live-backdrop" }, "Launch"))));
+    expect(renderer.setBackground).toHaveBeenLastCalledWith(null);
+  });
+
+  it("regenerates the field on layout resize while reusing it for unchanged reports", async () => {
+    vi.mocked(createGlassRenderer).mockReturnValue({ ...renderer, mode: "full" });
+    let width = 220;
+    const reports: { target?: Element; callback: () => void }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      report: { target?: Element; callback: () => void };
+      constructor(callback: () => void) { this.report = { callback }; reports.push(this.report); }
+      observe(target: Element) { this.report.target = target; }
+      disconnect() {}
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({
+      x: 0, y: 0, top: 0, left: 0, right: width, bottom: 100, width, height: 100, toJSON() {},
+    }));
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+      putImageData() {},
+    } as never);
+    const encode = vi.spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockImplementation(function (this: HTMLCanvasElement) { return `data:image/png;base64,${this.width}`; });
+    await act(async () => root.render(createElement(GlassProvider, null,
+      createElement(GlassSurface, { id: "resizable" }, "Launch"))));
+    const surface = container.querySelector<HTMLElement>(".vx-glass-surface")!;
+    expect(surface.querySelector("filter")?.getAttribute("width")).toBe("220");
+    const initialEncodes = encode.mock.calls.length;
+    await act(async () => reports.filter((report) => report.target === surface).forEach((report) => report.callback()));
+    expect(encode.mock.calls).toHaveLength(initialEncodes);
+    width = 360;
+    await act(async () => reports.filter((report) => report.target === surface).forEach((report) => report.callback()));
+    expect(surface.querySelector("filter")?.getAttribute("width")).toBe("360");
+    expect(surface.querySelector("feImage")?.getAttribute("href")).toBe("data:image/png;base64,360");
+  });
+
+  it("removes live clipping and color separation in fallback and restores the same lens on return", async () => {
+    vi.mocked(createGlassRenderer).mockReturnValue({ ...renderer, mode: "full" });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 100, bottom: 44, width: 100, height: 44, toJSON() {},
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData() {},
+    } as never);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,curvature");
+    const view = (reducedTransparency: boolean) => createElement(GlassProvider, { reducedTransparency },
+      createElement(GlassSurface, { id: "preference-switch" }, "Launch"));
+    await act(async () => root.render(view(false)));
+    const surface = container.querySelector<HTMLElement>(".vx-glass-surface")!;
+    const clip = surface.style.clipPath;
+    expect(clip).not.toBe("");
+    expect(surface.querySelectorAll("feDisplacementMap")).toHaveLength(3);
+    await act(async () => root.render(view(true)));
+    expect(surface.style.clipPath).toBe("");
+    expect(surface.querySelector("feDisplacementMap")).toBeNull();
+    await act(async () => root.render(view(false)));
+    expect(surface.style.clipPath).toBe(clip);
+    expect(surface.querySelectorAll("feDisplacementMap")).toHaveLength(3);
+  });
+
+  it.each([
+    { effects: "lite" as const },
+    { reducedTransparency: true },
+    { highContrast: true },
+  ])("does not allocate curvature maps when simpler rendering is required: %o", async (preferences) => {
+    vi.mocked(createGlassRenderer).mockReturnValue({ ...renderer, mode: "full" });
+    const encode = vi.spyOn(HTMLCanvasElement.prototype, "toDataURL");
+    await act(async () => root.render(createElement(GlassProvider, preferences,
+      createElement(GlassSurface, { id: "accessible" }, "Launch"))));
+    expect(container.querySelector(".vx-glass-surface")?.getAttribute("data-glass-refraction")).toBe("none");
+    expect(container.querySelector("feImage")).toBeNull();
+    expect(encode).not.toHaveBeenCalled();
   });
 
   it("registers each surface once and unregisters it on removal", async () => {
@@ -147,5 +283,20 @@ describe("glass provider surfaces", () => {
     renderer.pause.mockClear();
     await act(async () => document.dispatchEvent(new Event("visibilitychange")));
     expect(renderer.pause).not.toHaveBeenLastCalledWith(false);
+  });
+
+  it("requests optical work from a spring publisher without feeding back its own field styles", async () => {
+    await act(async () => root.render(createElement(GlassProvider, null,
+      createElement("div", { className: "spring-publisher" }, createElement(GlassSurface, { id: "moving" }, "Launch")))));
+    renderer.update.mockClear();
+    const publisher = container.querySelector<HTMLElement>(".spring-publisher")!;
+    await act(async () => { publisher.style.setProperty("--jelly-press", "0.8"); await Promise.resolve(); });
+    expect(renderer.update).toHaveBeenCalled();
+    renderer.update.mockClear();
+    await act(async () => {
+      container.querySelector<HTMLElement>(".vx-glass-surface")!.style.setProperty("--vx-lens-pressure", "0.8");
+      await Promise.resolve();
+    });
+    expect(renderer.update).not.toHaveBeenCalled();
   });
 });
