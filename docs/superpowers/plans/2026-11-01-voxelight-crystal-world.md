@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 2026-11-02 执行记录：Task 1–8 的代码和自动验收已完成，提交及实际结果见 [实施报告](../../crystal-world-implementation-report.md)。Task 5 Step 6 和 Task 8 Step 3 保持未勾选，表示 RTX 已实测、Intel 经用户批准留待人工验收；Task 8 Step 5 由用户确认。未勾选不代表 Intel 已通过。
+
 **Goal:** 用 WebGL2 结晶世界替换现有 Canvas 2D 方块墙，默认外观为地平线场景 + 点阵材质，并让背景响应真实启动进度。
 
 **Architecture:** 纯逻辑（状态推导、导演、相机、字标、档位）与 WebGL2 渲染器分离，React 外壳只负责画布、观察器和指针事件。渲染器把导演每帧输出的 `WorldFrame` 画出来，不持有业务状态。粒子层只在点阵材质下启用，实体材质同时是不支持浮点渲染目标时的回退。
@@ -51,7 +53,7 @@
 | `src/components/world/camera.ts` | 相机矩阵、射线求交 |
 | `src/components/world/worldDirector.ts` | 目标值、弹簧、前沿、开场 |
 | `src/components/world/wordmark.ts` | 字标粒子目标 |
-| `src/components/world/qualityTier.ts` | 档位选择、降档、帧率上限 |
+| `src/components/world/qualityTier.ts` | 档位选择、降档；帧率上限已于 2026-11-02 按用户决定取消 |
 | `src/components/world/pointerTarget.ts` | 判断按压目标是否为空白处 |
 | `src/components/world/shaders.ts` | GLSL 源码 |
 | `src/components/world/renderer.ts` | WebGL2 上下文和各通道 |
@@ -81,7 +83,7 @@
   ```
 - `Config` 增加 `worldScene: WorldSceneId`、`worldMaterial: WorldMaterial`。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `deriveWorldState.test.ts`：
 
@@ -105,12 +107,12 @@ it("prefers bytes, then items, then unknown", () => {
 
 `SettingsPage.test.tsx` 增加：选择场景和材质时 `onChange` 收到对应字段。`storage.rs` 的迁移测试在 `for field in [...]` 中加入 `"worldScene", "worldMaterial"`，并断言迁移后为 `"horizon"`、`"lattice"`。
 
-- [ ] **Step 2: 运行并确认失败**
+- [x] **Step 2: 运行并确认失败**
 
 Run: `npx vitest run src/components/world src/features/settings/SettingsPage.test.tsx`；`cargo test --manifest-path src-tauri/Cargo.toml storage`
 Expected: FAIL，模块或字段不存在。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 Rust 字段名 `world_scene`、`world_material`，`storage.rs` 按 `effects` 的 `.entry().or_insert_with()` 写法补默认值。设置页在 `effects` 下方增加两个 `Select`，语言键：
 
@@ -123,11 +125,11 @@ Rust 字段名 `world_scene`、`world_material`，`storage.rs` 按 `effects` 的
 | `worldMaterial.lattice` | 点阵 | Lattice |
 | `worldMaterial.solid` | 实体 | Solid |
 
-- [ ] **Step 4: 运行并确认通过**
+- [x] **Step 4: 运行并确认通过**
 
 Run: 同 Step 2。Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/world src/lib/launcher.ts src-tauri/src src/features/settings src/i18n tests/e2e/fixtures.ts
@@ -167,7 +169,7 @@ git commit -m "feat: add world settings and derive world state"
   export const FRONT_MAX = 165;
   ```
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 const run = (d, s) => { let f; for (let i = 0; i < s * 60; i++) f = d.step(1 / 60, i); return f; };
@@ -227,12 +229,12 @@ it("a huge dt after sleep does not jump the simulation", () => {
 
 `camera.test.ts`：`groundHit` 对正下方射线返回眼点正下方；射线向上返回 `null`；`viewProj` 把 `at` 映射到 NDC 中心（x、y 约为 0）。
 
-- [ ] **Step 2: 运行并确认失败**
+- [x] **Step 2: 运行并确认失败**
 
 Run: `npx vitest run src/components/world/camera.test.ts src/components/world/worldDirector.test.ts`
 Expected: FAIL，模块不存在。
 
-- [ ] **Step 3: 实现 `camera.ts`、`presets.ts` 和 `worldDirector.ts`**
+- [x] **Step 3: 实现 `camera.ts`、`presets.ts` 和 `worldDirector.ts`**
 
 预设取附录 A.1，lat 由材质决定。
 
@@ -246,11 +248,11 @@ Expected: FAIL，模块不存在。
 - 开场时序：汇聚 0.9 秒（`toWord: true, transit: 10`）→ 停留至 1.4 秒 → 散开 1.1 秒（`fromWord: true, transit: 16`）。开场中 `island` 目标为 0。
 - `active`：开场、准备中、切换后 2 秒内或距 `noteInteraction` 不到 1 秒时为 true。
 
-- [ ] **Step 4: 运行并确认通过**
+- [x] **Step 4: 运行并确认通过**
 
 Run: 同 Step 2。Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/world
@@ -276,7 +278,7 @@ git commit -m "feat: add world camera and director"
   export function isBlankPress(target: EventTarget | null): boolean;
   ```
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```ts
 // qualityTier
@@ -307,20 +309,20 @@ it("downgrades only after a sustained 2s overrun", () => {
 
 `pointerTarget.test.ts`（`// @vitest-environment jsdom`）：`button`、`a`、`input`、`select`、`[data-tauri-drag-region]`、带文本节点的元素及其子孙返回 `false`；`null` 返回 `false`；空的 `div` 返回 `true`。
 
-- [ ] **Step 2: 运行并确认失败**
+- [x] **Step 2: 运行并确认失败**
 
 Run: `npx vitest run src/components/world/wordmark.test.ts src/components/world/qualityTier.test.ts src/components/world/pointerTarget.test.ts`
 Expected: FAIL，模块不存在。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 字形和几何取附录 A.5。
 
-- [ ] **Step 4: 运行并确认通过**
+- [x] **Step 4: 运行并确认通过**
 
 Run: 同 Step 2。Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/world
@@ -356,7 +358,7 @@ git commit -m "feat: add wordmark targets, quality tiers and press filter"
 - 删除 `OvertureScene.tsx` 后，从 `character-animation.test.mjs` 移除 `renderScene`、`Probe`（若不再使用）和第 262、289 行的两个用例；`CharacterCanvas` 自身的动画用例保留。`overture.css` 不动，其中的 `.vx-character-placeholder` 仍在使用。
 - DOM 约定：单个画布 `.world-scene__canvas`；根节点 `data-world-tier`（`animated`、`static`、`css`）、`data-world-material`、`data-world-phase`、`data-world-frames`（已绘制帧数）、`data-motion`、`data-paused`。
 
-- [ ] **Step 1: 重写单元测试（失败）**
+- [x] **Step 1: 重写单元测试（失败）**
 
 `WorldScene.test.tsx` 整体替换（`// @vitest-environment jsdom`，`getContext` 用可控假对象）：
 
@@ -370,7 +372,7 @@ it("reads palette again when data-theme changes", ...)
 
 `renderer` 通过 `vi.mock("./world/renderer")` 替换，这里只测外壳。
 
-- [ ] **Step 2: 改写端到端测试（失败）**
+- [x] **Step 2: 改写端到端测试（失败）**
 
 - 选择器统一为 `.world-scene__canvas`；`global-glass` 的画布数量从 2 改为 1。
 - `round15` 的 `canvasHash` 和 `round6` 的 `toDataURL` 改为 `data-world-frames` 断言，并用 `page.screenshot({ clip })` 比较可见像素（WebGL 画布不保留绘制缓冲，不能直接读取）。
@@ -381,24 +383,24 @@ it("reads palette again when data-theme changes", ...)
 Run: `npx playwright test tests/e2e/global-glass.spec.ts tests/e2e/round15-runtime.spec.ts`
 Expected: FAIL，找不到 `.world-scene__canvas`。
 
-- [ ] **Step 3: 实现 `shaders.ts`**
+- [x] **Step 3: 实现 `shaders.ts`**
 
 按附录 A.2、A.3 编写地形、方块、天空和后处理着色器。保留热度衰减里的 `-2./255.`，否则 RGBA8 舍入会让热度卡住、地形残留信号色。网格大小由 uniform 传入，不写死 160。
 
-- [ ] **Step 4: 实现 `renderer.ts`（实体材质）**
+- [x] **Step 4: 实现 `renderer.ts`（实体材质）**
 
 地形通道、天空、实例化方块、辉光、合成。`light` 时关闭辉光，雾色取 `--bg-base`。监听 `webglcontextlost`（调用 `preventDefault`）和 `webglcontextrestored`（重建全部资源）；恢复失败或第二次丢失后调用 `onLost`，由外壳切到 `css`。
 
-- [ ] **Step 5: 实现 `WorldScene.tsx` 和 CSS**
+- [x] **Step 5: 实现 `WorldScene.tsx` 和 CSS**
 
 外壳沿用现有的 `useMediaQuery`、可见性、`IntersectionObserver`、`ResizeObserver` 和主题 `MutationObserver` 写法。从 `--accent`、`--bg-base` 读调色板；无法解析的颜色回退 `#b4f17a`。按 2026-11-02 用户修订，主循环每个可用 rAF 绘制，`frame.settled` 或 `paused` 时停止调度。分别记录 CPU/GPU 耗时及回调间隔；GPU 计时不可用时以独立 rAF 间隔回退，预算窗口不混用来源。`createFrameBudget(16.7)` 返回 `downgrade` 时 `setTier(nextTier(tier))`，为 `null` 时保持。删除 `::before`、`::after` 光束。CSS 降级：`--world-ink` 底色加 `radial-gradient` 点阵，深浅主题都定义。
 
-- [ ] **Step 6: 运行全部相关测试**
+- [x] **Step 6: 运行全部相关测试**
 
 Run: `npx vitest run src/components`；`npx playwright test tests/e2e/global-glass.spec.ts tests/e2e/round6-acceptance.spec.ts tests/e2e/round12-runtime-probe.spec.ts tests/e2e/round15-runtime.spec.ts`；`npx tsc -b`
 Expected: 全部 PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/components tests/e2e
@@ -416,7 +418,7 @@ git commit -m "feat: replace cube wall with WebGL2 solid world"
 - Consumes: Task 3 的 `buildWordTargets`、`isBlankPress`，Task 4 的 `WorldRenderer`。
 - Produces: `WorldRenderer` 增加 `press(ndc: [number, number]): void`、`release(): void`、`shock(ndc: [number, number]): void`。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `WorldScene.test.tsx`：
 ```tsx
@@ -429,20 +431,20 @@ it("no float targets renders solid and reports data-world-material=solid", ...)
 
 `world-lattice.spec.ts`：默认 `data-world-material="lattice"`、`data-world-tier="animated"`；移动鼠标后 `data-world-frames` 增长；切换设置到实体后 `data-world-material="solid"`；运行时修改 `--accent` 后不报错且帧继续增长；按住 `.vx-home__console-name` 后拖动，文字选择结果不受影响。
 
-- [ ] **Step 2: 运行并确认失败**
+- [x] **Step 2: 运行并确认失败**
 
 Run: `npx vitest run src/components/WorldScene.test.tsx`；`npx playwright test tests/e2e/world-lattice.spec.ts`
 Expected: FAIL。
 
-- [ ] **Step 3: 实现粒子通道**
+- [x] **Step 3: 实现粒子通道**
 
 按附录 A.4 编写粒子模拟和点绘制：MRT 位置和速度纹理（RGBA32F，`EXT_color_buffer_float`）。点通道关闭深度写入，`blendFunc(ONE, ONE)`；`light` 时改为普通混合，点色取 `--text-primary`。粒子边长由 `tier.particleSide` 决定，变化时重建。降档重建时从当前地形生成初始位置，不触发散布。
 
-- [ ] **Step 4: 实现指针事件**
+- [x] **Step 4: 实现指针事件**
 
 沿用现有窗口级 `pointermove`。`pointerdown` 仅在 `page === "home"` 且 `isBlankPress(event.target)` 时调用 `renderer.press`。`pointerup`：按压不足 300ms 且融化值低于 0.3 时调用 `shock`。静态档和粗指针不注册。任何指针活动调用 `director.noteInteraction`。
 
-- [ ] **Step 5: 运行并确认通过**
+- [x] **Step 5: 运行并确认通过**
 
 Run: 同 Step 2。Expected: PASS。
 
@@ -454,7 +456,7 @@ Run: 同 Step 2。Expected: PASS。
 
 2026-11-02 用户确认：RTX 完整原生界面实测通过后，允许继续 Task 6–8，Intel 测量改为最终人工验收。Intel 未测不得标成通过；这项延期不授权擅自修改设备回退预算。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/components tests/e2e/world-lattice.spec.ts docs/world-performance.md
@@ -471,7 +473,7 @@ git commit -m "feat: add lattice particle layer and pointer field"
 - Consumes: Task 1 的 `deriveWorldState`、`Config.worldScene`、`Config.worldMaterial`。
 - DOM 约定：首页 `.vx-home__char-col` 增加 `data-world-anchor`。`WorldScene` 在尺寸变化和页面变化时用其底部中点作为结晶起点；不存在时用 NDC `(0.62, -0.66)`。根节点增加 `data-world-front`（四舍五入的前沿值）。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `WorldScene.test.tsx`：`it("uses the anchor element and falls back when it is gone", ...)`，含窗口尺寸变化后重新测量。
 
@@ -485,20 +487,20 @@ test("launch drives the crystal front and stop returns to idle", async ({ page }
 test("launching from the library page also drives the world", ...);
 ```
 
-- [ ] **Step 2: 运行并确认失败**
+- [x] **Step 2: 运行并确认失败**
 
 Run: `npx vitest run src/components/WorldScene.test.tsx`；`npx playwright test tests/e2e/world-lattice.spec.ts`
 Expected: FAIL，`data-world-phase` 始终是 `idle`。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `App.tsx` 从 `useLauncher` 取 `busy`、`progress`、`running`、`gamePid`、`config`，用 `useMemo` 调用 `deriveWorldState`，把 `phase` 和 `fraction` 传给 `WorldScene`，取代 Task 4 中写死的 `phase="idle"`。
 
-- [ ] **Step 4: 运行并确认通过**
+- [x] **Step 4: 运行并确认通过**
 
 Run: 同 Step 2；再运行 `npx vitest run src/features/home`。Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app/App.tsx src/features/home/HomePage.tsx src/components tests/e2e/world-lattice.spec.ts
@@ -516,7 +518,7 @@ git commit -m "feat: drive world state from launcher progress"
 - Consumes: Task 2 的 `beginIntro`、`endIntro`、`frame.introActive`。
 - DOM 约定：`document.documentElement.dataset.worldIntro` 为 `"on"` 或 `"off"`；首页标题区在 `"on"` 时透明，启动控件不受影响。`--font-matrix: "Doto", var(--font-mono)`。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `WorldScene.test.tsx`：
 ```tsx
@@ -529,28 +531,28 @@ it("a press ends the intro", ...)
 - 开场中启动按钮可见且可点击；3 秒内 `dataset.worldIntro` 变为 `"off"`。
 - `.vx-launch-console__progress-text` 计算字体包含 `Doto`，字号不小于 15px。
 
-- [ ] **Step 2: 运行并确认失败**
+- [x] **Step 2: 运行并确认失败**
 
 Run: `npx vitest run src/components/WorldScene.test.tsx`；`npx playwright test tests/e2e/world-lattice.spec.ts`
 Expected: FAIL。
 
-- [ ] **Step 3: 实现开场**
+- [x] **Step 3: 实现开场**
 
 模块级布尔值记录本进程是否已播放。开场中渲染器用 `buildWordTargets` 生成目标。任何按压、启动或离开首页调用 `endIntro`。
 
-- [ ] **Step 4: 加入 Doto 字体**
+- [x] **Step 4: 加入 Doto 字体**
 
 从 Google Fonts 的 Doto 发布版取 Black 字重，转 woff2 放入 `public/fonts/`，附 OFL 许可证并更新 `THIRD_PARTY_NOTICES.md`，运行 `npm run license:check`。只用于 `.vx-launch-console__progress-text`。
 
-- [ ] **Step 5: 加 scrim 与浅色主题**
+- [x] **Step 5: 加 scrim 与浅色主题**
 
 `home.css` 给 `.vx-home__stage` 增加局部渐变 scrim，用 `--world-ink` 或浅色的 `--bg-base` 混合。`tokens.css` 定义 `--world-ink`（深色 `#07080b`，浅色取 `--bg-base`）。
 
-- [ ] **Step 6: 运行并确认通过**
+- [x] **Step 6: 运行并确认通过**
 
 Run: 同 Step 2；再运行 `npm run license:check`。Expected: PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/components src/design src/features/home public/fonts licenses THIRD_PARTY_NOTICES.md package.json tests/e2e/world-lattice.spec.ts
@@ -565,7 +567,7 @@ git commit -m "feat: add world intro, matrix type and text scrim"
 
 **Interfaces:** 无新增接口。这一步可能修改 scrim 强度、点密度和浅色主题默认值。
 
-- [ ] **Step 1: 写对比度和资源测试**
+- [x] **Step 1: 写对比度和资源测试**
 
 `world-acceptance.spec.ts`：
 ```ts
@@ -577,7 +579,7 @@ test("repeated page and setting switches do not leak", ...);
 // 往返切页 30 次、切换设置 10 次后：画布数量为 1，data-world-frames 继续增长，无新增控制台错误
 ```
 
-- [ ] **Step 2: 运行并按结果调整**
+- [x] **Step 2: 运行并按结果调整**
 
 Run: `npx playwright test tests/e2e/world-acceptance.spec.ts`
 Expected: PASS。不达标时调整 `home.css` 的 scrim；浅色主题观感或对比度仍不达标时，按规范第 9 节让浅色主题默认实体材质，并把这个决定告诉用户。
@@ -586,7 +588,7 @@ Expected: PASS。不达标时调整 `home.css` 的 scrim；浅色主题观感或
 
 重复 Task 5 的性能检查步骤，这次在全部功能完成后的完整应用中测量（含玻璃和角色）。标准：RTX 5080 完全档 p95 不超过 16.7ms；Intel 集成显卡自动降档后 p95 不超过 33ms。结果写入 `docs/world-performance.md`，注明不代表所有低配设备。显卡切换由用户操作。
 
-- [ ] **Step 4: 全量回归**
+- [x] **Step 4: 全量回归**
 
 Run: `npm test`；`npm run test:e2e`；`npm run build`；`cargo test --manifest-path src-tauri/Cargo.toml`
 Expected: 全部通过。失败项如实报告，不跳过。
@@ -595,7 +597,7 @@ Expected: 全部通过。失败项如实报告，不跳过。
 
 请用户在 `npm run desktop:dev` 中确认：两个场景、两种材质、深浅主题、1050×720 和最大化，以及完整启动流程。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/e2e/world-acceptance.spec.ts docs/world-performance.md src
