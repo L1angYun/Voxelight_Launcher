@@ -35,4 +35,3 @@ export function createFrameBudget(budgetMs: number, windowMs = 2000) {
     },
   };
 }
-export function frameIntervalMs(active: boolean): number { return 1000 / (active ? 60 : 30); }

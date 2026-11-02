@@ -73,7 +73,9 @@
   },
   "worldMaterial": {
     "lattice": "Lattice",
-    "solid": "Solid"
+    "solid": "Solid",
+    "solidFallback": "Floating-point particle rendering is unavailable on this device. Solid is used temporarily; your Lattice preference is preserved.",
+    "cssFallback": "The 3D world is unavailable. A static dot background is being used; launching games is unaffected."
   },
   "accent": {
     "voxelight": "Voxelight green",

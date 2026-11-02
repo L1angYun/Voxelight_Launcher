@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-const CLAIMED = "button,a,input,select,textarea,label,canvas,summary,[data-tauri-drag-region],[data-no-world-interaction],[contenteditable]:not([contenteditable='false']),[role='button'],[role='link'],[role='combobox'],[role='slider'],[role='switch'],[role='tab'],[role='checkbox'],[role='option'],[tabindex]:not([tabindex='-1'])";
+const CLAIMED = "button,a,input,select,textarea,label,canvas,summary,[data-visual-owner],[data-tauri-drag-region],[data-no-world-interaction],[contenteditable]:not([contenteditable='false']),[role='button'],[role='link'],[role='combobox'],[role='slider'],[role='switch'],[role='tab'],[role='checkbox'],[role='option'],[tabindex]:not([tabindex='-1'])";
 
 /** Background presses never take ownership of controls, drag regions or copy. */
 export function isBlankPress(target: EventTarget | null): boolean {
