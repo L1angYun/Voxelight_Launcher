@@ -12,6 +12,35 @@ async function openAppearance(page: Page) {
   await expect(page.getByRole("combobox", { name: "世界材质", exact: true })).toBeVisible();
 }
 
+async function makeFixtureLaunchCancellable(page: Page) {
+  await page.addInitScript(() => {
+    const api = (window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> };
+    }).__TAURI_INTERNALS__;
+    const original = api.invoke;
+    let generation = 0;
+    let cancel: (() => void) | null = null;
+    api.invoke = async (name, args) => {
+      if (name === "cancel_download_task") {
+        generation++;
+        cancel?.();
+      }
+      if (name !== "launch_game") return original(name, args);
+      const token = ++generation;
+      const cancelled = new Promise<never>((_, reject) => {
+        cancel = () => reject(new Error("任务已取消，已校验文件保留供下次复用"));
+      });
+      try {
+        const result = await Promise.race([original(name, args), cancelled]);
+        if (token !== generation) throw new Error("任务已取消，已校验文件保留供下次复用");
+        return result;
+      } finally {
+        cancel = null;
+      }
+    };
+  });
+}
+
 test("default lattice renders real animated terrain and continues through pointer movement", async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -185,7 +214,16 @@ for (const mode of ["lite effects", "system reduced motion", "high contrast"] as
     const scene = page.locator(".vx-global-scene");
     await expect(scene.locator(".world-scene__canvas")).toBeVisible();
     await expect(scene).toHaveAttribute("data-world-tier", "static");
+    await expect(page.locator(".vx-home__console-name")).toHaveText("合成测试世界");
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    await expect(page.locator("html")).toHaveAttribute("data-high-contrast", String(mode === "high contrast"));
     await expect.poll(async () => Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(0);
+    // Bootstrap, media policy, and the home anchor may each request an initial static redraw.
+    await expect.poll(async () => {
+      const frames = Number(await scene.getAttribute("data-world-frames"));
+      await page.waitForTimeout(400);
+      return Number(await scene.getAttribute("data-world-frames")) - frames;
+    }).toBe(0);
     await withWorldView(page, async capture => {
       const before = await capture(testInfo.outputPath("static-before.png"));
       const structure = worldStructure(before);
@@ -204,3 +242,100 @@ for (const mode of ["lite effects", "system reduced motion", "high contrast"] as
     expect(errors).toEqual([]);
   });
 }
+
+test("launch state: home preparation follows real 37% progress and cancellation restores idle", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await installLauncherFixture(page, { launchDelay: 10_000 });
+  await makeFixtureLaunchCancellable(page);
+  await page.goto("/");
+  const scene = page.locator(".vx-global-scene");
+  await expect(scene).toHaveAttribute("data-world-phase", "idle");
+  await page.getByRole("button", { name: "启动游戏", exact: true }).click();
+  await expect(page.getByText("37%", { exact: true })).toBeVisible();
+  await expect(scene).toHaveAttribute("data-world-phase", "preparing");
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-front"))).toBeGreaterThan(0);
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-front")), { timeout: 8000 }).toBe(61);
+  await page.getByRole("button", { name: "取消准备", exact: true }).click();
+  await expect(scene).toHaveAttribute("data-world-phase", "idle", { timeout: 3000 });
+  await expect(scene).toHaveAttribute("data-world-front", "0", { timeout: 3000 });
+  await expect(page.getByRole("button", { name: "启动游戏", exact: true })).toBeEnabled();
+  // The original fixture timer still resolves. Its stale success must not revive a cancelled launch.
+  await page.waitForTimeout(10_100);
+  await expect(scene).toHaveAttribute("data-world-phase", "idle");
+  await expect(scene).toHaveAttribute("data-world-front", "0");
+  await expect(page.getByRole("button", { name: "停止", exact: true })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("launch state: success fills the world, freezes its rendered frames, and Stop restores idle", async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await installLauncherFixture(page, { launchDelay: 3000 });
+  await page.goto("/");
+  const scene = page.locator(".vx-global-scene");
+  await expect(scene).toHaveAttribute("data-world-phase", "idle");
+  await expect(scene).toHaveAttribute("data-world-front", "0");
+  const idle = await withWorldView(page, capture => capture(testInfo.outputPath("launch-idle.png")));
+  await page.getByRole("button", { name: "启动游戏", exact: true }).click();
+  await expect(page.getByText("37%", { exact: true })).toBeVisible();
+  await expect(scene).toHaveAttribute("data-world-phase", "preparing");
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-front"))).toBeGreaterThan(0);
+  await expect(scene).toHaveAttribute("data-world-phase", "running");
+  // The director unit test checks the 600 ms logical duration; this software-rendered E2E observes its completed result.
+  await expect(scene).toHaveAttribute("data-world-front", "165");
+  await expect(page.getByRole("button", { name: "停止", exact: true })).toBeEnabled();
+  // Exclude the legacy 830 ms Overture pause from the settled-world observation.
+  await page.waitForTimeout(1000);
+  await expect(scene).toHaveAttribute("data-paused", "false");
+  await expect.poll(async () => {
+    const before = Number(await scene.getAttribute("data-world-frames"));
+    await page.waitForTimeout(700);
+    return Number(await scene.getAttribute("data-world-frames")) - before;
+  }, { timeout: 15_000 }).toBe(0);
+  await withWorldView(page, async capture => {
+    const before = await capture(testInfo.outputPath("launch-running-frozen.png"));
+    const frames = Number(await scene.getAttribute("data-world-frames"));
+    await page.waitForTimeout(1000);
+    const after = await capture(testInfo.outputPath("launch-running-still.png"));
+    expect(Number(await scene.getAttribute("data-world-frames"))).toBe(frames);
+    expect(changedPixels(before, after, 0)).toBe(0);
+    expect(changedPixels(idle, before)).toBeGreaterThan(100);
+  });
+  const stoppedFrames = Number(await scene.getAttribute("data-world-frames"));
+  await page.getByRole("button", { name: "停止", exact: true }).click();
+  await expect(scene).toHaveAttribute("data-world-phase", "idle");
+  await expect(scene).toHaveAttribute("data-world-front", "0");
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(stoppedFrames);
+  await expect(page.getByRole("button", { name: "启动游戏", exact: true })).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("launch state: launching from the library drives the shared world across navigation", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await installLauncherFixture(page, { launchDelay: 5000 });
+  await page.goto("/");
+  const scene = page.locator(".vx-global-scene");
+  const canvas = scene.locator(".world-scene__canvas");
+  const originalCanvas = await canvas.elementHandle();
+  await page.locator('button[data-page="library"]').click();
+  await expect(page.locator(".vx-library-page")).toBeVisible();
+  await page.locator('[data-instance-id="fixture-world"]').getByRole("button", { name: "启动游戏", exact: true }).click();
+  await expect(page.locator(".vx-launch-status")).toContainText("37%");
+  await expect(scene).toHaveAttribute("data-world-phase", "preparing");
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-front"))).toBeGreaterThan(0);
+  await page.locator('button[data-page="downloads"]').click();
+  await expect(page.locator(".vx-downloads-page")).toBeVisible();
+  await expect(scene).toHaveAttribute("data-world-phase", "preparing");
+  await expect(scene).toHaveAttribute("data-world-phase", "running", { timeout: 8000 });
+  await expect(scene).toHaveAttribute("data-world-front", "165");
+  await page.locator('button[data-page="home"]').click();
+  await expect(page.getByRole("button", { name: "停止", exact: true })).toBeEnabled();
+  await expect(scene).toHaveAttribute("data-world-phase", "running");
+  expect(await canvas.evaluate((node, previous) => node === previous, originalCanvas)).toBe(true);
+  expect(errors).toEqual([]);
+});

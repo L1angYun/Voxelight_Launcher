@@ -31,6 +31,21 @@ function timeline(inputs: WorldInputs = initial) {
 }
 
 describe("crystal world director", () => {
+  it("retreats on real elapsed time while a slow frame still caps simulation advancement", () => {
+    const time = timeline({ ...initial, phase: "preparing", fraction: 1 }); time.advance(3);
+    time.director.setInputs(initial);
+    const before = time.director.step(0, time.now);
+    const after = time.wake(.05, 2500);
+    expect(after.cry).toBe(0); expect(after.front).toBe(0);
+    expect(after.simTime - before.simTime).toBeLessThanOrEqual(.050001);
+  });
+  it("tracks real preparation progress even when GPU frames arrive slowly", () => {
+    const time = timeline(); time.director.setInputs({ ...initial, phase: "preparing", fraction: .37 });
+    time.director.step(0, time.now);
+    for (let index = 0; index < 12; index++) time.wake(.05, 250);
+    expect(time.frame.front).toBeCloseTo(61.05, 0);
+    expect(time.frame.simTime).toBeCloseTo(.6, 5);
+  });
   it("renders the selected scene and material correctly before the first animated frame", () => {
     expect(timeline().frame).toMatchObject({ eye: [-6, 14, 37], at: [2, 18.5, -40], fov: 36, profile: 0, mask: 0, lat: 1, island: 9, fogD: 150, bloom: .8, horizon: -1, exposure: 1 });
     expect(timeline({ ...initial, scene: "massif", material: "solid" }).frame)

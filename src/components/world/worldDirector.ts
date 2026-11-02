@@ -48,6 +48,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
   let preparationTarget = 0;
   let runningAt: number | null = null;
   let runningFrom = 0;
+  let retreatAt: number | null = null, retreatFrom = 0;
   let push = 0;
   let lastInteraction = -Infinity;
   let compositionAt = -Infinity;
@@ -80,6 +81,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
         if (inputs.fraction !== null && Number.isFinite(inputs.fraction)) preparationTarget = Math.max(preparationTarget, Math.max(0, Math.min(1, inputs.fraction)) * FRONT_MAX);
         frame.front = preparationTarget; frame.cry = preparationTarget;
       } else { frame.front = inputs.phase === "running" ? FRONT_MAX : 0; frame.cry = frame.front; }
+      if (inputs.phase === "idle") { retreatAt = clock; retreatFrom = 0; }
       frame.ring = inputs.phase === "preparing" ? frame.front : 0;
       frame.charge = inputs.phase === "preparing" ? 1 : 0;
       frame.timeScale = inputs.phase === "running" ? .12 : 1;
@@ -89,6 +91,8 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
     },
     setInputs(next) {
       const compositionChanged = inputs.scene !== next.scene || inputs.material !== next.material || inputs.page !== next.page;
+      if (next.phase === "idle" && inputs.phase !== "idle") { retreatAt = null; retreatFrom = frame.cry; }
+      else if (next.phase !== "idle") { retreatAt = null; retreatFrom = 0; }
       if (next.phase === "preparing" && inputs.phase !== "preparing") {
         preparationTarget = 0;
         frame.front = 0;
@@ -121,7 +125,9 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
     },
     step(dtSeconds, now) {
       const dt = Number.isFinite(dtSeconds) ? Math.max(0, Math.min(.05, dtSeconds)) : 0;
+      const previousClock = clock;
       clock = Number.isFinite(now) ? Math.max(clock ?? now, now) : (clock ?? 0) + dt * 1000;
+      const statusDt = previousClock === null ? dt : Math.max(0, (clock - previousClock) / 1000);
       if (pendingComposition) { compositionAt = clock; pendingComposition = false; }
       if (frame.introActive) {
         introAt ??= clock;
@@ -149,9 +155,9 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
       if (inputs.phase === "preparing") {
         const fraction = inputs.fraction;
         const reached = fraction !== null && Number.isFinite(fraction)
-          ? Math.max(0, Math.min(1, fraction)) * FRONT_MAX : Math.min(FRONT_MAX * .15, preparationTarget + FRONT_MAX * .02 * dt);
+          ? Math.max(0, Math.min(1, fraction)) * FRONT_MAX : Math.min(FRONT_MAX * .15, preparationTarget + FRONT_MAX * .02 * statusDt);
         preparationTarget = Math.max(preparationTarget, reached);
-        frame.front = approach(frame.front, preparationTarget, amount);
+        frame.front = approach(frame.front, preparationTarget, 1 - Math.exp(-statusDt * 2.4));
         frame.cry = Math.max(frame.cry, frame.front);
       } else if (inputs.phase === "running") {
         runningAt ??= clock;
@@ -160,7 +166,8 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
         frame.front = runningFrom + (FRONT_MAX - runningFrom) * fraction;
         frame.cry = Math.max(frame.cry, frame.front);
       } else {
-        frame.cry = Math.max(0, frame.cry - dt * 75);
+        retreatAt ??= clock;
+        frame.cry = Math.max(0, retreatFrom - (clock - retreatAt) / 1000 * 75);
         if (frame.cry === 0) frame.front = 0;
       }
       frame.charge = inputs.phase === "preparing" ? Math.min(1, frame.charge + dt * 2)

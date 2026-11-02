@@ -177,3 +177,25 @@ it("reports solid material when float targets are unavailable without overwritin
   expect(scene().dataset.worldMaterial).toBe("solid");
   expect(fake.draw.mock.calls.at(-1)![0].lat).toBe(0);
 });
+it("measures the character anchor, remeasures on resize, and falls back when absent", async () => {
+  const anchor = document.createElement("div"); anchor.dataset.worldAnchor = "";
+  anchor.getBoundingClientRect = () => new DOMRect(300, 100, 200, 400);
+  document.body.append(anchor);
+  try {
+    await render();
+    expect(fake.setAnchor.mock.calls.at(-1)![0][0]).toBeCloseTo(-.21875);
+    expect(fake.setAnchor.mock.calls.at(-1)![0][1]).toBeCloseTo(-.3020833333);
+    anchor.getBoundingClientRect = () => new DOMRect(600, 50, 100, 500);
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(fake.setAnchor.mock.calls.at(-1)![0][0]).toBeCloseTo(.26953125);
+    expect(fake.setAnchor.mock.calls.at(-1)![0][1]).toBeCloseTo(-.4322916667);
+    anchor.remove(); await render({ page: "content" });
+    expect(fake.setAnchor).toHaveBeenLastCalledWith([.62, -.66]);
+  } finally { anchor.remove(); }
+});
+it("publishes the actual rounded crystal frontier and returns to zero after cancel", async () => {
+  await render({ phase: "preparing", fraction: .37 }); await advance(3000);
+  expect(scene().dataset.worldFront).toBe("61");
+  await render(); await advance(3000);
+  expect(scene().dataset.worldFront).toBe("0");
+});
