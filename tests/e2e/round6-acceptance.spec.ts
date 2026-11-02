@@ -12,6 +12,25 @@ async function capture(page: Page, name: string) {
   await page.screenshot({ path: resolve(evidence, `${name}.png`) });
 }
 
+async function assertOperableBounds(page: Page, control: Locator, parts: string[]) {
+  await expect(control).toBeVisible();
+  await expect(control).toBeEnabled();
+  const box = (await control.boundingBox())!;
+  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  const hits = await control.evaluate((element, selectors) => [element, ...selectors.map(selector => element.querySelector(selector))].map(part => {
+    if (!part) return false;
+    const rect = part.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+  }), parts);
+  expect(hits.length).toBe(parts.length + 1);
+  expect(hits.every(Boolean)).toBe(true);
+  await control.click({ trial: true });
+}
+
 async function assertControlsAboveCanvas(page: Page) {
   const controls = page.getByRole("group", { name: /动画模式|Animation mode/ });
   const canvas = page.locator(".vx-home__character canvas");
@@ -21,12 +40,10 @@ async function assertControlsAboveCanvas(page: Page) {
   expect(canvasBox).not.toBeNull();
   expect(groupBox!.y + groupBox!.height).toBeLessThanOrEqual(canvasBox!.y);
   expect(groupBox!.y).toBeGreaterThanOrEqual(82);
-  for (const button of await controls.getByRole("button").all()) {
-    await expect(button).toBeInViewport({ ratio: 1 });
-    expect(await button.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
-    })).toBe(true);
+  const triggers = controls.getByRole("combobox", { name: /动画模式|Animation mode/ });
+  await expect(triggers).toHaveCount(1);
+  for (const trigger of await triggers.all()) {
+    await assertOperableBounds(page, trigger, [".vx-select__value", ":scope > svg", ".vx-select__chevron"]);
   }
 }
 
@@ -64,14 +81,28 @@ for (const theme of ["dark", "light"] as const) {
       expect(await page.locator(".vx-home").evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
       await capture(page, `after-home-${theme}-${width}`);
       await page.locator(".vx-home__char-col").hover();
-      await expect(page.locator(".vx-home__anim-picker")).toHaveCSS("opacity", "1");
+      const picker = page.locator(".vx-home-animation-selector");
+      const trigger = page.getByRole("combobox", { name: "动画模式", exact: true });
+      await expect(picker).toHaveCSS("opacity", "1");
       await assertControlsAboveCanvas(page);
+      await trigger.click();
+      const menu = page.getByRole("listbox", { name: "动画模式", exact: true });
+      await expect(menu.getByRole("option")).toHaveCount(3);
+      await expect(menu.getByRole("option")).toHaveText(["站立", "行走", "奔跑"]);
+      for (const option of await menu.getByRole("option").all()) {
+        await assertOperableBounds(page, option, [".vx-select__value", ":scope > svg"]);
+      }
+      await trigger.press("Escape");
+      await expect(trigger).toBeFocused();
       await capture(page, `after-controls-${theme}-${width}`);
       await page.mouse.move(5, height - 5);
-      await page.getByRole("button", { name: "奔跑", exact: true }).focus();
-      await expect(page.locator(".vx-home__anim-picker")).toHaveCSS("opacity", "1");
-      await page.keyboard.press("Enter");
-      await expect(page.getByRole("button", { name: "奔跑", exact: true })).toHaveAttribute("aria-pressed", "true");
+      await trigger.focus();
+      await expect(picker).toHaveCSS("opacity", "1");
+      await trigger.press("End");
+      await expect(menu.getByRole("option", { name: "奔跑", exact: true })).toHaveAttribute("data-active", "true");
+      await trigger.press("Enter");
+      await expect(trigger).toContainText("奔跑");
+      await expect(trigger).toBeFocused();
       await expect(page.locator(".vx-home__character")).toHaveAttribute("data-character-animation", "run");
     });
   }
@@ -82,9 +113,17 @@ test("round6 English long names at minimum size preserve the entire launch actio
   await installLauncherFixture(page, { stress: true });
   await page.goto("/");
   await assertCompleteLaunch(page, page.getByRole("button", { name: "Launch game", exact: true }));
-  await page.getByRole("button", { name: "Run", exact: true }).focus();
-  await expect(page.locator(".vx-home__anim-picker")).toHaveCSS("opacity", "1");
+  const trigger = page.getByRole("combobox", { name: "Animation mode", exact: true });
+  await trigger.focus();
+  await expect(page.locator(".vx-home-animation-selector")).toHaveCSS("opacity", "1");
   await assertControlsAboveCanvas(page);
+  await trigger.press("End");
+  const menu = page.getByRole("listbox", { name: "Animation mode", exact: true });
+  await expect(menu.getByRole("option")).toHaveCount(3);
+  await expect(menu.getByRole("option")).toHaveText(["Idle", "Walk", "Run"]);
+  await trigger.press("Enter");
+  await expect(trigger).toContainText("Run");
+  await expect(page.locator(".vx-home__character")).toHaveAttribute("data-character-animation", "run");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await capture(page, "after-home-en-long-1050");
 });
@@ -140,6 +179,7 @@ test("round6 four recent instances fit the minimum viewport without decorative o
     };
   });
   await page.goto("/");
+  await expect(page.locator(".vx-recent-card")).toHaveCount(4);
   for (const card of await page.locator(".vx-recent-card").all()) await expect(card).toBeInViewport({ ratio: 1 });
   await page.waitForTimeout(1000);
   expect(await page.locator(".vx-home").evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
@@ -221,6 +261,9 @@ test("round6 full world changes visibly over time and keeps rendering through a 
 test("round6 real backdrop stripes bend only at curvature and follow live background movement", async ({ page }) => {
   await installLauncherFixture(page, { effects: "full" });
   await page.goto("/");
+  await expect(page.locator(".vx-floating-nav")).toHaveAttribute("data-motion-settled", "true");
+  await expect.poll(async () => (await page.locator(".vx-floating-nav__indicator").boundingBox())?.width ?? 0).toBeGreaterThan(60);
+  await expect.poll(async () => (await page.locator(".vx-floating-nav__indicator").boundingBox())?.height ?? 0).toBeGreaterThan(30);
   const result = await probeGlassRefraction(page, evidence);
   expect(result.maxEdgeShift).toBeGreaterThanOrEqual(2);
   expect(result.maxCenterShift).toBeLessThanOrEqual(1);

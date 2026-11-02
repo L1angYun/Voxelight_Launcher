@@ -9,6 +9,10 @@ import { isBlankPress } from "./world/pointerTarget";
 import { publishWorldAvailability } from "./world/worldAvailability";
 import "./WorldScene.css";
 
+// Claimed by the first scheduled draw, so StrictMode's disposable setup cannot
+// consume the entrance. A real remount in this application process never replays it.
+let introConsumed = false;
+
 export interface WorldSceneProps {
   phase: WorldPhase; fraction: number | null; page: WorldPage; scene: WorldSceneId; material: WorldMaterial;
   className?: string; paused?: boolean; effects?: EffectsLevel; reducedMotion?: boolean;
@@ -49,6 +53,8 @@ export function WorldScene(props: WorldSceneProps) {
     let lastLayoutKey = "", trackedAnchor: Element | null = null;
     let renderer: WorldRenderer | null = null;
     let pointerBound = false;
+    let introPending = false, introTimer: ReturnType<typeof setTimeout> | null = null;
+    let introDeadline: number | null = null;
     let held: { id: number; start: number; x: number; y: number; moved: number } | null = null;
     let budget = createFrameBudget(16.7);
     const userInputs = () => ({ phase: current.current.phase, fraction: current.current.fraction, page: current.current.page, scene: current.current.scene, material: current.current.material });
@@ -56,12 +62,34 @@ export function WorldScene(props: WorldSceneProps) {
     const director = createWorldDirector(userInputs());
     let lastFrame = director.step(0, performance.now());
     const permitted = () => !disposed && !lost && !current.current.paused && !document.hidden && visible;
+    const introEligible = () => Boolean(renderer) && !lost && tier?.kind === "animated" &&
+      current.current.page === "home" && current.current.phase === "idle" && requestedInputs().material === "lattice";
+    function endIntro() {
+      introPending = false; director.endIntro();
+      if (introTimer !== null) clearTimeout(introTimer);
+      introTimer = null; introDeadline = null; html.dataset.worldIntro = "off";
+    }
+    function queueIntro() {
+      introPending = true; introDeadline = performance.now() + 2500;
+      introTimer = setTimeout(() => {
+        introConsumed = true; endIntro();
+        publish(director.step(0, performance.now()));
+        // Retire glyph weights in the actual GPU field, even if its delta is zero.
+        paint(performance.now(), 0); start();
+      }, 2500);
+    }
+    function skipIntro() {
+      if (!introPending && !lastFrame.introActive) return;
+      introConsumed = true; endIntro();
+      publish(director.step(0, performance.now())); start();
+    }
     function stop() {
       if (animation !== null) cancelAnimationFrame(animation);
       animation = null; lastDraw = null; previousTick = null; lastGpuAt = null; budgetSource = null;
       finishPress();
     }
     function publish(frame: WorldFrame) {
+      html.dataset.worldIntro = introPending || frame.introActive ? "on" : "off";
       host!.dataset.worldFrames = String(drawn);
       host!.dataset.worldMaterial = renderer?.material ?? "solid";
       host!.dataset.worldPhase = current.current.phase;
@@ -76,7 +104,7 @@ export function WorldScene(props: WorldSceneProps) {
       publishWorldAvailability(lost || !renderer ? "css" : renderer.capabilities.floatTargets ? "available" : "solid-only");
       syncPointerBindings();
     }
-    function fallback() { lost = true; stop(); host!.dataset.worldTier = "css"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
+    function fallback() { lost = true; introConsumed = true; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
     function sample(source: "gpu" | "raf", costMs: number, elapsedMs: number) {
       if (tier.kind !== "animated" || elapsedMs <= 0) return;
       if (source !== budgetSource) { budget = createFrameBudget(16.7); budgetSource = source; }
@@ -85,9 +113,15 @@ export function WorldScene(props: WorldSceneProps) {
       const next = nextTier(tier);
       if (next) { downgrades++; tier = next; renderer?.setTier(tier); fit(); }
     }
-    function paint(now: number, dt: number) {
+    function paint(now: number, dt: number, scheduled = false) {
       if (!renderer || !permitted()) return;
+      if (scheduled && introPending) {
+        introConsumed = true;
+        if (introDeadline !== null && now >= introDeadline) endIntro();
+        else { introPending = false; director.step(0, now); director.beginIntro(); }
+      }
       const frame = tier.kind === "static" ? director.snap() : director.step(dt, now);
+      if (!frame.introActive && !introPending && introTimer !== null) endIntro();
       try {
         const floatSupport = renderer.capabilities.floatTargets;
         const result = renderer.draw(frame, dt);
@@ -111,7 +145,7 @@ export function WorldScene(props: WorldSceneProps) {
       if (!permitted() || tier.kind !== "animated" || lastFrame.settled) { publish(lastFrame); return; }
       const callbackGap = previousTick === null ? 0 : Math.max(0, now - previousTick);
       previousTick = now;
-      paint(now, lastDraw === null ? 0 : Math.max(0, Math.min(.05, (now - lastDraw) / 1000)));
+      paint(now, lastDraw === null ? 0 : Math.max(0, Math.min(.05, (now - lastDraw) / 1000)), true);
       // GPU timing and callback cadence stay separate; animated frames are uncapped.
       if (lastGpuAt === null || now - lastGpuAt > 500) {
         try { sample("raf", Math.max(lastCpuMs, callbackGap), callbackGap); } catch { fallback(); }
@@ -154,6 +188,8 @@ export function WorldScene(props: WorldSceneProps) {
       budget = createFrameBudget(16.7);
       director.setInputs(requestedInputs());
       if (drawn === 0) director.snap();
+      if (!introEligible()) { introConsumed = true; endIntro(); }
+      else if (!introConsumed && !introPending) queueIntro();
       try {
         renderer?.setTier(tier);
         if (paletteKey !== lastPalette) { renderer?.setPalette(nextPalette); lastPalette = paletteKey; }
@@ -213,14 +249,15 @@ export function WorldScene(props: WorldSceneProps) {
     const queries = [reduce, contrast, forced, fine];
     queries.forEach(value => value?.addEventListener?.("change", changed));
     document.addEventListener("visibilitychange", changed);
+    document.addEventListener("pointerdown", skipIntro, { capture: true, passive: true });
     window.addEventListener("resize", resized);
     runtime.current = { update }; update();
     return () => {
-      disposed = true; stop(); runtime.current = null;
+      disposed = true; endIntro(); stop(); runtime.current = null;
       syncPointerBindings(); publishWorldAvailability("unknown");
       mutations.disconnect(); resize?.disconnect(); intersection?.disconnect();
       queries.forEach(value => value?.removeEventListener?.("change", changed));
-      document.removeEventListener("visibilitychange", changed); window.removeEventListener("resize", resized);
+      document.removeEventListener("visibilitychange", changed); document.removeEventListener("pointerdown", skipIntro, true); window.removeEventListener("resize", resized);
       renderer?.dispose();
     };
   }, []);

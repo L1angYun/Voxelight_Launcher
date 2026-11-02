@@ -3,8 +3,225 @@ import { expect, test, type Page } from "@playwright/test";
 import { installLauncherFixture } from "./fixtures";
 import { changedPixels, withWorldView, worldStructure } from "./helpers/world-image";
 import { selectValue } from "./select-helpers";
+import { writeFile } from "node:fs/promises";
+import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 
 test.use({ viewport: { width: 1280, height: 720 } });
+
+type IntroProbe = {
+  events: { state: string; at: number; page: string | null }[];
+  firstInteractive: { launch: { visible: boolean; enabled: boolean; hit: boolean }; navigation: { visible: boolean; enabled: boolean; hit: boolean }[]; titleOpacity: string } | null;
+  presses: { state: string | undefined; page: string | null; launch: boolean }[];
+  gpu: { active: number; at: number }[];
+  captureClocks: { phaseTime: string; wallAt: string };
+  captures: { source: "gpu-default-framebuffer"; active: number; toWord: number; phaseTime: number; wallAt: number; intro: string | undefined; url: string }[];
+};
+
+async function observeWorldIntro(page: Page, captureFrames = false) {
+  await page.addInitScript((captureFrames: boolean) => {
+    const probe: IntroProbe = { events: [], firstInteractive: null, presses: [], gpu: [], captures: [], captureClocks: {
+      phaseTime: "uIntroTime uniform, seconds since the current gather/return stage began; uToWord=1 selects gather",
+      wallAt: "performance.now() milliseconds after the real default-framebuffer draw, before synchronous PNG readback",
+    } };
+    (window as unknown as { __worldIntroProbe: IntroProbe }).__worldIntroProbe = probe;
+    const operable = (element: HTMLButtonElement) => {
+      const box = element.getBoundingClientRect();
+      return { visible: box.width > 0 && box.height > 0 && element.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+        enabled: !element.disabled, hit: element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)) };
+    };
+    const sample = () => {
+      const root = document.documentElement;
+      if (!root) return;
+      const state = root.dataset.worldIntro;
+      if (state !== "on" && state !== "off") return;
+      if (probe.events.at(-1)?.state !== state) probe.events.push({ state, at: performance.now(), page: document.querySelector<HTMLElement>(".vx-app-body")?.dataset.currentPage ?? null });
+      const launch = document.querySelector<HTMLButtonElement>("button[data-launch-primary]");
+      const navigation = [...document.querySelectorAll<HTMLButtonElement>("nav button[data-page]")];
+      if (state === "on" && !probe.firstInteractive && launch && navigation.length) {
+        probe.firstInteractive = { launch: operable(launch), navigation: navigation.map(operable),
+          titleOpacity: getComputedStyle(document.querySelector(".vx-home__identity")!).opacity };
+      }
+    };
+    new MutationObserver(sample).observe(document, { attributes: true, attributeFilter: ["data-world-intro", "data-current-page"], childList: true, subtree: true });
+    document.addEventListener("pointerdown", event => {
+      const target = event.target instanceof Element ? event.target : null;
+      probe.presses.push({ state: document.documentElement?.dataset.worldIntro, page: target?.closest<HTMLButtonElement>("button[data-page]")?.dataset.page ?? null,
+        launch: Boolean(target?.closest("button[data-launch-primary]")) });
+    }, true);
+    if (typeof WebGL2RenderingContext !== "undefined") {
+      const names = new WeakMap<WebGLUniformLocation, string>();
+      const phases = new WeakMap<WebGL2RenderingContext, { active?: number; time?: number; toWord?: number }>();
+      const originalLocation = WebGL2RenderingContext.prototype.getUniformLocation;
+      const originalScalar = WebGL2RenderingContext.prototype.uniform1f;
+      const originalDraw = WebGL2RenderingContext.prototype.drawArrays;
+      WebGL2RenderingContext.prototype.getUniformLocation = function (program, name) {
+        const location = originalLocation.call(this, program, name);
+        if (location) names.set(location, name);
+        return location;
+      };
+      WebGL2RenderingContext.prototype.uniform1f = function (location, value) {
+        if (location && (this.canvas as HTMLCanvasElement).classList.contains("world-scene__canvas")) {
+          const name = names.get(location);
+          const phase = phases.get(this) ?? {};
+          if (name === "uIntroActive") {
+            phase.active = value;
+            if (probe.gpu.at(-1)?.active !== value) probe.gpu.push({ active: value, at: performance.now() });
+          } else if (name === "uIntroTime") phase.time = value;
+          else if (name === "uToWord") phase.toWord = value;
+          phases.set(this, phase);
+        }
+        return originalScalar.call(this, location, value);
+      };
+      if (captureFrames) WebGL2RenderingContext.prototype.drawArrays = function (mode, first, count) {
+        const result = originalDraw.call(this, mode, first, count);
+        const canvas = this.canvas as HTMLCanvasElement;
+        if (!canvas.classList.contains("world-scene__canvas") || this.getParameter(this.FRAMEBUFFER_BINDING) !== null) return result;
+        const phase = phases.get(this), active = phase?.active, phaseTime = phase?.time, toWord = phase?.toWord;
+        const intro = document.documentElement?.dataset.worldIntro;
+        const now = performance.now();
+        const forming = active === 1 && toWord === 1 && phaseTime !== undefined && phaseTime >= .8 && phaseTime < 1.4 && intro === "on";
+        const ended = active === 0 && intro === "off" && probe.captures.some(capture => capture.active === 1);
+        if ((forming || ended) && !probe.captures.some(capture => capture.active === active)) {
+          sample(); // Record real HTML state before synchronous PNG readback delays observers.
+          probe.captures.push({ source: "gpu-default-framebuffer", active: active!, toWord: toWord!, phaseTime: phaseTime!, wallAt: now, intro, url: canvas.toDataURL("image/png") });
+        }
+        return result;
+      };
+    }
+    sample();
+  }, captureFrames);
+}
+
+const introProbe = (page: Page) => page.evaluate(() => (window as unknown as { __worldIntroProbe: IntroProbe }).__worldIntroProbe);
+const introReport = (probe: IntroProbe) => ({ ...probe, captures: probe.captures.map(({ url: _url, ...capture }) => capture) });
+async function pressDuringIntro(page: Page, selector: string) {
+  const handle = await page.waitForFunction(selector => {
+    const control = document.querySelector<HTMLButtonElement>(selector);
+    if (document.documentElement?.dataset.worldIntro !== "on" || !control || control.disabled || !control.checkVisibility({ opacityProperty: true })) return null;
+    const box = control.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : null;
+  }, selector, { timeout: 3000 });
+  const point = await handle.jsonValue();
+  expect(point).not.toBeNull();
+  await page.mouse.move(point!.x, point!.y);
+  await page.mouse.down();
+}
+const runtimeErrors = new WeakMap<Page, string[]>();
+test.beforeEach(({ page }) => {
+  const errors: string[] = [];
+  runtimeErrors.set(page, errors);
+  page.on("pageerror", error => errors.push(error.message));
+});
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  const snapshot = await page.evaluate(() => {
+    const probe = (window as unknown as { __worldIntroProbe?: IntroProbe }).__worldIntroProbe;
+    return { probe: probe && { ...probe, captures: probe.captures.map(({ url: _url, ...capture }) => capture) },
+      html: { ...document.documentElement.dataset }, scene: { ...document.querySelector<HTMLElement>(".vx-global-scene")?.dataset } };
+  });
+  const report = { ...snapshot, errors: runtimeErrors.get(page) };
+  await writeFile(testInfo.outputPath("failure-runtime.json"), JSON.stringify(report, null, 2));
+  console.log("Failure runtime:", JSON.stringify(report));
+});
+
+test("world intro: plays once on home, keeps first-frame operations usable, and ends within three seconds", async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await installLauncherFixture(page);
+  await observeWorldIntro(page, true);
+  await page.goto("/", { waitUntil: "commit" });
+  const scene = page.locator(".vx-global-scene");
+  // The real default-framebuffer hook captures inside the finite entrance frame.
+  await page.waitForFunction(() => {
+    const probe = (window as unknown as { __worldIntroProbe?: IntroProbe }).__worldIntroProbe;
+    const scene = document.querySelector<HTMLElement>(".vx-global-scene");
+    return probe?.captures.some(capture => capture.active === 1) && probe.captures.some(capture => capture.active === 0) &&
+      document.documentElement.dataset.worldIntro === "off" && scene?.dataset.worldTier === "animated" && scene?.dataset.worldMaterial === "lattice";
+  }, null, { timeout: 5000 });
+  const initial = await introProbe(page);
+  const forming = initial.captures.find(capture => capture.active === 1)!;
+  const finished = initial.captures.find(capture => capture.active === 0)!;
+  expect(forming.intro).toBe("on");
+  expect(finished.intro).toBe("off");
+  expect(forming.toWord).toBe(1);
+  expect(forming.phaseTime).toBeGreaterThanOrEqual(.8);
+  expect(forming.phaseTime).toBeLessThan(1.4);
+  const duringBytes = Buffer.from(forming.url.split(",")[1], "base64");
+  const finishedBytes = Buffer.from(finished.url.split(",")[1], "base64");
+  await writeFile(testInfo.outputPath("intro-forming-real-world.png"), duringBytes);
+  await writeFile(testInfo.outputPath("intro-finished-real-world.png"), finishedBytes);
+  const during = decodePng(duringBytes), settled = decodePng(finishedBytes);
+  expect(worldStructure(during).range).toBeGreaterThanOrEqual(16);
+  expect(worldStructure(during).edges).toBeGreaterThan(100);
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off", { timeout: 3000 });
+  await expect.poll(async () => (await introProbe(page)).gpu.at(-1)?.active).toBe(0);
+  expect(changedPixels(during, settled)).toBeGreaterThan(100);
+  const compositor = await withWorldView(page, capture => capture(testInfo.outputPath("intro-finished-compositor-world.png")));
+  expect(worldStructure(compositor).range).toBeGreaterThanOrEqual(16);
+  expect(worldStructure(compositor).edges).toBeGreaterThan(100);
+  const on = initial.events.find(event => event.state === "on")!;
+  const off = initial.events.find(event => event.state === "off" && event.at >= on.at)!;
+  expect(on.page).toBe("home");
+  expect(off.at - on.at).toBeGreaterThan(0);
+  expect(off.at - on.at).toBeLessThanOrEqual(3000);
+  expect(initial.firstInteractive).not.toBeNull();
+  expect(initial.firstInteractive!.launch).toEqual({ visible: true, enabled: true, hit: true });
+  expect(initial.firstInteractive!.navigation.length).toBeGreaterThanOrEqual(7);
+  for (const control of initial.firstInteractive!.navigation) expect(control).toEqual({ visible: true, enabled: true, hit: true });
+  expect(initial.firstInteractive!.titleOpacity).toBe("0");
+  await expect(page.locator(".vx-home__identity")).toHaveCSS("opacity", "1");
+  for (let index = 0; index < 2; index++) {
+    await page.locator('button[data-page="library"]').click();
+    await page.locator('button[data-page="home"]').click();
+    await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
+  }
+  const final = await introProbe(page);
+  expect(final.events.filter(event => event.state === "on")).toHaveLength(1);
+  expect(runtimeErrors.get(page)).toEqual([]);
+  await writeFile(testInfo.outputPath("intro-lifecycle.json"), JSON.stringify(introReport(final), null, 2));
+  await page.screenshot({ path: testInfo.outputPath("intro-finished-no-replay.png") });
+});
+
+test("world intro: the first launch press skips the intro and keeps the real launch action", async ({ page }, testInfo) => {
+  await installLauncherFixture(page, { launchDelay: 10_000 });
+  await makeFixtureLaunchCancellable(page);
+  await observeWorldIntro(page);
+  await page.goto("/", { waitUntil: "commit" });
+  await pressDuringIntro(page, "button[data-launch-primary]");
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off", { timeout: 1000 });
+  await expect(page.locator(".vx-global-scene")).toHaveAttribute("data-world-phase", "idle");
+  await page.mouse.up();
+  await expect(page.locator(".vx-launch-console__progress-text")).toHaveText("37%");
+  await expect(page.locator(".vx-global-scene")).toHaveAttribute("data-world-phase", "preparing");
+  expect((await introProbe(page)).presses.some(press => press.launch && press.state === "on")).toBe(true);
+  await page.getByRole("button", { name: "取消准备", exact: true }).click();
+  await expect(page.locator(".vx-global-scene")).toHaveAttribute("data-world-phase", "idle");
+  await page.locator('button[data-page="library"]').click();
+  await page.locator('button[data-page="home"]').click();
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
+  const probe = await introProbe(page);
+  expect(probe.events.filter(event => event.state === "on")).toHaveLength(1);
+  expect(runtimeErrors.get(page)).toEqual([]);
+  await writeFile(testInfo.outputPath("intro-launch-skip.json"), JSON.stringify(introReport(probe), null, 2));
+});
+
+test("world intro: a first navigation press skips without blocking navigation or replaying on return", async ({ page }, testInfo) => {
+  await installLauncherFixture(page);
+  await observeWorldIntro(page);
+  await page.goto("/", { waitUntil: "commit" });
+  await pressDuringIntro(page, 'button[data-page="library"]');
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off", { timeout: 1000 });
+  await expect(page.locator(".vx-app-body")).toHaveAttribute("data-current-page", "home");
+  await page.mouse.up();
+  await expect(page.locator(".vx-library-page")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off", { timeout: 1000 });
+  expect((await introProbe(page)).presses.some(press => press.page === "library" && press.state === "on")).toBe(true);
+  await page.locator('button[data-page="home"]').click();
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
+  const probe = await introProbe(page);
+  expect(probe.events.filter(event => event.state === "on")).toHaveLength(1);
+  expect(runtimeErrors.get(page)).toEqual([]);
+  await writeFile(testInfo.outputPath("intro-navigation-skip.json"), JSON.stringify(introReport(probe), null, 2));
+});
 
 async function openAppearance(page: Page) {
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置", exact: true }).click();
@@ -210,10 +427,12 @@ for (const mode of ["lite effects", "system reduced motion", "high contrast"] as
       contrast: mode === "high contrast" ? "more" : "no-preference",
     });
     await installLauncherFixture(page, { effects: mode === "lite effects" ? "lite" : "full" });
+    await observeWorldIntro(page);
     await page.goto("/");
     const scene = page.locator(".vx-global-scene");
     await expect(scene.locator(".world-scene__canvas")).toBeVisible();
     await expect(scene).toHaveAttribute("data-world-tier", "static");
+    await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
     await expect(page.locator(".vx-home__console-name")).toHaveText("合成测试世界");
     await page.evaluate(() => document.fonts.ready.then(() => undefined));
     await expect(page.locator("html")).toHaveAttribute("data-high-contrast", String(mode === "high contrast"));
@@ -239,6 +458,7 @@ for (const mode of ["lite effects", "system reduced motion", "high contrast"] as
       expect(Number(await scene.getAttribute("data-world-frames"))).toBe(frames);
       expect(changedPixels(before, after, 0)).toBe(0);
     });
+    expect((await introProbe(page)).events.filter(event => event.state === "on")).toHaveLength(0);
     expect(errors).toEqual([]);
   });
 }
@@ -254,6 +474,17 @@ test("launch state: home preparation follows real 37% progress and cancellation 
   await expect(scene).toHaveAttribute("data-world-phase", "idle");
   await page.getByRole("button", { name: "启动游戏", exact: true }).click();
   await expect(page.getByText("37%", { exact: true })).toBeVisible();
+  const progress = page.locator(".vx-launch-console__progress-text");
+  await expect(progress).toHaveText("37%");
+  const typography = await progress.evaluate(async element => {
+    const style = getComputedStyle(element);
+    const faces = await document.fonts.load(`${style.fontWeight} ${style.fontSize} "Doto"`, "37%");
+    return { family: style.fontFamily, size: parseFloat(style.fontSize), loaded: faces.length, statuses: faces.map(face => face.status) };
+  });
+  expect(typography.family).toContain("Doto");
+  expect(typography.size).toBeGreaterThanOrEqual(15);
+  expect(typography.loaded).toBeGreaterThan(0);
+  expect(typography.statuses.every(status => status === "loaded")).toBe(true);
   await expect(scene).toHaveAttribute("data-world-phase", "preparing");
   await expect.poll(async () => Number(await scene.getAttribute("data-world-front"))).toBeGreaterThan(0);
   await expect.poll(async () => Number(await scene.getAttribute("data-world-front")), { timeout: 8000 }).toBe(61);

@@ -180,6 +180,17 @@ describe("crystal world director", () => {
     expect(time.advance(1.1).introActive).toBe(false);
   });
 
+  it("publishes real phase time for readable intro motion independently of capped simulation", () => {
+    const time = timeline(); time.director.beginIntro();
+    expect(time.wake(.05, 900).introTime).toBeCloseTo(.9);
+    const release = time.wake(.05, 500);
+    expect(release.morph.fromWord).toBe(true);
+    expect(release.introTime).toBeCloseTo(0);
+    expect(time.wake(.05, 400).introTime).toBeCloseTo(.4);
+    expect(time.frame.simTime).toBeCloseTo(.15);
+    expect(time.wake(.05, 700)).toMatchObject({ introActive: false, introTime: 0 });
+  });
+
   it("never stretches the intro deadline on low FPS or a sleep gap", () => {
     const time = timeline();
     time.director.beginIntro();

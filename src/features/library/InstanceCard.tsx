@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 import {
   Activity,
   ArrowUpRight,
+  Check,
   Clock3,
   Folder,
   Play,
@@ -62,6 +63,7 @@ export function InstanceCard({
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     >
       <LatticeFrame hovered={hovered} focused={focused} selected={selected} signature={instance.id} />
+      {selected ? <Check className="vx-lattice-selection" data-selected-mark size={16} aria-hidden="true" /> : null}
       <button
         type="button"
         className="vx-instance-card__select"

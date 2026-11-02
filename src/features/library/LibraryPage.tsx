@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowUpRight,
+  Check,
   Folder,
   Grid2X2,
   LibraryBig,
@@ -433,6 +434,7 @@ function VersionDirectoryCard({
         selected={selected}
         signature={version.id}
       />
+      {selected ? <Check className="vx-lattice-selection" data-selected-mark size={16} aria-hidden="true" /> : null}
       <button
         type="button"
         className="vx-instance-card__select"

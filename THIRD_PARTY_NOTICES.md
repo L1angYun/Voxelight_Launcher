@@ -13,6 +13,7 @@ Voxelight Launcher's original source code and original visual assets are license
 | Tailwind CSS | Component styling | https://github.com/tailwindlabs/tailwindcss — MIT |
 | Lucide | Interface icons | https://github.com/lucide-icons/lucide — ISC |
 | MiSans | Original Regular and Semibold WOFF2 assets embedded in the application | Xiaomi Inc.; MiSans Fonts Intellectual Property License Agreement, `licenses/fonts/MiSans/LICENSE.pdf`; unmodified official files |
+| Doto | Static Black (900, ROND=0) WOFF2 instance used only for launch progress | Doto Project Authors; Google Fonts `ofl/doto`, SIL Open Font License 1.1, `licenses/fonts/Doto/OFL.txt`; instantiated from the official variable font |
 | skinview3d | Minecraft skin geometry and WebGL preview | https://github.com/bs-community/skinview3d — MIT |
 | Three.js | WebGL renderer used by skinview3d | https://github.com/mrdoob/three.js — MIT |
 | clsx / tailwind-merge | Class-name utilities for the Magic UI components | https://github.com/lukeed/clsx — MIT; https://github.com/dcastil/tailwind-merge — MIT |

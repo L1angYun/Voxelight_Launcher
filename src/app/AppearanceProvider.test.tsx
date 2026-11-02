@@ -10,6 +10,7 @@ let root: Root;
 let container: HTMLDivElement;
 let current: AppearanceContextValue;
 let mediaMatches: Record<string, boolean>;
+let mediaListeners: Map<string, Set<() => void>>;
 
 function Harness() {
   current = useAppearance();
@@ -28,19 +29,37 @@ function render(config: Config, system: SystemAppearance) {
   });
 }
 
+function setSystemLight(light: boolean) {
+  act(() => {
+    mediaMatches["(prefers-color-scheme: light)"] = light;
+    mediaListeners.get("(prefers-color-scheme: light)")?.forEach((listener) => listener());
+  });
+}
+
+const systemAppearance: SystemAppearance = {
+  accentColor: "#123456",
+  animationsEnabled: true,
+  advancedEffectsEnabled: true,
+  locale: "en-US",
+};
+
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mediaMatches = { "(prefers-color-scheme: light)": true };
+  mediaListeners = new Map();
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
-    value: vi.fn((query: string) => ({
-      matches: Boolean(mediaMatches[query]),
-      media: query,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-    })),
+    value: vi.fn((query: string) => {
+      if (!mediaListeners.has(query)) mediaListeners.set(query, new Set());
+      return {
+        get matches() { return Boolean(mediaMatches[query]); },
+        media: query,
+        addEventListener: (_event: string, listener: () => void) => mediaListeners.get(query)!.add(listener),
+        removeEventListener: (_event: string, listener: () => void) => mediaListeners.get(query)!.delete(listener),
+        addListener: (listener: () => void) => mediaListeners.get(query)!.add(listener),
+        removeListener: (listener: () => void) => mediaListeners.get(query)!.delete(listener),
+      };
+    }),
   });
   container = document.createElement("div");
   document.body.append(container);
@@ -55,6 +74,35 @@ afterEach(() => {
 });
 
 describe("appearance and accessibility preferences", () => {
+  it("follows the current system theme with an untouched default configuration", () => {
+    render({ ...defaults }, systemAppearance);
+    expect(current.resolvedTheme).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    setSystemLight(false);
+    expect(current.resolvedTheme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
+  it("updates a system theme in both directions without remounting", () => {
+    render({ ...defaults, theme: "system" }, systemAppearance);
+    setSystemLight(false);
+    expect(current.resolvedTheme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    setSystemLight(true);
+    expect(current.resolvedTheme).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it.each(["dark", "light"] as const)("preserves an explicit %s preference when the system changes", (theme) => {
+    render({ ...defaults, theme }, systemAppearance);
+    setSystemLight(false);
+    expect(current.resolvedTheme).toBe(theme);
+    expect(document.documentElement.dataset.theme).toBe(theme);
+    setSystemLight(true);
+    expect(current.resolvedTheme).toBe(theme);
+    expect(document.documentElement.dataset.theme).toBe(theme);
+  });
+
   it("gives reduced motion and transparency priority over full effects", () => {
     expect(resolveEffects({ effects: "full", reducedMotion: true }).ambientMotion).toBe(false);
     expect(resolveEffects({ effects: "full", reducedTransparency: true }).transparency).toBe(false);

@@ -1,6 +1,7 @@
 :root {
   color-scheme: dark;
   --bg-base: #141516;
+  --world-ink: #07080b;
   --bg-raised: #1c1d1f;
   --bg-overlay: rgba(20, 21, 22, 0.88);
   --surface-solid: #242527;
@@ -21,6 +22,7 @@
   --scrim-soft: rgba(5, 10, 13, 0.48);
   --font-ui: "MiSans", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --font-matrix: "Doto", var(--font-mono);
   --text-xs: 12px;
   --text-sm: 13px;
   --text-md: 14px;
@@ -50,6 +52,7 @@
 }
 
 [data-theme="light"] {
+  --world-ink: var(--bg-base);
   color-scheme: light;
   --bg-base: #f3f1eb;
   --bg-raised: #eae7e0;

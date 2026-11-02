@@ -343,7 +343,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       const key = [aspect, ...frame.eye, ...frame.at, frame.fov].join(",");
       if (p.wordKey !== key) {
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, p.word);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, p.side, p.side, gl.RGBA, gl.FLOAT, buildWordTargets(camera, aspect, p.side));
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, p.side, p.side, gl.RGBA, gl.FLOAT, buildWordTargets(camera, aspect, p.side, Math.random, [.28, .62]));
         p.wordKey = key;
       }
     }
@@ -354,6 +354,8 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       bind(sim, "uField", terrain, 2); bind(sim, "uWord", p.word, 3);
       scalar(sim, "uN", field!.grid); scalar(sim, "uS", p.side); scalar(sim, "uSpan", SPAN);
       scalar(sim, "uInitialize", Number(initialize)); scalar(sim, "uTime", frame.simTime); scalar(sim, "uDt", initialize ? 0 : Math.min(dt, 1 / 30));
+      scalar(sim, "uIntroActive", Number(frame.introActive));
+      scalar(sim, "uIntroTime", frame.introTime);
       scalar(sim, "uMorphStart", frame.morph.start); scalar(sim, "uMorphDur", frame.morph.dur);
       scalar(sim, "uToWord", Number(frame.morph.toWord)); scalar(sim, "uFromWord", Number(frame.morph.fromWord));
       scalar(sim, "uTransit", frame.morph.transit); scalar(sim, "uMeltP", meltAmount); scalar(sim, "uPtrOn", pointerStrength);

@@ -1,0 +1,20 @@
+.vx-home-animation-selector {
+  position: relative;
+  z-index: 3;
+  justify-self: center;
+  align-self: start;
+  width: min(100%, 180px);
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms var(--ease-out);
+}
+.vx-home-animation-selector[data-visible="true"],
+.vx-home-animation-selector:focus-within,
+.vx-home-animation-selector:has([aria-expanded="true"]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.vx-home-animation-selector[data-motion="reduced"] { transition: none; }
+@media (hover: none) { .vx-home-animation-selector { opacity: 1; pointer-events: auto; } }
+@media (prefers-reduced-motion: reduce) { .vx-home-animation-selector { transition: none; } }

@@ -181,11 +181,32 @@ test("one world canvas serves full and lite modes while real data points remain 
     const context = await page.context().browser()!.newContext();
     const current = await context.newPage();
     await installLauncherFixture(current, { effects });
+    await current.addInitScript(() => {
+      const api = (window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
+      const original = api.invoke;
+      api.invoke = async (name, args) => name === "list_download_tasks" ? [{
+        id: "point-regression", kind: "install", target: "1.21.1", label: "1.21.1", status: "running", stage: "download",
+        completed: 65, total: 130, bytesCompleted: 1024, bytesTotal: 2048, message: "",
+        createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:01Z",
+      }] : original(name, args);
+    });
     await current.goto("http://127.0.0.1:1420/");
     await expect(current.locator(".vx-global-scene canvas")).toHaveCount(1);
     await expect(current.locator(".world-scene__canvas")).toBeVisible();
     await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", effects === "full" ? "animated" : "static");
     await expect(current.locator(".vx-recent-card .vx-lattice-frame")).toHaveCount(1);
+    await expect(current.locator(".vx-lattice-frame__dot")).toHaveCount(0);
+    await expect(current.locator(".vx-recent-card svg[data-selected-mark]")).toBeVisible();
+    await current.locator('button[data-page="downloads"]').click();
+    const progress = current.locator('[data-task-id="point-regression"] canvas.vx-lattice-progress');
+    await expect(progress).toBeVisible();
+    await expect(progress).toHaveAttribute("aria-valuenow", "1024");
+    await expect(progress).toHaveAttribute("aria-valuemax", "2048");
+    await expect(progress).toHaveAttribute("aria-valuetext", "50%");
+    await expect.poll(() => progress.evaluate((canvas: HTMLCanvasElement) => {
+      const pixels = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
+      return pixels.some((value, index) => index % 4 === 3 && value > 0);
+    })).toBe(true);
     await context.close();
   }
 });

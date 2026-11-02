@@ -14,7 +14,8 @@ for (const [character, letter] of Array.from("VOXELIGHT").entries()) {
     Array.from(row).forEach((pixel, x) => { if (pixel === "1") cells.push([character * 6 + x, y]); });
   });
 }
-export function buildWordTargets(camera: Camera, aspect: number, side: number, random = Math.random): Float32Array {
+export function buildWordTargets(camera: Camera, aspect: number, side: number, random = Math.random,
+  center: readonly [number, number] = [0, .36]): Float32Array {
   const targets = new Float32Array(side * side * 4);
   const distance = 70;
   const cell = 2 * distance * camera.tanHalfFov * aspect * .62 / 53;
@@ -25,7 +26,8 @@ export function buildWordTargets(camera: Camera, aspect: number, side: number, r
     const y = (3 - row + (random() - .5) * .62) * cell;
     for (let axis = 0; axis < 3; axis++) {
       targets[index * 4 + axis] = camera.eye[axis] + camera.forward[axis] * distance +
-        camera.up[axis] * (distance * camera.tanHalfFov * .36 + y) + camera.right[axis] * x;
+        camera.up[axis] * (distance * camera.tanHalfFov * center[1] + y) +
+        camera.right[axis] * (distance * camera.tanHalfFov * aspect * center[0] + x);
     }
     targets[index * 4 + 3] = 1;
   }

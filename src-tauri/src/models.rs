@@ -45,7 +45,7 @@ impl Default for Config {
             max_memory_mb: 4096,
             jvm_arguments: "-XX:+UseG1GC".into(),
             version_isolation: true,
-            theme: "dark".into(),
+            theme: "system".into(),
             download_concurrency: 8,
             microsoft_client_id: String::new(),
             download_limit_kib: 0,
@@ -226,6 +226,22 @@ pub struct LaunchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_defaults_to_system_for_new_and_missing_preferences() {
+        assert_eq!(Config::default().theme, "system");
+        let missing: Config = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(missing.theme, "system");
+    }
+
+    #[test]
+    fn theme_deserialization_preserves_explicit_light_and_dark_preferences() {
+        for theme in ["light", "dark"] {
+            let config: Config =
+                serde_json::from_value(serde_json::json!({ "theme": theme })).unwrap();
+            assert_eq!(config.theme, theme);
+        }
+    }
 
     #[test]
     fn default_skin_is_steve_and_old_configs_remain_compatible() {

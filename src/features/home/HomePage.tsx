@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Upload, UserRound, PersonStanding, Footprints, Timer } from "lucide-react";
+import { Plus, Upload, UserRound } from "lucide-react";
 import { command } from "../../lib/launcher";
 import { useDefaultSkin } from "../../lib/defaultSkin";
 import { useLauncher } from "../../app/controller/LauncherProvider";
@@ -13,6 +13,7 @@ import { Button } from "../../components/ui/Button";
 import { CreateInstanceDialog } from "../library/CreateInstanceDialog";
 import { LaunchConsole } from "./LaunchConsole";
 import { RecentInstances } from "./RecentInstances";
+import { HomeAnimationSelector } from "./HomeAnimationSelector";
 import "./home.css";
 
 export function HomePage() {
@@ -89,10 +90,6 @@ export function HomePage() {
     if (currentInstance && !selectedInstance)
       selectInstance(currentInstance.id);
   }, [currentInstance, selectInstance, selectedInstance]);
-
-  useEffect(() => {
-    play({ id: "home-first-entry", kind: "first-run" });
-  }, [play]);
 
   useEffect(() => {
     if (gamePid)
@@ -254,34 +251,19 @@ export function HomePage() {
 
         <div
           className="vx-home__char-col"
-            ref={characterAreaRef}
-            data-world-anchor
+          ref={characterAreaRef}
+          data-world-anchor
           onPointerEnter={() => setCharAreaHovered(true)}
           onPointerLeave={() => { setCharAreaHovered(false); setHeadPointer(null); }}
           onPointerMove={onCharPointerMove}
         >
           <div
-            className="vx-home__anim-picker"
+            className="vx-home__animation-controls"
             role="group"
-            data-visible={charAreaHovered && !running && !preparing}
             aria-label={t("home:animationMode")}
           >
-            {(["idle", "walk", "run"] as const).map((mode) => {
-              const Icon = mode === "idle" ? PersonStanding : mode === "walk" ? Footprints : Timer;
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  className="vx-home__anim-btn"
-                  aria-pressed={currentAnimation === mode}
-                  disabled={running || preparing}
-                  onClick={() => setManualAnimation(mode)}
-                >
-                  <Icon size={16} aria-hidden="true" />
-                  <span>{t(`home:anim.${mode}`)}</span>
-                </button>
-              );
-            })}
+            <HomeAnimationSelector value={currentAnimation === "none" ? "idle" : currentAnimation}
+              onChange={setManualAnimation} visible={charAreaHovered} disabled={running || preparing || staticScene} />
           </div>
           <section className="vx-home__character-panel" aria-label={previewLabel}>
             <div className="vx-home__character-orbit" aria-hidden="true">

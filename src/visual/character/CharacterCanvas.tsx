@@ -1,12 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IdleAnimation, RunningAnimation, WalkingAnimation, SkinViewer as WebGLSkinViewer } from "skinview3d";
+import { FunctionAnimation, IdleAnimation, WalkingAnimation, SkinViewer as WebGLSkinViewer } from "skinview3d";
 import type { BufferGeometry, Material, Object3D } from "three";
 import { CapeTextureLoader, SkinTextureLoader, type SkinModel } from "../../components/skinTexture";
 import { cn } from "../../lib/utils";
 import "./character.css";
 
 export type CharacterAnimation = "idle" | "walk" | "run" | "none";
+
+function groundedRun() {
+  return new FunctionAnimation((player, progress) => {
+    // Original grounded, empty-handed gait: phase .6662 per tick, arm/leg
+    // amplitudes 1 and 1.4. A steady full stride advances at 20 ticks/second.
+    const ticks = progress * 20;
+    const swing = Math.cos(ticks * .6662 + Math.PI / 2);
+    const armBob = Math.sin(ticks * .067) * .05;
+    const armSpread = Math.cos(ticks * .09) * .05 + .05;
+    player.skin.leftLeg.rotation.x = -swing * 1.4;
+    player.skin.rightLeg.rotation.x = swing * 1.4;
+    player.skin.leftArm.rotation.x = swing - armBob;
+    player.skin.rightArm.rotation.x = -swing + armBob;
+    // skinview3d's up axis reverses the original model's outward z rotation.
+    player.skin.leftArm.rotation.z = armSpread;
+    player.skin.rightArm.rotation.z = -armSpread;
+    // There is no world velocity to drive cape physics in a stationary preview.
+    player.cape.rotation.x = Math.PI * .06 + Math.sin(progress * 2) * .01;
+  });
+}
 
 function useReducedMotion() {
   const [reduced, setReduced] = useState(() =>
@@ -294,14 +314,11 @@ export function CharacterCanvas({
   useEffect(() => {
     if (!viewer || viewer.disposed) return;
     // Assigning animation resets the pose and clock; pause separately to retain the stride.
-    const next = mode === "walk" ? new WalkingAnimation() : mode === "run" ? new RunningAnimation() : mode === "idle" ? new IdleAnimation() : null;
+    const next = mode === "walk" ? new WalkingAnimation() : mode === "run" ? groundedRun() : mode === "idle" ? new IdleAnimation() : null;
     next?.addAnimation((player) => {
       const head = player.skin.head;
       if (mode === "run") {
-        // Keep the native stride, jumping and roll; pitch is an absolute pose,
-        // so repeated frames never accumulate lean or retain pointer angles.
-        player.rotation.x = Math.PI / 24;
-        head.rotation.x = -player.rotation.x;
+        head.rotation.x = 0;
         head.rotation.y = 0;
         return;
       }

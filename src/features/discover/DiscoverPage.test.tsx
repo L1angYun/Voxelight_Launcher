@@ -76,6 +76,7 @@ function fixture(): LauncherContextValue {
     capabilities: {},
   };
   return {
+    bootstrapped: true,
     data,
     config: data.config,
     manifest: { latestRelease: "1.21.1", latestSnapshot: "", versions: [] },
