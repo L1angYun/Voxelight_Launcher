@@ -12,7 +12,8 @@ export interface WorldFrame {
   exposure: number; fogD: number; bloom: number; horizon: number; runDim: number; dim: number;
   front: number; cry: number; charge: number; timeScale: number; simTime: number; ring: number;
   morph: { start: number; dur: number; toWord: boolean; fromWord: boolean; transit: number };
-  introActive: boolean; settled: boolean; active: boolean;
+  /** Real seconds since the current intro gather/return stage began. */
+  introTime: number; introActive: boolean; settled: boolean; active: boolean;
 }
 export interface WorldDirector {
   setInputs(inputs: WorldInputs): void;
@@ -43,7 +44,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
   const initialValues = sceneValues(inputs);
   const cameraEye: Vec3 = [...initialValues.eye], cameraAt: Vec3 = [...initialValues.at];
   const frame: WorldFrame = { ...initialValues, front: 0, cry: 0, charge: 0, timeScale: 1, simTime: 0, ring: 0,
-    morph: { start: -1, dur: .001, toWord: false, fromWord: false, transit: 0 }, introActive: false, settled: false, active: false };
+    morph: { start: -1, dur: .001, toWord: false, fromWord: false, transit: 0 }, introTime: 0, introActive: false, settled: false, active: false };
   let clock: number | null = null;
   let preparationTarget = 0;
   let runningAt: number | null = null;
@@ -59,7 +60,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
 
   function endIntro() {
     if (!frame.introActive) return;
-    frame.introActive = false;
+    frame.introActive = false; frame.introTime = 0;
     introAt = null;
     introStage = 0;
     frame.morph = { start: frame.simTime, dur: .001, toWord: false, fromWord: false, transit: 0 };
@@ -116,7 +117,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
       introPlayed = true;
       introAt = clock;
       introStage = 1;
-      frame.introActive = true;
+      frame.introActive = true; frame.introTime = 0;
       frame.morph = { start: frame.simTime, dur: .9, toWord: true, fromWord: false, transit: 10 };
     },
     endIntro,
@@ -137,6 +138,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
           introStage = 2;
           frame.morph = { start: frame.simTime, dur: 1.1, toWord: false, fromWord: true, transit: 16 };
         }
+        if (frame.introActive) frame.introTime = Math.max(0, (elapsed - (introStage === 2 ? 1400 : 0)) / 1000);
       }
       const target = sceneValues(inputs);
       if (frame.introActive) target.island = 0;

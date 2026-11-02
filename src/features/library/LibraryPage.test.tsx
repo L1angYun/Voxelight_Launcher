@@ -63,6 +63,7 @@ function fixture(): LauncherContextValue {
     capabilities: {},
   };
   return {
+    bootstrapped: true,
     data,
     config: data.config,
     manifest: { latestRelease: "1.21.1", latestSnapshot: "", versions: [] },
@@ -132,7 +133,8 @@ describe("library and instance details", () => {
     const card = container.querySelector<HTMLElement>('[data-instance-id="fixture-world"]')!;
     expect(card.dataset.visualOwner).toBe("lattice");
     expect(card.querySelector("[data-launch]")!.getAttribute("data-variant")).toBe("secondary");
-    expect(card.querySelectorAll(".vx-lattice-frame__dot")).toHaveLength(64);
+    expect(card.querySelectorAll(".vx-lattice-frame__dot")).toHaveLength(0);
+    expect(card.querySelector("svg[data-selected-mark]")).not.toBeNull();
     expect(card.querySelector(".vx-instance-card__path")?.getAttribute("title")).toBe(instance.gameDirectory);
     expect(card.querySelector(".vx-instance-card__name")?.getAttribute("title")).toBe(instance.name);
     expect(card.querySelector(".vx-instance-card__technical")?.getAttribute("title")).toContain("1.21.1");
@@ -191,5 +193,16 @@ describe("library and instance details", () => {
     await act(async () => container.querySelector<HTMLElement>('[data-tab="logs"]')!.click());
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("分析最近错误"))!.click());
     expect(commandMock).toHaveBeenCalledWith("diagnose_instance", { versionId: "1.21.1", instanceId: undefined });
+  });
+
+  it("keeps the current version directory visibly selected when its shared frame is owned", async () => {
+    mockLauncher.selectedInstance = undefined;
+    await render(createElement(LibraryPage));
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "版本目录")!.click());
+    const card = container.querySelector<HTMLElement>('[data-version-directory="1.21.1"]')!;
+    expect(card.getAttribute("aria-current")).toBe("true");
+    const marker = card.querySelector("svg[data-selected-mark]");
+    expect(marker).not.toBeNull();
+    expect(card.querySelector(":scope > .vx-lattice-frame")!.contains(marker)).toBe(false);
   });
 });

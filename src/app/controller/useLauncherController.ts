@@ -15,6 +15,7 @@ import { useAccountSkin } from "../../lib/accountSkin";
 import type { LauncherContextValue, LauncherNotice } from "./types";
 
 export function useLauncherController(): LauncherContextValue {
+  const [bootstrapped, setBootstrapped] = useState(false);
   const [data, setData] = useState<Bootstrap>({
     config: defaults,
     accounts: [],
@@ -71,6 +72,7 @@ export function useLauncherController(): LauncherContextValue {
     const result = await command<Bootstrap>("bootstrap");
     setData(result);
     setConfig(result.config);
+    setBootstrapped(true);
     setSelectedVersionId((previous) =>
       result.installedVersions.some((version) => version.id === previous)
         ? previous
@@ -240,6 +242,7 @@ export function useLauncherController(): LauncherContextValue {
   }, [reload, showNotice]);
 
   return {
+    bootstrapped,
     data,
     config,
     manifest,

@@ -1,4 +1,12 @@
 /* Unmodified MiSans webfonts from Xiaomi. See licenses/fonts/MiSans/LICENSE.pdf. */
+/* Static 900/ROND=0 Doto instance from Google Fonts. See licenses/fonts/Doto/OFL.txt. */
+@font-face {
+  font-family: "Doto";
+  src: url("/fonts/Doto-Black.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
 @font-face {
   font-family: "MiSans";
   src: url("/fonts/MiSans-Regular.woff2") format("woff2");

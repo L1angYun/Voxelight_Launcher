@@ -1,0 +1,160 @@
+{
+  "title": "角色",
+  "subtitle": "管理账号、线上外观与本地预览。",
+  "listTitle": "账号",
+  "addAccount": "添加角色",
+  "loginTitle": "添加角色",
+  "loginDescription": "选择登录方式，或创建离线角色。",
+  "loginMethods": "登录方式",
+  "avatar": "{{name}} 的角色头像",
+  "fields": {
+    "playerName": "角色名称",
+    "authlibApiUrl": "认证服务 API 地址",
+    "usernameOrEmail": "用户名或邮箱",
+    "password": "密码",
+    "onlineSkinUrl": "在线皮肤 URL",
+    "importLocalPng": "导入本地 PNG"
+  },
+  "credentialNotice": "登录令牌仅保存在系统加密凭据中，本地预览文件不会因此页操作而上传。",
+  "method": {
+    "microsoft": "Microsoft",
+    "offline": "离线角色",
+    "authlib": "第三方认证"
+  },
+  "type": {
+    "microsoft": "Microsoft 正版",
+    "authlib": "第三方认证",
+    "offline": "离线角色",
+    "unknown": "账号"
+  },
+  "actions": {
+    "current": "当前角色 {{name}}",
+    "select": "选择 {{name}}",
+    "refresh": "刷新 {{name}} 的会话",
+    "remove": "移除 {{name}}",
+    "retryAppearance": "重试账号外观",
+    "retryDefault": "重试默认角色"
+  },
+  "empty": {
+    "title": "还没有角色",
+    "description": "添加离线角色，或登录账号以管理线上外观。"
+  },
+  "microsoft": {
+    "description": "在 Microsoft 官方页面完成授权，启动器不会收集你的 Microsoft 密码。",
+    "clientId": "本项目的 Microsoft Client ID",
+    "clientIdHelp": "请使用自己注册的公共客户端应用，为个人账号开启设备代码登录，并确认 Xbox/Minecraft 服务准入，不能借用其它启动器的 Client ID。",
+    "saveClientId": "保存 Client ID",
+    "start": "开始 Microsoft 登录",
+    "deviceInstruction": "在 Microsoft 官方页面输入以下代码：",
+    "openVerification": "打开 Microsoft 授权页面",
+    "waiting": "等待授权 · 剩余 {{minutes}}:{{seconds}} · 每 {{interval}} 秒检查",
+    "cancel": "取消此次授权"
+  },
+  "offline": {
+    "description": "用于本地游戏和允许离线身份的服务器；正版验证服务器仍需要拥有游戏的账号。",
+    "name": "角色名称",
+    "namePlaceholder": "3–16 位英文字母、数字或下划线",
+    "submit": "添加离线角色"
+  },
+  "authlib": {
+    "description": "填写你信任的 Authlib / Yggdrasil API 根地址。密码只发送到此 HTTPS 服务，不保存到启动器配置中。",
+    "server": "认证服务 API 地址",
+    "username": "用户名或邮箱",
+    "password": "密码",
+    "submit": "登录第三方账号",
+    "chooseProfile": "请选择此次登录的角色：",
+    "cancelProfile": "取消角色选择"
+  },
+  "appearance": {
+    "title": "外观",
+    "refresh": "刷新外观",
+    "customSkin": "自定义皮肤",
+    "defaultSkin": "默认皮肤",
+    "uploadModel": "上传皮肤的模型",
+    "upload": "上传正版皮肤",
+    "reset": "恢复默认皮肤",
+    "cape": "正版披风",
+    "noCape": "不显示披风",
+    "noCapes": "此账号没有可用披风。",
+    "authlibReadonly": "此处仅显示第三方角色外观，修改皮肤请前往对应认证服务。",
+    "uploadPicker": "选择要上传到正版账号的 PNG 皮肤",
+    "pngFilter": "PNG 皮肤"
+  },
+  "preview": {
+    "source": "预览来源",
+    "account": "账号外观",
+    "local": "本地预览",
+    "canvasLabel": "可交互的 Minecraft 角色预览",
+    "unavailable": "3D 预览暂不可用，请重试或更换预览来源。",
+    "loading": "正在读取账号外观…",
+    "noAccountSkin": "尚未取得当前账号的皮肤",
+    "localNotice": "仅用于本地预览 · 不会修改账号外观",
+    "accountNotice": "线上账号来源 · 只有明确执行操作才会更改",
+    "import": "导入 PNG",
+    "resetView": "重置视角",
+    "restoreDefault": "恢复默认预览",
+    "loadUrl": "加载网址",
+    "model": "预览模型",
+    "animation": "人物动画",
+    "autoRotate": "自动旋转",
+    "reducedMotion": "已遵循系统“减少动态效果”设置，自动动画与旋转暂停，仍可手动调整视角。",
+    "urlSource": "在线 URL 皮肤"
+  },
+  "model": {
+    "auto": "自动识别",
+    "classic": "Classic · 宽臂",
+    "slim": "Slim · 细臂"
+  },
+  "animation": {
+    "idle": "待机",
+    "walk": "步行",
+    "run": "奔跑",
+    "none": "静止"
+  },
+  "default": {
+    "title": "默认预览角色",
+    "description": "仅在没有账号外观或本地导入时使用。Steve / Alex 来自已校验客户端。",
+    "sourceVersion": "来源：已校验的 Minecraft {{version}} 客户端。",
+    "fallback": "默认角色暂不可用，可重试或导入本地预览。",
+    "steve": {
+      "name": "Steve",
+      "description": "经典模型 · 已校验客户端"
+    },
+    "alex": {
+      "name": "Alex",
+      "description": "纤细模型 · 已校验客户端"
+    }
+  },
+  "notice": {
+    "sessionRefreshed": "{{name}} 的会话已刷新。",
+    "clientIdSaved": "Client ID 已保存，可以开始 Microsoft 登录。",
+    "loginCancelled": "登录已取消。",
+    "skinUpdated": "正版皮肤已更新。",
+    "skinReset": "已恢复默认正版皮肤。",
+    "capeShown": "披风已切换。",
+    "capeHidden": "披风已隐藏。",
+    "defaultSaved": "默认预览角色已保存。"
+  },
+  "errors": {
+    "preview": {
+      "fileInvalid": "请选择小于 16 MB 的 PNG 本地预览皮肤。",
+      "urlInvalid": "请输入完整的 http:// 或 https:// PNG 皮肤网址。"
+    },
+    "auth": {
+      "profileUnavailable": "暂时无法读取此账号的外观，请检查会话后重试。",
+      "deviceExpired": "设备代码已过期，请重新开始 Microsoft 登录。",
+      "invalidResponse": "认证服务返回的信息不完整，未添加账号，请重试。",
+      "clientIdRequired": "请先填写并保存本项目的 Microsoft Client ID。",
+      "offlineNameInvalid": "角色名称需为 3–16 位英文字母、数字或下划线。",
+      "credentialsRequired": "请输入第三方认证服务的用户名和密码。",
+      "microsoftRequired": "此操作只适用于 Microsoft 正版账号。",
+      "sessionExpired": "登录会话已过期或取消，请重新开始。",
+      "credentialsRejected": "用户名、密码或会话未通过验证，请检查后重试。",
+      "serverInvalid": "请输入最终的 HTTPS 认证 API 根地址，不要包含凭据、查询参数或片段。"
+    },
+    "skin": {
+      "fileInvalid": "请选择有效且不超过 1 MB 的 64×64 或 64×32 PNG 皮肤，高清贴图仅供本地预览。",
+      "modelInvalid": "上传皮肤时请选择 Classic 或 Slim 模型。"
+    }
+  }
+}

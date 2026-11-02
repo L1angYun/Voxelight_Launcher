@@ -150,7 +150,7 @@ export const defaults: Config = {
   maxMemoryMb: 4096,
   jvmArguments: "-XX:+UseG1GC",
   versionIsolation: true,
-  theme: "dark",
+  theme: "system",
   downloadConcurrency: 6,
   microsoftClientId: "",
   downloadLimitKib: 0,

@@ -3,6 +3,7 @@
   inset: -3px;
   z-index: 2;
   overflow: visible;
+  border-radius: inherit;
   pointer-events: none;
   color: var(--text-secondary);
   opacity: 0;
@@ -12,67 +13,20 @@
   overflow: visible;
 }
 
-.vx-lattice-frame__dot {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: calc(0.58 + var(--lattice-weight, 0.5) * 0.42);
-  transform-origin: center;
-  will-change: transform, width, height;
-}
-
-.vx-lattice-frame--hover {
-  color: var(--text-secondary);
-  opacity: 0.68;
-}
-
-.vx-lattice-frame--focus {
+.vx-lattice-frame[data-focused="true"] {
   color: var(--accent);
-  opacity: 0.94;
-}
-
-.vx-lattice-frame--selected {
-  color: var(--accent);
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
   opacity: 1;
 }
 
-.vx-lattice-frame.is-dispersing {
-  color: var(--text-secondary);
-  opacity: 0.46;
-}
-
-.vx-lattice-frame--hover .vx-lattice-frame__dot {
-  border-radius: 50%;
-}
-
-.vx-lattice-frame--focus .vx-lattice-frame__dot {
-  border-radius: 0.4px;
-  rotate: 45deg;
-}
-
-.vx-lattice-frame--selected .vx-lattice-frame__dot {
-  width: 2px;
-  height: 8px;
-  border-radius: 1px;
-  opacity: 1;
-  rotate: 0deg;
-}
-
-.vx-lattice-frame--selected .vx-lattice-frame__dot[data-anchor="true"] {
-  background: color-mix(in srgb, var(--accent) 88%, white);
-}
-
-.vx-lattice-frame__dot[data-glint="true"]::after {
+.vx-lattice-selection {
   position: absolute;
-  inset: -4px;
-  border: 1px solid color-mix(in srgb, white 84%, var(--accent));
-  border-radius: 50%;
-  content: "";
-  animation: vx-lattice-lock-flash 620ms var(--ease-out) both;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  color: var(--accent);
+  pointer-events: none;
 }
 
 /* canvas element base — replaced the old CSS-only cell grid */
@@ -80,22 +34,6 @@ canvas.vx-lattice-progress {
   display: block;
   width: 100%;
   min-width: 0;
-}
-
-[data-effects="full"] .vx-lattice-frame {
-  transition:
-    opacity 180ms var(--ease-out),
-    color 180ms ease;
-}
-
-[data-effects="full"] .vx-lattice-frame__dot {
-  transition:
-    width 180ms var(--ease-out),
-    height 180ms var(--ease-out),
-    rotate 220ms var(--ease-out),
-    border-radius 180ms var(--ease-out),
-    opacity 160ms ease,
-    background-color 180ms ease;
 }
 
 @keyframes vx-lattice-lissajous {
@@ -151,64 +89,9 @@ canvas.vx-lattice-progress {
   }
 }
 
-@keyframes vx-lattice-lock-flash {
-  0% {
-    opacity: 0;
-    scale: 0.35;
-  }
-
-  36% {
-    opacity: 0.95;
-    scale: 1;
-  }
-
-  100% {
-    opacity: 0;
-    scale: 2.1;
-  }
-}
-
-[data-effects="lite"] .vx-lattice-frame,
-[data-effects="lite"] .vx-lattice-frame__dot,
-[data-reduced-motion="true"] .vx-lattice-frame,
-[data-reduced-motion="true"] .vx-lattice-frame__dot {
-  transition: none !important;
-  animation: none !important;
-}
-
-[data-effects="lite"] .vx-lattice-frame--hover,
-[data-reduced-motion="true"] .vx-lattice-frame--hover {
-  opacity: 0.52;
-}
-
-@media (hover: none) {
-  .vx-lattice-frame--hover {
-    color: var(--text-secondary);
-    opacity: 0.42;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .vx-lattice-frame,
-  .vx-lattice-frame__dot {
-    transition: none !important;
-    animation: none !important;
-  }
-}
-
 @media (prefers-contrast: more), (forced-colors: active) {
-  .vx-lattice-frame {
+  .vx-lattice-frame,
+  .vx-lattice-selection {
     color: Highlight;
   }
-
-  .vx-lattice-frame__dot {
-    forced-color-adjust: none;
-    background: Highlight;
-  }
-}
-
-.vx-overture-root[data-overture-playing="true"] .vx-lattice-frame,
-.vx-overture-root[data-overture-playing="true"] .vx-lattice-frame__dot {
-  transition: none;
-  animation: none;
 }

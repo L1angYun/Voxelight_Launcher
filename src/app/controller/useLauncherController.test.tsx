@@ -142,6 +142,35 @@ afterEach(async () => {
 });
 
 describe("launcher controller", () => {
+  it("waits for the actual bootstrap config even for an empty library, and stays ready during later reloads", async () => {
+    let resolve!: (value: Bootstrap) => void;
+    let pending = new Promise<Bootstrap>(done => { resolve = done; });
+    commandMock.mockImplementation(async name => name === "bootstrap" ? pending : name === "list_running_games" ? [] : null);
+    bootstrap = { ...bootstrap, accounts: [], instances: [], installedVersions: [], config: { ...defaults, effects: "lite" } };
+    await render();
+    expect(current.bootstrapped).toBe(false);
+    await act(async () => resolve(bootstrap));
+    expect(current.bootstrapped).toBe(true);
+    expect(current.config.effects).toBe("lite");
+    expect(current.data.instances).toEqual([]);
+    pending = new Promise<Bootstrap>(done => { resolve = done; });
+    let reloading!: Promise<void>;
+    await act(async () => { reloading = current.reload(); });
+    expect(current.bootstrapped).toBe(true);
+    await act(async () => { resolve(bootstrap); await reloading; });
+    expect(current.bootstrapped).toBe(true);
+  });
+
+  it("does not mark a failed initial bootstrap as loaded defaults", async () => {
+    commandMock.mockImplementation(async name => {
+      if (name === "bootstrap") throw new LauncherError("desktop.required");
+      return name === "list_running_games" ? [] : null;
+    });
+    await render();
+    expect(current.bootstrapped).toBe(false);
+    expect(current.notice?.code).toBe("desktop.required");
+  });
+
   it("launches the selected instance and cancels preparation with existing IPC arguments", async () => {
     await render();
     act(() => current.selectInstance("fixture-world"));

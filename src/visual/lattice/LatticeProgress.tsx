@@ -67,6 +67,7 @@ export function LatticeProgress({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fieldRef = useRef<LatticeProgressField | null>(null);
   const frameRef = useRef<number | null>(null);
+  const staticPaintRef = useRef<(() => void) | null>(null);
   const prevTimeRef = useRef<number>(0);
   const staticMotion = useLatticeStaticMotion();
   const noAnimation = staticMotion || !animated;
@@ -87,11 +88,15 @@ export function LatticeProgress({
       const rect = canvas.getBoundingClientRect();
       const w = Math.round(rect.width || canvas.clientWidth || 300);
       const h = PROGRESS_FIELD_HEIGHT_PX;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
+      const pixelWidth = Math.round(w * dpr);
+      const pixelHeight = Math.round(h * dpr);
+      const resized = canvas.width !== pixelWidth || canvas.height !== pixelHeight;
+      if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+      if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
       canvas.style.height = `${h}px`;
       if (!fieldRef.current) fieldRef.current = new LatticeProgressField(2);
       fieldRef.current.resize(w, h);
+      if (resized) staticPaintRef.current?.();
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;
@@ -146,6 +151,7 @@ export function LatticeProgress({
       else prevTimeRef.current = 0;
     };
 
+    staticPaintRef.current = noAnimation ? paint : null;
     if (noAnimation) {
       // One paint whenever fraction/status changes (effect re-runs on those deps).
       paint();
@@ -156,6 +162,7 @@ export function LatticeProgress({
 
     return () => {
       stopped = true;
+      staticPaintRef.current = null;
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
         frameRef.current = null;

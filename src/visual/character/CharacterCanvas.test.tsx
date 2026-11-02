@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PlayerObject, RunningAnimation, WalkingAnimation } from "skinview3d";
+import { PlayerObject, WalkingAnimation } from "skinview3d";
 import { CharacterCanvas } from "./CharacterCanvas";
 
 const { loadSkin, loadCape, viewers, MockViewer, viewerBackend } = vi.hoisted(() => {
@@ -167,17 +167,18 @@ afterEach(() => {
 });
 
 describe("CharacterCanvas", () => {
-  it("keeps the native running phase order with a stable forward-facing posture", async () => {
+  it("uses grounded vanilla running proportions without artificial jumping or whole-body lean", async () => {
     await render({ skinUrl: "skin.png", animation: "run", headPointer: { x: 1, y: 1 }, label: "Preview" });
     const viewer = viewers[0];
     const stride = viewer.animation!;
     const player = viewer.playerObject;
-    expect(stride).toBeInstanceOf(RunningAnimation);
-    for (const [progress, leftLeg, rightLeg, leftArm, rightArm, jump] of [
-      [0, 0, 0, 0, 0, -1],
-      [Math.PI / 30, 1.3, -1.3, -1.5, 1.5, 1],
-      [Math.PI / 15, 0, 0, 0, 0, -1],
-      [Math.PI / 10, -1.3, 1.3, 1.5, -1.5, 1],
+    // Independently calculated from vanilla's .6662 limb phase, 1:1.4 arm/leg
+    // amplitudes and .05 arm bob at 20 ticks/sec, starting with neutral legs.
+    for (const [progress, leftLeg, rightLeg, leftArm, rightArm, spread] of [
+      [0, 0, 0, 0, 0, .1],
+      [.11789224908397603, 1.4, -1.4, -1.0078659676, 1.0078659676, .0988784331],
+      [.23578449816795205, 0, 0, -.0155360377, .0155360377, .0955640490],
+      [.3536767472519281, -1.4, 1.4, .9771808084, -.9771808084, .0902055398],
     ]) {
       stride.progress = progress;
       stride.update(player, 0);
@@ -185,17 +186,18 @@ describe("CharacterCanvas", () => {
       expect(player.skin.rightLeg.rotation.x).toBeCloseTo(rightLeg);
       expect(player.skin.leftArm.rotation.x).toBeCloseTo(leftArm);
       expect(player.skin.rightArm.rotation.x).toBeCloseTo(rightArm);
-      expect(player.position.y).toBeCloseTo(jump);
-      expect(player.rotation.x).toBeGreaterThan(0);
-      expect(player.rotation.x).toBeLessThan(0.2);
-      expect(player.skin.head.rotation.x + player.rotation.x).toBeCloseTo(0);
+      expect(player.skin.leftArm.rotation.z).toBeCloseTo(spread);
+      expect(player.skin.rightArm.rotation.z).toBeCloseTo(-spread);
+      expect(player.position.length()).toBe(0);
+      expect(player.rotation.x).toBe(0);
+      expect(player.rotation.z).toBe(0);
+      expect(player.skin.head.rotation.x).toBe(0);
       expect(player.skin.head.rotation.y).toBe(0);
     }
-    const lean = player.rotation.x;
     await render({ skinUrl: "skin.png", animation: "run", headPointer: { x: -1, y: -1 }, label: "Preview" });
     stride.update(player, 0);
-    expect(player.rotation.x).toBe(lean);
-    expect(player.skin.head.rotation.x + lean).toBeCloseTo(0);
+    expect(player.rotation.x).toBe(0);
+    expect(player.skin.head.rotation.x).toBe(0);
     expect(player.skin.head.rotation.y).toBe(0);
   });
 
@@ -208,18 +210,19 @@ describe("CharacterCanvas", () => {
     expect(viewer.playerObject.skin.head.rotation.y).toBeCloseTo(0.165);
   });
 
-  it("samples the first native frame when the running mode is selected while paused", async () => {
+  it("samples a grounded neutral frame when the running mode is selected while paused", async () => {
     await render({ skinUrl: "skin.png", animation: "idle", paused: true, label: "Preview" });
     await render({ skinUrl: "skin.png", animation: "run", paused: true, label: "Preview" });
     const viewer = viewers[0];
-    expect(viewer.playerObject.position.y).toBe(-1);
+    expect(viewer.playerObject.position.length()).toBe(0);
     expect(viewer.playerObject.skin.leftLeg.rotation.x).toBeCloseTo(0);
-    expect(viewer.playerObject.skin.head.rotation.x + viewer.playerObject.rotation.x).toBeCloseTo(0);
+    expect(viewer.playerObject.rotation.x).toBe(0);
+    expect(viewer.playerObject.skin.head.rotation.x).toBe(0);
     expect(viewer.animation!.progress).toBe(0);
     expect(scheduledFrames.size).toBe(0);
   });
 
-  it("keeps the same native pose across different frame partitions at equal elapsed time", async () => {
+  it("keeps the same grounded pose across different frame partitions at equal elapsed time", async () => {
     for (const intervals of [[150], [25, 25, 50, 50]]) {
       await render({ skinUrl: "skin.png", animation: "idle", label: "Preview" });
       await render({ skinUrl: "skin.png", animation: "run", label: "Preview" });
@@ -229,9 +232,9 @@ describe("CharacterCanvas", () => {
       // Upstream evaluates the pose before adding delta; sample the resulting progress.
       advanceFrame(0);
       expect(viewer.animation!.progress).toBeCloseTo(0.15);
-      expect(viewer.playerObject.skin.leftLeg.rotation.x).toBeCloseTo(1.011495);
-      expect(viewer.playerObject.skin.rightLeg.rotation.x).toBeCloseTo(-1.011495);
-      expect(viewer.playerObject.skin.leftArm.rotation.x).toBeCloseTo(-1.16711);
+      expect(viewer.playerObject.skin.leftLeg.rotation.x).toBeCloseTo(1.2738307975);
+      expect(viewer.playerObject.skin.rightLeg.rotation.x).toBeCloseTo(-1.2738307975);
+      expect(viewer.playerObject.skin.leftArm.rotation.x).toBeCloseTo(-.9198616060);
     }
   });
 
@@ -268,13 +271,13 @@ describe("CharacterCanvas", () => {
     expect(stride.progress).toBeCloseTo(0.25);
   });
 
-  it("clears running offsets when repeatedly switching to walking and idle", async () => {
+  it("clears running joint offsets when repeatedly switching to walking and idle", async () => {
     for (let repeat = 0; repeat < 3; repeat += 1) {
       await render({ skinUrl: "skin.png", animation: "run", label: "Preview" });
       const viewer = viewers[0];
       viewer.animation!.update(viewer.playerObject, 0.1);
       viewer.animation!.update(viewer.playerObject, 0);
-      expect(Math.abs(viewer.playerObject.position.x)).toBeGreaterThan(0.1);
+      expect(Math.abs(viewer.playerObject.skin.leftLeg.rotation.x)).toBeGreaterThan(.1);
       await render({ skinUrl: "skin.png", animation: "walk", label: "Preview" });
       expect(viewer.animation).toBeInstanceOf(WalkingAnimation);
       expect(viewer.animation!.progress).toBe(0);
@@ -294,7 +297,7 @@ describe("CharacterCanvas", () => {
     const viewer = viewers[0];
     const stride = viewer.animation!;
     const player = new PlayerObject();
-    expect(stride).toBeInstanceOf(animation === "walk" ? WalkingAnimation : RunningAnimation);
+    if (animation === "walk") expect(stride).toBeInstanceOf(WalkingAnimation);
     expect(viewer.renderPaused).toBe(false);
     stride.update(player, 0.125);
     const legRotation = player.skin.leftLeg.rotation.x;

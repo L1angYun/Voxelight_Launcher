@@ -108,6 +108,7 @@ function fixture(): LauncherContextValue {
   const selectedInstance = data.instances[0];
   const selectedVersion = data.installedVersions[0];
   return {
+    bootstrapped: true,
     data,
     config,
     manifest: { latestRelease: "1.21.1", latestSnapshot: "", versions: [] },
@@ -216,8 +217,21 @@ describe("HomePage", () => {
     const character = container.querySelector(".vx-home__char-col")!;
     expect(heading?.textContent).toBe("合成测试世界");
     expect(Boolean(heading!.compareDocumentPosition(character) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
-    expect(container.querySelector('.vx-home__anim-picker[role="group"]')).not.toBeNull();
+    expect(container.querySelector('.vx-home__animation-controls[role="group"]')).not.toBeNull();
+    expect(container.querySelector('[role="combobox"][aria-label="动画模式"]')).not.toBeNull();
     expect(container.querySelector(".vx-home__greeting-line")).toBeNull();
+  });
+  it("offers one shared animation selector with three real pose choices", async () => {
+    await render();
+    const selector = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="动画模式"]')!;
+    expect(selector).not.toBeNull();
+    await act(async () => selector.click());
+    const list = document.querySelector('[role="listbox"][aria-label="动画模式"]')!;
+    expect([...list.querySelectorAll('[role="option"]')].map(option => option.getAttribute("data-value"))).toEqual(["idle", "walk", "run"]);
+    await act(async () => list.querySelector<HTMLElement>('[data-value="run"]')!.click());
+    expect(selector.textContent).toContain("奔跑");
+    mockLauncher.busy = "game.prepare"; await render();
+    expect(selector.disabled).toBe(true); expect(selector.textContent).toContain("行走");
   });
 
   it("honors system reduced motion even when full effects are selected", async () => {

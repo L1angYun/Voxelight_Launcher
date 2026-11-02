@@ -10,6 +10,9 @@ obj/
 accounts.json
 instances.json
 settings.json
+# Locale resources share these names with user data and must ship in a clone.
+!src/i18n/locales/*/accounts.json
+!src/i18n/locales/*/settings.json
 *.log
 *.tsbuildinfo
 .env

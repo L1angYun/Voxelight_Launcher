@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowUpRight, Download, Package } from "lucide-react";
+import { ArrowUpRight, Check, Download, Package } from "lucide-react";
 import type { ResourceProject } from "../../lib/launcher";
 import { Button } from "../../components/ui/Button";
 import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
@@ -20,6 +20,7 @@ export function ProjectCard({ project, targetName, selected = false, onOpen, onI
   return (
     <article className={cn("vx-project-card", selected && "is-selected")} data-project-id={project.project_id} data-visual-owner="lattice" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
       <LatticeFrame hovered={hovered} focused={focused} selected={selected} signature={project.project_id} />
+      {selected ? <Check className="vx-lattice-selection" data-selected-mark size={16} aria-hidden="true" /> : null}
       <div className="vx-project-card__art" aria-hidden="true">{project.icon_url ? <img src={project.icon_url} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} /> : <Package size={27} strokeWidth={1.3} />}</div>
       <div className="vx-project-card__body">
         <div className="vx-project-card__identity"><h3>{project.title}</h3>{project.author ? <span>{project.author}</span> : null}</div>

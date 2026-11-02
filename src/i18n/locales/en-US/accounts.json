@@ -1,0 +1,160 @@
+{
+  "title": "Players",
+  "subtitle": "Accounts, online appearance, and local previews.",
+  "listTitle": "Accounts",
+  "addAccount": "Add account",
+  "loginTitle": "Add account",
+  "loginDescription": "Choose how you want to sign in or play offline.",
+  "loginMethods": "Sign-in method",
+  "avatar": "{{name}}'s player avatar",
+  "fields": {
+    "playerName": "Player name",
+    "authlibApiUrl": "Authlib API URL",
+    "usernameOrEmail": "Username or email",
+    "password": "Password",
+    "onlineSkinUrl": "Online skin URL",
+    "importLocalPng": "Import local PNG"
+  },
+  "credentialNotice": "Login tokens stay in system-encrypted credentials. Local preview files are never uploaded by this page.",
+  "method": {
+    "microsoft": "Microsoft",
+    "offline": "Offline",
+    "authlib": "Authlib"
+  },
+  "type": {
+    "microsoft": "Microsoft",
+    "authlib": "Authlib",
+    "offline": "Offline",
+    "unknown": "Account"
+  },
+  "actions": {
+    "current": "Current {{name}}",
+    "select": "Select {{name}}",
+    "refresh": "Refresh {{name}} session",
+    "remove": "Remove {{name}}",
+    "retryAppearance": "Retry appearance",
+    "retryDefault": "Retry default character"
+  },
+  "empty": {
+    "title": "No accounts yet",
+    "description": "Add an offline player or sign in to manage an online appearance."
+  },
+  "microsoft": {
+    "description": "Authorize in Microsoft's official page. The launcher does not collect your Microsoft password.",
+    "clientId": "Microsoft Client ID for this project",
+    "clientIdHelp": "Register your own public client app, enable device-code flow for personal accounts, and confirm Xbox/Minecraft access. Do not borrow another launcher's Client ID.",
+    "saveClientId": "Save Client ID",
+    "start": "Start Microsoft login",
+    "deviceInstruction": "Enter this code on Microsoft's official page:",
+    "openVerification": "Open Microsoft authorization",
+    "waiting": "Waiting for authorization · {{minutes}}:{{seconds}} remaining · polling every {{interval}}s",
+    "cancel": "Cancel authorization"
+  },
+  "offline": {
+    "description": "Use local games and servers that allow offline identities. Online-mode servers still require a licensed account.",
+    "name": "Player name",
+    "namePlaceholder": "3–16 letters, numbers, or underscores",
+    "submit": "Add offline account"
+  },
+  "authlib": {
+    "description": "Use an Authlib/Yggdrasil API root you trust. Your password goes only to that HTTPS service and is not saved in launcher settings.",
+    "server": "Authentication API URL",
+    "username": "Username or email",
+    "password": "Password",
+    "submit": "Sign in with Authlib",
+    "chooseProfile": "Choose the player for this login:",
+    "cancelProfile": "Cancel player selection"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "refresh": "Refresh appearance",
+    "customSkin": "Custom skin",
+    "defaultSkin": "Default skin",
+    "uploadModel": "Upload model",
+    "upload": "Upload skin",
+    "reset": "Reset skin",
+    "cape": "Cape",
+    "noCape": "Hide cape",
+    "noCapes": "No capes are available for this account.",
+    "authlibReadonly": "Appearance is read-only here. Manage this player's skin on its Authlib service.",
+    "uploadPicker": "Choose a PNG skin to upload to your Microsoft account",
+    "pngFilter": "PNG skin"
+  },
+  "preview": {
+    "source": "Preview source",
+    "account": "Account appearance",
+    "local": "Local preview",
+    "canvasLabel": "Interactive Minecraft character preview",
+    "unavailable": "The 3D preview is unavailable. Retry or use another preview source.",
+    "loading": "Loading account appearance…",
+    "noAccountSkin": "No account skin is available",
+    "localNotice": "Local preview only · does not change your account",
+    "accountNotice": "Online account source · changes below require an explicit action",
+    "import": "Import PNG",
+    "resetView": "Reset view",
+    "restoreDefault": "Restore default preview",
+    "loadUrl": "Load URL",
+    "model": "Preview model",
+    "animation": "Preview animation",
+    "autoRotate": "Auto-rotate",
+    "reducedMotion": "Reduced motion is enabled. Automatic animation and rotation are paused; manual camera controls remain available.",
+    "urlSource": "Online URL skin"
+  },
+  "model": {
+    "auto": "Automatic",
+    "classic": "Classic · wide arms",
+    "slim": "Slim · narrow arms"
+  },
+  "animation": {
+    "idle": "Idle",
+    "walk": "Walk",
+    "run": "Run",
+    "none": "Still"
+  },
+  "default": {
+    "title": "Default preview character",
+    "description": "Used only when no account appearance or local import is shown. Steve and Alex come from a verified game client.",
+    "sourceVersion": "Source: verified Minecraft {{version}} client.",
+    "fallback": "The selected default is unavailable. Retry or import a local preview.",
+    "steve": {
+      "name": "Steve",
+      "description": "Classic · verified client"
+    },
+    "alex": {
+      "name": "Alex",
+      "description": "Slim · verified client"
+    }
+  },
+  "notice": {
+    "sessionRefreshed": "{{name}}'s session was refreshed.",
+    "clientIdSaved": "Client ID saved. You can start Microsoft login.",
+    "loginCancelled": "Authorization cancelled.",
+    "skinUpdated": "Microsoft skin updated.",
+    "skinReset": "Microsoft skin reset to default.",
+    "capeShown": "Cape changed.",
+    "capeHidden": "Cape hidden.",
+    "defaultSaved": "Default preview character saved."
+  },
+  "errors": {
+    "preview": {
+      "fileInvalid": "Choose a PNG skin smaller than 16 MB for local preview.",
+      "urlInvalid": "Enter a complete http:// or https:// PNG skin URL."
+    },
+    "auth": {
+      "profileUnavailable": "We couldn't load this account's appearance. Check the session and retry.",
+      "deviceExpired": "The device code expired. Start Microsoft login again.",
+      "invalidResponse": "The authentication service returned an incomplete response. No account was added; try again.",
+      "clientIdRequired": "Enter and save this project's Microsoft Client ID first.",
+      "offlineNameInvalid": "Use 3–16 letters, numbers, or underscores for the player name.",
+      "credentialsRequired": "Enter the Authlib username and password.",
+      "microsoftRequired": "This action is available only for Microsoft accounts.",
+      "sessionExpired": "This login session expired or was cancelled. Start again.",
+      "credentialsRejected": "The username, password, or session was rejected. Check them and try again.",
+      "serverInvalid": "Enter the final HTTPS Authlib API root without credentials, query parameters, or fragments."
+    },
+    "skin": {
+      "fileInvalid": "Choose a valid 64×64 or 64×32 PNG skin no larger than 1 MB. High-resolution textures are for local preview only.",
+      "modelInvalid": "Choose Classic or Slim for the uploaded skin."
+    }
+  }
+}

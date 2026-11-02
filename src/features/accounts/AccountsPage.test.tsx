@@ -91,6 +91,7 @@ function fixture(): LauncherContextValue {
     capabilities: {},
   };
   return {
+    bootstrapped: true,
     data,
     config,
     manifest: null,

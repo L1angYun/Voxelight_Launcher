@@ -46,6 +46,7 @@ function fixture(): LauncherContextValue {
   };
   const data: Bootstrap = { config, accounts: [], instances: [], installedVersions: [], capabilities: {} };
   return {
+    bootstrapped: true,
     data,
     config,
     manifest: null,

@@ -91,7 +91,7 @@ precision highp float;
 layout(location=0) out vec4 oP;
 layout(location=1) out vec4 oV;
 uniform sampler2D uPos, uVel, uField, uWord;
-uniform float uN, uS, uSpan, uTime, uDt, uInitialize;
+uniform float uN, uS, uSpan, uTime, uDt, uInitialize, uIntroActive, uIntroTime;
 uniform float uMorphStart, uMorphDur, uToWord, uFromWord, uTransit, uMeltP, uPtrOn, uShockT, uRing;
 uniform vec2 uOffset, uPtr, uPtrVel, uMeltAtP, uShockAt, uOriginP;
 float rnd(vec2 p) {
@@ -113,11 +113,34 @@ void main() {
   // New tiers start on the current GPU terrain, never in a random scatter.
   if (uInitialize > .5) { oP = vec4(terrain, 0.); oV = vec4(0.); return; }
   vec4 P = texelFetch(uPos, id, 0), V = texelFetch(uVel, id, 0), W = texelFetch(uWord, id, 0);
+  // A skip or deadline is immediate, including a zero-delta frame. Ordinary
+  // particles have no word weight and retain their current motion.
+  if (uIntroActive < .5 && P.w > 0.) { oP = vec4(terrain, 0.); oV = vec4(0.); return; }
   float seed = rnd(uv), seed2 = rnd(uv + .37);
+  // The 2.5-second entrance has its own bounded motion, driven by real phase
+  // time. Ordinary particles keep the spring/ABC simulation below unchanged.
+  if (uIntroActive > .5 && W.w > .5) {
+    float order = seed * .45 + uv.x * .55;
+    if (uToWord > .5) {
+      float t = clamp((uIntroTime - order * .2) / .6, 0., 1.);
+      float eased = t * t * (3. - 2. * t);
+      float rate = t > 0. && t < 1. ? 6. * t * (1. - t) / .6 : 0.;
+      vec3 cloud = W.xyz + vec3((seed - .5) * 10., (seed2 - .5) * 8., (rnd(uv + .73) - .5) * 4.);
+      oP = vec4(mix(cloud, W.xyz, eased), .05 + .95 * eased);
+      oV = vec4((W.xyz - cloud) * rate, 0.); return;
+    }
+    if (uFromWord > .5) {
+      float t = clamp((uIntroTime - order * .15) / .75, 0., 1.);
+      float eased = t * t * (3. - 2. * t);
+      float rate = t > 0. && t < 1. ? 6. * t * (1. - t) / .75 : 0.;
+      oP = vec4(mix(W.xyz, terrain, eased), 1. - eased);
+      oV = vec4((terrain - W.xyz) * rate, 0.); return;
+    }
+  }
   float releaseAt = uMorphStart + (seed * .45 + uv.x * .55) * uMorphDur;
   float since = uTime - releaseAt;
   bool after = since >= 0.;
-  bool word = W.w > .5 && (uToWord > .5 ? after : (uFromWord > .5 && !after));
+  bool word = uIntroActive > .5 && W.w > .5 && (uToWord > .5 ? after : (uFromWord > .5 && !after));
   vec3 goal = word ? W.xyz : terrain;
   float k = after ? 38. * smoothstep(.05, .75, since) : 38.;
   float flow = after ? uTransit * (1. - smoothstep(0., 1., since)) : 0.;

@@ -26,7 +26,7 @@ function AppShell() {
   const [page, setPage] = useState<NavigationPage>("home");
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
-  const { activeAccount, accountAppearance, config, busy, progress, running, gamePid } = useLauncher();
+  const { bootstrapped, activeAccount, accountAppearance, config, busy, progress, running, gamePid } = useLauncher();
   const world = useMemo(() => deriveWorldState({ busy, progress, running, gamePid }), [busy, progress, running, gamePid]);
   const { effects, reducedMotion, highContrast } = useAppearance();
   const { playing } = useOverture();
@@ -35,7 +35,7 @@ function AppShell() {
       <a className="vx-skip-link" href="#main-content">{t("shell:a11y.skipToContent")}</a>
       <div className="vx-app-body" data-current-page={page}>
         {/* Global WorldScene background — runs on all pages for glass refraction */}
-        <WorldScene
+        {bootstrapped ? <WorldScene
           className="vx-global-scene"
           phase={world.phase}
           fraction={world.fraction}
@@ -45,7 +45,9 @@ function AppShell() {
           paused={playing}
           effects={effects}
           reducedMotion={reducedMotion || highContrast}
-        />
+        /> : <div className="world-scene vx-global-scene" aria-hidden="true" data-world-tier="css"
+          data-world-bootstrap="pending" data-world-frames="0" data-world-material="solid" data-world-phase={world.phase}
+          data-world-front="0" data-motion="reduced" data-paused="true" />}
         <FloatingNav
           page={page}
           onNavigate={(nextPage) => {

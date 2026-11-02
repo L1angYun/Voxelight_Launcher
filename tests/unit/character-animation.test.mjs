@@ -152,7 +152,7 @@ const tests = [];
 function test(name, body) { tests.push([name, body]); }
 
 test("idle, walk and run select real animations and advance their joints", async () => {
-  for (const [animation, Type] of [["idle", skin.IdleAnimation], ["walk", skin.WalkingAnimation], ["run", skin.RunningAnimation]]) {
+  for (const [animation, Type] of [["idle", skin.IdleAnimation], ["walk", skin.WalkingAnimation], ["run", skin.PlayerAnimation]]) {
     await render({ animation });
     assert.ok(viewer().animation instanceof Type);
     assert.equal(viewer().renderPaused, false);
@@ -160,6 +160,19 @@ test("idle, walk and run select real animations and advance their joints", async
     else assertMoving();
   }
   assert.equal(viewers.length, 1, "state transitions must retain the viewer");
+});
+
+test("running uses vanilla grounded limbs instead of a jumping showcase pose", async () => {
+  await render({ animation: "run" });
+  const stride = viewer().animation, player = viewer().playerObject;
+  stride.progress = .11789224908397603;
+  stride.update(player, 0);
+  assert.ok(Math.abs(player.skin.leftLeg.rotation.x - 1.4) < .000001);
+  assert.ok(Math.abs(player.skin.rightLeg.rotation.x + 1.4) < .000001);
+  assert.ok(Math.abs(player.skin.leftArm.rotation.x + 1.0078659676) < .000001);
+  assert.equal(player.position.length(), 0);
+  assert.equal(player.rotation.x, 0);
+  assert.equal(player.rotation.z, 0);
 });
 
 for (const animation of ["walk", "run"]) test(`${animation} freezes its stride during a pause and continues playback on resume`, async () => {
@@ -233,7 +246,7 @@ test("reduced motion stops walk/run and restores the requested running mode", as
   assert.equal(frames.size, 0);
   reduced = false;
   await act(async () => { for (const listener of mediaListeners) listener(); });
-  assert.ok(viewer().animation instanceof skin.RunningAnimation);
+  assert.ok(viewer().animation instanceof skin.PlayerAnimation);
   assertMoving();
 });
 

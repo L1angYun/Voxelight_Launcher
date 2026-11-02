@@ -137,6 +137,23 @@ describe("WebGL renderer boundary", () => {
     r.dispose(); expect(t.live.size).toBe(0);
   });
 
+  it("sends an immediate intro end to the existing simulation even with zero delta", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.draw({ ...frame(), introActive: true, introTime: 1.2,
+      morph: { start: -9, dur: .001, toWord: true, fromWord: false, transit: 0 } }, .016);
+    expect(t.uniforms.get("uIntroActive")).toBe(1);
+    expect(t.uniforms.get("uIntroTime")).toBe(1.2);
+    const count = t.live.size;
+    r.draw({ ...frame(), introActive: false,
+      morph: { start: 0, dur: .001, toWord: false, fromWord: false, transit: 0 } }, 0);
+    expect(t.uniforms.get("uIntroActive")).toBe(0);
+    expect(t.uniforms.get("uDt")).toBe(0);
+    expect(t.uniforms.get("uInitialize")).toBe(0);
+    expect(t.pointCounts).toEqual([65536, 65536]);
+    expect(t.live.size).toBe(count);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
   it("initializes a changed particle budget from the current terrain without a scatter burst", () => {
     const t = mount({ float: true }); const r = t.renderer!;
     r.draw(frame(), .016);

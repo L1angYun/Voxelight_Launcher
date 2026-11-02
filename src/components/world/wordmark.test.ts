@@ -25,3 +25,12 @@ it("keeps seeded glyph placement deterministic at both particle budgets", () => 
   expect(buildWordTargets(camera, 16 / 9, 160, () => .3)).toEqual(buildWordTargets(camera, 16 / 9, 160, () => .3));
   expect(buildWordTargets(camera, 16 / 9, 160, () => .3)).not.toEqual(buildWordTargets(camera, 16 / 9, 160, () => .8));
 });
+
+it("can place the intro above the character without changing the default wordmark", () => {
+  const camera = makeCamera([0, 0, 10], [0, 0, 0], 90, 1);
+  const original = buildWordTargets(camera, 1, 160, () => .5);
+  const elevated = buildWordTargets(camera, 1, 160, () => .5, [.28, .62]);
+  expect(elevated[0] - original[0]).toBeCloseTo(19.6, 4);
+  expect(elevated[1] - original[1]).toBeCloseTo(18.2, 4);
+  expect(elevated[2]).toBeCloseTo(original[2]);
+});
