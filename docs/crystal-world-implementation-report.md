@@ -167,3 +167,9 @@ Task 8 首轮像素／资源完整验收：`npx playwright test tests/e2e/world-
 这些目录位于 `E:/CodeX/VoxelightLauncher-worklogs/crystal-world/`。七状态是开场、空闲、真实 37%／70%／95% 前沿、运行前沿和运行停绘。正文保留 4.5:1、大标题保留 3:1 原门槛；开场故意隐藏的标题／元数据仅做名义颜色检查，实际可见的角色来源说明与启动操作另行检查。开场使用真正 compositor swap 的 PNG，时间戳被两条真实 on／同主题／同布局观察夹住；后读状态真实保留 off，未延长或冻结开场，也没有用 CSS 背景色代替像素。候选帧选择最小对比度裕量，不选择容易通过的帧。
 
 资源基线先实际开关共用菜单、等待角色 ready，以包含 Motion 首次创建的一次共享 resize 监听；Node 实际模块证明再构造 20 次不增长。清理后最终完整运行的 30 次页面往返及 10 次场景／材质切换：世界画布 1、同一上下文 id2；纹理 10、FBO 8、RBO 2、program 8、shader 0、buffer 1、VAO 2 均回到基线；在途 query 4→1、全程≤4，window.resize 5→5。没有重复释放、GL 错误或页面错误。原始记录在 `delivery-evidence/world-acceptance/resources/gpu-resources.json`。事件检查明确限定 window／document／world canvas 的持久监听；once／signal 按真实生命周期去重处理并单列，不将它冒称完整堆内存分析。
+
+## 2026-11-02 追加目录整理
+
+用户复核项目后要求进一步整理。此前为保留构建缓存和历史链接而留在项目内的 Cargo 中间文件、旧原生测试数据、开发 profile 和逐轮证据，现已可逆迁到 `E:/CodeX/VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/`；该次清单单独记录 38,147 个文件、33,617.51MiB 逻辑长度，不代表释放同等磁盘空间。当前原生程序、调试符号、安装包、发布源码包和必读契约仍保留，五项运行产物哈希一致。
+
+项目内报告和旧截图已分类，证据链接已更新；当前目录说明见 [文档入口](README.md)。常规参考测试改用 `test-results/reference-alignment/`，单项真实浏览器验证通过，未重建旧设计目录。应用运行源码未修改，本次没有重跑上一轮全量 120 项，也没有重建安装包。TypeScript 检查、测试发现和源码包校验均实际通过；验证产物随同归档，详情见外部清理目录的 README 和日志。

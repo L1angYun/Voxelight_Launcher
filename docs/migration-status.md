@@ -12,9 +12,9 @@
 
 ### 最终原生与安装验收
 
-- [19 项完整原生验收](release-0.5.0-smoke-report.json)全部通过，0 失败、0 个 WebView 运行时错误。测试对象为最终 NSIS 安装包内 EXE，SHA-256 为 `3481a7663cbe5af32b17048ba5b946ab1021191fe52bbfbb130a8215445f24bc`。
+- [19 项完整原生验收](reports/smoke/release-0.5.0-smoke-report.json)全部通过，0 失败、0 个 WebView 运行时错误。测试对象为最终 NSIS 安装包内 EXE，SHA-256 为 `3481a7663cbe5af32b17048ba5b946ab1021191fe52bbfbb130a8215445f24bc`。
 - Fabric 0.20.1、Quilt 0.30.1、NeoForge 21.1.265、旧版 NeoForge 47.1.106 和 Forge 47.4.28 均完成官方安装与真实 Java 渲染；每组均有 6 项运行中实例保护及退出后重启记录。BMCLAPI、Steve/Alex、同版本独立实例、Modrinth 界面更新与回滚、下载控制、官方服务端 JAR 和 EULA 拒绝启动也在同一轮通过。
-- [安装、许可资源与卸载检查](install-0.5.0-smoke-report.json)通过。安装包 SHA-256 为 `1e3059f00ec69de5be3d1959b022304d302b38390cd08bd2d011713d99b458cd`；签名状态为 `NotSigned`，无 Low 完整性标签，1,126 份第三方通知验证通过。
+- [安装、许可资源与卸载检查](reports/smoke/install-0.5.0-smoke-report.json)通过。安装包 SHA-256 为 `1e3059f00ec69de5be3d1959b022304d302b38390cd08bd2d011713d99b458cd`；签名状态为 `NotSigned`，无 Low 完整性标签，1,126 份第三方通知验证通过。
 
 ## 项目边界
 
@@ -34,15 +34,15 @@
 - 实例克隆、备份恢复、基础 mrpack 导入导出、世界 NBT/ZIP、PNG 预览、服务器 NBT 与本地协议查询，均使用隔离测试文件。
 - 下载暂停、恢复、排队取消、活动取消及后续任务；官方服务端 JAR 校验、`eula=false` 和未同意时拒绝启动。
 - 数据目录与安装目录的分离有 Rust 单元测试。Windows Low 文件标签的根因已定位；同一未签名 Debug 程序在不继承 Low 标签的位置可正常启动 Fabric，不要求用自签名或修改 ACL 来规避。
-- 非 UTF-8 的进程日志不再导致安装器或游戏日志读取中断。旧版 NeoForge 已完成[安装器与实际启动专项验收](legacy-neoforge-smoke-report.json)，官方安装器退出状态、生成文件和启动结果仍分别校验。
+- 非 UTF-8 的进程日志不再导致安装器或游戏日志读取中断。旧版 NeoForge 已完成[安装器与实际启动专项验收](reports/smoke/legacy-neoforge-smoke-report.json)，官方安装器退出状态、生成文件和启动结果仍分别校验。
 
 ## 当前验证基线
 
 - 前端：31 项单元测试、6 项浏览器测试通过。
 - Rust：76 项通过，另有 1 项默认忽略的真实网络专项已显式运行通过：Mojang 26.3 元数据和 41,483,720 字节客户端 JAR 的 SHA-1 与缓存复用验证。该专项不等同于启动 26.3。
 - Rust 格式检查、前端构建通过。构建仍有未使用代码警告，不是无警告构建。
-- 原生 Modrinth 更新/回滚、后续变化保护和桌面确认权限已通过[专项验收](debug-focused-smoke-report.json)，桌面皮肤无运行时错误。
-- 最终安装的 Release 已通过[16 项完整原生验收](release-smoke-report.json)，五组加载器均有实际渲染证据；[安装、升级与默认卸载检查](install-smoke-report.json)也已通过。历史失败报告不作为成功依据。
+- 原生 Modrinth 更新/回滚、后续变化保护和桌面确认权限已通过[专项验收](reports/smoke/debug-focused-smoke-report.json)，桌面皮肤无运行时错误。
+- 最终安装的 Release 已通过[16 项完整原生验收](reports/smoke/release-smoke-report.json)，五组加载器均有实际渲染证据；[安装、升级与默认卸载检查](reports/smoke/install-smoke-report.json)也已通过。历史失败报告不作为成功依据。
 
 ### 0.4.0 时尚未完成或不能宣称已验证（历史记录）
 

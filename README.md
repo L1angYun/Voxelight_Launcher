@@ -83,6 +83,8 @@ Test state is created below `src-tauri/target/native-*`; do not point the test o
 
 ## Features and research
 
+Start with [the documentation index](docs/README.md) for the current design, verification reports and directory layout.
+
 See `docs/migration-status.md` for verified functionality and remaining limitations, and `docs/launcher-feature-catalog.md` for the competing-launcher feature inventory. Third-party component attribution is in `THIRD_PARTY_NOTICES.md`.
 
 Microsoft device authorization requires your own OAuth Client ID. CurseForge requires your own API Key and is subject to each project's distribution permissions. Neither is configured by default; missing credentials are not treated as a successful login or restricted-download test.

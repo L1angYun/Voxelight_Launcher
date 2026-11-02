@@ -63,7 +63,7 @@
 
 - 包含 `src/app/App.tsx`、完整 `src-tauri/installer`、双语 NSIS 文件、模板和原创 BMP / ICO。
 - ZIP CRC、内嵌清单路径和逐文件 SHA-256 均通过；没有 `lumen.png` 或 `face.png`。
-- 最终文件数、字节数和 ZIP SHA-256 见[源码打包日志](../.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-source-final.log)，避免文档自身被打包后形成哈希自引用。
+- 最终文件数、字节数和 ZIP SHA-256 见[源码打包日志](../../../VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-source-final.log)，避免文档自身被打包后形成哈希自引用。
 
 ## 安装器与数据保留
 
@@ -80,9 +80,9 @@
 
 证据：
 
-- [English UI 报告](../.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-installer-english/report.json)
-- [简体中文 UI 报告](../.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-installer-simpchinese/report.json)
-- [静默安装报告](../.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-install-report.json)
+- [English UI 报告](../../../VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-installer-english/report.json)
+- [简体中文 UI 报告](../../../VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-installer-simpchinese/report.json)
+- [静默安装报告](../../../VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-install-report.json)
 
 安装器基于 `tauri-cli-v2.12.4`（上游提交 `993038c49185307dfc895ab7657d77ca0d5ed7c7`）的 NSIS 模板，保留 Apache-2.0 / MIT 许可和修改说明。详见 `src-tauri/installer/windows/README.md`。
 
@@ -99,7 +99,7 @@
 - 下载暂停 / 恢复 / 排队取消 / 活动取消及后续任务通过；受管服务端保持 `eula=false`，未同意时拒绝启动，没有替用户接受 EULA。
 - 首页场景与角色页没有 WebView 运行时错误；缓存只包含不可变客户端文件，没有复制世界或凭据。
 
-证据：[完整原生报告](../.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-native-report.json)、[Forge 专项重试报告](../.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-forge-retry-report.json)。
+证据：[完整原生报告](../../../VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-final-native-report.json)、[Forge 专项重试报告](../../../VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/.superpowers/sdd/2026-10-26-voxelight-liquid-ui/review-forge-retry-report.json)。
 
 ## 视觉矩阵与性能采样
 
@@ -108,7 +108,7 @@
 - 72 个基础场景：2 语言 × 2 主题 × 2 特效档，覆盖各功能页和 1050 / 1440 / 1920 宽度。
 - 10 个空状态、16 个长文本 / 200% 伪翻译压力场景、6 个减少动态 / 减少透明 / 高对比度场景，以及 1 个无 WebGL2 回退场景。
 - 所有当前场景均无页面横向溢出、缺失图片、旧 UI 或浏览器运行时错误。装饰光圈可以超出自身容器，但 `documentElement.scrollWidth` 不超过视口。
-- 输出目录：[voxelight-ui-rework](../../tmp/voxelight-ui-rework/)。
+- 输出目录：[voxelight-ui-rework](../../../tmp/voxelight-ui-rework/)。
 
 性能采样在 1440×930 下执行导航与页面切换，每档约 2.4 秒。rAF 间隔包含测试自身的采样调度；长任务包含页面初始化与导航，不应解释为持续稳定帧率。CDP `TaskDuration` 是渲染主线程耗时，不是完整进程 CPU 百分比。
 
@@ -123,7 +123,7 @@
 | en-US | light | lite | 22.02 / 16.80 ms | 3 | 38.4 |
 | en-US | light | full | 24.00 / 33.40 ms | 3 | 31.4 |
 
-完整帧时间、长任务、CDP 主线程耗时、DOM 节点、动画数和玻璃模式见 [performance.json](../../tmp/voxelight-ui-rework/performance.json)。这些样本不支持“某档在所有设备上更快”的推断。
+完整帧时间、长任务、CDP 主线程耗时、DOM 节点、动画数和玻璃模式见 [performance.json](../../../tmp/voxelight-ui-rework/performance.json)。这些样本不支持“某档在所有设备上更快”的推断。
 
 ## 二十条设计原则的证据
 
@@ -173,4 +173,4 @@
 - `smoke-install.mjs` 的超时/失败清理仍可加强；本次成功流程均完成卸载和登记恢复，没有遗留失败清理任务。
 - 性能采样没有通过/失败预算，仅作为本地证据，不作为性能保证。
 
-其他路径与实现决策、成本和历史记录见[进度台账](../.superpowers/sdd/2026-10-26-voxelight-liquid-ui/progress.md)。修复后没有重复安排审查代理；按照实施流程，以 RED→GREEN 回归和完整套件作为修正验证。
+其他路径与实现决策、成本和历史记录见[进度台账](../../../VoxelightLauncher-worklogs/workspace-cleanup/2026-11-02/archive/.superpowers/sdd/2026-10-26-voxelight-liquid-ui/progress.md)。修复后没有重复安排审查代理；按照实施流程，以 RED→GREEN 回归和完整套件作为修正验证。

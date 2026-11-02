@@ -644,7 +644,7 @@ Update `review-ui.mjs` to capture both locales/themes/effect levels at 1050×720
 - Create: `scripts/generate-installer-assets.py`, `scripts/verify-installer-ui.ps1`
 - Create: `scripts/check-installer.mjs`
 - Modify: `src-tauri/tauri.conf.json`, `scripts/smoke-install.mjs`
-- Create: `docs/liquid-ui-validation.md`
+- Create: `docs/ui/validation.md`
 
 **Interfaces:**
 - Produces: custom NSIS pages `welcome -> location -> options -> install -> finish`, English/SimpChinese language selection, native keyboard-accessible controls, and original pre-rendered optical assets.
@@ -676,5 +676,5 @@ Run: `node scripts/smoke-install.mjs` for isolated first install, then repeat wi
 
 Run with the release executable and isolated fixtures: set `$env:SMOKE_BINARY` to the absolute `src-tauri/target/release/voxelight-launcher.exe` path, then run `node scripts/smoke-native.mjs`, `npm test`, `npm run test:e2e`, `npm run license:check`, and `node scripts/review-ui.mjs`.
 
-Write `docs/liquid-ui-validation.md` with exact commands/results, installer hashes, Windows 11 build 26220 / WebView2 157.0.4341.16 reference environment, full/lite performance traces, two-language/two-level screenshots, all twenty design principles, and the explicit limitation that no separate physical low-end device was tested. Do not claim code signing, universal GPU performance, or unexecuted external account/server validation.
+Write `docs/ui/validation.md` with exact commands/results, installer hashes, Windows 11 build 26220 / WebView2 157.0.4341.16 reference environment, full/lite performance traces, two-language/two-level screenshots, all twenty design principles, and the explicit limitation that no separate physical low-end device was tested. Do not claim code signing, universal GPU performance, or unexecuted external account/server validation.
 
