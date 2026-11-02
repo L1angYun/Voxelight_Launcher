@@ -16,6 +16,7 @@ const media = new Map<string, { matches: boolean; listeners: Set<() => void> }>(
 const inputs = { phase: "idle" as const, fraction: null, page: "home" as const, scene: "horizon" as const, material: "lattice" as const };
 function renderer() {
   return { capabilities: { webgl2: true as const, floatTargets: true }, material: "solid" as const,
+    melt: 0, press: vi.fn(), release: vi.fn(), shock: vi.fn(),
     resize: vi.fn(), setTier: vi.fn(), setPalette: vi.fn(), setAnchor: vi.fn(), setPointer: vi.fn(),
     draw: vi.fn((_frame: any, _dt: number) => ({ cpuMs: 2, gpuMs: null })), dispose: vi.fn() };
 }
@@ -123,4 +124,56 @@ it("detects an unthrottled RAF bottleneck when GPU timing is unavailable", async
   fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null });
   await render(); await advance(2200, 10);
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
+});
+it("renders every available full-policy RAF callback without an idle frame cap", async () => {
+  await render();
+  const count = fake.draw.mock.calls.length;
+  await advance(100, 120);
+  expect(fake.draw.mock.calls.length - count).toBe(12);
+});
+async function pointer(type: string, target: Element, init: Partial<MouseEventInit> = {}) {
+  await act(async () => {
+    const event = new MouseEvent(type, { clientX: 500, clientY: 400, bubbles: true, button: 0, ...init });
+    Object.assign(event, { pointerId: 1, pointerType: "mouse" }); target.dispatchEvent(event);
+  });
+}
+function target(markup = "<div></div>") { container.insertAdjacentHTML("beforeend", markup); return container.lastElementChild!; }
+it("presses blank home space and turns a short release into one shock", async () => {
+  await render(); const blank = target();
+  await pointer("pointerdown", blank); expect(fake.press).toHaveBeenCalledTimes(1);
+  now += 100; await pointer("pointerup", blank);
+  expect(fake.release).toHaveBeenCalled(); expect(fake.shock).toHaveBeenCalledTimes(1);
+});
+it("does not shock after a hold, drag or a rapid press with residual melt", async () => {
+  await render(); const blank = target();
+  await pointer("pointerdown", blank); now += 500; await pointer("pointerup", blank);
+  expect(fake.shock).not.toHaveBeenCalled();
+  await pointer("pointerdown", blank); await pointer("pointermove", blank, { clientX: 550 }); now += 100;
+  await pointer("pointerup", blank, { clientX: 550 }); expect(fake.shock).not.toHaveBeenCalled();
+  fake.melt = .7; await pointer("pointerdown", blank); now += 50; await pointer("pointerup", blank);
+  expect(fake.shock).not.toHaveBeenCalled(); expect(fake.release).toHaveBeenCalled();
+});
+it("leaves controls, readable copy and drag regions outside the press field", async () => {
+  await render();
+  for (const markup of ['<button>Launch</button>', '<p>Readable text<span></span></p>', '<div data-tauri-drag-region></div>', '<article data-visual-owner="lattice"></article>']) {
+    await pointer("pointerdown", target(markup));
+  }
+  expect(fake.press).not.toHaveBeenCalled();
+});
+it("only presses on home, and disabling motion releases an existing hold", async () => {
+  await render({ page: "content" }); await pointer("pointerdown", target()); expect(fake.press).not.toHaveBeenCalled();
+  await render(); await pointer("pointerdown", target()); expect(fake.press).toHaveBeenCalledTimes(1);
+  await render({ effects: "lite" }); expect(fake.release).toHaveBeenCalled();
+  fake.press.mockClear(); await pointer("pointerdown", target()); expect(fake.press).not.toHaveBeenCalled();
+});
+it("releases a hold on pointer cancellation and blur without adding a shock", async () => {
+  await render(); const blank = target(); await pointer("pointerdown", blank); await pointer("pointercancel", blank);
+  expect(fake.release).toHaveBeenCalled(); fake.release.mockClear();
+  await pointer("pointerdown", blank); window.dispatchEvent(new Event("blur"));
+  expect(fake.release).toHaveBeenCalled(); expect(fake.shock).not.toHaveBeenCalled();
+});
+it("reports solid material when float targets are unavailable without overwriting the request", async () => {
+  fake.capabilities.floatTargets = false; await render();
+  expect(scene().dataset.worldMaterial).toBe("solid");
+  expect(fake.draw.mock.calls.at(-1)![0].lat).toBe(0);
 });

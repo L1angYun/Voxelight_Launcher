@@ -11,11 +11,17 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
   const constants = new Map<string, number>();
   const live = new Set<Handle>();
   const textures: number[][] = [], instances: number[] = [];
+  const floatSizes: number[][] = [], pointCounts: number[] = [], blends: number[][] = [];
+  const passes: { mrt: boolean; width: number; uniforms: Map<string, number>; field: Handle | undefined }[] = [];
   const uniforms = new Map<string, number>();
+  const vectors = new Map<string, [number, number]>();
+  const textureSizes = new Map<Handle, number[]>(), framebufferTextures = new Map<Handle, Map<number, Handle>>();
+  const boundTextures = new Map<number, Handle>();
   const attached = new Map<Handle, Set<Handle>>(), errors: string[] = [];
   let compiled = 0;
   let failShader = false, failFramebuffer = false, floatAttachment = false;
   let currentInternalFormat = 0;
+  let boundTexture: Handle, boundFramebuffer: Handle | null = null, textureUnit = 0, failLargeFloat = false;
   const create = (kind: string) => { const handle = { kind, id: ++sequence }; live.add(handle); return handle; };
   const remove = (handle: Handle | null) => { if (handle) { expect(live.has(handle)).toBe(true); live.delete(handle); } };
   const noOp = () => {};
@@ -46,23 +52,43 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
       if (!attached.get(program)?.delete(shader)) errors.push("INVALID_OPERATION: shader was not attached");
     },
     uniform1f: (location: { name: string }, value: number) => uniforms.set(location.name, value),
+    uniform2f: (location: { name: string }, x: number, y: number) => vectors.set(location.name, [x, y]),
+    activeTexture: (unit: number) => { textureUnit = unit - constant("TEXTURE0"); },
+    bindTexture: (_target: number, texture: Handle) => { boundTexture = texture; boundTextures.set(textureUnit, texture); },
+    bindFramebuffer: (_target: number, framebuffer: Handle | null) => { boundFramebuffer = framebuffer; },
     texImage2D: (_target: number, _level: number, internal: number, width: number, height: number) => {
       currentInternalFormat = internal; textures.push([width, height]);
+      textureSizes.set(boundTexture, [width, height]);
+      if (internal === constant("RGBA32F")) floatSizes.push([width, height]);
     },
-    framebufferTexture2D: () => { floatAttachment ||= currentInternalFormat === constant("RGBA32F"); },
-    checkFramebufferStatus: () => failFramebuffer || (floatAttachment && options.floatComplete === false) ? 0 : constant("FRAMEBUFFER_COMPLETE"),
+    framebufferTexture2D: (_target: number, attachment: number, _textureTarget: number, texture: Handle) => {
+      floatAttachment ||= currentInternalFormat === constant("RGBA32F");
+      if (!framebufferTextures.has(boundFramebuffer!)) framebufferTextures.set(boundFramebuffer!, new Map());
+      framebufferTextures.get(boundFramebuffer!)!.set(attachment, texture);
+    },
+    checkFramebufferStatus: () => failFramebuffer || (floatAttachment && options.floatComplete === false) ||
+      (failLargeFloat && [...(framebufferTextures.get(boundFramebuffer!)?.values() ?? [])].some(texture => (textureSizes.get(texture)?.[0] ?? 0) > 2) && floatAttachment) ? 0 : constant("FRAMEBUFFER_COMPLETE"),
+    drawArrays: (mode: number, _first: number, count: number) => {
+      if (mode === constant("POINTS")) pointCounts.push(count);
+      const attachments = framebufferTextures.get(boundFramebuffer!);
+      const width = attachments?.size ? textureSizes.get(attachments.values().next().value!)?.[0] ?? 0 : 0;
+      passes.push({ mrt: (attachments?.size ?? 0) === 2, width, uniforms: new Map(uniforms), field: boundTextures.get(2) });
+    },
+    blendFunc: (source: number, destination: number) => blends.push([source, destination]),
     drawArraysInstanced: (_mode: number, _first: number, _count: number, count: number) => instances.push(count),
     getQueryParameter: (_query: Handle, name: number) => name === constant("QUERY_RESULT_AVAILABLE") ? true : 2_500_000,
     getError: () => constant("NO_ERROR"), isContextLost: () => false,
   };
-  for (const name of ["shaderSource", "compileShader", "linkProgram", "bindTexture", "texParameteri",
-    "bindFramebuffer", "drawBuffers", "bindRenderbuffer", "renderbufferStorageMultisample", "renderbufferStorage", "framebufferRenderbuffer",
+  for (const name of ["shaderSource", "compileShader", "linkProgram", "texParameteri", "texSubImage2D",
+    "drawBuffers", "bindRenderbuffer", "renderbufferStorageMultisample", "renderbufferStorage", "framebufferRenderbuffer",
     "bindBuffer", "bufferData", "bindVertexArray", "enableVertexAttribArray", "vertexAttribPointer", "useProgram", "uniform1i",
-    "uniform2f", "uniform3fv", "uniformMatrix4fv", "activeTexture", "viewport", "clearColor", "clear", "enable", "disable",
-    "depthMask", "cullFace", "frontFace", "drawArrays", "blitFramebuffer", "beginQuery", "endQuery", "blendFunc"]) methods[name] = noOp;
+    "uniform3fv", "uniformMatrix4fv", "viewport", "clearColor", "clear", "enable", "disable",
+    "depthMask", "cullFace", "frontFace", "blitFramebuffer", "beginQuery", "endQuery"]) methods[name] = noOp;
   function constant(name: string) { if (!constants.has(name)) constants.set(name, enumSequence++); return constants.get(name)!; }
   const gl = new Proxy(methods, { get: (target, name: string) => /^[A-Z][A-Z_0-9]+$/.test(name) ? constant(name) : target[name] }) as unknown as WebGL2RenderingContext;
-  return { gl, live, textures, instances, uniforms, errors, failShader: () => { failShader = true; }, failFramebuffer: () => { failFramebuffer = true; } };
+  return { gl, live, textures, instances, floatSizes, pointCounts, blends, passes, uniforms, vectors, errors,
+    failShader: () => { failShader = true; }, failFramebuffer: () => { failFramebuffer = true; },
+    failLargeFloat: () => { failLargeFloat = true; } };
 }
 const fullTier: Tier = { kind: "animated", grid: 160, particleSide: 256, dprCap: 1.5, forceSolid: false };
 const frame = () => createWorldDirector({ phase: "idle", fraction: null, page: "home", scene: "horizon", material: "lattice" }).step(0, 0);
@@ -77,6 +103,109 @@ function mount(options: Parameters<typeof glBoundary>[0] = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("WebGL renderer boundary", () => {
+  it("allocates lattice simulation lazily and renders the current particle budget", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    expect(t.floatSizes.every(([width]) => width <= 2)).toBe(true);
+    r.draw({ ...frame(), lat: 0 }, .016);
+    expect(t.pointCounts).toEqual([]);
+    expect(t.floatSizes.every(([width]) => width <= 2)).toBe(true);
+    r.draw(frame(), .016);
+    expect(r.material).toBe("lattice");
+    expect(t.pointCounts).toEqual([65536]);
+    expect(t.floatSizes.filter(([width]) => width === 256).length).toBeGreaterThanOrEqual(4);
+    expect(t.passes.filter(pass => pass.mrt && pass.width === 256).length).toBeGreaterThanOrEqual(2);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("finishes the solid transition by releasing particles below the visible lattice boundary", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    const baselineTextures = [...t.live].filter(handle => handle.kind === "texture").length;
+    r.draw(frame(), .016);
+    expect([...t.live].filter(handle => handle.kind === "texture")).toHaveLength(baselineTextures + 5);
+    r.draw({ ...frame(), lat: .1 }, .016);
+    expect(r.material).toBe("lattice");
+    expect(t.uniforms.get("uLat")).toBe(.1);
+    const pointsBefore = t.pointCounts.length, simulationsBefore = t.passes.filter(pass => pass.mrt).length;
+    r.draw({ ...frame(), lat: .0001 }, .016);
+    expect(r.material).toBe("solid");
+    expect(t.pointCounts).toHaveLength(pointsBefore);
+    expect(t.passes.filter(pass => pass.mrt)).toHaveLength(simulationsBefore);
+    expect(t.uniforms.get("uLat")).toBe(0);
+    expect(t.uniforms.get("uDots")).toBe(0);
+    expect([...t.live].filter(handle => handle.kind === "texture")).toHaveLength(baselineTextures);
+    expect(r.capabilities.floatTargets).toBe(true);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("initializes a changed particle budget from the current terrain without a scatter burst", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.draw(frame(), .016);
+    const count = t.live.size;
+    r.setTier({ ...fullTier, grid: 110, particleSide: 160 });
+    r.draw({ ...frame(), profile: 1 }, .016);
+    expect(t.pointCounts.at(-1)).toBe(25600);
+    const initialized = t.passes.filter(pass => pass.mrt && pass.width === 160 && pass.uniforms.get("uInitialize") === 1);
+    expect(initialized.length).toBeGreaterThanOrEqual(1);
+    expect(initialized[0].field).toBeDefined();
+    expect(initialized[0].uniforms.get("uSpan")).toBe(160);
+    expect(initialized[0].uniforms.get("uN")).toBe(110);
+    expect(t.live.size).toBe(count);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("exposes hold melt and shock input while static tiers ignore interaction", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    expect(typeof r.press).toBe("function");
+    expect(typeof r.release).toBe("function");
+    expect(typeof r.shock).toBe("function");
+    r.press([.5, -.6]);
+    for (let index = 0; index < 30; index++) r.draw(frame(), .05);
+    expect(r.melt).toBeGreaterThan(.6);
+    expect(t.uniforms.get("uMeltP")).toBeGreaterThan(.6);
+    r.release();
+    for (let index = 0; index < 30; index++) r.draw(frame(), .05);
+    expect(r.melt).toBeLessThan(.05);
+    r.shock([0, -.5]); r.draw(frame(), .016);
+    expect(t.uniforms.get("uShockT")).toBeGreaterThanOrEqual(0);
+    r.setTier({ kind: "static", grid: 110, particleSide: 0, dprCap: 1, forceSolid: true });
+    const pointCount = t.pointCounts.length;
+    r.press([0, -.5]); r.shock([0, -.5]); r.draw(frame(), .05);
+    expect(r.melt).toBe(0);
+    expect(t.pointCounts).toHaveLength(pointCount);
+    expect(r.material).toBe("solid");
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("keeps solid rendering alive when the real particle allocation fails", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    t.failLargeFloat(); r.draw(frame(), .016);
+    expect(r.capabilities.floatTargets).toBe(false);
+    expect(r.material).toBe("solid");
+    expect(t.callbacks.onLost).not.toHaveBeenCalled();
+    expect(t.instances.at(-1)).toBe(25600);
+    expect(t.pointCounts).toEqual([]);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("uses normal alpha points and skips bloom on paper", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.setPalette({ ink: [1, 1, 1], point: [.1, .1, .1], accent: [.3, .6, .2], haze: [.95, .95, .95], light: true });
+    r.draw(frame(), .016);
+    expect(t.pointCounts).toEqual([65536]);
+    expect(t.blends.at(-1)).toEqual([t.gl.SRC_ALPHA, t.gl.ONE_MINUS_SRC_ALPHA]);
+    expect(t.uniforms.get("uAmt")).toBe(0);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("preserves animated solid terrain pointer feedback without allocating particles", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.setPointer([.5, -.6]); r.draw({ ...frame(), lat: 0 }, .05);
+    expect(t.uniforms.get("uPtrOn")).toBeGreaterThan(0);
+    expect(t.pointCounts).toEqual([]);
+    expect(t.floatSizes.every(([width]) => width <= 2)).toBe(true);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
   it("returns null when WebGL2 creation is unavailable or throws", () => {
     const canvas = document.createElement("canvas");
     const getContext = vi.spyOn(canvas, "getContext").mockReturnValue(null);
@@ -135,11 +264,12 @@ describe("WebGL renderer boundary", () => {
     expect(result.cpuMs).toBeGreaterThanOrEqual(0);
     expect(result.gpuMs).toBeNull();
     expect(raf).not.toHaveBeenCalled();
+    expect(t.floatSizes.every(([width]) => width <= 2)).toBe(true);
     r.dispose(); vi.unstubAllGlobals();
   });
 
   it("rebuilds once after context loss and stays failed after a second loss", () => {
-    const t = mount(); const r = t.renderer!;
+    const t = mount({ float: true }); const r = t.renderer!;
     const lost = new Event("webglcontextlost", { cancelable: true });
     t.canvas.dispatchEvent(lost);
     expect(lost.defaultPrevented).toBe(true);
@@ -147,6 +277,7 @@ describe("WebGL renderer boundary", () => {
     t.canvas.dispatchEvent(new Event("webglcontextrestored"));
     expect(t.callbacks.onRestored).toHaveBeenCalledTimes(1);
     r.draw(frame(), 0); expect(t.instances).toHaveLength(1);
+    expect(t.pointCounts).toEqual([65536]);
     t.canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
     t.canvas.dispatchEvent(new Event("webglcontextrestored"));
     r.draw(frame(), 0); expect(t.instances).toHaveLength(1);

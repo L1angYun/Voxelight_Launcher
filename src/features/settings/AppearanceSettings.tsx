@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import type { CSSProperties } from "react";
+import { useId, type CSSProperties } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Image, X } from "lucide-react";
 import { command, type Config } from "../../lib/launcher";
@@ -7,12 +7,17 @@ import { useAppearance } from "../../app/AppearanceProvider";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import type { SettingsSectionProps } from "./types";
+import { useWorldAvailability } from "../../components/world/worldAvailability";
 
 const accentPresets = ["#b4f17a", "#78ded5", "#a9a2ef", "#f1b889", "#ee9ec5", "#86bbf4"];
 
 export function AppearanceSettings({ config, onChange, onPersistedPatch, onError, onNotice }: SettingsSectionProps) {
   const { t } = useTranslation();
   const appearance = useAppearance();
+  const availability = useWorldAvailability();
+  const materialNoticeId = useId();
+  const materialNotice = availability === "css" ? t("settings:worldMaterial.cssFallback")
+    : availability === "solid-only" && config.worldMaterial === "lattice" ? t("settings:worldMaterial.solidFallback") : "";
 
   async function background(path?: string) {
     try {
@@ -92,6 +97,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
             {t("settings:fields.worldMaterial")}
             <Select
               aria-label={t("settings:fields.worldMaterial")}
+              aria-describedby={materialNotice ? materialNoticeId : undefined}
               value={config.worldMaterial}
               onChange={(v) => onChange({ ...config, worldMaterial: v as Config["worldMaterial"] })}
               options={[
@@ -99,6 +105,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
                 { value: "solid", label: t("settings:worldMaterial.solid") },
               ]}
             />
+            {materialNotice ? <small id={materialNoticeId} role="status">{materialNotice}</small> : null}
           </label>
           <label>
             {t("settings:fields.accentSource")}

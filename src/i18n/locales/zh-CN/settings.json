@@ -73,7 +73,9 @@
   },
   "worldMaterial": {
     "lattice": "点阵",
-    "solid": "实体"
+    "solid": "实体",
+    "solidFallback": "当前设备无法使用浮点粒子渲染，已暂用实体材质；你的点阵选择仍会保留。",
+    "cssFallback": "三维世界暂不可用，已使用静态点阵背景；游戏启动功能不受影响。"
   },
   "accent": {
     "voxelight": "Voxelight 绿",

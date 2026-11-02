@@ -68,7 +68,7 @@ void main() {
   o = vec4(floor(encoded / 256.) / 255., mod(encoded, 256.) / 255., (1. - shadow) * cloud, heat);
 }`;
 
-// Shared with the later point pass. uLat=0 is always enforced by the solid renderer.
+// Shared by the voxel and point passes so both materials use the same boundary.
 export const CRYSTAL_GLSL = `
 uniform float uLat, uCry, uIsland, uMelt, uMask;
 uniform vec2 uOrigin, uMeltAt;
@@ -84,6 +84,108 @@ float crystal(vec2 c, float heat, float m) {
   float core = uMask * m * m;
   float melt = uMelt * exp(-pow(length(c - uMeltAt) / 9., 2.));
   return mix(1., max(max(island, front), max(trail, core)) * (1. - melt), uLat);
+}`;
+
+export const SIMULATION_FRAGMENT = `#version 300 es
+precision highp float;
+layout(location=0) out vec4 oP;
+layout(location=1) out vec4 oV;
+uniform sampler2D uPos, uVel, uField, uWord;
+uniform float uN, uS, uSpan, uTime, uDt, uInitialize;
+uniform float uMorphStart, uMorphDur, uToWord, uFromWord, uTransit, uMeltP, uPtrOn, uShockT, uRing;
+uniform vec2 uOffset, uPtr, uPtrVel, uMeltAtP, uShockAt, uOriginP;
+float rnd(vec2 p) {
+  p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19);
+  return fract((p.x + p.y) * p.x);
+}
+vec3 abc(vec3 p, float t) {
+  return vec3(sin(p.z + t * .13) + .43 * cos(p.y - t * .11),
+    .7 * sin(p.x + t * .07) + cos(p.z + t * .05),
+    .43 * sin(p.y - t * .09) + .7 * cos(p.x + t * .12));
+}
+void main() {
+  ivec2 id = ivec2(gl_FragCoord.xy);
+  vec2 uv = (vec2(id) + .5) / uS;
+  vec2 site = (uv - .5) * uSpan + uOffset;
+  vec4 f = texelFetch(uField, clamp(ivec2(uv * uN), ivec2(0), ivec2(int(uN) - 1)), 0);
+  float h = (f.r * 255. * 256. + f.g * 255.) / 65535. * 40.;
+  vec3 terrain = vec3(site.x, h + .62, site.y);
+  // New tiers start on the current GPU terrain, never in a random scatter.
+  if (uInitialize > .5) { oP = vec4(terrain, 0.); oV = vec4(0.); return; }
+  vec4 P = texelFetch(uPos, id, 0), V = texelFetch(uVel, id, 0), W = texelFetch(uWord, id, 0);
+  float seed = rnd(uv), seed2 = rnd(uv + .37);
+  float releaseAt = uMorphStart + (seed * .45 + uv.x * .55) * uMorphDur;
+  float since = uTime - releaseAt;
+  bool after = since >= 0.;
+  bool word = W.w > .5 && (uToWord > .5 ? after : (uFromWord > .5 && !after));
+  vec3 goal = word ? W.xyz : terrain;
+  float k = after ? 38. * smoothstep(.05, .75, since) : 38.;
+  float flow = after ? uTransit * (1. - smoothstep(0., 1., since)) : 0.;
+  float dm = length(P.xz - uMeltAtP);
+  float hf = uMeltP * exp(-dm * dm / 81.);
+  k *= 1. - .97 * hf; flow += hf * 42.;
+  vec3 acc = (goal - P.xyz) * k;
+  acc += abc(P.xyz * .16 + vec3(seed, seed2, seed + seed2) * 6.2831, uTime) * flow;
+  acc += vec3(-(P.z - uMeltAtP.y), 0., P.x - uMeltAtP.x) * hf * 3.;
+  acc.y += hf * 14.;
+  vec2 dp = P.xz - uPtr;
+  float dd = length(dp), fp = exp(-dd * dd / 30.) * uPtrOn;
+  vec2 n = dp / max(dd, .001);
+  acc.xz += (n * 150. + vec2(-n.y, n.x) * 70. + uPtrVel * 5.) * fp;
+  acc.y += fp * 80.;
+  float st = uTime - uShockT;
+  if (st > 0. && st < 1.8) {
+    vec2 ds = P.xz - uShockAt; float l = length(ds);
+    float e = exp(-pow((l - st * 42.) / 4.5, 2.)) * (1. - st / 1.8);
+    acc.xz += ds / max(l, .001) * e * 520.; acc.y += e * 520.;
+  }
+  if (uRing > 0.) {
+    float e = exp(-pow((length(site - uOriginP) - uRing) / 3.2, 2.));
+    acc.y += e * 360. * (.4 + seed);
+  }
+  vec3 velocity = (V.xyz + acc * uDt) * exp(-6.5 * uDt);
+  P.xyz += velocity * uDt;
+  P.w += ((word ? 1. : 0.) - P.w) * min(1., uDt * (word ? 3. : 6.));
+  oP = P; oV = vec4(velocity, hf);
+}`;
+
+export const POINT_VERTEX = `#version 300 es
+uniform sampler2D uPos, uVel, uField;
+uniform mat4 uVP;
+uniform vec3 uEye;
+uniform vec2 uOffset;
+uniform float uN, uS, uSpan, uDpr, uFogD, uRunDim;
+${CRYSTAL_GLSL}
+out float vAlpha, vHot;
+void main() {
+  ivec2 id = ivec2(gl_VertexID % int(uS), gl_VertexID / int(uS));
+  vec4 P = texelFetch(uPos, id, 0), V = texelFetch(uVel, id, 0);
+  vec2 uv = (vec2(id) + .5) / uS, c = (uv - .5) * uSpan + uOffset;
+  vec4 f = texelFetch(uField, clamp(ivec2(uv * uN), ivec2(0), ivec2(int(uN) - 1)), 0);
+  float h = (f.r * 255. * 256. + f.g * 255.) / 65535. * 40.;
+  float cr = crystal(c, f.a, maskM(c)), speed = length(V.xyz), dist = length(P.xyz - uEye);
+  float fog = exp(-pow(dist / (uFogD * 1.12), 3.));
+  float flying = smoothstep(.6, 3.5, length(P.xz - c));
+  float alpha = (.13 + .62 * f.b * (.55 + .45 * smoothstep(3., 20., h))) * (1. - smoothstep(.35, .9, cr));
+  alpha = max(alpha, flying * .55) * fog * uRunDim;
+  vAlpha = mix(alpha, .95, P.w) * uLat;
+  vHot = clamp((speed - 7.) * .035 + V.w * 1.2, 0., 1.);
+  gl_Position = uVP * vec4(P.xyz, 1.);
+  gl_PointSize = uDpr * (1.15 + P.w * .9 + min(speed, 30.) * .035) * clamp(58. / max(dist, .001), .72, 2.7);
+}`;
+
+export const POINT_FRAGMENT = `#version 300 es
+precision highp float;
+in float vAlpha, vHot;
+out vec4 o;
+uniform vec3 uAccent, uPoint;
+uniform float uLight;
+void main() {
+  float d = 1. - smoothstep(.3, .5, length(gl_PointCoord - .5));
+  float alpha = d * vAlpha;
+  if (alpha < .004) discard;
+  vec3 color = mix(uPoint, uAccent, vHot);
+  o = uLight > .5 ? vec4(color, alpha) : vec4(color * alpha * (1. + vHot), 1.);
 }`;
 
 export const VOXEL_VERTEX = `#version 300 es

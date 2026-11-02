@@ -18,7 +18,7 @@
 
 - 默认值：`worldScene: "horizon"`，`worldMaterial: "lattice"`；新安装和升级用户相同。
 - 粒子预算：完全档 65,536 点（纹理 256²）+ 160×160 方块，DPR 上限 1.5；降档 DPR 1.0，再降 25,600 点（160²）+ 110×110 方块。
-- 帧率：空闲上限 30 FPS，有鼠标交互、切页或启动时上限 60 FPS。
+- 帧率：2026-11-02 用户明确取消 30/60 FPS 上限；完全档每个可用 rAF 绘制，静态、隐藏和运行后停绘规则保留。
 - 开场全程不超过 2.5 秒，每次打开应用最多一次，只在首页播放；导航和启动按钮从第一帧起可用。
 - 信号色只用 `--accent`，含用户自定义强调色；静止的点不使用信号色。
 - 深色场景底色 `--world-ink: #07080b`，点色 `#ece7da`；不修改全局 `--bg-base`。
@@ -272,7 +272,6 @@ git commit -m "feat: add world camera and director"
   export function selectTier(cap: { webgl2: boolean; floatTargets: boolean; effects: EffectsLevel; reducedMotion: boolean; highContrast: boolean }): Tier;
   export function nextTier(tier: Tier): Tier | null;
   export function createFrameBudget(budgetMs: number, windowMs?: number): { sample(dtMs: number): "hold" | "downgrade" };
-  export function frameIntervalMs(active: boolean): number;
 
   export function isBlankPress(target: EventTarget | null): boolean;
   ```
@@ -301,7 +300,7 @@ it("downgrades only after a sustained 2s overrun", () => {
   let r; for (let i = 0; i < 60; i++) r = b.sample(40);
   expect(r).toBe("downgrade");
 });
-it("frame caps", () => { expect(frameIntervalMs(false)).toBeCloseTo(1000 / 30); expect(frameIntervalMs(true)).toBeCloseTo(1000 / 60); });
+// 2026-11-02 用户取消帧率上限；外壳测试断言完全档每个可用 rAF 都绘制。
 ```
 
 `wordmark.test.ts`：长度 `256*256*4`；`w=1` 的点数等于 `Math.ceil(65536/9)`；传入固定 `random` 时结果确定；所有目标在相机前方。
@@ -337,7 +336,7 @@ git commit -m "feat: add wordmark targets, quality tiers and press filter"
 - Modify: `src/app/App.tsx:36-42`, `tests/unit/character-animation.test.mjs:120,128-133,262,289`, `tests/e2e/global-glass.spec.ts:17,173-175`, `tests/e2e/round6-acceptance.spec.ts:130-184`, `tests/e2e/round12-runtime-probe.spec.ts:4`, `tests/e2e/round15-runtime.spec.ts:1-37`
 
 **Interfaces:**
-- Consumes: Task 2 的 `WorldFrame`、`createWorldDirector`，Task 3 的 `Tier`、`selectTier`、`nextTier`、`createFrameBudget`、`frameIntervalMs`。
+- Consumes: Task 2 的 `WorldFrame`、`createWorldDirector`，Task 3 的 `Tier`、`selectTier`、`nextTier`、`createFrameBudget`。
 - Produces:
   ```ts
   export interface WorldPalette { ink: RGB; point: RGB; accent: RGB; haze: RGB; light: boolean }
@@ -392,7 +391,7 @@ Expected: FAIL，找不到 `.world-scene__canvas`。
 
 - [ ] **Step 5: 实现 `WorldScene.tsx` 和 CSS**
 
-外壳沿用现有的 `useMediaQuery`、可见性、`IntersectionObserver`、`ResizeObserver` 和主题 `MutationObserver` 写法。从 `--accent`、`--bg-base` 读调色板；无法解析的颜色回退 `#b4f17a`。主循环按 `frameIntervalMs(frame.active)` 节流，`frame.settled` 或 `paused` 时停止调度；帧时间喂给 `createFrameBudget(16.7)`，返回 `downgrade` 时 `setTier(nextTier(tier))`，为 `null` 时保持。删除 `::before`、`::after` 光束。CSS 降级：`--world-ink` 底色加 `radial-gradient` 点阵，深浅主题都定义。
+外壳沿用现有的 `useMediaQuery`、可见性、`IntersectionObserver`、`ResizeObserver` 和主题 `MutationObserver` 写法。从 `--accent`、`--bg-base` 读调色板；无法解析的颜色回退 `#b4f17a`。按 2026-11-02 用户修订，主循环每个可用 rAF 绘制，`frame.settled` 或 `paused` 时停止调度。分别记录 CPU/GPU 耗时及回调间隔；GPU 计时不可用时以独立 rAF 间隔回退，预算窗口不混用来源。`createFrameBudget(16.7)` 返回 `downgrade` 时 `setTier(nextTier(tier))`，为 `null` 时保持。删除 `::before`、`::after` 光束。CSS 降级：`--world-ink` 底色加 `radial-gradient` 点阵，深浅主题都定义。
 
 - [ ] **Step 6: 运行全部相关测试**
 
@@ -452,6 +451,8 @@ Run: 同 Step 2。Expected: PASS。
 运行 `npm run desktop:dev`，在开发者工具中注入 rAF 差值采样，点阵和实体材质分别在空闲和鼠标交互下采样 10 秒，算 p50、p95。请用户在 Windows“图形设置”里分别把应用指定为高性能（RTX 5080）和节能（Intel 集成显卡），这是系统设置，由用户操作。把设备、WebView2 版本、分辨率和各档结果写入 `docs/world-performance.md`。
 
 通过标准：集成显卡 25,600 点档 p95 不超过 33ms。未通过时停下，把数据告诉用户，由用户确认后再调整 `selectTier`（如该类设备默认回退实体材质）。
+
+2026-11-02 用户确认：RTX 完整原生界面实测通过后，允许继续 Task 6–8，Intel 测量改为最终人工验收。Intel 未测不得标成通过；这项延期不授权擅自修改设备回退预算。
 
 - [ ] **Step 7: Commit**
 

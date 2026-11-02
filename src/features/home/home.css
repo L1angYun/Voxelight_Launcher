@@ -30,6 +30,7 @@
 }
 .vx-home__identity { min-width: 0; }
 .vx-home__console-name {
+  user-select: text;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;

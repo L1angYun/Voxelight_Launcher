@@ -3,8 +3,10 @@ import { useEffect, useRef } from "react";
 import type { EffectsLevel } from "../lib/launcher";
 import { createWorldDirector, type WorldFrame } from "./world/worldDirector";
 import { createWorldRenderer, type RGB, type WorldPalette, type WorldRenderer } from "./world/renderer";
-import { createFrameBudget, frameIntervalMs, nextTier, selectTier, type Tier } from "./world/qualityTier";
+import { createFrameBudget, nextTier, selectTier, type Tier } from "./world/qualityTier";
 import type { WorldMaterial, WorldPage, WorldPhase, WorldSceneId } from "./world/types";
+import { isBlankPress } from "./world/pointerTarget";
+import { publishWorldAvailability } from "./world/worldAvailability";
 import "./WorldScene.css";
 
 export interface WorldSceneProps {
@@ -45,30 +47,38 @@ export function WorldScene(props: WorldSceneProps) {
     let budgetSource: "gpu" | "raf" | null = null;
     let width = 1, height = 1, tier: Tier;
     let renderer: WorldRenderer | null = null;
+    let pointerBound = false;
+    let held: { id: number; start: number; x: number; y: number; moved: number } | null = null;
     let budget = createFrameBudget(16.7);
-    const requestedInputs = () => ({ phase: current.current.phase, fraction: current.current.fraction, page: current.current.page, scene: current.current.scene,
-      // Task 4 renders solid; Task 5 enables the requested particle material.
-      material: renderer?.material ?? "solid" as WorldMaterial });
-    const director = createWorldDirector(requestedInputs());
+    const userInputs = () => ({ phase: current.current.phase, fraction: current.current.fraction, page: current.current.page, scene: current.current.scene, material: current.current.material });
+    const requestedInputs = () => ({ ...userInputs(), material: !renderer?.capabilities.floatTargets || tier?.forceSolid ? "solid" as WorldMaterial : current.current.material });
+    const director = createWorldDirector(userInputs());
     let lastFrame = director.step(0, performance.now());
     const permitted = () => !disposed && !lost && !current.current.paused && !document.hidden && visible;
     function stop() {
       if (animation !== null) cancelAnimationFrame(animation);
       animation = null; lastDraw = null; previousTick = null; lastGpuAt = null; budgetSource = null;
+      finishPress();
     }
     function publish(frame: WorldFrame) {
       host!.dataset.worldFrames = String(drawn);
       host!.dataset.worldMaterial = renderer?.material ?? "solid";
       host!.dataset.worldPhase = current.current.phase;
       host!.dataset.worldTier = lost || !renderer ? "css" : tier.kind;
+      host!.dataset.worldGrid = String(tier.grid);
+      host!.dataset.worldParticles = String(renderer?.material === "lattice" ? tier.particleSide ** 2 : 0);
+      host!.dataset.worldDpr = (canvas!.width / width).toFixed(3);
       host!.dataset.motion = tier?.kind === "animated" ? "full" : "reduced";
       host!.dataset.paused = String(!permitted());
       lastFrame = frame;
+      publishWorldAvailability(lost || !renderer ? "css" : renderer.capabilities.floatTargets ? "available" : "solid-only");
+      syncPointerBindings();
     }
-    function fallback() { lost = true; stop(); host!.dataset.worldTier = "css"; host!.dataset.paused = "true"; }
+    function fallback() { lost = true; stop(); host!.dataset.worldTier = "css"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
     function sample(source: "gpu" | "raf", costMs: number, elapsedMs: number) {
       if (tier.kind !== "animated" || elapsedMs <= 0) return;
       if (source !== budgetSource) { budget = createFrameBudget(16.7); budgetSource = source; }
+      host!.dataset.worldBudgetSource = source;
       if (budget.sample(costMs, elapsedMs) !== "downgrade") return;
       const next = nextTier(tier);
       if (next) { downgrades++; tier = next; renderer?.setTier(tier); fit(); }
@@ -77,9 +87,11 @@ export function WorldScene(props: WorldSceneProps) {
       if (!renderer || !permitted()) return;
       const frame = tier.kind === "static" ? director.snap() : director.step(dt, now);
       try {
+        const floatSupport = renderer.capabilities.floatTargets;
         const result = renderer.draw(frame, dt);
         if (lost) return;
         drawn++; lastDraw = now;
+        if (floatSupport !== renderer.capabilities.floatTargets) { update(true); return; }
         if (result) {
           lastCpuMs = result.cpuMs;
           host!.dataset.worldCpuMs = result.cpuMs.toFixed(3);
@@ -97,10 +109,8 @@ export function WorldScene(props: WorldSceneProps) {
       if (!permitted() || tier.kind !== "animated" || lastFrame.settled) { publish(lastFrame); return; }
       const callbackGap = previousTick === null ? 0 : Math.max(0, now - previousTick);
       previousTick = now;
-      if (lastDraw === null || now - lastDraw + .2 >= frameIntervalMs(lastFrame.active)) {
-        paint(now, lastDraw === null ? 0 : Math.max(0, Math.min(.05, (now - lastDraw) / 1000)));
-      }
-      // This is the unthrottled callback cadence, not the intentional idle draw gap.
+      paint(now, lastDraw === null ? 0 : Math.max(0, Math.min(.05, (now - lastDraw) / 1000)));
+      // GPU timing and callback cadence stay separate; animated frames are uncapped.
       if (lastGpuAt === null || now - lastGpuAt > 500) {
         try { sample("raf", Math.max(lastCpuMs, callbackGap), callbackGap); } catch { fallback(); }
       }
@@ -122,13 +132,14 @@ export function WorldScene(props: WorldSceneProps) {
       const reducedMotion = Boolean(input.reducedMotion || reduce?.matches || html.dataset.reducedMotion === "true");
       const highContrast = Boolean(contrast?.matches || forced?.matches || html.dataset.highContrast === "true");
       const nextPalette = palette(), paletteKey = JSON.stringify(nextPalette);
-      const key = JSON.stringify([input.phase, input.fraction, input.page, input.scene, input.material, input.paused, input.effects, reducedMotion, highContrast, document.hidden, visible, lost]);
+      const key = JSON.stringify([input.phase, input.fraction, input.page, input.scene, input.material, input.paused, input.effects, reducedMotion, highContrast, document.hidden, visible, lost, Boolean(fine?.matches)]);
       if (!force && key === lastKey && paletteKey === lastPalette) return;
       lastKey = key; stop();
       tier = selectTier({ webgl2: Boolean(renderer) && !lost, floatTargets: Boolean(renderer?.capabilities.floatTargets), effects: input.effects ?? "full", reducedMotion, highContrast });
       for (let index = 0; index < downgrades; index++) tier = nextTier(tier) ?? tier;
       budget = createFrameBudget(16.7);
       director.setInputs(requestedInputs());
+      if (drawn === 0) director.snap();
       try {
         renderer?.setTier(tier);
         if (paletteKey !== lastPalette) { renderer?.setPalette(nextPalette); lastPalette = paletteKey; }
@@ -140,13 +151,41 @@ export function WorldScene(props: WorldSceneProps) {
     try {
       renderer = createWorldRenderer(canvas, { onLost: fallback, onRestored: () => { if (!disposed) { lost = false; update(true); } } });
     } catch { renderer = null; }
+    const ndc = (event: PointerEvent): [number, number] => {
+      const rect = host.getBoundingClientRect();
+      return [(event.clientX - rect.left) / width * 2 - 1, 1 - (event.clientY - rect.top) / height * 2];
+    };
     const move = (event: PointerEvent) => {
       if (!permitted() || tier.kind !== "animated" || !fine?.matches || event.pointerType === "touch" || lastFrame.settled) return;
-      const rect = host.getBoundingClientRect();
-      renderer?.setPointer([(event.clientX - rect.left) / width * 2 - 1, 1 - (event.clientY - rect.top) / height * 2]);
+      renderer?.setPointer(ndc(event));
+      if (held && held.id === event.pointerId) held.moved = Math.max(held.moved, Math.hypot(event.clientX - held.x, event.clientY - held.y));
       director.noteInteraction(performance.now()); start();
     };
-    const leave = () => { renderer?.setPointer(null); };
+    const down = (event: PointerEvent) => {
+      if (!permitted() || tier.kind !== "animated" || !fine?.matches || event.pointerType === "touch" || event.button !== 0 || current.current.page !== "home" || lastFrame.settled || !isBlankPress(event.target) || held) return;
+      held = { id: event.pointerId, start: performance.now(), x: event.clientX, y: event.clientY, moved: 0 };
+      renderer?.setPointer(ndc(event)); renderer?.press(ndc(event)); director.noteInteraction(performance.now()); start();
+    };
+    function finishPress(event?: PointerEvent, tap = false) {
+      if (!held || event && event.pointerId !== held.id) return;
+      const shock = tap && event && performance.now() - held.start < 300 && held.moved < 8 && (renderer?.melt ?? 0) < .3 && isBlankPress(event.target);
+      held = null; renderer?.release();
+      if (shock && event) renderer?.shock(ndc(event));
+    }
+    const up = (event: PointerEvent) => { finishPress(event, true); director.noteInteraction(performance.now()); start(); };
+    const cancel = (event: PointerEvent) => finishPress(event);
+    const leave = () => { finishPress(); renderer?.setPointer(null); };
+    function syncPointerBindings() {
+      const bind = permitted() && tier?.kind === "animated" && Boolean(fine?.matches) && !lastFrame.settled;
+      if (bind === pointerBound) return;
+      pointerBound = bind;
+      const handlers: Array<[string, EventListener]> = [["pointermove", move as EventListener], ["pointerdown", down as EventListener], ["pointerup", up as EventListener], ["pointercancel", cancel as EventListener], ["pointerleave", leave], ["blur", leave]];
+      if (!bind) leave();
+      for (const [name, handler] of handlers) {
+        if (bind) window.addEventListener(name, handler, { passive: true });
+        else window.removeEventListener(name, handler);
+      }
+    }
     const changed = () => update();
     const resized = () => update(true);
     const mutations = new MutationObserver(records => { if (records.some(record => record.target === html)) update(); });
@@ -161,15 +200,13 @@ export function WorldScene(props: WorldSceneProps) {
     queries.forEach(value => value?.addEventListener?.("change", changed));
     document.addEventListener("visibilitychange", changed);
     window.addEventListener("resize", resized);
-    window.addEventListener("pointermove", move, { passive: true });
-    window.addEventListener("pointerleave", leave); window.addEventListener("blur", leave);
     runtime.current = { update }; update();
     return () => {
       disposed = true; stop(); runtime.current = null;
+      syncPointerBindings(); publishWorldAvailability("unknown");
       mutations.disconnect(); resize?.disconnect(); intersection?.disconnect();
       queries.forEach(value => value?.removeEventListener?.("change", changed));
       document.removeEventListener("visibilitychange", changed); window.removeEventListener("resize", resized);
-      window.removeEventListener("pointermove", move); window.removeEventListener("pointerleave", leave); window.removeEventListener("blur", leave);
       renderer?.dispose();
     };
   }, []);

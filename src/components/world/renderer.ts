@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-import { groundHit, makeCamera, type Vec3 } from "./camera";
+import { groundHit, makeCamera, type Camera, type Vec3 } from "./camera";
 import type { Tier } from "./qualityTier";
 import type { WorldMaterial } from "./types";
 import type { WorldFrame } from "./worldDirector";
+import { buildWordTargets } from "./wordmark";
 import { BLUR_FRAGMENT, COMPOSITE_FRAGMENT, FULLSCREEN_VERTEX, SKY_FRAGMENT, TERRAIN_FRAGMENT,
-  THRESHOLD_FRAGMENT, VOXEL_FRAGMENT, VOXEL_VERTEX } from "./shaders";
+  THRESHOLD_FRAGMENT, VOXEL_FRAGMENT, VOXEL_VERTEX, SIMULATION_FRAGMENT, POINT_VERTEX, POINT_FRAGMENT } from "./shaders";
 
 export type RGB = readonly [number, number, number];
 export interface WorldPalette { ink: RGB; point: RGB; accent: RGB; haze: RGB; light: boolean }
@@ -12,11 +13,15 @@ export interface WorldDrawMetrics { cpuMs: number; gpuMs: number | null }
 export interface WorldRenderer {
   readonly capabilities: { webgl2: true; floatTargets: boolean };
   readonly material: WorldMaterial;
+  readonly melt: number;
   resize(cssWidth: number, cssHeight: number, dpr: number): void;
   setTier(tier: Tier): void;
   setPalette(palette: WorldPalette): void;
   setAnchor(ndc: [number, number]): void;
   setPointer(ndc: [number, number] | null): void;
+  press(ndc: [number, number]): void;
+  release(): void;
+  shock(ndc: [number, number]): void;
   draw(frame: WorldFrame, dtSeconds: number): WorldDrawMetrics;
   dispose(): void;
 }
@@ -39,6 +44,11 @@ class ResourceScope {
   }
 }
 interface FieldResources { scope: ResourceScope; targets: [Target, Target]; read: number; grid: number }
+interface ParticleTarget { position: WebGLTexture; velocity: WebGLTexture; framebuffer: WebGLFramebuffer }
+interface ParticleResources {
+  scope: ResourceScope; targets: [ParticleTarget, ParticleTarget]; word: WebGLTexture;
+  simulation: Program; points: Program; side: number; read: number; initialized: boolean; wordKey: string;
+}
 interface SurfaceResources {
   scope: ResourceScope; scene: Target; bloom: [Target, Target];
   drawFramebuffer: WebGLFramebuffer; multisampled: boolean; width: number; height: number;
@@ -48,6 +58,7 @@ interface CoreResources {
   terrain: Program; voxel: Program; sky: Program; threshold: Program; blur: Program; composite: Program;
 }
 const SPAN = 160;
+const LATTICE_EPSILON = .01;
 const OFFSET: [number, number] = [0, -46];
 const SUN_LENGTH = Math.hypot(.72, .4, .16);
 const SUN: RGB = [.72 / SUN_LENGTH, .4 / SUN_LENGTH, .16 / SUN_LENGTH];
@@ -80,9 +91,13 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   const capabilities: { webgl2: true; floatTargets: boolean } = { webgl2: true, floatTargets: false };
   let palette = DEFAULT_PALETTE, tier = { ...DEFAULT_TIER };
   let core: CoreResources | null = null, field: FieldResources | null = null, surface: SurfaceResources | null = null;
+  let particles: ParticleResources | null = null, actualMaterial: WorldMaterial = "solid";
   let cssWidth = 2, cssHeight = 2, requestedDpr = 1;
   let anchor: [number, number] = [.62, -.66], pointer: [number, number] | null = null;
   let pointerStrength = 0, pointerMovedAt = -Infinity, terrainTime = 0;
+  let lastHit: [number, number] | null = null, holding = false, holdTime = 0, meltAmount = 0;
+  let meltAt: [number, number] = [99999, 99999], shockAt: [number, number] = [99999, 99999];
+  let pendingShock: [number, number] | null = null, shockTime = -9;
   let lost = false, terminal = false, disposed = false, lossCount = 0;
   let timer: TimerExtension | null = null;
   let pendingQueries: WebGLQuery[] = [];
@@ -121,7 +136,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + attachment, gl.TEXTURE_2D, texture, 0);
       }
       gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
-      return gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      return gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE && gl.getError() === gl.NO_ERROR;
     } catch { return false; }
     finally { scope.dispose(); gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
   }
@@ -171,6 +186,40 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       for (const item of targets) { gl.bindFramebuffer(gl.FRAMEBUFFER, item.framebuffer); gl.clear(gl.COLOR_BUFFER_BIT); }
       return { scope, targets, read: 0, grid };
     } catch (error) { scope.dispose(); throw error; }
+  }
+  function createParticles(side: number): ParticleResources {
+    const scope = new ResourceScope();
+    try {
+      const simulation = program(scope, FULLSCREEN_VERTEX, SIMULATION_FRAGMENT);
+      const points = program(scope, POINT_VERTEX, POINT_FRAGMENT);
+      const pair = (): ParticleTarget => {
+        const framebuffer = ownFramebuffer(scope), position = ownTexture(scope), velocity = ownTexture(scope);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        for (const [index, texture] of [position, velocity].entries()) {
+          textureStorage(texture, side, side, true, gl.NEAREST);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + index, gl.TEXTURE_2D, texture, 0);
+        }
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]); assertFramebuffer();
+        return { position, velocity, framebuffer };
+      };
+      const targets: [ParticleTarget, ParticleTarget] = [pair(), pair()];
+      const word = ownTexture(scope); textureStorage(word, side, side, true, gl.NEAREST);
+      if (gl.getError() !== gl.NO_ERROR) throw new Error("World float texture allocation failed");
+      return { scope, targets, word, simulation, points, side, read: 0, initialized: false, wordKey: "" };
+    } catch (error) { scope.dispose(); throw error; }
+    finally { gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
+  }
+  function clearInteraction(clearPointer = true) {
+    holding = false; holdTime = 0; meltAmount = 0;
+    if (clearPointer) pointerStrength = 0;
+    lastHit = null; pendingShock = null; shockTime = -9;
+    meltAt = [99999, 99999]; shockAt = [99999, 99999];
+  }
+  function releaseParticles() {
+    particles?.scope.dispose(); particles = null; actualMaterial = "solid";
+  }
+  function particleMaterialAllowed() {
+    return tier.kind === "animated" && !tier.forceSolid && tier.particleSide > 0 && capabilities.floatTargets;
   }
   function samples(): number {
     try {
@@ -227,7 +276,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   }
   function clearQueries() { for (const query of pendingQueries) gl.deleteQuery(query); pendingQueries = []; }
   function releaseResources() {
-    clearQueries(); surface?.scope.dispose(); field?.scope.dispose(); core?.scope.dispose();
+    clearQueries(); releaseParticles(); clearInteraction(); surface?.scope.dispose(); field?.scope.dispose(); core?.scope.dispose();
     surface = null; field = null; core = null;
   }
   function rebuild() {
@@ -282,6 +331,40 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     }
     return value;
   }
+  function crystalUniforms(p: Program, frame: WorldFrame, lat: number, origin: [number, number]) {
+    scalar(p, "uLat", lat); scalar(p, "uCry", frame.cry); scalar(p, "uIsland", frame.island);
+    scalar(p, "uMelt", meltAmount); scalar(p, "uMask", frame.mask);
+    vector2(p, "uOrigin", origin); vector2(p, "uMeltAt", meltAt);
+  }
+  function simulate(frame: WorldFrame, dt: number, terrain: WebGLTexture, camera: Camera, aspect: number,
+    hit: [number, number] | null, velocity: [number, number], origin: [number, number]) {
+    const p = particles!, sim = p.simulation;
+    if (frame.introActive) {
+      const key = [aspect, ...frame.eye, ...frame.at, frame.fov].join(",");
+      if (p.wordKey !== key) {
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, p.word);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, p.side, p.side, gl.RGBA, gl.FLOAT, buildWordTargets(camera, aspect, p.side));
+        p.wordKey = key;
+      }
+    }
+    const pass = (initialize: boolean) => {
+      const from = p.targets[p.read], to = p.targets[1 - p.read];
+      fullscreen(sim, to.framebuffer, p.side, p.side);
+      bind(sim, "uPos", from.position); bind(sim, "uVel", from.velocity, 1);
+      bind(sim, "uField", terrain, 2); bind(sim, "uWord", p.word, 3);
+      scalar(sim, "uN", field!.grid); scalar(sim, "uS", p.side); scalar(sim, "uSpan", SPAN);
+      scalar(sim, "uInitialize", Number(initialize)); scalar(sim, "uTime", frame.simTime); scalar(sim, "uDt", initialize ? 0 : Math.min(dt, 1 / 30));
+      scalar(sim, "uMorphStart", frame.morph.start); scalar(sim, "uMorphDur", frame.morph.dur);
+      scalar(sim, "uToWord", Number(frame.morph.toWord)); scalar(sim, "uFromWord", Number(frame.morph.fromWord));
+      scalar(sim, "uTransit", frame.morph.transit); scalar(sim, "uMeltP", meltAmount); scalar(sim, "uPtrOn", pointerStrength);
+      scalar(sim, "uShockT", shockTime); scalar(sim, "uRing", frame.ring);
+      vector2(sim, "uOffset", OFFSET); vector2(sim, "uPtr", hit ?? [99999, 99999]); vector2(sim, "uPtrVel", velocity);
+      vector2(sim, "uMeltAtP", meltAt); vector2(sim, "uShockAt", shockAt); vector2(sim, "uOriginP", origin);
+      gl.drawArrays(gl.TRIANGLES, 0, 3); p.read = 1 - p.read;
+    };
+    if (!p.initialized) { pass(true); p.initialized = true; }
+    pass(false);
+  }
   function drawPasses(frame: WorldFrame, dt: number) {
     const c = core!, f = field!, s = surface!;
     const animated = tier.kind === "animated";
@@ -292,7 +375,28 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     const hit = animated && pointer ? groundHit(camera, aspect, pointer[0], pointer[1]) : null;
     const pointerGoal = hit && performance.now() - pointerMovedAt < 260 ? 1 : 0;
     pointerStrength = animated ? pointerStrength + (pointerGoal - pointerStrength) * (1 - Math.exp(-dt * 8)) : 0;
-    const haze: RGB = palette.light ? palette.haze : palette.haze.map((value, index) => value + (palette.ink[index] - value) * frame.profile * .8) as unknown as RGB;
+    let lat = particleMaterialAllowed() && frame.lat > LATTICE_EPSILON ? Math.min(1, frame.lat) : 0;
+    if (lat > 0 && !particles) {
+      try { particles = createParticles(tier.particleSide); }
+      catch { capabilities.floatTargets = false; releaseParticles(); clearInteraction(); lat = 0; }
+    } else if (lat === 0 && particles) releaseParticles();
+    actualMaterial = lat > 0 ? "lattice" : "solid";
+    if (lat > 0) {
+      if (holding) { holdTime += dt; if (hit) meltAt = hit; }
+      const goal = holding && holdTime > .22 ? Math.min(1, (holdTime - .22) / .9) : 0;
+      meltAmount += (goal - meltAmount) * Math.min(1, dt * (goal > meltAmount ? 5 : 3));
+      if (pendingShock) {
+        const at = groundHit(camera, aspect, pendingShock[0], pendingShock[1]);
+        if (at) { shockAt = at; shockTime = frame.simTime; }
+        pendingShock = null;
+      }
+    } else clearInteraction(!animated);
+    const velocity: [number, number] = hit && lastHit && dt > 0 ? [(hit[0] - lastHit[0]) / Math.max(dt, .008), (hit[1] - lastHit[1]) / Math.max(dt, .008)] : [0, 0];
+    const speed = Math.hypot(...velocity);
+    if (speed > 60) { velocity[0] *= 60 / speed; velocity[1] *= 60 / speed; }
+    lastHit = hit;
+    const hazeMix = frame.profile * .8 + (1 - frame.profile * .8) * lat;
+    const haze: RGB = palette.light ? palette.haze : palette.haze.map((value, index) => value + (palette.ink[index] - value) * hazeMix) as unknown as RGB;
     const from = f.targets[f.read], to = f.targets[1 - f.read];
 
     fullscreen(c.terrain, to.framebuffer, f.grid, f.grid);
@@ -304,23 +408,39 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     vector2(c.terrain, "uOffset", OFFSET); vector2(c.terrain, "uSunXZ", [SUN[0] / SUN_XZ_LENGTH, SUN[2] / SUN_XZ_LENGTH]);
     gl.drawArrays(gl.TRIANGLES, 0, 3); f.read = 1 - f.read;
 
+    if (lat > 0) simulate(frame, dt, to.texture, camera, aspect, hit, velocity, origin);
+
     fullscreen(c.sky, s.drawFramebuffer, s.width, s.height);
     vector3(c.sky, "uHaze", haze); vector3(c.sky, "uInk", palette.ink); vector3(c.sky, "uPoint", palette.point);
-    scalar(c.sky, "uHorizon", frame.horizon); scalar(c.sky, "uDots", 0); scalar(c.sky, "uDotPx", Math.max(1, Math.round(s.width / 62)));
+    scalar(c.sky, "uHorizon", frame.horizon); scalar(c.sky, "uDots", lat * frame.runDim); scalar(c.sky, "uDotPx", Math.max(1, Math.round(s.width / 62)));
     scalar(c.sky, "uLight", Number(palette.light));
     gl.drawArrays(gl.TRIANGLES, 0, 3); gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
     gl.bindVertexArray(c.cubes); gl.useProgram(c.voxel.program);
     bind(c.voxel, "uField", to.texture); gl.uniformMatrix4fv(uniform(c.voxel, "uVP"), false, camera.viewProj);
-    scalar(c.voxel, "uN", f.grid); scalar(c.voxel, "uSpan", SPAN); scalar(c.voxel, "uLat", 0);
-    scalar(c.voxel, "uCry", frame.cry); scalar(c.voxel, "uIsland", frame.island); scalar(c.voxel, "uMelt", 0); scalar(c.voxel, "uMask", frame.mask);
+    scalar(c.voxel, "uN", f.grid); scalar(c.voxel, "uSpan", SPAN); crystalUniforms(c.voxel, frame, lat, origin);
     scalar(c.voxel, "uFront", frame.front); scalar(c.voxel, "uCharge", frame.charge);
-    vector2(c.voxel, "uOrigin", origin as [number, number]); vector2(c.voxel, "uMeltAt", [99999, 99999]); vector2(c.voxel, "uOffset", OFFSET);
+    vector2(c.voxel, "uOffset", OFFSET);
     vector3(c.voxel, "uEye", frame.eye); vector3(c.voxel, "uAccent", palette.accent); vector3(c.voxel, "uSun", SUN);
     vector3(c.voxel, "uHaze", haze); vector3(c.voxel, "uPoint", palette.point);
-    scalar(c.voxel, "uExposure", frame.exposure); scalar(c.voxel, "uFogD", frame.fogD); scalar(c.voxel, "uDim", frame.dim);
+    scalar(c.voxel, "uExposure", frame.exposure); scalar(c.voxel, "uFogD", frame.fogD); scalar(c.voxel, "uDim", frame.dim * (1 - .7 * lat));
     scalar(c.voxel, "uLight", Number(palette.light));
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 30, f.grid * f.grid);
+
+    if (lat > 0 && particles) {
+      const p = particles, points = p.points, state = p.targets[p.read];
+      gl.bindVertexArray(c.empty); gl.disable(gl.CULL_FACE); gl.depthMask(false); gl.enable(gl.BLEND);
+      gl.blendFunc(palette.light ? gl.SRC_ALPHA : gl.ONE, palette.light ? gl.ONE_MINUS_SRC_ALPHA : gl.ONE);
+      gl.useProgram(points.program);
+      bind(points, "uPos", state.position); bind(points, "uVel", state.velocity, 1); bind(points, "uField", to.texture, 2);
+      gl.uniformMatrix4fv(uniform(points, "uVP"), false, camera.viewProj);
+      vector3(points, "uEye", frame.eye); vector2(points, "uOffset", OFFSET);
+      scalar(points, "uN", f.grid); scalar(points, "uS", p.side); scalar(points, "uSpan", SPAN);
+      scalar(points, "uDpr", s.width / cssWidth); scalar(points, "uFogD", frame.fogD); scalar(points, "uRunDim", frame.runDim);
+      vector3(points, "uPoint", palette.point); vector3(points, "uAccent", palette.accent); scalar(points, "uLight", Number(palette.light));
+      crystalUniforms(points, frame, lat, origin); gl.drawArrays(gl.POINTS, 0, p.side * p.side);
+      gl.disable(gl.BLEND); gl.depthMask(true);
+    }
 
     if (s.multisampled) {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, s.drawFramebuffer); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, s.scene.framebuffer);
@@ -344,7 +464,8 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   }
   return {
     capabilities,
-    get material(): WorldMaterial { return "solid"; },
+    get material(): WorldMaterial { return actualMaterial; },
+    get melt() { return meltAmount; },
     resize(width, height, dpr) {
       cssWidth = Number.isFinite(width) && width > 0 ? width : 2;
       cssHeight = Number.isFinite(height) && height > 0 ? height : 2;
@@ -353,11 +474,21 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     },
     setTier(next) {
       tier = { ...next };
+      if (!particleMaterialAllowed() || particles?.side !== next.particleSide) releaseParticles();
+      if (!particleMaterialAllowed()) clearInteraction();
       if (!lost && !terminal && !disposed) try { replaceTargets(); } catch { fail(); }
     },
     setPalette(next) { palette = next; },
     setAnchor(ndc) { anchor = [...ndc]; },
     setPointer(ndc) { pointer = ndc ? [...ndc] : null; pointerMovedAt = performance.now(); },
+    press(ndc) {
+      if (!particleMaterialAllowed() || lost || terminal || disposed) return;
+      pointer = [...ndc]; pointerMovedAt = performance.now(); holding = true; holdTime = 0;
+    },
+    release() { holding = false; holdTime = 0; },
+    shock(ndc) {
+      if (particleMaterialAllowed() && !lost && !terminal && !disposed) pendingShock = [...ndc];
+    },
     draw(frame, dtSeconds) {
       if (lost || terminal || disposed || !core || !field || !surface || tier.kind === "css") return { cpuMs: 0, gpuMs: null };
       const started = performance.now();

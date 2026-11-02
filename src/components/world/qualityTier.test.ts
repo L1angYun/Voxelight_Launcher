@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { expect, it } from "vitest";
-import { createFrameBudget, frameIntervalMs, nextTier, selectTier } from "./qualityTier";
+import { createFrameBudget, nextTier, selectTier } from "./qualityTier";
 
 const full = { webgl2: true, floatTargets: true, effects: "full" as const, reducedMotion: false, highContrast: false };
 it("starts full capability at the approved counts, then reduces resolution before geometry", () => {
@@ -39,8 +39,4 @@ it("measures real elapsed windows separately from rendering cost and ignores inv
   expect(budget.sample(20, 1000 / 30)).toBe("downgrade");
   const cheap = createFrameBudget(16.7);
   for (let i = 0; i < 120; i++) expect(cheap.sample(2, 1000 / 30)).toBe("hold");
-});
-it("caps idle renders at thirty and active renders at sixty FPS", () => {
-  expect(frameIntervalMs(false)).toBeCloseTo(33.333333);
-  expect(frameIntervalMs(true)).toBeCloseTo(16.666667);
 });
