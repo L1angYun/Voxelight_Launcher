@@ -1,6 +1,6 @@
 # 结晶世界性能实测
 
-日期：2026-11-02。当前记录为 Task 5 完成后的完整原生界面；Task 8 最终版本仍需复测。
+日期：2026-11-02。包含 Task 5 与最终功能版的两次完整原生界面测量；Intel 按用户决定留待人工验收。
 
 用户于 2026-11-02 明确取消完全档的 30/60 FPS 上限。以下回调间隔来自未节流的 rAF；CPU 提交耗时、异步完成的 GPU 绘制耗时分别记录。精简、系统减少动态、高对比度、隐藏、离屏和游戏运行后的停绘规则继续生效。
 
@@ -30,13 +30,33 @@
 
 原始数据及截图：`E:/CodeX/VoxelightLauncher-worklogs/crystal-world/native-performance/active-adapter.json`、同目录四组 `*-raw.json` 与 PNG。可重跑的采样器：`E:/CodeX/VoxelightLauncher-worklogs/crystal-world/measure-native.mjs`。
 
+## Task 8：最终功能版 RTX 5080 原生结果
+
+与上表使用同一实际 NVIDIA D3D11 适配器、WebView2 157.0.4341.30、1280×720 CSS 视口和 DPR 1.5。包含新开场、MiSans／Doto、角色步态、共用姿态菜单、局部 scrim、真实玻璃、鼠标点群低帧率积分修正，以及最后的字标关键帧补交／真实截止守卫；空闲／交互采样在开场结束后进行。三种画布均真实存在，角色为 ready；采样前等待原生后台纹理读取结束。没有替换 IPC 或修改系统显卡设置，期间没有并行软件渲染测试。
+
+| 材质／活动 | 10 秒绘制帧数 | rAF p50 | rAF p95 | CPU 提交 p95 | 已完成 GPU p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 点阵／空闲 | 2401 | 4.2 | 4.3 | 0.2 | 0.548 |
+| 点阵／鼠标 | 2401 | 4.2 | 4.3 | 0.2 | 0.679 |
+| 实体／空闲 | 2401 | 4.2 | 4.3 | 0.2 | 1.198 |
+| 实体／鼠标 | 2401 | 4.2 | 4.3 | 0.2 | 1.221 |
+
+四组均低于 RTX 16.7ms 的预算，保持 160×160 网格、DPR 1.5；点阵为 65,536 点，未降档。GPU 有效样本分别为 2388、2209、2316、2211；不可用的计时不记作零。页面错误为空。各阶段的测量是不同运行时段的实际记录，不将差值当作优化收益。
+
+原始数据：`E:/CodeX/VoxelightLauncher-worklogs/crystal-world/native-performance-release/active-adapter.json` 及同目录四组 `*-raw.json` 和 PNG。该 JSON 记录 App、WorldScene、renderer、shaders、cursor、CharacterCanvas 和 HomeAnimationSelector 共七个实际源码 SHA256，已逐一与本轮最终源码比对。采样器：`E:/CodeX/VoxelightLauncher-worklogs/crystal-world/measure-native-final.mjs`；输出日志：`intro-frame-2026-11-02/native-performance.log`。此前的中间测量保留在 `native-performance-final/`、`native-performance-complete/` 和 `native-performance-verified/`，未作为本表的最终数据。
+
+另外，最终原生 600–2100ms 地平线开场序列保存在 `native-intro-sequence-after/`，山体开场补验保存在 `native-massif-intro-final/`，15 张两色／尺寸／菜单／山体截图保存在 `native-visual-after/`。完整截图证明字标已避开 scrim 和角色；这些是图像证据，不代替用户的最终视觉确认。
+
+补帧修正后的原生主页／姿态菜单／奔跑补拍保存在 `native-visual-release/`。软件 WebGL 的补帧点位读回在 `intro-frame-2026-11-02/gpu-supplement/`：7282 个字标点均进入半格，58254 个普通点位置／速度不变，截止权重归零、GL 错误和释放后资源均为零；该功能验证不纳入物理显卡性能结论。
+
 ## Intel 与最终验收状态
 
 | 项目 | 当前状态 |
 | --- | --- |
 | RTX 5080，Task 5 完整原生界面 | 已实测通过以上预算 |
 | Intel Graphics，原生自动降档／25,600 点档，p95≤33ms | 未测；用户于 2026-11-02 明确允许继续 Task 6–8，移到最终人工验收 |
-| Task 8 完整最终功能版，两显卡复测 | 尚未进行 |
+| Task 8 完整最终功能版，RTX 5080 | 已实测通过，见最终四组数据 |
+| Task 8 完整最终功能版，Intel Graphics | 未测；按用户决定留待人工验收 |
 | 用户最后视觉确认 | 尚未进行 |
 
 以上结果仅代表本次设备、驱动、视口及界面负载，不代表所有低配机器。Chromium／SwiftShader 的功能测试没有纳入物理显卡性能结论。
@@ -50,3 +70,22 @@
 5. 记录自动降档后的实际预算。若 Intel 25,600 点档仍超过 33ms，按计划先报告数据，由用户确认后再调整该设备的实体回退策略。
 
 隔离启动使用原有 `npm run desktop:dev`，仅覆盖 beforeDevCommand 以复用当前 Vite，并设置进程级数据目录及 CDP 端口；没有改持久系统环境变量或项目 Tauri 权限。
+
+复测时先在项目目录用一个终端运行 `npm run dev`；另一个 PowerShell 终端设置以下进程环境并启动原生应用：
+
+```powershell
+$env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH
+$env:VOXELIGHT_LAUNCHER_DATA_DIR = 'E:/CodeX/VoxelightLauncher-worklogs/crystal-world/native-fixture-data'
+$env:VOXELIGHT_LAUNCHER_GAME_DIR = 'E:/CodeX/VoxelightLauncher-worklogs/crystal-world/native-fixture-games'
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9238'
+npm run desktop:dev -- --no-watch --config E:/CodeX/VoxelightLauncher-worklogs/crystal-world/desktop-dev-config.json
+```
+
+原生首页和合成角色就绪后，在第三个终端运行采样器。Intel 使用独立输出目录，保留已完成的 RTX 原始数据：
+
+```powershell
+$env:VOXELIGHT_NATIVE_PERF_OUTPUT = 'E:/CodeX/VoxelightLauncher-worklogs/crystal-world/native-performance-intel'
+node E:/CodeX/VoxelightLauncher-worklogs/crystal-world/measure-native-final.mjs
+```
+
+采样器会通过真实设置界面选择深色并依次测试两种材质，结束时恢复跟随系统；材质停留在最后测量的实体，可在设置中改回点阵。先核对输出 JSON 中实际 GPU 名称，再记录 Intel 是否达到预算。

@@ -9,11 +9,12 @@ let react: typeof import("react"), component: typeof import("./WorldScene");
 let root: Root, container: HTMLDivElement, now: number, sequence: number;
 let frames: Map<number, FrameRequestCallback>;
 let fake: ReturnType<typeof renderer>;
+let callbacks: { onLost(): void; onRestored(): void };
 const inputs = { phase: "idle" as const, fraction: null, page: "home" as const, scene: "horizon" as const, material: "lattice" as const };
 function renderer() {
   return { capabilities: { webgl2: true as const, floatTargets: true }, material: "lattice" as const,
     melt: 0, press: vi.fn(), release: vi.fn(), shock: vi.fn(), resize: vi.fn(), setTier: vi.fn(), setPalette: vi.fn(), setAnchor: vi.fn(), setPointer: vi.fn(),
-    draw: vi.fn((_frame: any, _dt: number) => ({ cpuMs: 1, gpuMs: 1 })), dispose: vi.fn() };
+    draw: vi.fn((_frame: any, _dt: number) => ({ cpuMs: 1, gpuMs: 1, pointsSubmitted: true })), dispose: vi.fn() };
 }
 async function render(props: Partial<Parameters<typeof component.WorldScene>[0]> = {}, strict = false) {
   const element = react.createElement(component.WorldScene, { ...inputs, ...props });
@@ -35,7 +36,8 @@ beforeEach(async () => {
   vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
   vi.spyOn(performance, "now").mockImplementation(() => now);
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("pointer: fine"), addEventListener: vi.fn(), removeEventListener: vi.fn() }));
-  bridge.create.mockImplementation(() => fake);
+  bridge.create.mockImplementation((_canvas, handlers) => { callbacks = handlers; return fake; });
+  Object.defineProperty(document, "hidden", { configurable: true, value: false });
   document.documentElement.dataset.theme = "dark"; delete document.documentElement.dataset.worldIntro;
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -116,4 +118,128 @@ it("preparation or leaving home ends an active entrance", async () => {
   expect(document.documentElement.dataset.worldIntro).toBe("off");
   await render({ page: "content" }); await frame();
   expect(document.documentElement.dataset.worldIntro).toBe("off");
+});
+
+it("submits a missed word keyframe after sparse draws, then resumes the real return clock", async () => {
+  await render(); await frame(0); await frame(700);
+  expect(fake.draw.mock.calls.at(-1)![0].introTime).toBeCloseTo(.7);
+  await frame(900);
+  const word = fake.draw.mock.calls.at(-1)![0];
+  expect(word).toMatchObject({ introActive: true, introTime: 1, morph: { toWord: true, fromWord: false } });
+  await frame(100);
+  expect(fake.draw.mock.calls.at(-1)![0].introTime).toBe(1);
+  await frame(21);
+  const returning = fake.draw.mock.calls.at(-1)![0];
+  expect(returning.morph).toMatchObject({ toWord: false, fromWord: true });
+  expect(returning.introTime).toBeCloseTo(.321);
+  expect(returning.simTime).toBeCloseTo(.171);
+});
+
+it.each([16, 1000 / 6])("keeps the ordinary %s ms word and return timeline without an extra hold", async interval => {
+  await render(); await frame(0);
+  let elapsed = 0;
+  while (elapsed < 1800) {
+    elapsed += interval; await frame(interval);
+    const drawn = fake.draw.mock.calls.at(-1)![0];
+    expect(drawn.introTime).toBeCloseTo((elapsed < 1400 ? elapsed : elapsed - 1400) / 1000);
+    expect(drawn.morph.toWord).toBe(elapsed < 1400);
+    expect(drawn.morph.fromWord).toBe(elapsed >= 1400);
+  }
+});
+
+it("does not acknowledge a formed word from a publish-only paused update", async () => {
+  await render(); await frame(0); await frame(700);
+  now += 200;
+  const count = fake.draw.mock.calls.length;
+  await render({ paused: true });
+  expect(fake.draw).toHaveBeenCalledTimes(count);
+  now += 700; await render();
+  expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ introTime: 1, morph: { toWord: true, fromWord: false } });
+});
+
+it("acknowledges only actual submitted points and retries an unsuccessful supplemental draw", async () => {
+  fake.draw.mockReturnValue({ cpuMs: 1, gpuMs: 1, pointsSubmitted: false });
+  await render(); await frame(0); await frame(900); await frame(700);
+  expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ introTime: 1, morph: { toWord: true } });
+  fake.draw.mockReturnValue({ cpuMs: 1, gpuMs: 1, pointsSubmitted: true });
+  await frame(50);
+  expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ introTime: 1, morph: { toWord: true } });
+  await frame(110);
+  expect(fake.draw.mock.calls.at(-1)![0].morph.toWord).toBe(true);
+  await frame(11);
+  expect(fake.draw.mock.calls.at(-1)![0].morph.fromWord).toBe(true);
+  expect(fake.draw.mock.calls.at(-1)![0].introTime).toBeCloseTo(.371);
+});
+
+it("clips a late supplemental hold at the original queue deadline", async () => {
+  await render(); await frame(0); await frame(700); await frame(1750);
+  expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ introTime: 1, morph: { toWord: true } });
+  await frame(49);
+  expect(fake.draw.mock.calls.at(-1)![0].morph.toWord).toBe(true);
+  await frame(2);
+  expect(fake.draw.mock.calls.at(-1)![0].introActive).toBe(false);
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+});
+
+it("does not renew the supplemental hold when the live palette updates", async () => {
+  await render(); await frame(0); await frame(700); await frame(900); await frame(100);
+  expect(fake.draw.mock.calls.at(-1)![0].morph.toWord).toBe(true);
+  await react.act(async () => { document.documentElement.dataset.theme = "light"; });
+  await frame(21);
+  expect(fake.draw.mock.calls.at(-1)![0].morph.fromWord).toBe(true);
+  expect(fake.draw.mock.calls.at(-1)![0].introTime).toBeCloseTo(.321);
+});
+
+it.each(["float", "lost"])("checks %s failure before reading a submitted-word acknowledgement", async failure => {
+  await render(); await frame(0); await frame(700);
+  const acknowledged = vi.fn(() => true);
+  fake.draw.mockImplementationOnce(() => {
+    if (failure === "float") fake.capabilities.floatTargets = false;
+    else callbacks.onLost();
+    return { cpuMs: 1, gpuMs: 1, get pointsSubmitted() { return acknowledged(); } };
+  });
+  await frame(900);
+  expect(acknowledged).not.toHaveBeenCalled();
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+  if (failure === "float") {
+    expect(fake.draw.mock.calls.at(-1)![0].introActive).toBe(false);
+    expect(container.querySelector<HTMLElement>(".world-scene")!.dataset.worldParticles).toBe("0");
+  } else expect(frames.size).toBe(0);
+});
+
+it.each([false, true])("expires an %s active entrance before drawing a stale rAF delivered after its deadline", async active => {
+  await render();
+  if (active) { await frame(0); await frame(700); }
+  await react.act(async () => {
+    now = 3501;
+    for (const [id, callback] of [...frames]) if (frames.delete(id)) callback(1800);
+  });
+  expect(fake.draw.mock.calls.at(-1)![0].introActive).toBe(false);
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+});
+
+it.each(["press", "prepare", "static", "pause", "hidden"])("lets %s immediately interrupt the supplemental hold", async interrupt => {
+  await render(); await frame(0); await frame(700); await frame(900);
+  expect(fake.draw.mock.calls.at(-1)![0].morph.toWord).toBe(true);
+  if (interrupt === "press") {
+    await react.act(async () => document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    await frame(16);
+  } else if (interrupt === "prepare") await render({ phase: "preparing", fraction: .37 });
+  else if (interrupt === "static") await render({ effects: "lite" });
+  else {
+    const count = fake.draw.mock.calls.length;
+    if (interrupt === "pause") await render({ paused: true });
+    else await react.act(async () => {
+      Object.defineProperty(document, "hidden", { configurable: true, value: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await frame(16);
+    expect(fake.draw).toHaveBeenCalledTimes(count);
+    if (interrupt === "pause") await render();
+    else await react.act(async () => {
+      Object.defineProperty(document, "hidden", { configurable: true, value: false });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+  }
+  expect(fake.draw.mock.calls.at(-1)![0].morph.toWord).toBe(false);
 });

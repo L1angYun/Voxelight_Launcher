@@ -55,6 +55,7 @@ export function WorldScene(props: WorldSceneProps) {
     let pointerBound = false;
     let introPending = false, introTimer: ReturnType<typeof setTimeout> | null = null;
     let introDeadline: number | null = null;
+    let introWordSubmitted = false, introWordHoldUntil: number | null = null;
     let held: { id: number; start: number; x: number; y: number; moved: number } | null = null;
     let budget = createFrameBudget(16.7);
     const userInputs = () => ({ phase: current.current.phase, fraction: current.current.fraction, page: current.current.page, scene: current.current.scene, material: current.current.material });
@@ -66,10 +67,12 @@ export function WorldScene(props: WorldSceneProps) {
       current.current.page === "home" && current.current.phase === "idle" && requestedInputs().material === "lattice";
     function endIntro() {
       introPending = false; director.endIntro();
+      introWordSubmitted = false; introWordHoldUntil = null;
       if (introTimer !== null) clearTimeout(introTimer);
       introTimer = null; introDeadline = null; html.dataset.worldIntro = "off";
     }
     function queueIntro() {
+      introWordSubmitted = false; introWordHoldUntil = null;
       introPending = true; introDeadline = performance.now() + 2500;
       introTimer = setTimeout(() => {
         introConsumed = true; endIntro();
@@ -115,6 +118,9 @@ export function WorldScene(props: WorldSceneProps) {
     }
     function paint(now: number, dt: number, scheduled = false) {
       if (!renderer || !permitted()) return;
+      // A queued rAF timestamp can predate the callback's actual execution.
+      const drawAt = performance.now();
+      if (introDeadline !== null && drawAt >= introDeadline) { introConsumed = true; endIntro(); }
       if (scheduled && introPending) {
         introConsumed = true;
         if (introDeadline !== null && now >= introDeadline) endIntro();
@@ -122,12 +128,22 @@ export function WorldScene(props: WorldSceneProps) {
       }
       const frame = tier.kind === "static" ? director.snap() : director.step(dt, now);
       if (!frame.introActive && !introPending && introTimer !== null) endIntro();
+      // Sparse draws can cross the entire readable gather interval. Submit its
+      // keyframe once without rewinding the director or extending the entrance.
+      const supplement = frame.introActive && introEligible() && introDeadline !== null && drawAt < introDeadline &&
+        ((!introWordSubmitted && frame.morph.fromWord) || (introWordHoldUntil !== null && drawAt < introWordHoldUntil));
+      const drawFrame = supplement ? { ...frame, introTime: 1, morph: { ...frame.morph, toWord: true, fromWord: false } } : frame;
       try {
         const floatSupport = renderer.capabilities.floatTargets;
-        const result = renderer.draw(frame, dt);
+        const result = renderer.draw(drawFrame, dt);
         if (lost) return;
         drawn++; lastDraw = now;
         if (floatSupport !== renderer.capabilities.floatTargets) { update(true); return; }
+        if (drawFrame.introActive && drawFrame.morph.toWord && drawFrame.introTime >= .8 && drawFrame.introTime < 1.4 && result?.pointsSubmitted) {
+          if (supplement && !introWordSubmitted && introDeadline !== null)
+            introWordHoldUntil = Math.min(introDeadline, performance.now() + 120);
+          introWordSubmitted = true;
+        }
         if (result) {
           lastCpuMs = result.cpuMs;
           host!.dataset.worldCpuMs = result.cpuMs.toFixed(3);
@@ -183,6 +199,7 @@ export function WorldScene(props: WorldSceneProps) {
       const key = JSON.stringify([input.phase, input.fraction, input.page, input.scene, input.material, input.paused, input.effects, reducedMotion, highContrast, document.hidden, visible, lost, Boolean(fine?.matches)]);
       if (!force && key === lastKey && paletteKey === lastPalette) return;
       lastKey = key; stop();
+      if (!permitted()) introWordHoldUntil = null;
       tier = selectTier({ webgl2: Boolean(renderer) && !lost, floatTargets: Boolean(renderer?.capabilities.floatTargets), effects: input.effects ?? "full", reducedMotion, highContrast });
       for (let index = 0; index < downgrades; index++) tier = nextTier(tier) ?? tier;
       budget = createFrameBudget(16.7);

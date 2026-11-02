@@ -2,6 +2,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountCursorHalo, type CursorHalo } from "./cursor";
+import { DotField } from "./dots";
 
 type Circle = { x: number; y: number; radius: number; alpha: number };
 let circles: Circle[];
@@ -68,6 +69,52 @@ function card() {
     button,
     outline: element.querySelector<HTMLElement>(".vx-lattice-frame")!,
   };
+}
+
+function advanceAtRate(start: number, milliseconds: number, hz: number): number {
+  const interval = 1000 / hz;
+  let count = 0;
+  for (let elapsed = interval; elapsed < milliseconds - 1e-6; elapsed += interval) {
+    frame(start + elapsed);
+    count++;
+  }
+  frame(start + milliseconds);
+  return count + 1;
+}
+
+function beginCardMigration() {
+  const fixture = card();
+  halo = mountCursorHalo(document.body);
+  pointer(document.body, 700, 600);
+  settle();
+  pointer(fixture.button, 530, 300);
+  return { ...fixture, startedAt: (119 * 1000) / 60 };
+}
+
+function expectCompleteCardContour(points: Circle[]) {
+  expect(points).toHaveLength(30);
+  for (const distances of [
+    points.map(point => Math.abs(point.x - 194)),
+    points.map(point => Math.abs(point.x - 606)),
+    points.map(point => Math.abs(point.y - 94)),
+    points.map(point => Math.abs(point.y - 346)),
+  ]) expect(Math.min(...distances)).toBeLessThan(8);
+  for (const point of points) {
+    expect(point.alpha).toBeGreaterThan(.8);
+    expect(Math.min(Math.abs(point.x - 194), Math.abs(point.x - 606), Math.abs(point.y - 94), Math.abs(point.y - 346))).toBeLessThan(12);
+  }
+}
+
+function migrationPath(hz: number) {
+  const { element, startedAt } = beginCardMigration();
+  advanceAtRate(startedAt, 500, hz);
+  const middle = circles.map(point => ({ ...point }));
+  advanceAtRate(startedAt + 500, 600, hz);
+  const finished = circles.map(point => ({ ...point }));
+  halo!.dispose();
+  halo = null;
+  element.remove();
+  return { middle, finished };
 }
 
 beforeEach(() => {
@@ -190,6 +237,49 @@ describe("Lattice cursor halo", () => {
     expect(circles).toHaveLength(31);
     expect(element.hasAttribute("data-halo-owned")).toBe(false);
     expect(outline.style.visibility).toBe("visible");
+  });
+
+  it.each([6, 60])("covers all four stable card edges within 1100 ms at %d Hz", (hz) => {
+    const { element, startedAt } = beginCardMigration();
+    const bounds = vi.mocked(element.getBoundingClientRect);
+    bounds.mockClear();
+    const frameCount = advanceAtRate(startedAt, 1100, hz);
+    expectCompleteCardContour(circles);
+    // Usability and the current target bounds may each read layout once per RAF.
+    expect(bounds.mock.calls.length).toBeLessThanOrEqual(frameCount * 2);
+  });
+
+  it("keeps the same migration path at 6 Hz and 60 Hz for equal elapsed time", () => {
+    const sixty = migrationPath(60);
+    const six = migrationPath(6);
+    for (const stage of ["middle", "finished"] as const) {
+      expect(six[stage]).toHaveLength(30);
+      expect(sixty[stage]).toHaveLength(30);
+      six[stage].forEach((point, index) => {
+        expect(Math.hypot(point.x - sixty[stage][index].x, point.y - sixty[stage][index].y), `${stage} point ${index}`).toBeLessThan(2);
+      });
+    }
+  });
+
+  it("bounds catch-up work after a long visible stall and continues to converge", () => {
+    const { element, startedAt } = beginCardMigration();
+    const initialDistance = circles.slice(0, 30).reduce((sum, point) => sum + Math.hypot(point.x - 400, point.y - 220), 0);
+    const steps = vi.spyOn(DotField.prototype, "step");
+    const bounds = vi.mocked(element.getBoundingClientRect);
+    bounds.mockClear();
+    frame(startedAt + 10_000);
+    expect(steps.mock.calls.length).toBeGreaterThan(0);
+    expect(steps.mock.calls.length).toBeLessThanOrEqual(60);
+    expect(bounds.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(circles).toHaveLength(30);
+    for (const point of circles) {
+      expect([point.x, point.y, point.radius, point.alpha].every(Number.isFinite)).toBe(true);
+      expect(point.alpha).toBeGreaterThanOrEqual(0);
+      expect(point.alpha).toBeLessThanOrEqual(1);
+    }
+    expect(circles.reduce((sum, point) => sum + Math.hypot(point.x - 400, point.y - 220), 0)).toBeLessThan(initialDistance);
+    advanceAtRate(startedAt + 10_000, 1100, 60);
+    expectCompleteCardContour(circles);
   });
 
   it("respects opt-out ancestry and lets Lens controls keep their own primary material", () => {

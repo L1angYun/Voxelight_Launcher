@@ -36,59 +36,6 @@ canvas.vx-lattice-progress {
   min-width: 0;
 }
 
-@keyframes vx-lattice-lissajous {
-  0%,
-  100% {
-    translate: var(--lattice-drift-x-back) 0;
-  }
-
-  25% {
-    translate: 0 var(--lattice-drift-y-back);
-  }
-
-  50% {
-    translate: var(--lattice-drift-x) 0;
-  }
-
-  75% {
-    translate: 0 var(--lattice-drift-y);
-  }
-}
-
-@keyframes vx-lattice-scan {
-  0%,
-  78%,
-  100% {
-    opacity: 0.24;
-    scale: 0.68;
-  }
-
-  10% {
-    opacity: 1;
-    scale: 1.25;
-  }
-}
-
-@keyframes vx-lattice-progress-lock {
-  0% {
-    opacity: 0.15;
-    scale: 0.55;
-    translate: 0 2px;
-  }
-
-  42% {
-    opacity: 1;
-    scale: 1.55;
-    translate: 0 0;
-  }
-
-  100% {
-    opacity: 1;
-    scale: 1;
-    translate: 0 0;
-  }
-}
-
 @media (prefers-contrast: more), (forced-colors: active) {
   .vx-lattice-frame,
   .vx-lattice-selection {

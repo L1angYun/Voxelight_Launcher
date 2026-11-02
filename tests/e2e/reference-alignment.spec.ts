@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { selectValue } from "./select-helpers";
 
-const evidence = resolve(".superpowers/sdd/2026-11-01-reference-alignment/evidence");
+const evidence = resolve(process.env.VOXELIGHT_E2E_EVIDENCE ?? ".superpowers/sdd/2026-11-01-reference-alignment/evidence");
 
 for (const [width, height] of [[1440, 930], [1050, 720]]) {
   test(`settings navigation height stays constant through all six sections at ${width}`, async ({ page }) => {
@@ -74,10 +74,27 @@ test("one real cursor point pool migrates from pointer onto the whole card and b
   await page.addInitScript(() => {
     const originalClear = CanvasRenderingContext2D.prototype.clearRect;
     const originalArc = CanvasRenderingContext2D.prototype.arc;
-    const probe = window as unknown as { __haloArcs: number[][] };
+    const originalFrame = window.requestAnimationFrame;
+    let frameTime: number | null = null;
+    window.requestAnimationFrame = callback => originalFrame.call(window, time => {
+      const previous = frameTime;
+      frameTime = time;
+      try { callback(time); } finally { frameTime = previous; }
+    });
+    const probe = window as unknown as { __haloArcs: number[][]; __haloFrames: {
+      rafTime: number | null; drawAt: number; haloState: string | undefined; owned: string | undefined;
+      bounds: { x: number; y: number; width: number; height: number } | null;
+    }[] };
     probe.__haloArcs = [];
+    probe.__haloFrames = [];
     CanvasRenderingContext2D.prototype.clearRect = function (...args) {
-      if (this.canvas.classList.contains("vx-cursor-halo")) probe.__haloArcs = [];
+      if (this.canvas.classList.contains("vx-cursor-halo")) {
+        probe.__haloArcs = [];
+        const card = document.querySelector<HTMLElement>('article[data-instance-id="fixture-world"]');
+        const box = card?.getBoundingClientRect();
+        probe.__haloFrames.push({ rafTime: frameTime, drawAt: performance.now(), haloState: this.canvas.dataset.haloState,
+          owned: card?.dataset.haloOwned, bounds: box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null });
+      }
       return originalClear.apply(this, args);
     };
     CanvasRenderingContext2D.prototype.arc = function (...args) {
@@ -111,7 +128,12 @@ test("one real cursor point pool migrates from pointer onto the whole card and b
   expect(moving.some((point, index) => Math.hypot(point[0] - prior[index][0], point[1] - prior[index][1]) > 2)).toBe(true);
   await page.waitForTimeout(1100);
   const bounds = (await card.boundingBox())!;
-  const settled = await arcs();
+  const snapshot = await page.evaluate(() => {
+    const probe = window as unknown as { __haloArcs: number[][]; __haloFrames: unknown[] };
+    return { settled: probe.__haloArcs, frames: probe.__haloFrames };
+  });
+  const { settled, frames } = snapshot;
+  await writeFile(resolve(evidence, "cursor-real-geometry.json"), JSON.stringify({ prior, moving, settled, bounds, frames }, null, 2));
   expect(settled).toHaveLength(30);
   const left = bounds.x - 6, right = bounds.x + bounds.width + 6;
   const top = bounds.y - 6, bottom = bounds.y + bounds.height + 6;
@@ -132,7 +154,6 @@ test("one real cursor point pool migrates from pointer onto the whole card and b
   await expect.poll(async () => (await arcs()).length).toBe(31);
   expect(await halo.evaluate((element, original) => element === original, canvas)).toBe(true);
   await page.screenshot({ path: resolve(evidence, "cursor-04-leave-restored.png") });
-  await writeFile(resolve(evidence, "cursor-real-geometry.json"), JSON.stringify({ prior, moving, settled, bounds }, null, 2));
 });
 
 for (const preference of ["lite", "reduced-motion", "forced-colors"] as const) {

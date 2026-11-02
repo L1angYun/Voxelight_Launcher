@@ -103,6 +103,45 @@ function mount(options: Parameters<typeof glBoundary>[0] = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("WebGL renderer boundary", () => {
+  it("acknowledges points only after their real draw pass completes", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    expect(r.draw(frame(), .016).pointsSubmitted).toBe(true);
+    expect(t.pointCounts).toEqual([65536]);
+    const drawArrays = t.gl.drawArrays.bind(t.gl);
+    vi.spyOn(t.gl, "drawArrays").mockImplementation((mode, first, count) => {
+      if (mode === t.gl.POINTS) throw new Error("injected points draw failure");
+      drawArrays(mode, first, count);
+    });
+    expect(r.draw(frame(), .016).pointsSubmitted).toBe(false);
+    expect(t.callbacks.onLost).toHaveBeenCalledOnce();
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("does not acknowledge points in solid, epsilon, static, CSS, lost or disposed draws", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    expect(r.draw({ ...frame(), lat: 0 }, .016).pointsSubmitted).toBe(false);
+    expect(r.draw({ ...frame(), lat: .0001 }, .016).pointsSubmitted).toBe(false);
+    r.setTier({ kind: "static", grid: 110, particleSide: 0, dprCap: 1, forceSolid: true });
+    expect(r.draw(frame(), 0).pointsSubmitted).toBe(false);
+    r.setTier({ kind: "css", grid: 110, particleSide: 0, dprCap: 1, forceSolid: true });
+    expect(r.draw(frame(), 0).pointsSubmitted).toBe(false);
+    t.canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    expect(r.draw(frame(), 0).pointsSubmitted).toBe(false);
+    r.dispose(); expect(r.draw(frame(), 0).pointsSubmitted).toBe(false);
+    expect(t.pointCounts).toEqual([]); expect(t.live.size).toBe(0);
+  });
+
+  it("does not acknowledge points when float allocation falls back to solid", () => {
+    const unsupported = mount();
+    expect(unsupported.renderer!.draw(frame(), .016).pointsSubmitted).toBe(false);
+    unsupported.renderer!.dispose(); expect(unsupported.live.size).toBe(0);
+    const t = mount({ float: true }); t.failLargeFloat();
+    expect(t.renderer!.draw(frame(), .016).pointsSubmitted).toBe(false);
+    expect(t.renderer!.capabilities.floatTargets).toBe(false);
+    expect(t.pointCounts).toEqual([]);
+    t.renderer!.dispose(); expect(t.live.size).toBe(0);
+  });
+
   it("allocates lattice simulation lazily and renders the current particle budget", () => {
     const t = mount({ float: true }); const r = t.renderer!;
     expect(t.floatSizes.every(([width]) => width <= 2)).toBe(true);
