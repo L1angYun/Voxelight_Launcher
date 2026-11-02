@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // One foreground point pool: pointer orbit, rounded control outline, then back.
-import { DotField, seededRandom } from "./dots";
+import { DOT_SUBSTEP_SECONDS, DotField, seededRandom } from "./dots";
 
 export const CURSOR_HALO_POINT_COUNT = 30;
 export const CURSOR_HALO_RADIUS_PX = 12;
@@ -306,40 +306,51 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       clear();
       return;
     }
-    const dt =
+    const elapsed =
       previousTime === null
         ? 1 / 60
-        : Math.max(0, Math.min(0.05, (now - previousTime) / 1000));
+        : Math.max(0, Math.min(0.25, (now - previousTime) / 1000));
     previousTime = now;
-    spin += dt;
-    if (target) {
-      const bounds = target.getBoundingClientRect();
-      const pad = CURSOR_HALO_OUTSET_PX;
-      const radius =
-        (parseFloat(getComputedStyle(target).borderTopLeftRadius) ||
-          parseFloat(getComputedStyle(target).borderRadius) ||
-          0) + pad;
-      for (let index = 0; index < dots.count; index += 1) {
-        const [x, y] = contourPoint(
-          bounds.width + pad * 2,
-          bounds.height + pad * 2,
-          radius,
-          index / dots.count + spin * 0.035,
-        );
-        dots.setHome(index, bounds.left - pad + x, bounds.top - pad + y, 0.95);
+    const bounds = target?.getBoundingClientRect();
+    const targetStyle = target ? getComputedStyle(target) : null;
+    const pad = CURSOR_HALO_OUTSET_PX;
+    const radius =
+      (parseFloat(targetStyle?.borderTopLeftRadius ?? "") ||
+        parseFloat(targetStyle?.borderRadius ?? "") ||
+        0) + pad;
+    const updateHomes = () => {
+      if (bounds) {
+        for (let index = 0; index < dots.count; index += 1) {
+          const [x, y] = contourPoint(
+            bounds.width + pad * 2,
+            bounds.height + pad * 2,
+            radius,
+            index / dots.count + spin * 0.035,
+          );
+          dots.setHome(index, bounds.left - pad + x, bounds.top - pad + y, 0.95);
+        }
+      } else {
+        for (let index = 0; index < dots.count; index += 1) {
+          const angle = (index / dots.count) * TWO_PI + spin * 0.6;
+          dots.setHome(
+            index,
+            px + Math.cos(angle) * CURSOR_HALO_RADIUS_PX,
+            py + Math.sin(angle) * CURSOR_HALO_RADIUS_PX,
+            0.9,
+          );
+        }
       }
-    } else {
-      for (let index = 0; index < dots.count; index += 1) {
-        const angle = (index / dots.count) * TWO_PI + spin * 0.6;
-        dots.setHome(
-          index,
-          px + Math.cos(angle) * CURSOR_HALO_RADIUS_PX,
-          py + Math.sin(angle) * CURSOR_HALO_RADIUS_PX,
-          0.9,
-        );
-      }
+    };
+    // Advance low-FPS input by elapsed time without changing the shared field's stall cap.
+    let remaining = elapsed;
+    if (remaining === 0) updateHomes();
+    while (remaining > 1e-9) {
+      const seconds = Math.min(remaining, DOT_SUBSTEP_SECONDS);
+      spin += seconds;
+      updateHomes();
+      dots.step(seconds);
+      remaining -= seconds;
     }
-    dots.step(dt);
     const style = getComputedStyle(document.documentElement);
     const accent = style.getPropertyValue("--accent").trim() || "#b4f17a";
     const cold = style.getPropertyValue("--optical-cold").trim() || accent;

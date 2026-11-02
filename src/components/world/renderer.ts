@@ -9,7 +9,11 @@ import { BLUR_FRAGMENT, COMPOSITE_FRAGMENT, FULLSCREEN_VERTEX, SKY_FRAGMENT, TER
 
 export type RGB = readonly [number, number, number];
 export interface WorldPalette { ink: RGB; point: RGB; accent: RGB; haze: RGB; light: boolean }
-export interface WorldDrawMetrics { cpuMs: number; gpuMs: number | null }
+export interface WorldDrawMetrics {
+  cpuMs: number; gpuMs: number | null;
+  /** The points pass and final composite were submitted without a rendering failure. */
+  pointsSubmitted: boolean;
+}
 export interface WorldRenderer {
   readonly capabilities: { webgl2: true; floatTargets: boolean };
   readonly material: WorldMaterial;
@@ -368,6 +372,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     pass(false);
   }
   function drawPasses(frame: WorldFrame, dt: number) {
+    let pointsSubmitted = false;
     const c = core!, f = field!, s = surface!;
     const animated = tier.kind === "animated";
     terrainTime += animated ? dt * frame.timeScale : 0;
@@ -441,6 +446,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       scalar(points, "uDpr", s.width / cssWidth); scalar(points, "uFogD", frame.fogD); scalar(points, "uRunDim", frame.runDim);
       vector3(points, "uPoint", palette.point); vector3(points, "uAccent", palette.accent); scalar(points, "uLight", Number(palette.light));
       crystalUniforms(points, frame, lat, origin); gl.drawArrays(gl.POINTS, 0, p.side * p.side);
+      pointsSubmitted = true;
       gl.disable(gl.BLEND); gl.depthMask(true);
     }
 
@@ -463,6 +469,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     bind(c.composite, "uTex", s.scene.texture); bind(c.composite, "uBloom", bloomAmount > 0 ? s.bloom[0].texture : s.scene.texture, 1);
     scalar(c.composite, "uAmt", bloomAmount); gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE0); gl.bindVertexArray(null);
+    return pointsSubmitted;
   }
   return {
     capabilities,
@@ -492,9 +499,10 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       if (particleMaterialAllowed() && !lost && !terminal && !disposed) pendingShock = [...ndc];
     },
     draw(frame, dtSeconds) {
-      if (lost || terminal || disposed || !core || !field || !surface || tier.kind === "css") return { cpuMs: 0, gpuMs: null };
+      if (lost || terminal || disposed || !core || !field || !surface || tier.kind === "css") return { cpuMs: 0, gpuMs: null, pointsSubmitted: false };
       const started = performance.now();
       let gpuMs: number | null = null, query: WebGLQuery | null = null;
+      let pointsSubmitted = false;
       try {
         gpuMs = pollGpu();
         if (timer && pendingQueries.length < 4) {
@@ -502,13 +510,14 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
           if (query) gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
         }
         const dt = Number.isFinite(dtSeconds) ? Math.max(0, Math.min(.05, dtSeconds)) : 0;
-        drawPasses(frame, dt);
+        pointsSubmitted = drawPasses(frame, dt);
         if (query && timer) { gl.endQuery(timer.TIME_ELAPSED_EXT); pendingQueries.push(query); query = null; }
       } catch {
+        pointsSubmitted = false;
         if (query && timer) { gl.endQuery(timer.TIME_ELAPSED_EXT); gl.deleteQuery(query); }
         fail();
       }
-      return { cpuMs: Math.max(0, performance.now() - started), gpuMs };
+      return { cpuMs: Math.max(0, performance.now() - started), gpuMs, pointsSubmitted: pointsSubmitted && !lost && !gl.isContextLost() };
     },
     dispose() {
       if (disposed) return;

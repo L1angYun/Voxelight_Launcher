@@ -13,15 +13,31 @@ type IntroProbe = {
   firstInteractive: { launch: { visible: boolean; enabled: boolean; hit: boolean }; navigation: { visible: boolean; enabled: boolean; hit: boolean }[]; titleOpacity: string } | null;
   presses: { state: string | undefined; page: string | null; launch: boolean }[];
   gpu: { active: number; at: number }[];
-  captureClocks: { phaseTime: string; wallAt: string };
-  captures: { source: "gpu-default-framebuffer"; active: number; toWord: number; phaseTime: number; wallAt: number; intro: string | undefined; url: string }[];
+  captureClocks: { phaseTime: string; wallAt: string; rafTimestamp: string; callbackStartedAt: string };
+  drawFrames: { contextId: number; active: number | null; toWord: number | null; phaseTime: number | null; wallAt: number;
+    intro: string | null; rafTimestamp: number | null; callbackStartedAt: number | null }[];
+  phaseCompleteness: { total: number; complete: number; missingActive: number; missingToWord: number; missingPhaseTime: number };
+  collectionTiming?: {
+    clockNote: string;
+    readinessWaitNodeStart: { performanceNow: number; epochMs: number };
+    firstActiveDraw?: IntroProbe["drawFrames"][number]; readyObservedAt?: number;
+    collectorWaitNodeStart?: { performanceNow: number; epochMs: number }; collectorFirstEvaluatedAt?: number;
+  };
+  encodingErrors: string[];
+  captures: { source: "gpu-default-framebuffer"; active: number; toWord: number; phaseTime: number; wallAt: number; intro: string | undefined; url: string | null;
+    snapshotRequestedAt?: number; snapshotReturnedAt?: number; readbackMethod?: "pixel-pack-buffer";
+    readbackWidth?: number; readbackHeight?: number; readbackByteLength?: number; readbackPolls?: number;
+    readbackReadyAt?: number; readbackCopiedAt?: number; pngEncodingStartedAt?: number; blobReadyAt?: number; encodedAt?: number; encodingError?: string }[];
 };
 
 async function observeWorldIntro(page: Page, captureFrames = false) {
   await page.addInitScript((captureFrames: boolean) => {
-    const probe: IntroProbe = { events: [], firstInteractive: null, presses: [], gpu: [], captures: [], captureClocks: {
+    const probe: IntroProbe = { events: [], firstInteractive: null, presses: [], gpu: [], captures: [], encodingErrors: [], drawFrames: [],
+      phaseCompleteness: { total: 0, complete: 0, missingActive: 0, missingToWord: 0, missingPhaseTime: 0 }, captureClocks: {
       phaseTime: "uIntroTime uniform, seconds since the current gather/return stage began; uToWord=1 selects gather",
-      wallAt: "performance.now() milliseconds after the real default-framebuffer draw, before synchronous PNG readback",
+      wallAt: "performance.now() milliseconds after the real default-framebuffer draw, before PIXEL_PACK_BUFFER submission; fence polling and PNG completion are asynchronous",
+      rafTimestamp: "The browser-provided requestAnimationFrame timestamp of the currently executing callback; null for draws outside a RAF callback",
+      callbackStartedAt: "performance.now() milliseconds at entry to that actual RAF callback; the callback timestamp and scheduling are unchanged",
     } };
     (window as unknown as { __worldIntroProbe: IntroProbe }).__worldIntroProbe = probe;
     const operable = (element: HTMLButtonElement) => {
@@ -48,9 +64,137 @@ async function observeWorldIntro(page: Page, captureFrames = false) {
       probe.presses.push({ state: document.documentElement?.dataset.worldIntro, page: target?.closest<HTMLButtonElement>("button[data-page]")?.dataset.page ?? null,
         launch: Boolean(target?.closest("button[data-launch-primary]")) });
     }, true);
+    const collectPng = (canvas: HTMLCanvasElement, capture: IntroProbe["captures"][number], finished: () => void, gl: WebGL2RenderingContext) => {
+      let settled = false, buffer: WebGLBuffer | null = null, sync: WebGLSync | null = null;
+      let pollTimer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = () => {
+        if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; }
+        const errors: string[] = [];
+        if (sync !== null) {
+          const owned = sync; sync = null;
+          try { gl.deleteSync(owned); } catch (error) { errors.push(String(error)); }
+        }
+        if (buffer !== null) {
+          const owned = buffer; buffer = null;
+          try { gl.deleteBuffer(owned); } catch (error) { errors.push(String(error)); }
+        }
+        if (errors.length) throw new Error(`Readback cleanup failed: ${errors.join("; ")}`);
+      };
+      const fail = (reason: string) => {
+        if (settled) return;
+        settled = true;
+        try { cleanup(); } catch (error) { reason += `; ${String(error)}`; }
+        capture.encodedAt = performance.now();
+        capture.encodingError = `Intro PNG encoding failed (active=${capture.active}, phaseTime=${capture.phaseTime}): ${reason}`;
+        probe.encodingErrors.push(capture.encodingError);
+        finished();
+      };
+      const checkError = (stage: string) => {
+        const error = gl.getError();
+        if (error !== gl.NO_ERROR) throw new Error(`WebGL error 0x${error.toString(16)} after ${stage}`);
+      };
+      const encode = async (bytes: Uint8Array, width: number, height: number) => {
+        const stride = width * 4, pixels = new Uint8ClampedArray(bytes.length);
+        for (let row = 0; row < height; row++)
+          pixels.set(bytes.subarray((height - row - 1) * stride, (height - row) * stride), row * stride);
+        const output = new OffscreenCanvas(width, height), context = output.getContext("2d", { willReadFrequently: true });
+        if (!context) throw new Error("OffscreenCanvas 2D context is unavailable");
+        context.putImageData(new ImageData(pixels, width, height), 0, 0);
+        capture.pngEncodingStartedAt = performance.now();
+        const blob = await output.convertToBlob({ type: "image/png" });
+        capture.blobReadyAt = performance.now();
+        if (blob.type !== "image/png" || blob.size === 0) throw new Error("OffscreenCanvas did not return a nonempty PNG");
+        const reader = new FileReader();
+        reader.onerror = () => fail(reader.error?.message ?? "FileReader failed");
+        reader.onabort = () => fail("FileReader aborted");
+        reader.onload = () => {
+          if (settled) return;
+          if (typeof reader.result !== "string" || !reader.result.startsWith("data:image/png;base64,")) { fail("FileReader did not return a PNG data URL"); return; }
+          settled = true; capture.url = reader.result; capture.encodedAt = performance.now(); finished();
+        };
+        reader.readAsDataURL(blob);
+      };
+      try {
+        capture.snapshotRequestedAt = performance.now();
+        const width = canvas.width, height = canvas.height, byteLength = width * height * 4;
+        if (width <= 0 || height <= 0 || width !== gl.drawingBufferWidth || height !== gl.drawingBufferHeight)
+          throw new Error("Canvas and WebGL drawing-buffer dimensions must match and be nonzero");
+        if (gl.isContextLost()) throw new Error("WebGL context was lost before readback");
+        capture.readbackMethod = "pixel-pack-buffer";
+        capture.readbackWidth = width; capture.readbackHeight = height; capture.readbackByteLength = byteLength;
+        const previousBuffer = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) as WebGLBuffer | null;
+        const previousRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+        const packNames = [gl.PACK_ALIGNMENT, gl.PACK_ROW_LENGTH, gl.PACK_SKIP_PIXELS, gl.PACK_SKIP_ROWS];
+        const previousPack = packNames.map(name => gl.getParameter(name) as number);
+        let defaultReadBuffer: number | undefined;
+        buffer = gl.createBuffer();
+        if (!buffer) throw new Error("Pixel-pack buffer allocation returned null");
+        try {
+          gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+          defaultReadBuffer = gl.getParameter(gl.READ_BUFFER) as number;
+          gl.readBuffer(gl.BACK);
+          gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+          gl.pixelStorei(gl.PACK_ROW_LENGTH, 0); gl.pixelStorei(gl.PACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.PACK_SKIP_ROWS, 0);
+          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+          gl.bufferData(gl.PIXEL_PACK_BUFFER, byteLength, gl.STREAM_READ);
+          // The offset overload snapshots this actual draw in the GL command stream.
+          gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+          checkError("readPixels");
+          sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+          if (!sync) throw new Error("Readback fenceSync returned null");
+          gl.flush();
+        } finally {
+          packNames.forEach((name, index) => gl.pixelStorei(name, previousPack[index]));
+          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, previousBuffer);
+          if (defaultReadBuffer !== undefined) gl.readBuffer(defaultReadBuffer);
+          gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previousRead);
+        }
+        capture.snapshotReturnedAt = performance.now();
+        const poll = () => {
+          pollTimer = null;
+          if (settled) return;
+          try {
+            if (gl.isContextLost()) throw new Error("WebGL context was lost during readback");
+            capture.readbackPolls = (capture.readbackPolls ?? 0) + 1;
+            const status = gl.clientWaitSync(sync!, 0, 0);
+            if (status === gl.TIMEOUT_EXPIRED) { pollTimer = setTimeout(poll, 0); return; }
+            if (status !== gl.ALREADY_SIGNALED && status !== gl.CONDITION_SATISFIED)
+              throw new Error(`Readback fence wait failed with status 0x${status.toString(16)}`);
+            capture.readbackReadyAt = performance.now();
+            const bytes = new Uint8Array(byteLength);
+            const currentBuffer = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) as WebGLBuffer | null;
+            try {
+              gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+              gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, bytes);
+              checkError("getBufferSubData");
+            } finally { gl.bindBuffer(gl.PIXEL_PACK_BUFFER, currentBuffer); }
+            capture.readbackCopiedAt = performance.now();
+            cleanup();
+            void encode(bytes, width, height).catch(error => fail(String(error)));
+          } catch (error) { fail(String(error)); }
+        };
+        pollTimer = setTimeout(poll, 0);
+      } catch (error) { fail(String(error)); }
+    };
+    let executingRaf: { timestamp: number; callbackStartedAt: number } | null = null;
+    if (captureFrames) {
+      const originalRaf = window.requestAnimationFrame;
+      window.requestAnimationFrame = function (this: Window, callback: FrameRequestCallback) {
+        if (typeof callback !== "function") return originalRaf.call(this, callback);
+        return originalRaf.call(this, function (this: Window, timestamp: number) {
+          const callbackStartedAt = performance.now();
+          const previous = executingRaf;
+          executingRaf = { timestamp, callbackStartedAt };
+          try { callback.call(this, timestamp); } finally { executingRaf = previous; }
+        });
+      };
+    }
     if (typeof WebGL2RenderingContext !== "undefined") {
       const names = new WeakMap<WebGLUniformLocation, string>();
       const phases = new WeakMap<WebGL2RenderingContext, { active?: number; time?: number; toWord?: number }>();
+      const contextIds = new WeakMap<WebGL2RenderingContext, number>();
+      let nextContextId = 0;
+      const pending = new Set<number>();
       const originalLocation = WebGL2RenderingContext.prototype.getUniformLocation;
       const originalScalar = WebGL2RenderingContext.prototype.uniform1f;
       const originalDraw = WebGL2RenderingContext.prototype.drawArrays;
@@ -79,11 +223,24 @@ async function observeWorldIntro(page: Page, captureFrames = false) {
         const phase = phases.get(this), active = phase?.active, phaseTime = phase?.time, toWord = phase?.toWord;
         const intro = document.documentElement?.dataset.worldIntro;
         const now = performance.now();
+        let contextId = contextIds.get(this);
+        if (contextId === undefined) { contextId = ++nextContextId; contextIds.set(this, contextId); }
+        probe.drawFrames.push({ contextId, active: active ?? null, toWord: toWord ?? null, phaseTime: phaseTime ?? null, wallAt: now,
+          intro: intro ?? null, rafTimestamp: executingRaf?.timestamp ?? null, callbackStartedAt: executingRaf?.callbackStartedAt ?? null });
+        const hasActive = Number.isFinite(active), hasToWord = Number.isFinite(toWord), hasPhaseTime = Number.isFinite(phaseTime);
+        probe.phaseCompleteness.total++;
+        if (hasActive && hasToWord && hasPhaseTime) probe.phaseCompleteness.complete++;
+        if (!hasActive) probe.phaseCompleteness.missingActive++;
+        if (!hasToWord) probe.phaseCompleteness.missingToWord++;
+        if (!hasPhaseTime) probe.phaseCompleteness.missingPhaseTime++;
         const forming = active === 1 && toWord === 1 && phaseTime !== undefined && phaseTime >= .8 && phaseTime < 1.4 && intro === "on";
         const ended = active === 0 && intro === "off" && probe.captures.some(capture => capture.active === 1);
-        if ((forming || ended) && !probe.captures.some(capture => capture.active === active)) {
-          sample(); // Record real HTML state before synchronous PNG readback delays observers.
-          probe.captures.push({ source: "gpu-default-framebuffer", active: active!, toWord: toWord!, phaseTime: phaseTime!, wallAt: now, intro, url: canvas.toDataURL("image/png") });
+        if ((forming || ended) && !pending.has(active!) && !probe.captures.some(capture => capture.active === active)) {
+          sample();
+          pending.add(active!);
+          const capture: IntroProbe["captures"][number] = { source: "gpu-default-framebuffer", active: active!, toWord: toWord!, phaseTime: phaseTime!, wallAt: now, intro, url: null };
+          probe.captures.push(capture);
+          collectPng(canvas, capture, () => pending.delete(active!), this);
         }
         return result;
       };
@@ -130,23 +287,49 @@ test("world intro: plays once on home, keeps first-frame operations usable, and 
   await observeWorldIntro(page, true);
   await page.goto("/", { waitUntil: "commit" });
   const scene = page.locator(".vx-global-scene");
-  // The real default-framebuffer hook captures inside the finite entrance frame.
-  await page.waitForFunction(() => {
+  // Cold module/configuration readiness has its own finite wait. The PNG budget
+  // stays anchored to the first actual active default-framebuffer submission.
+  const readinessWaitNodeStart = { performanceNow: performance.now(), epochMs: Date.now() };
+  await page.waitForFunction(nodeStart => {
     const probe = (window as unknown as { __worldIntroProbe?: IntroProbe }).__worldIntroProbe;
+    if (!probe) return false;
+    probe.collectionTiming ??= {
+      clockNote: "Node performanceNow is process-relative; epochMs is the Node wall clock. readyObservedAt, collectorFirstEvaluatedAt and draw/capture timestamps use the page performance.now() clock; their values are never rewritten.",
+      readinessWaitNodeStart: nodeStart,
+    };
+    const firstActiveDraw = probe.drawFrames.find(draw => draw.active === 1);
+    if (!firstActiveDraw || !probe.firstInteractive) return false;
+    probe.collectionTiming.firstActiveDraw ??= firstActiveDraw;
+    probe.collectionTiming.readyObservedAt ??= performance.now();
+    return true;
+  }, readinessWaitNodeStart, { timeout: 5000 });
+  // The real default-framebuffer hook captures inside the finite entrance frame.
+  const collectorWaitNodeStart = { performanceNow: performance.now(), epochMs: Date.now() };
+  await page.waitForFunction(nodeStart => {
+    const probe = (window as unknown as { __worldIntroProbe?: IntroProbe }).__worldIntroProbe;
+    if (probe?.collectionTiming) {
+      probe.collectionTiming.collectorWaitNodeStart ??= nodeStart;
+      probe.collectionTiming.collectorFirstEvaluatedAt ??= performance.now();
+    }
     const scene = document.querySelector<HTMLElement>(".vx-global-scene");
-    return probe?.captures.some(capture => capture.active === 1) && probe.captures.some(capture => capture.active === 0) &&
+    if (probe?.encodingErrors.length) throw new Error(probe.encodingErrors.join("; "));
+    return probe?.captures.some(capture => capture.active === 1 && capture.url !== null) && probe.captures.some(capture => capture.active === 0 && capture.url !== null) &&
       document.documentElement.dataset.worldIntro === "off" && scene?.dataset.worldTier === "animated" && scene?.dataset.worldMaterial === "lattice";
-  }, null, { timeout: 5000 });
+  }, collectorWaitNodeStart, { timeout: 5000 });
   const initial = await introProbe(page);
   const forming = initial.captures.find(capture => capture.active === 1)!;
   const finished = initial.captures.find(capture => capture.active === 0)!;
+  const firstActiveDraw = initial.collectionTiming!.firstActiveDraw!;
+  expect(forming.encodedAt! - firstActiveDraw.wallAt).toBeLessThanOrEqual(5000);
+  expect(finished.encodedAt! - firstActiveDraw.wallAt).toBeLessThanOrEqual(5000);
   expect(forming.intro).toBe("on");
   expect(finished.intro).toBe("off");
   expect(forming.toWord).toBe(1);
   expect(forming.phaseTime).toBeGreaterThanOrEqual(.8);
   expect(forming.phaseTime).toBeLessThan(1.4);
-  const duringBytes = Buffer.from(forming.url.split(",")[1], "base64");
-  const finishedBytes = Buffer.from(finished.url.split(",")[1], "base64");
+  expect(initial.encodingErrors).toEqual([]);
+  const duringBytes = Buffer.from(forming.url!.split(",")[1], "base64");
+  const finishedBytes = Buffer.from(finished.url!.split(",")[1], "base64");
   await writeFile(testInfo.outputPath("intro-forming-real-world.png"), duringBytes);
   await writeFile(testInfo.outputPath("intro-finished-real-world.png"), finishedBytes);
   const during = decodePng(duringBytes), settled = decodePng(finishedBytes);
