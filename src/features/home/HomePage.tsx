@@ -254,7 +254,8 @@ export function HomePage() {
 
         <div
           className="vx-home__char-col"
-          ref={characterAreaRef}
+            ref={characterAreaRef}
+            data-world-anchor
           onPointerEnter={() => setCharAreaHovered(true)}
           onPointerLeave={() => { setCharAreaHovered(false); setHeadPointer(null); }}
           onPointerMove={onCharPointerMove}

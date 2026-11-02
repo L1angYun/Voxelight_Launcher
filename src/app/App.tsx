@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppProviders } from "./AppProviders";
 import { FloatingNav, type NavigationPage } from "./FloatingNav";
@@ -11,6 +11,7 @@ import { AccountsPage } from "../features/accounts/AccountsPage";
 import { MultiplayerPage } from "../features/multiplayer/MultiplayerPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { WorldScene } from "../components/WorldScene";
+import { deriveWorldState } from "../components/world/deriveWorldState";
 import { useLauncher } from "./controller/LauncherProvider";
 import { useAppearance } from "./AppearanceProvider";
 import { useOverture } from "../visual/overture/OvertureProvider";
@@ -25,7 +26,8 @@ function AppShell() {
   const [page, setPage] = useState<NavigationPage>("home");
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
-  const { activeAccount, accountAppearance, config } = useLauncher();
+  const { activeAccount, accountAppearance, config, busy, progress, running, gamePid } = useLauncher();
+  const world = useMemo(() => deriveWorldState({ busy, progress, running, gamePid }), [busy, progress, running, gamePid]);
   const { effects, reducedMotion, highContrast } = useAppearance();
   const { playing } = useOverture();
   return (
@@ -35,8 +37,8 @@ function AppShell() {
         {/* Global WorldScene background — runs on all pages for glass refraction */}
         <WorldScene
           className="vx-global-scene"
-          phase="idle"
-          fraction={null}
+          phase={world.phase}
+          fraction={world.fraction}
           page={page === "home" ? "home" : "content"}
           scene={config.worldScene}
           material={config.worldMaterial}

@@ -238,8 +238,8 @@ Expected: FAIL，模块不存在。
 
 导演规则：
 - `step` 内把 dt 截断到 0.05；相机和标量用 `1 - exp(-dt * 2.4)` 趋近目标，push 用速率 1.3。
-- 目标 `front`：准备中为 `max(已达值, fraction × FRONT_MAX)`；未知时每秒增加 `FRONT_MAX × 0.02`，封顶 15%；运行中 600ms 内线性到 `FRONT_MAX`。
-- 离开准备和运行后，`cry` 每秒减 75；`cry` 归零时重置 `front`。
+- 目标 `front`：准备中为 `max(已达值, fraction × FRONT_MAX)`；未知时每秒增加 `FRONT_MAX × 0.02`，封顶 15%；运行中 600ms 内线性到 `FRONT_MAX`。准备信号的收敛及未知总量推进同样使用真实经过时间，不随 GPU 帧数变慢；粒子模拟仍限制单步时间。
+- 离开准备和运行后，`cry` 按真实经过时间每秒减 75；`cry` 归零时重置 `front`。数据前沿与物理步长分离，避免低帧率把停止／取消反馈拖长；`simTime` 单步仍限制到 0.05。
 - 运行中 `exposure` 趋向 0.3，`bloom` 0.1，`runDim` 0.3，`timeScale` 0.12；曝光收敛后 `settled = true`。
 - 内容页：`runDim` 0.5，`dim` 0.55，机位取 `LIST_CAM`。
 - 场景、材质或页面变化时写入 `morph = { start: simTime, dur: 1.2, toWord: false, fromWord: false, transit: 26 }`。

@@ -46,6 +46,7 @@ export function WorldScene(props: WorldSceneProps) {
     let previousTick: number | null = null, lastGpuAt: number | null = null, lastCpuMs = 0;
     let budgetSource: "gpu" | "raf" | null = null;
     let width = 1, height = 1, tier: Tier;
+    let lastLayoutKey = "", trackedAnchor: Element | null = null;
     let renderer: WorldRenderer | null = null;
     let pointerBound = false;
     let held: { id: number; start: number; x: number; y: number; moved: number } | null = null;
@@ -64,6 +65,7 @@ export function WorldScene(props: WorldSceneProps) {
       host!.dataset.worldFrames = String(drawn);
       host!.dataset.worldMaterial = renderer?.material ?? "solid";
       host!.dataset.worldPhase = current.current.phase;
+      host!.dataset.worldFront = String(Math.round(frame.front));
       host!.dataset.worldTier = lost || !renderer ? "css" : tier.kind;
       host!.dataset.worldGrid = String(tier.grid);
       host!.dataset.worldParticles = String(renderer?.material === "lattice" ? tier.particleSide ** 2 : 0);
@@ -120,11 +122,23 @@ export function WorldScene(props: WorldSceneProps) {
       if (renderer && permitted() && tier.kind === "animated" && !lastFrame.settled && animation === null)
         animation = requestAnimationFrame(tick);
     }
-    function fit() {
+    function measureLayout() {
       const rect = host!.getBoundingClientRect();
-      width = Math.max(1, rect.width || window.innerWidth); height = Math.max(1, rect.height || window.innerHeight);
+      const nextWidth = Math.max(1, rect.width || window.innerWidth), nextHeight = Math.max(1, rect.height || window.innerHeight);
+      const anchor = document.querySelector("[data-world-anchor]");
+      const bounds = anchor?.getBoundingClientRect();
+      const ndc: [number, number] = bounds && bounds.width > 0 && bounds.height > 0
+        ? [(bounds.left + bounds.width / 2 - rect.left) / nextWidth * 2 - 1, 1 - (bounds.bottom - rect.top) / nextHeight * 2] : [.62, -.66];
+      return { width: nextWidth, height: nextHeight, ndc, anchor, key: JSON.stringify([nextWidth, nextHeight, ...ndc, window.devicePixelRatio || 1]) };
+    }
+    function fit() {
+      const next = measureLayout(); width = next.width; height = next.height; lastLayoutKey = next.key;
+      if (trackedAnchor !== next.anchor) {
+        if (trackedAnchor) resize?.unobserve(trackedAnchor);
+        trackedAnchor = next.anchor; if (trackedAnchor) resize?.observe(trackedAnchor);
+      }
       renderer?.resize(width, height, Math.min(window.devicePixelRatio || 1, tier.dprCap));
-      renderer?.setAnchor([.62, -.66]);
+      renderer?.setAnchor(next.ndc);
     }
     function update(force = false) {
       if (disposed) return;
@@ -187,7 +201,7 @@ export function WorldScene(props: WorldSceneProps) {
       }
     }
     const changed = () => update();
-    const resized = () => update(true);
+    const resized = () => { if (measureLayout().key !== lastLayoutKey) update(true); };
     const mutations = new MutationObserver(records => { if (records.some(record => record.target === html)) update(); });
     mutations.observe(html, { attributes: true, attributeFilter: ["data-theme", "data-effects", "data-high-contrast", "data-reduced-motion", "style", "class"] });
     const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resized);
@@ -212,7 +226,7 @@ export function WorldScene(props: WorldSceneProps) {
   }, []);
   useEffect(() => runtime.current?.update(), [props.phase, props.fraction, props.page, props.scene, props.material, props.paused, props.effects, props.reducedMotion]);
   return <div ref={hostRef} className={["world-scene", props.className].filter(Boolean).join(" ")} aria-hidden="true"
-    data-world-tier="css" data-world-material="solid" data-world-phase={props.phase} data-world-frames="0" data-motion="reduced" data-paused={Boolean(props.paused)}>
+    data-world-tier="css" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-motion="reduced" data-paused={Boolean(props.paused)}>
     <canvas ref={canvasRef} className="world-scene__canvas" />
   </div>;
 }
