@@ -11,6 +11,7 @@ import {
   taskActions,
   useDownloadTasks,
   type DownloadTask,
+  type DownloadTasksModel,
 } from "./useDownloadTasks";
 
 const commandMock = vi.mocked(command);
@@ -19,6 +20,7 @@ const listeners = new Map<string, (value: unknown) => void>();
 let root: Root;
 let container: HTMLDivElement;
 let currentTasks: DownloadTask[];
+let latestModel: DownloadTasksModel;
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/launcher")>()),
@@ -47,6 +49,7 @@ function task(overrides: Partial<DownloadTask> = {}): DownloadTask {
 
 function DownloadHarness() {
   const model = useDownloadTasks();
+  latestModel = model;
   return createElement(DownloadsPage, { model });
 }
 
@@ -115,6 +118,21 @@ afterEach(async () => {
 });
 
 describe("download task center", () => {
+  it("retains prepared groups across page renders and sorts timestamp offsets chronologically", async () => {
+    currentTasks = [
+      task({ id: "older", status: "completed", updatedAt: "2026-11-03T04:00:00+08:00" }),
+      task({ id: "newer", status: "completed", updatedAt: "2026-11-02T22:00:00Z" }),
+      task({ id: "queued", status: "queued" }),
+      task({ id: "running", status: "running" }),
+    ];
+    await render();
+    expect(latestModel.active?.map(item => item.id)).toEqual(["running", "queued"]);
+    expect(latestModel.history?.map(item => item.id)).toEqual(["newer", "older"]);
+    const active = latestModel.active, history = latestModel.history;
+    await render();
+    expect(latestModel.active).toBe(active);
+    expect(latestModel.history).toBe(history);
+  });
   it("maps every persisted status to an allowed action", () => {
     expect(taskActions("queued")).toEqual(["cancel"]);
     expect(taskActions("running")).toEqual(["pause", "cancel"]);

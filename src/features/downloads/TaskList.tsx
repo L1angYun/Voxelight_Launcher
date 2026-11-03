@@ -258,6 +258,7 @@ function TaskRow({
                 <Button
                   key={action}
                   variant="ghost"
+                  size="sm"
                   icon={<Icon size={15} />}
                   loading={busyTaskId === task.id}
                   disabled={busyTaskId !== null}

@@ -1,27 +1,7 @@
 .vx-downloads-page {
   --download-quiet: color-mix(in srgb, var(--bg-raised) 64%, transparent);
-  --download-raised: color-mix(in srgb, var(--bg-raised) 92%, var(--surface-solid));
+  --download-raised: var(--surface-card);
   --download-rule: color-mix(in srgb, var(--text-primary) 9%, transparent);
-  width: min(100%, var(--content-max));
-  margin: 0 auto;
-  padding: 28px 36px 56px;
-}
-
-.vx-downloads-page .vx-page-heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 24px;
-}
-
-.vx-downloads-page .vx-page-heading h1 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: var(--text-2xl);
-  font-weight: 650;
-  line-height: 1.16;
-  letter-spacing: 0;
 }
 
 .vx-downloads-error {
@@ -30,7 +10,7 @@
   gap: 9px;
   margin: 0 0 18px;
   padding: 11px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   color: var(--danger);
   font-size: var(--text-sm);
@@ -95,7 +75,7 @@
   min-height: 78px;
   margin: 0;
   padding: 14px 18px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--download-quiet);
   color: var(--text-secondary);
 }
@@ -177,7 +157,7 @@
   min-height: 272px;
   overflow: hidden;
   padding: 40px 42px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--download-quiet);
 }
 
@@ -239,8 +219,8 @@
   gap: 14px;
   min-width: 0;
   padding: 19px 22px 15px;
-  border: 0;
-  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
   background: var(--download-raised);
   box-shadow:
     inset 0 1px color-mix(in srgb, white 11%, transparent),
@@ -249,11 +229,14 @@
 }
 
 .vx-task-row[data-status="running"] {
-  background: color-mix(in srgb, var(--bg-raised) 96%, var(--surface-solid));
+  background: var(--surface-card);
 }
 
 .vx-task-section--history .vx-task-row {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 250px;
   padding: 16px 8px 12px;
+  border: 0;
   border-top: 1px dotted var(--download-rule);
   border-radius: 0;
   background: transparent;
@@ -304,7 +287,7 @@
 }
 
 .vx-task-row__stage[data-status="running"] {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .vx-task-row__stage[data-status="queued"] {
@@ -367,8 +350,8 @@
 
 .vx-task-row__percent {
   flex: none;
-  color: var(--accent);
-  font-family: var(--font-mono);
+  color: var(--accent-ink);
+  font-family: var(--font-matrix);
   font-size: 32px;
   font-variant-numeric: tabular-nums;
   font-weight: 560;
@@ -393,7 +376,7 @@
 }
 
 .vx-task-row__rate {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .vx-task-row__message {
@@ -434,9 +417,6 @@
 }
 
 .vx-task-row__actions .vx-button {
-  min-height: 30px;
-  padding: 5px 9px;
-  border-radius: var(--radius-pill);
   font-size: 11.5px;
 }
 
@@ -459,27 +439,12 @@
 }
 
 @media (max-width: 1050px) {
-  .vx-downloads-page {
-    padding-inline: 28px;
-  }
-
   .vx-task-row__percent {
     font-size: 29px;
   }
 }
 
 @media (max-width: 680px) {
-  .vx-downloads-page {
-    padding: 16px 16px 40px;
-  }
-
-  .vx-downloads-page .vx-page-heading {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-bottom: 20px;
-  }
-
   .vx-task-row {
     gap: 13px;
     padding: 15px;

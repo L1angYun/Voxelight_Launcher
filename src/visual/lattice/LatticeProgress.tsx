@@ -14,8 +14,21 @@ import { useLatticeStaticMotion } from "./staticMotion";
 import type { LatticeStatus } from "./model";
 import "./lattice.css";
 
-// Cached palette — refreshed on html[data-theme] changes via MutationObserver.
-let cachedPalette: ProgressPalette | null = null;
+const pendingMeasurements = new Map<HTMLCanvasElement, (width: number) => void>();
+function queueMeasurement(canvas: HTMLCanvasElement, apply: (width: number) => void) {
+  const scheduled = pendingMeasurements.size > 0;
+  pendingMeasurements.set(canvas, apply);
+  if (scheduled) return;
+  queueMicrotask(() => {
+    // Read the whole list before changing a bitmap. Interleaved row reads and
+    // writes otherwise force a separate layout for every mounted progress field.
+    const measured = [...pendingMeasurements].map(([element, resize]) => ({
+      resize, width: element.getBoundingClientRect().width || element.clientWidth || 300,
+    }));
+    pendingMeasurements.clear();
+    for (const { resize, width } of measured) resize(width);
+  });
+}
 
 function readPalette(): ProgressPalette {
   if (typeof window === "undefined") {
@@ -25,26 +38,10 @@ function readPalette(): ProgressPalette {
   const get = (name: string, fallback: string) =>
     style.getPropertyValue(name).trim() || fallback;
   return {
-    gas: get("--lattice-ink", "rgba(255,255,255,0.38)"),
-    solid: get("--lattice-hot", "#84f068"),
-    flash: "#ffffff",
+    gas: get("--text-tertiary", "rgba(255,255,255,0.38)"),
+    solid: get("--accent", "#b4f17a"),
+    flash: get("--text-primary", "#ece7da"),
   };
-}
-
-function palette(): ProgressPalette {
-  if (!cachedPalette) cachedPalette = readPalette();
-  return cachedPalette;
-}
-
-// Watch html[data-theme] (and any attribute change on <html>) to bust the cache.
-if (typeof MutationObserver !== "undefined" && typeof document !== "undefined") {
-  const themeObserver = new MutationObserver(() => {
-    cachedPalette = null;
-  });
-  themeObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme", "data-color-scheme", "class"],
-  });
 }
 
 export function LatticeProgress({
@@ -78,32 +75,52 @@ export function LatticeProgress({
     : 0;
   const fraction = determinate ? safeCompleted / total : 0;
   const percent = determinate ? Math.round(fraction * 100) : null;
+  const progressRef = useRef({ determinate, fraction, status, noAnimation });
+  progressRef.current = { determinate, fraction, status, noAnimation };
 
   // Build or resize the field whenever the canvas size changes.
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    let started = false, disposed = false;
     const dpr = Math.min(2, typeof devicePixelRatio !== "undefined" ? devicePixelRatio : 1);
-    const measure = () => {
-      const rect = canvas.getBoundingClientRect();
-      const w = Math.round(rect.width || canvas.clientWidth || 300);
+    const resize = (width: number) => {
+      const w = Math.round(width);
       const h = PROGRESS_FIELD_HEIGHT_PX;
       const pixelWidth = Math.round(w * dpr);
       const pixelHeight = Math.round(h * dpr);
       const resized = canvas.width !== pixelWidth || canvas.height !== pixelHeight;
       if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
       if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-      canvas.style.height = `${h}px`;
       if (!fieldRef.current) fieldRef.current = new LatticeProgressField(2);
+      const progress = progressRef.current;
+      if (!progress.determinate || progress.status === "unknown") fieldRef.current.setScanning();
+      else fieldRef.current.setTarget(progress.fraction);
       fieldRef.current.resize(w, h);
+      if (progress.noAnimation) fieldRef.current.settle();
       if (resized) staticPaintRef.current?.();
     };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(canvas);
-    return () => observer.disconnect();
-  }, []);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width;
+      if (width !== undefined) resize(width);
+      else resize(canvas.getBoundingClientRect().width || canvas.clientWidth || 300);
+    });
+    const initialize = () => {
+      if (started || disposed) return;
+      started = true;
+      queueMeasurement(canvas, resize);
+      observer?.observe(canvas);
+    };
+    // Task labels, actions and aria progress remain in the DOM. Only a static
+    // bitmap waits until near the viewport; active progress starts immediately.
+    const visibility = !animated && typeof IntersectionObserver !== "undefined"
+      ? new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.isIntersecting)) { visibility?.disconnect(); initialize(); }
+      }, { rootMargin: "120px 0px" }) : null;
+    if (visibility) visibility.observe(canvas);
+    else initialize();
+    return () => { disposed = true; pendingMeasurements.delete(canvas); observer?.disconnect(); visibility?.disconnect(); };
+  }, [animated]);
 
   // Sync the progress target and scanning state to the field.
   useEffect(() => {
@@ -125,6 +142,7 @@ export function LatticeProgress({
     if (!canvas) return;
     const dpr = Math.min(2, typeof devicePixelRatio !== "undefined" ? devicePixelRatio : 1);
     let stopped = false;
+    let palette = readPalette();
 
     const paint = () => {
       const field = fieldRef.current;
@@ -133,7 +151,7 @@ export function LatticeProgress({
       if (!ctx) return;
       ctx.save();
       ctx.scale(dpr, dpr);
-      field.draw(ctx, palette());
+      field.draw(ctx, palette);
       ctx.restore();
     };
 
@@ -152,6 +170,8 @@ export function LatticeProgress({
     };
 
     staticPaintRef.current = noAnimation ? paint : null;
+    const themeObserver = new MutationObserver(() => { palette = readPalette(); paint(); });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-color-scheme", "style", "class"] });
     if (noAnimation) {
       // One paint whenever fraction/status changes (effect re-runs on those deps).
       paint();
@@ -162,6 +182,7 @@ export function LatticeProgress({
 
     return () => {
       stopped = true;
+      themeObserver.disconnect();
       staticPaintRef.current = null;
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);

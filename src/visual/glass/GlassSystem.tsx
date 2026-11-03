@@ -321,6 +321,7 @@ export function GlassSurface({
     if (!element) return;
     if (image && shape) syncSurfaceOptics(element, shape, readGlassOptics(element));
     else resetSurfaceOptics(element);
+    return () => resetSurfaceOptics(element);
   }, [image, shape]);
 
   useLayoutEffect(() => {

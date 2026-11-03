@@ -9,6 +9,7 @@ let circles: Circle[];
 let context: CanvasRenderingContext2D;
 let callbacks: Map<number, FrameRequestCallback>;
 let frameId: number;
+let now: number;
 let pageHidden: boolean;
 let media: Record<string, boolean>;
 let mediaListeners: Map<string, Set<() => void>>;
@@ -16,9 +17,9 @@ let halo: CursorHalo | null;
 let originalMatchMedia: PropertyDescriptor | undefined;
 
 function frame(time: number) {
+  now = time;
   const pending = [...callbacks.values()];
   callbacks.clear();
-  circles = [];
   pending.forEach((callback) => callback(time));
 }
 
@@ -121,6 +122,8 @@ beforeEach(() => {
   circles = [];
   callbacks = new Map();
   frameId = 0;
+  now = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
   pageHidden = false;
   halo = null;
   document.body.innerHTML = "";
@@ -190,6 +193,58 @@ afterEach(() => {
 });
 
 describe("Lattice cursor halo", () => {
+  it("stops drawing a settled pointer and restarts for movement and a press", () => {
+    halo = mountCursorHalo(document.body);
+    pointer(document.body, 400, 300); settle();
+    expect(callbacks.size).toBe(0);
+    const draws = vi.mocked(context.clearRect).mock.calls.length;
+    settle(2000);
+    expect(vi.mocked(context.clearRect).mock.calls.length).toBe(draws);
+    pointer(document.body, 480, 320);
+    expect(callbacks.size).toBe(1);
+    settle(4000); expect(callbacks.size).toBe(0);
+    expect(circles[30]).toMatchObject({ x: 480, y: 320 });
+    pointer(document.body, 480, 320, "pointerdown");
+    expect(callbacks.size).toBe(1);
+    settle(6000); expect(callbacks.size).toBe(0);
+  });
+
+  it("stops a settled card contour and resumes for scroll and keyboard handoff", () => {
+    const first = card(); const second = card();
+    box(second.element, 650, 400, 250, 220); box(second.button, 660, 410, 100, 40);
+    halo = mountCursorHalo(document.body);
+    pointer(first.button, 530, 300); settle();
+    expect(callbacks.size).toBe(0);
+    document.dispatchEvent(new Event("scroll"));
+    expect(callbacks.size).toBe(1);
+    settle(2000); expect(callbacks.size).toBe(0);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    second.button.focus();
+    expect(callbacks.size).toBe(1);
+    settle(4000); expect(callbacks.size).toBe(0);
+    expect(first.element.hasAttribute("data-halo-owned")).toBe(false);
+    expect(second.element.dataset.haloOwned).toBe("true");
+  });
+
+  it("releases a settled target removed from the document without another pointer event", async () => {
+    const { element, button, outline } = card();
+    halo = mountCursorHalo(document.body); pointer(button, 530, 300); settle();
+    element.remove(); await Promise.resolve();
+    expect(element.hasAttribute("data-halo-owned")).toBe(false);
+    expect(outline.style.visibility).toBe("visible");
+    settle(2000); expect(callbacks.size).toBe(0);
+    expect(circles).toHaveLength(31);
+  });
+
+  it("uses readable primary ink for the control contour", () => {
+    document.documentElement.style.setProperty("--text-primary", "#eee8dc");
+    document.documentElement.style.setProperty("--optical-cold", "#cc99ff");
+    const { button } = card(); halo = mountCursorHalo(document.body);
+    pointer(button, 530, 300); settle();
+    expect(context.fillStyle).toBe("#eee8dc");
+    document.documentElement.style.removeProperty("--text-primary");
+    document.documentElement.style.removeProperty("--optical-cold");
+  });
   it("responds to actual pointer events with one center and all thirty visible orbit points", () => {
     halo = mountCursorHalo(document.body);
     expect(halo).not.toBeNull();
@@ -201,7 +256,7 @@ describe("Lattice cursor halo", () => {
     expect(ring.every((point) => point.alpha > 0.5)).toBe(true);
     expect(
       ring.every(
-        (point) => Math.abs(Math.hypot(point.x - 700, point.y - 600) - 12) < 3,
+        (point) => Math.abs(Math.hypot(point.x - 700, point.y - 600) - 18) < 3,
       ),
     ).toBe(true);
     expect(circles[30]).toMatchObject({ x: 700, y: 600 });
@@ -400,6 +455,7 @@ describe("Lattice cursor halo", () => {
       halo = mountCursorHalo(document.body);
       pointer(button, 530, 300);
       settle();
+      pointer(button, 530, 300, "pointerdown");
       expect(callbacks.size).toBe(1);
       if (reason === "blur") window.dispatchEvent(new Event("blur"));
       if (reason === "hidden") {
@@ -431,6 +487,7 @@ describe("Lattice cursor halo", () => {
     halo = mountCursorHalo(document.body);
     pointer(document.body, 400, 300);
     frame(0);
+    pointer(document.body, 500, 400);
     expect(callbacks.size).toBe(1);
     media[query] = true;
     mediaListeners.get(query)?.forEach((listener) => listener());
@@ -467,6 +524,7 @@ describe("Lattice cursor halo", () => {
       halo = mountCursorHalo(document.body);
       pointer(document.body, 400, 300);
       frame(0);
+      pointer(document.body, 500, 400);
       expect(callbacks.size).toBe(1);
       document.documentElement.dataset[key] = value;
       await Promise.resolve();
@@ -506,7 +564,7 @@ describe("Lattice cursor halo", () => {
     },
   );
 
-  it("releases its frame if an active card is moved into a native top layer", () => {
+  it("releases its frame if an active card is moved into a native top layer", async () => {
     const { element, button, outline } = card();
     halo = mountCursorHalo(document.body);
     pointer(button, 530, 300);
@@ -516,6 +574,7 @@ describe("Lattice cursor halo", () => {
     layer.open = true;
     layer.append(element);
     document.body.append(layer);
+    await Promise.resolve();
     frame(2000);
     expect(element.hasAttribute("data-halo-owned")).toBe(false);
     expect(outline.style.visibility).toBe("visible");
