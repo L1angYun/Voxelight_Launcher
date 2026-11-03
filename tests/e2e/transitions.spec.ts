@@ -3,12 +3,30 @@ import { chromium, expect, test, type CDPSession, type Page, type TestInfo } fro
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
+import { MOTION } from "../../src/design/motion";
 
 const EVIDENCE = resolve(process.env.VOXELIGHT_TRANSITION_EVIDENCE ?? "test-results/transitions");
 const HARDWARE = process.env.VOXELIGHT_TRANSITION_HARDWARE === "1";
+const hardwareLaunchOptions = {
+  channel: "chromium",
+  headless: process.env.VOXELIGHT_TRANSITION_HEADED !== "1",
+  args: process.platform === "win32" ? ["--enable-automation", "--use-angle=d3d11"] : ["--enable-automation"],
+  ignoreDefaultArgs: ["--enable-unsafe-swiftshader"],
+};
+const drillTest = test.extend<{ drillHardware: boolean }>({
+  drillHardware: [false, { option: true }],
+  context: async ({ drillHardware, baseURL }, use) => {
+    if (!drillHardware) throw new Error("Full drill geometry requires its hardware Chromium fixture");
+    const browser = await chromium.launch(hardwareLaunchOptions);
+    try { await use(await browser.newContext({ baseURL })); }
+    finally { await browser.close(); }
+  },
+});
 type Rect = { x: number; y: number; width: number; height: number };
 type TraceParams = { trigger: string; source?: string; target?: string };
 type FrameBoundary = { rafTimestamp: number; callbackStartedAt: number; observedAt: number };
+type ProjectionWrite = { at: number; rafTimestamp: number | null; callbackStartedAt: number | null;
+  transform: string; transformOrigin: string; bounds: Rect };
 type Sample = {
   at: number; rafTimestamp: number | null; callbackStartedAt: number | null;
   stageOpacity: number | null; stageTransform: string | null; stageAnimationCount: number;
@@ -19,9 +37,10 @@ type Sample = {
 type Trace = {
   timeOrigin: number; startedAt: number; inputAt: number | null; lastInputAt: number | null;
   actionCompletedAt: number | null; finishedAt: number | null; params: TraceParams;
-  inputs: { at: number; type: string; page: string | null; key: string | null }[];
+  inputs: { at: number; type: string; page: string | null; key: string | null; trusted: boolean }[];
   inputFrameBaseline: FrameBoundary | null;
   sourceAtInput: Rect | null; frames: Sample[]; commits: Sample[];
+  projectionWrites: ProjectionWrite[]; projectionErrors: string[];
 };
 type Harness = { start(params: TraceParams): void; actionComplete(): void; done(): boolean; stop(): Trace };
 declare global { interface Window { __transitionHarness?: Harness } }
@@ -38,11 +57,61 @@ async function installRecorder(page: Page) {
     let current: (Omit<Trace, "frames"> & { frameMap: Map<number, Sample>; done: boolean }) | null = null;
     let scheduled: number | null = null;
     let lastNativeFrame: FrameBoundary | null = null;
+    let executingRaf: FrameBoundary | null = null;
+    let restoreProjectionObserver: (() => void) | null = null;
     const rect = (selector?: string): Rect | null => {
       const element = selector ? document.querySelector<HTMLElement>(selector) : null;
       if (!element) return null;
       const box = element.getBoundingClientRect();
       return { x: box.x, y: box.y, width: box.width, height: box.height };
+    };
+    const observeProjection = () => {
+      // Chromium exposes transformOrigin as a named CSS property, without a
+      // prototype setter. Observe the complete Motion write via the exact
+      // destination's native style object, before any batched RAF/MO sample.
+      const key = "style";
+      let owner: object | null = Object.getPrototypeOf(document.createElement("span"));
+      let descriptor: PropertyDescriptor | undefined;
+      while (owner && !(descriptor = Object.getOwnPropertyDescriptor(owner, key))) owner = Object.getPrototypeOf(owner);
+      if (!owner || !descriptor?.get || !descriptor.configurable)
+        throw new Error("The native HTMLElement.style getter is not observable for synchronous identity projection");
+      const prototype = owner, original = descriptor, read = descriptor.get;
+      const proxies = new WeakMap<CSSStyleDeclaration, CSSStyleDeclaration>();
+      let observing = true;
+      Object.defineProperty(prototype, key, { ...original, get(this: HTMLElement) {
+        const nativeStyle: CSSStyleDeclaration = read.call(this);
+        const trace = current;
+        const selector = trace?.params.target;
+        if (!observing || !trace || trace.done || !selector || this.localName !== "span" || !this.matches(selector)) return nativeStyle;
+        const existing = proxies.get(nativeStyle);
+        if (existing) return existing;
+        const element = this;
+        const methods = new Map<Function, Function>();
+        const proxy = new Proxy(nativeStyle, {
+          get(style, property) {
+            const value = Reflect.get(style, property, style);
+            if (typeof value !== "function" || property === "constructor") return value;
+            if (!methods.has(value)) methods.set(value, value.bind(style));
+            return methods.get(value);
+          },
+          set(style, property, value) {
+            const applied = Reflect.set(style, property, value, style);
+            if (applied && property === "transformOrigin" && observing && current === trace &&
+              !trace.done && trace.inputAt !== null && element.isConnected && element.matches(selector)) {
+              try {
+                const box = element.getBoundingClientRect(), computed = getComputedStyle(element);
+                trace.projectionWrites.push({ at: performance.now(), rafTimestamp: executingRaf?.rafTimestamp ?? null,
+                  callbackStartedAt: executingRaf?.callbackStartedAt ?? null, transform: computed.transform,
+                  transformOrigin: computed.transformOrigin, bounds: { x: box.x, y: box.y, width: box.width, height: box.height } });
+              } catch (error) { trace.projectionErrors.push(String(error)); }
+            }
+            return applied;
+          },
+        });
+        proxies.set(nativeStyle, proxy);
+        return proxy;
+      } });
+      return () => { observing = false; Object.defineProperty(prototype, key, original); };
     };
     const sample = (rafTimestamp: number | null, callbackStartedAt: number | null): Sample | null => {
       if (!current || current.done) return null;
@@ -84,7 +153,10 @@ async function installRecorder(page: Page) {
       return nativeRaf.call(this, function (this: Window, timestamp: number) {
         const callbackStartedAt = performance.now();
         lastNativeFrame = { rafTimestamp: timestamp, callbackStartedAt, observedAt: callbackStartedAt };
+        const previous = executingRaf;
+        executingRaf = lastNativeFrame;
         try { callback.call(this, timestamp); } finally {
+          executingRaf = previous;
           queueMicrotask(() => {
             const value = sample(timestamp, callbackStartedAt);
             if (value && current) current.frameMap.set(timestamp, value);
@@ -93,7 +165,7 @@ async function installRecorder(page: Page) {
       });
     };
     const beginInput = (event: Event) => {
-      if (!current || current.done) return;
+      if (!current || current.done || !event.isTrusted) return;
       if (event instanceof KeyboardEvent && event.key !== "Enter" && event.key !== " ") return;
       if (!(event.target instanceof Element) || !event.target.closest(current.params.trigger)) return;
       const at = performance.now();
@@ -104,7 +176,7 @@ async function installRecorder(page: Page) {
       }
       current.lastInputAt = at;
       current.inputs.push({ at, type: event.type, page: event.target.closest<HTMLElement>("button[data-page]")?.dataset.page ?? null,
-        key: event instanceof KeyboardEvent ? event.key : null });
+        key: event instanceof KeyboardEvent ? event.key : null, trusted: event.isTrusted });
       commitSample();
     };
     document.addEventListener("pointerdown", beginInput, true);
@@ -123,12 +195,22 @@ async function installRecorder(page: Page) {
     window.__transitionHarness = {
       start(params) {
         if (scheduled !== null) nativeCancel.call(window, scheduled);
+        restoreProjectionObserver?.();
+        restoreProjectionObserver = null;
         current = { timeOrigin: performance.timeOrigin, startedAt: performance.now(), inputAt: null, lastInputAt: null,
           actionCompletedAt: null, inputs: [], finishedAt: null, params, sourceAtInput: null,
           inputFrameBaseline: null,
-          frameMap: new Map(), commits: [], done: false };
-        commitSample();
-        scheduled = nativeRaf.call(window, tick);
+          frameMap: new Map(), commits: [], projectionWrites: [], projectionErrors: [], done: false };
+        try {
+          if (params.target) restoreProjectionObserver = observeProjection();
+          commitSample();
+          scheduled = nativeRaf.call(window, tick);
+        } catch (error) {
+          current.done = true;
+          restoreProjectionObserver?.();
+          restoreProjectionObserver = null;
+          throw error;
+        }
       },
       actionComplete() {
         if (!current) throw new Error("Transition recorder was never started");
@@ -140,6 +222,8 @@ async function installRecorder(page: Page) {
         if (!current) throw new Error("Transition recorder was never started");
         if (scheduled !== null) nativeCancel.call(window, scheduled);
         scheduled = null; current.done = true;
+        restoreProjectionObserver?.();
+        restoreProjectionObserver = null;
         const { frameMap, done: _done, ...trace } = current;
         return { ...trace, frames: [...frameMap.values()].sort((a, b) => a.rafTimestamp! - b.rafTimestamp!) };
       },
@@ -177,6 +261,7 @@ async function settle(page: Page) {
   await expect.poll(() => page.locator("#main-content > .vx-page-stage").evaluate(element => {
     const style = getComputedStyle(element);
     return Number(style.opacity) === 1 && (style.transform === "none" || style.transform === "matrix(1, 0, 0, 1, 0, 0)") &&
+      !style.willChange.split(",").some(property => property.trim() === "opacity") &&
       element.getAnimations().every(animation => animation.playState !== "running");
   })).toBe(true);
   await expect(page.locator("nav.vx-floating-nav")).toHaveAttribute("data-motion-settled", "true");
@@ -333,24 +418,33 @@ async function secondSettingsVisit(page: Page, info: TestInfo) {
     () => page.locator(".vx-settings-nav button").nth(1).click(), false);
 }
 
+async function verifyHardwareRenderer(page: Page, directory: string) {
+  const browser = page.context().browser();
+  if (!browser) throw new Error("Hardware acceptance requires the launched Chromium browser");
+  const device = await renderer(page);
+  const browserCdp = await browser.newBrowserCDPSession();
+  let browserArguments: string[];
+  try { browserArguments = (await browserCdp.send("Browser.getBrowserCommandLine")).arguments; }
+  finally { await browserCdp.detach(); }
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "hardware-renderer.json"), JSON.stringify({ ...device, browserArguments }, null, 2));
+  expect(browserArguments.filter(argument => /swiftshader/i.test(argument)), "Hardware Chromium must not inherit SwiftShader flags").toEqual([]);
+  expect(device.renderer).not.toBe("unavailable");
+  expect(softwareRenderer(device.renderer), "Hardware acceptance requires a real non-software renderer").toBe(false);
+  if (process.platform === "win32") {
+    expect(browserArguments[0]).toMatch(/[\\/]chrome\.exe$/i);
+    expect(browserArguments).toContain("--use-angle=d3d11");
+    expect(device.renderer).toMatch(/\b(?:Direct3D11|D3D11)\b/i);
+  }
+}
+
 if (HARDWARE) {
   test("transitions: hardware second settings visit stays below 40ms", async ({}, info) => {
-    const browser = await chromium.launch({ channel: "chromium", headless: process.env.VOXELIGHT_TRANSITION_HEADED !== "1",
-      args: process.platform === "win32" ? ["--enable-automation", "--use-angle=d3d11"] : ["--enable-automation"],
-      ignoreDefaultArgs: ["--enable-unsafe-swiftshader"] });
+    const browser = await chromium.launch(hardwareLaunchOptions);
     const page = await browser.newPage();
     try {
       await prepare(page);
-      const device = await renderer(page);
-      const browserCdp = await browser.newBrowserCDPSession();
-      let browserArguments: string[];
-      try { browserArguments = (await browserCdp.send("Browser.getBrowserCommandLine")).arguments; }
-      finally { await browserCdp.detach(); }
-      await mkdir(EVIDENCE, { recursive: true });
-      await writeFile(join(EVIDENCE, "hardware-renderer.json"), JSON.stringify({ ...device, browserArguments }, null, 2));
-      expect(browserArguments.filter(argument => /swiftshader/i.test(argument)), "Hardware Chromium must not inherit SwiftShader flags").toEqual([]);
-      expect(device.renderer).not.toBe("unavailable");
-      expect(softwareRenderer(device.renderer), "Hardware acceptance requires a real non-software renderer").toBe(false);
+      await verifyHardwareRenderer(page, EVIDENCE);
       const measured = await secondSettingsVisit(page, info);
       expect(measured.sampledSpanMs).toBeGreaterThanOrEqual(1000);
       expect(measured.frames.length).toBeGreaterThan(25);
@@ -459,5 +553,195 @@ if (HARDWARE) {
     expect(measured.sampledSpanMs).toBeGreaterThanOrEqual(1000);
     if (softwareRenderer(measured.renderer)) expect(measured.hardware40ms).toBe("NOT_EVALUATED_SOFTWARE_RENDERER");
     info.annotations.push({ type: "hardware-acceptance", description: "40ms is assessed only with VOXELIGHT_TRANSITION_HARDWARE=1 and a verified hardware renderer." });
+  });
+}
+
+async function tabTo(page: Page, selector: string) {
+  await page.locator(".vx-library-page h1").evaluate(element => element.focus({ preventScroll: true }));
+  for (let index = 0; index < 160; index++) {
+    if (await page.locator(selector).evaluate(element => document.activeElement === element)) return;
+    await page.keyboard.press("Tab");
+  }
+  throw new Error("Keyboard Tab traversal never reached " + selector);
+}
+
+const fields = ["x", "y", "width", "height"] as const;
+const rectangleError = (actual: Rect, expected: Rect) => Math.max(...fields.map(field => Math.abs(actual[field] - expected[field])));
+
+async function assertDrillGeometry(recorded: Recorded, finalRect: Rect, info: TestInfo, label: string) {
+  const source = recorded.sourceAtInput;
+  expect(source, "identity origin must be captured synchronously before the real input handler").not.toBeNull();
+  const firstProjected = recorded.projectionWrites.find(sample => !identityTransform(sample.transform));
+  const frames = recorded.frames.filter((sample): sample is Sample & { target: Rect } => sample.target !== null);
+  const delta = fields.map(field => finalRect[field] - source![field]);
+  const distance = Math.hypot(...delta);
+  expect(distance, "fixture must exercise a genuine spatial drill").toBeGreaterThan(20);
+  const progress = (box: Rect) => fields.reduce((sum, field, index) => sum + (box[field] - source![field]) * delta[index], 0) / (distance * distance);
+  const values = frames.map(sample => ({ ...sample, progress: progress(sample.target) }));
+  const intermediate = values.filter(sample => sample.progress > .001 && sample.progress < .999);
+  const intermediatePositions = new Set(intermediate.map(sample => fields.map(field => sample.target[field].toFixed(2)).join("|")));
+  const alpha = MOTION.identity.damping / 2;
+  const beta = Math.sqrt(MOTION.identity.stiffness - alpha * alpha);
+  const peakAt = Math.atan(beta / alpha) / beta;
+  const peakVelocity = MOTION.identity.stiffness / beta * Math.exp(-alpha * peakAt) * Math.sin(beta * peakAt);
+  const directory = join(EVIDENCE, info.title.replace(/[^a-zA-Z0-9_-]+/g, "-"), label);
+  await writeFile(join(directory, "drill-geometry.json"), JSON.stringify({ source, finalRect, firstProjected, intermediateFrames: intermediate.length, distinctIntermediatePositions: intermediatePositions.size, projectionErrors: recorded.projectionErrors,
+    peakNormalizedVelocityPerSecond: peakVelocity, frames: values }, null, 2));
+  expect(recorded.projectionErrors).toEqual([]);
+  if (!firstProjected) throw new Error("The first applied projection was not observed synchronously");
+  expect(rectangleError(firstProjected.bounds, source!), "initial projected identity must coincide with the source span in all four coordinates").toBeLessThanOrEqual(.1);
+  const earlyFrames = frames.filter(sample => sample.at < firstProjected.at);
+  expect(earlyFrames.every(sample => rectangleError(sample.target, source!) <= .1),
+    "no real RAF may expose the unprojected destination before the initial projection").toBe(true);
+  expect(intermediatePositions.size, "real RAF geometry must contain multiple distinct intermediate positions").toBeGreaterThan(1);
+  const firstFrame = frames.find(sample => sample.at >= firstProjected.at);
+  if (!firstFrame) throw new Error("No real RAF followed the synchronous projection");
+  // The synchronous style write proves the origin, but is not Motion's
+  // internal start clock. The actual input is the earliest possible start;
+  // callback entry uses the same performance clock even for a stale RAF stamp.
+  if (recorded.inputAt === null || firstFrame.callbackStartedAt === null) throw new Error("First projection needs actual input and callback clocks");
+  const elapsedUpperBound = (firstFrame.callbackStartedAt - recorded.inputAt) / 1000;
+  expect(elapsedUpperBound).toBeGreaterThanOrEqual(0);
+  const firstStep = Math.hypot(...fields.map(field => firstFrame.target[field] - firstProjected.bounds[field])) / distance;
+  await writeFile(join(directory, "first-step-clock.json"), JSON.stringify({ inputAt: recorded.inputAt,
+    projectionObservedAt: firstProjected.at, callbackStartedAt: firstFrame.callbackStartedAt,
+    rafTimestamp: firstFrame.rafTimestamp, elapsedUpperBound, firstStep }, null, 2));
+  expect(firstStep, "first real RAF must continue from the captured projection origin").toBeLessThanOrEqual(peakVelocity * elapsedUpperBound + .2 / distance);
+  expect(rectangleError(frames.at(-1)!.target, finalRect)).toBeLessThanOrEqual(.1);
+  for (const sample of values) {
+    expect(sample.progress).toBeGreaterThanOrEqual(-.002);
+    expect(sample.progress).toBeLessThanOrEqual(1.002);
+  }
+  // Motion's batcher samples performance.now() inside the callback, not the
+  // native RAF timestamp, and JSAnimation rounds elapsed time to milliseconds.
+  // Bound that real clock by callback entry and the observed projection write.
+  const clocks = values.map(sample => {
+    for (let index = recorded.projectionWrites.length - 1; index >= 0; index--) {
+      const write = recorded.projectionWrites[index];
+      if (write.at <= sample.at && write.rafTimestamp === sample.rafTimestamp &&
+        write.callbackStartedAt !== null && rectangleError(write.bounds, sample.target) <= .01)
+        return { earliest: write.callbackStartedAt, latest: write.at, projectionWrite: true };
+    }
+    if (sample.callbackStartedAt === null) throw new Error("A real geometry frame is missing its callback entry time");
+    return { earliest: sample.callbackStartedAt, latest: sample.at, projectionWrite: false };
+  });
+  await writeFile(join(directory, "motion-clock-bounds.json"), JSON.stringify(clocks, null, 2));
+  for (let index = 1; index < values.length; index++) {
+    const before = values[index - 1], after = values[index];
+    const elapsed = (clocks[index].latest - clocks[index - 1].earliest + 1) / 1000;
+    expect(elapsed).toBeGreaterThanOrEqual(0);
+    const step = Math.hypot(...fields.map(field => after.target[field] - before.target[field])) / distance;
+    expect(step, "one real RAF must not teleport farther than the specified spring permits").toBeLessThanOrEqual(peakVelocity * elapsed + .2 / distance);
+  }
+}
+
+if (!HARDWARE) {
+  drillTest.describe("hardware drill geometry", () => {
+    // Built-in browser launch options are worker-scoped. Keep the override
+    // local to these eight tests through a test-scoped context fixture.
+    drillTest.use({ drillHardware: true });
+    for (const kind of ["instance", "version-directory"] as const) {
+      for (const view of ["grid", "list"] as const) {
+        for (const input of ["mouse", "keyboard"] as const) {
+          drillTest("transitions: drill " + kind + " " + view + " " + input + " preserves scrolled origin and return focus", async ({ page }, info) => {
+            await prepare(page, { instanceCount: 30, versionDirectoryCount: 30 });
+            await verifyHardwareRenderer(page, join(EVIDENCE, info.title.replace(/[^a-zA-Z0-9_-]+/g, "-")));
+            await navigate(page, "library");
+            if (kind === "version-directory") await page.locator(".vx-library-scope button").nth(1).click();
+            await page.locator(".vx-library-view button").nth(view === "list" ? 1 : 0).click();
+            await expect(page.locator(".vx-instance-sheet--" + view)).toBeVisible();
+            const attribute = kind === "instance" ? "data-instance-id" : "data-version-directory";
+            const cards = page.locator("article[" + attribute + "]");
+            await expect(cards).toHaveCount(30);
+            const id = await cards.nth(24).getAttribute(attribute);
+            expect(id).not.toBeNull();
+            const cardSelector = "article[" + attribute + "=" + JSON.stringify(id) + "]";
+            const openSelector = cardSelector + " .vx-instance-card__select";
+            const identity = ".vx-instance-identity[data-identity-kind=" + JSON.stringify(kind) + "][data-identity=" + JSON.stringify(id) + "]";
+            const cardIdentity = cardSelector + " " + identity;
+            const detailIdentity = ".vx-detail-header " + identity;
+            const layoutId = kind + "-identity-" + id;
+            await expect(page.locator(cardIdentity)).toHaveAttribute("data-layout-id", layoutId);
+            const main = page.locator("#main-content");
+            if (input === "keyboard") await tabTo(page, openSelector);
+            else await page.locator(openSelector).scrollIntoViewIfNeeded();
+            const savedScrollTop = await main.evaluate(element => element.scrollTop);
+            expect(savedScrollTop).toBeGreaterThan(100);
+            const openTrace = await capture(page, info, "open", { trigger: openSelector, source: cardIdentity, target: detailIdentity },
+              () => input === "keyboard" ? page.keyboard.press("Enter") : page.locator(openSelector).click());
+            await expect(page.locator(".vx-detail-header h1")).toBeFocused();
+            await expect(page.locator(detailIdentity)).toHaveAttribute("data-layout-id", layoutId);
+            await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(0);
+            const finalDetail = await page.locator(detailIdentity).boundingBox();
+            expect(finalDetail).not.toBeNull();
+            await assertDrillGeometry(openTrace, finalDetail!, info, "open");
+            const backSelector = ".vx-detail-header > button:first-child";
+            if (input === "keyboard") {
+              await page.keyboard.press("Shift+Tab");
+              await expect(page.locator(backSelector)).toBeFocused();
+            }
+            const backTrace = await capture(page, info, "back", { trigger: backSelector, source: detailIdentity, target: cardIdentity },
+              () => input === "keyboard" ? page.keyboard.press("Enter") : page.locator(backSelector).click());
+            await expect(page.locator(openSelector)).toBeFocused();
+            await expect.poll(() => main.evaluate(element => element.scrollTop)).toBeCloseTo(savedScrollTop, 0);
+            const finalCard = await page.locator(cardIdentity).boundingBox();
+            expect(finalCard).not.toBeNull();
+            await assertDrillGeometry(backTrace, finalCard!, info, "back");
+          });
+        }
+      }
+    }
+  });
+
+  for (const mode of ["lite", "reduced-motion"] as const) {
+    test("transitions: drill " + mode + " keeps keyboard focus without shared layout", async ({ page }, info) => {
+      if (mode === "reduced-motion") await page.emulateMedia({ reducedMotion: "reduce" });
+      await prepare(page, { effects: mode === "lite" ? "lite" : "full" });
+      await navigate(page, "library");
+      const card = 'article[data-instance-id="fixture-world"]';
+      const identity = '.vx-instance-identity[data-identity-kind="instance"][data-identity="fixture-world"]';
+      const cardIdentity = card + " " + identity;
+      const detailIdentity = ".vx-detail-header " + identity;
+      const open = card + " .vx-instance-card__select";
+      const back = ".vx-detail-header > button:first-child";
+      expect(await page.locator(cardIdentity).getAttribute("data-layout-id")).toBeNull();
+      await tabTo(page, open);
+      const opened = await capture(page, info, "open", { trigger: open, source: cardIdentity, target: detailIdentity },
+        () => page.keyboard.press("Enter"));
+      await expect(page.locator(".vx-detail-header h1")).toBeFocused();
+      expect(await page.locator(detailIdentity).getAttribute("data-layout-id")).toBeNull();
+      await page.keyboard.press("Shift+Tab");
+      await expect(page.locator(back)).toBeFocused();
+      const returned = await capture(page, info, "back", { trigger: back, source: detailIdentity, target: cardIdentity },
+        () => page.keyboard.press("Enter"));
+      await expect(page.locator(open)).toBeFocused();
+      expect(await page.locator(cardIdentity).getAttribute("data-layout-id")).toBeNull();
+      for (const trace of [opened, returned]) {
+        expect(trace.sourceAtInput).not.toBeNull();
+        const destinationFrames = trace.frames.filter(frame => frame.target !== null);
+        expect(destinationFrames.length).toBeGreaterThan(0);
+        expect(trace.projectionErrors).toEqual([]);
+        expect(trace.projectionWrites.filter(write => !identityTransform(write.transform))).toHaveLength(0);
+        expect(destinationFrames.every(frame => identityTransform(frame.targetTransform))).toBe(true);
+      }
+    });
+  }
+
+  test("transitions: drill current-library navigation resets details without restoring the old scroll", async ({ page }, info) => {
+    await prepare(page, { instanceCount: 30, versionDirectoryCount: 30 });
+    await navigate(page, "library");
+    for (const kind of ["instance", "version-directory"] as const) {
+      await page.locator(".vx-library-scope button").nth(kind === "instance" ? 0 : 1).click();
+      const attribute = kind === "instance" ? "data-instance-id" : "data-version-directory";
+      const open = page.locator("article[" + attribute + "] .vx-instance-card__select").nth(24);
+      await open.scrollIntoViewIfNeeded();
+      expect(await page.locator("#main-content").evaluate(element => element.scrollTop)).toBeGreaterThan(100);
+      await open.click();
+      await expect(page.locator(".vx-detail-page")).toBeVisible();
+      await capture(page, info, kind + "-nav-reset", { trigger: navSelector("library") }, () => page.locator(navSelector("library")).click());
+      await expect(page.locator(".vx-library-page")).toBeVisible();
+      await expect(page.locator(".vx-detail-page")).toHaveCount(0);
+      await expect.poll(() => page.locator("#main-content").evaluate(element => element.scrollTop)).toBe(0);
+    }
   });
 }
