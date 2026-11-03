@@ -50,6 +50,7 @@
     "files": "files"
   },
   "a11y": {
+    "dismissNotification": "Dismiss notification",
     "mainNavigation": "Main navigation",
     "windowControls": "Window controls",
     "closeDialog": "Close dialog"

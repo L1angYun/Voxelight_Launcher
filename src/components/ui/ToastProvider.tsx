@@ -57,7 +57,7 @@ export function ToastProvider({ children }: { children?: ReactNode }) {
         animate={{ opacity: 1, transform: "none" }}
         exit={{ opacity: 0, transform: tier === "full" ? "translateY(8px)" : "none", transition: { duration: motionDuration(tier, "exit") } }}
         transition={{ duration: motionDuration(tier, "enter"), ease: MOTION.ease }}>
-        <span>{toast.message}</span><IconButton label={t("common:actions.close")} icon={<X size={16} />} onClick={() => dismiss()} />
+        <span>{toast.message}</span><IconButton label={t("common:a11y.dismissNotification")} icon={<X size={16} />} onClick={() => dismiss()} />
       </motion.div> : null}
     </AnimatePresence></div>, host) : null}
   </ToastContext.Provider>;
