@@ -60,3 +60,12 @@ it("ignores a queued close event for a dialog that has already reopened", async 
   expect(dialog.open).toBe(true);
   expect(dialog.querySelector(".vx-toast")?.textContent).toContain("Download failed");
 });
+it("names notification dismissal separately and leaves its hosting dialog open", async () => {
+  await click("#first"); await click("#notify");
+  const dialog = node.querySelector<HTMLDialogElement>("dialog[open]")!;
+  const dismiss = dialog.querySelector<HTMLButtonElement>(".vx-toast button")!;
+  expect(dismiss.getAttribute("aria-label")).toBe("common:a11y.dismissNotification");
+  await act(async () => dismiss.click());
+  expect(dialog.open).toBe(true);
+  expect(dialog.querySelector(".vx-toast")).toBeNull();
+});

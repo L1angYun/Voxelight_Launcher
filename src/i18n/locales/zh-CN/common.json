@@ -50,6 +50,7 @@
     "files": "个文件"
   },
   "a11y": {
+    "dismissNotification": "关闭通知",
     "mainNavigation": "主导航",
     "windowControls": "窗口控制",
     "closeDialog": "关闭对话框"
