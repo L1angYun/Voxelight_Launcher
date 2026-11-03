@@ -20,6 +20,7 @@ let mockReducedMotion = false;
 let mockHighContrast = false;
 let mockReducedTransparency = false;
 let mockCharacterState = "loading";
+const overturePlay = vi.hoisted(() => vi.fn());
 const resizeObservers: { callback: ResizeObserverCallback; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }[] = [];
 let style: HTMLStyleElement;
 
@@ -44,7 +45,7 @@ vi.mock("../../visual/overture/OvertureProvider", () => ({
     playing: false,
     reducedMotion: false,
     soundEnabled: false,
-    play: vi.fn(),
+    play: overturePlay,
     dismiss: vi.fn(),
   }),
 }));
@@ -52,13 +53,13 @@ vi.mock("../../components/WorldScene", () => ({
   WorldScene: () => createElement("div", { "data-testid": "world-scene" }),
 }));
 vi.mock("../../visual/character/CharacterCanvas", () => ({
-  CharacterCanvas: ({ paused, deferMs }: { paused: boolean; deferMs?: number }) => createElement("div", {
+  CharacterCanvas: ({ paused, deferMs, animation }: { paused: boolean; deferMs?: number; animation?: string }) => createElement("div", {
     "data-testid": "character-canvas", className: "vx-character-canvas", "data-paused": paused,
-    "data-defer-ms": deferMs, "data-character-state": mockCharacterState,
+    "data-defer-ms": deferMs, "data-character-state": mockCharacterState, "data-animation": animation,
   }),
 }));
 vi.mock("../../visual/glass/GlassSystem", () => ({
-  GlassSurface: ({ children }: { children: React.ReactNode }) => createElement("div", null, children),
+  GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => createElement("div", { className }, children),
 }));
 const defaultSkinMock = vi.hoisted(() => vi.fn());
 vi.mock("../../lib/defaultSkin", () => ({
@@ -200,6 +201,8 @@ beforeEach(() => {
   });
   commandMock.mockReset();
   commandMock.mockResolvedValue(null);
+  // jsdom cannot create a GPU/2D canvas. Keep the real progress fallback path.
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     return this.getAttribute("role") === "combobox" ? new DOMRect(24, 600, 208, 48) : new DOMRect();
   });
@@ -231,6 +234,7 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("HomePage", () => {
@@ -277,7 +281,7 @@ describe("HomePage", () => {
     try {
       await render();
       expect(anchors).toHaveLength(1);
-      expect(anchors[0]).toBe(container.querySelector(".vx-home__char-col"));
+      expect(anchors[0]).toBe(container.querySelector(".vx-home__feet"));
       const layout = container.querySelector(".vx-home__layout")!;
       const observer = resizeObservers.find((item) => item.observe.mock.calls.some(([target]) => target === layout));
       expect(observer).toBeDefined();
@@ -299,6 +303,18 @@ describe("HomePage", () => {
     expect(container.querySelector('.vx-home__animation-controls[role="group"]')).not.toBeNull();
     expect(container.querySelector('[role="combobox"][aria-label="动画模式"]')).not.toBeNull();
     expect(container.querySelector(".vx-home__greeting-line")).toBeNull();
+  });
+  it("republishes the feet anchor when recent instances change the character row", async () => {
+    const anchors: Element[] = [];
+    const listener = () => { const anchor = document.querySelector("[data-world-anchor]"); if (anchor) anchors.push(anchor); };
+    window.addEventListener("vx:world-anchor", listener);
+    try {
+      await render();
+      mockLauncher.data.instances.push({ ...mockLauncher.data.instances[0], id: "second", name: "Second" });
+      await render();
+      expect(anchors).toHaveLength(2);
+      expect(anchors[1]).toBe(container.querySelector(".vx-home__feet"));
+    } finally { window.removeEventListener("vx:world-anchor", listener); }
   });
   it("offers one shared animation selector with three real pose choices", async () => {
     await render();
@@ -339,6 +355,7 @@ describe("HomePage", () => {
   });
 
   it("shows a real preparation state and cancels it", async () => {
+    vi.useFakeTimers();
     mockLauncher.busy = "game.prepare";
     mockLauncher.progress = {
       operation: "install",
@@ -354,7 +371,71 @@ describe("HomePage", () => {
     expect(container.textContent).toContain("37%");
     const cancel = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("取消准备"))!;
     await act(async () => cancel.click());
+    expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(249));
+    await act(async () => cancel.click());
+    expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(1));
+    await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the same glass action surface throughout preparation and running", async () => {
+    await render();
+    const surface = container.querySelector(".vx-launch-console__launch");
+    expect(surface).not.toBeNull();
+    mockLauncher.busy = "game.prepare";
+    await render();
+    expect(container.querySelector(".vx-launch-console__launch")).toBe(surface);
+    expect(surface!.textContent).toContain("取消准备");
+    mockLauncher.busy = ""; mockLauncher.gamePid = 42;
+    await render();
+    expect(container.querySelector(".vx-launch-console__launch")).toBe(surface);
+    expect(surface!.textContent).toContain("停止");
+  });
+
+  it("rests the character after a real launch and resumes it after the game ends", async () => {
+    vi.useFakeTimers();
+    await render();
+    mockLauncher.busy = "game.prepare"; await render();
+    mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+    const character = () => container.querySelector('[data-testid="character-canvas"]')!;
+    expect(character().getAttribute("data-animation")).toBe("run");
+    await act(async () => vi.advanceTimersByTime(1499));
+    expect(character().getAttribute("data-paused")).toBe("false");
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(character().getAttribute("data-animation")).toBe("idle");
+    expect(character().getAttribute("data-paused")).toBe("true");
+    mockLauncher.gamePid = undefined; await render();
+    expect(character().getAttribute("data-paused")).toBe("false");
+  });
+
+  it("does not replay launch feedback or run the character for an already running game", async () => {
+    mockLauncher.gamePid = 42;
+    await render();
+    expect(overturePlay).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-paused")).toBe("true");
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-animation")).toBe("idle");
+  });
+
+  it("plays optional launch feedback only after preparation becomes running", async () => {
+    await render();
+    mockLauncher.busy = "game.prepare"; await render();
+    mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+    expect(overturePlay).toHaveBeenCalledExactlyOnceWith({ id: "game-launched-42", kind: "game-launched" });
+    await render();
+    expect(overturePlay).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides redundant recent instances when only one exists", async () => {
+    await render();
+    expect(container.querySelector(".vx-recent")).toBeNull();
+  });
+
+  it("keeps account identity accessible without a redundant online preview capsule", async () => {
+    await render();
+    expect(container.querySelector(".vx-home__preview-source")).toBeNull();
+    expect(container.querySelector(".vx-home__character-panel")?.getAttribute("aria-label")).toBe("CyanFixture 的角色预览");
   });
 
   it("keeps version-directory selection after clearing the instance", async () => {

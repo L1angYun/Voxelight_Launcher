@@ -22,7 +22,7 @@ export function HomeAnimationSelector({ value, onChange, visible = false, disabl
   const { effects, reducedMotion, reducedTransparency, highContrast } = useAppearance();
   const staticMotion = effects !== "full" || reducedMotion || reducedTransparency || highContrast;
   return <div className="vx-home-animation-selector" data-visible={visible} data-motion={staticMotion ? "reduced" : "full"}>
-    <Select value={value} onChange={next => {
+    <Select material="glass" value={value} onChange={next => {
       if (next === "idle" || next === "walk" || next === "run") onChange(next);
     }} disabled={disabled} aria-label={label ?? t("home:animationMode")} aria-describedby={describedBy}
       minimumMenuWidth={180} options={[

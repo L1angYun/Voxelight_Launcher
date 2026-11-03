@@ -8,7 +8,6 @@ import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useAppearance } from "../../app/AppearanceProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
 import { CharacterCanvas, type CharacterAnimation } from "../../visual/character/CharacterCanvas";
-import { ToastRegion } from "../../components/ui/Feedback";
 import { Button } from "../../components/ui/Button";
 import { CreateInstanceDialog } from "../library/CreateInstanceDialog";
 import { LaunchConsole } from "./LaunchConsole";
@@ -19,7 +18,7 @@ import { useMotionTier } from "../../design/useMotionTier";
 import "./home.css";
 
 export function HomePage({ returning = false }: { returning?: boolean }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const {
     data,
     activeAccount,
@@ -28,9 +27,9 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     selectedVersion,
     selectedVersionId,
     selectedRunningGame,
+    running: runningGames,
     progress,
     busy,
-    notice,
     gamePid,
     selectInstance,
     selectVersion,
@@ -39,7 +38,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     cancelPreparation,
     run,
     reload,
-    dismissNotice,
   } = useLauncher();
   const { effects } = useAppearance();
   const { tier, sceneStatic: staticScene } = useMotionTier();
@@ -53,6 +51,27 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   const [headPointer, setHeadPointer] = useState<{ x: number; y: number } | null>(null);
   const characterAreaRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<HTMLDivElement>(null);
+  const preparing = busy === "game.prepare";
+  const running = Boolean(selectedRunningGame || gamePid);
+  const anyRunning = running || runningGames.length > 0;
+  const launchPhase = anyRunning ? "running" : preparing ? "preparing" : "idle";
+  const previousLaunchPhase = useRef(launchPhase);
+  const [characterResting, setCharacterResting] = useState(anyRunning);
+
+  useEffect(() => {
+    if (previousLaunchPhase.current === "preparing" && launchPhase === "running") {
+      const pid = gamePid ?? selectedRunningGame?.pid ?? runningGames[0]?.pid;
+      if (pid) play({ id: `game-launched-${pid}`, kind: "game-launched" });
+    }
+    previousLaunchPhase.current = launchPhase;
+  }, [gamePid, selectedRunningGame, runningGames, launchPhase, play]);
+
+  useEffect(() => {
+    if (!anyRunning) { setCharacterResting(false); return; }
+    if (characterResting) return;
+    const timer = setTimeout(() => setCharacterResting(true), MOTION.delay.characterIdleMs);
+    return () => clearTimeout(timer);
+  }, [anyRunning, characterResting]);
 
   useLayoutEffect(() => {
     let active = true;
@@ -66,7 +85,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
       observer?.disconnect();
       window.removeEventListener("resize", publishAnchor);
     };
-  }, []);
+  }, [data.instances.length > 1, activeAccount?.type]);
 
   const currentInstance = useMemo(
     () =>
@@ -109,11 +128,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
       selectInstance(currentInstance.id);
   }, [currentInstance, selectInstance, selectedInstance]);
 
-  useEffect(() => {
-    if (gamePid)
-      play({ id: `game-launched-${gamePid}`, kind: "game-launched" });
-  }, [gamePid, play]);
-
   const versionLabel = currentInstance?.versionId ?? selectedVersionId;
   const loaderLabel =
     currentInstance?.loader && currentInstance.loader !== "vanilla"
@@ -123,31 +137,21 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     ? t("home:javaVersion", { major: selectedVersion.javaMajor })
     : t("home:javaUnknown");
 
-  const noticeText = notice
-    ? i18n.exists(`shell:notifications.${notice.code}`)
-      ? t(`shell:notifications.${notice.code}`, notice.params)
-      : i18n.exists(`shell:errors.${notice.code}`)
-        ? t(`shell:errors.${notice.code}`, notice.params)
-        : t("common:errors.internalUnexpected")
-    : "";
-
   const previewLabel = onlineAccount
     ? t("home:accountPreview", { username: activeAccount?.username })
     : t("home:defaultPreview");
 
-  const preparing = busy === "game.prepare";
-  const running = Boolean(selectedRunningGame || gamePid);
   const currentProgress =
     preparing && progress?.versionId === selectedVersionId ? progress : null;
 
   // Animation: running/preparing take priority; then manual choice; then idle
   const currentAnimation: CharacterAnimation =
-    running ? "run" :
+    anyRunning ? characterResting ? "idle" : "run" :
     preparing || launchRequested ? "walk" :
     manualAnimation ?? "idle";
 
   function onCharPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
-    if (staticScene) return;
+    if (staticScene || characterResting) return;
     const rect = characterAreaRef.current?.getBoundingClientRect();
     if (!rect) return;
     setHeadPointer({
@@ -271,7 +275,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
         <div
           className="vx-home__char-col"
           ref={characterAreaRef}
-          data-world-anchor
           onPointerEnter={() => setCharAreaHovered(true)}
           onPointerLeave={() => { setCharAreaHovered(false); setHeadPointer(null); }}
           onPointerMove={onCharPointerMove}
@@ -282,13 +285,14 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
             aria-label={t("home:animationMode")}
           >
             <HomeAnimationSelector value={currentAnimation === "none" ? "idle" : currentAnimation}
-              onChange={setManualAnimation} visible={charAreaHovered} disabled={running || preparing || staticScene} />
+              onChange={setManualAnimation} visible={charAreaHovered} disabled={anyRunning || preparing || staticScene} />
           </div>
           <section className="vx-home__character-panel" aria-label={previewLabel}
             data-character-reveal={returning && tier !== "none" && !previewUnavailable ? "on" : "off"}>
             <div className="vx-home__character-orbit" aria-hidden="true">
               <span className="vx-home__character-floor" />
             </div>
+            <span className="vx-home__feet" data-world-anchor aria-hidden="true" />
             {!previewUnavailable ? (
               <CharacterCanvas
                 className="vx-home__character"
@@ -296,36 +300,28 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
                 capeUrl={onlineAccount ? accountAppearance.capeUrl : null}
                 model={onlineAccount ? accountAppearance.model : defaultSkin.model}
                 deferMs={returning && tier !== "none" ? MOTION.delay.characterMs : 0}
-                paused={staticScene}
+                paused={staticScene || (anyRunning && characterResting)}
                 animation={currentAnimation}
-                headPointer={headPointer}
+                headPointer={anyRunning ? null : headPointer}
                 label={previewLabel}
               />
             ) : characterFallback}
           </section>
-          <p className="vx-home__preview-source">
+          {!onlineAccount ? <p className="vx-home__preview-source">
             <UserRound size={14} aria-hidden="true" />
             {previewLabel}
-          </p>
+          </p> : null}
         </div>
 
-        <div className="vx-home__recent">
+        {data.instances.length > 1 ? <div className="vx-home__recent">
           <RecentInstances
             instances={data.instances}
             selectedId={currentInstance?.id}
             onSelect={chooseInstance}
           />
-        </div>
+        </div> : null}
       </div>
 
-      {notice ? (
-        <ToastRegion
-          message={noticeText}
-          kind={notice.kind}
-          onDismiss={dismissNotice}
-          closeLabel={t("common:actions.close")}
-        />
-      ) : null}
       <CreateInstanceDialog
         open={createOpen}
         onOpenChange={setCreateOpen}

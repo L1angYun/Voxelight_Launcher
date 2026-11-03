@@ -103,6 +103,26 @@ function mount(options: Parameters<typeof glBoundary>[0] = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("WebGL renderer boundary", () => {
+  it("keeps the island at its world position while the content camera moves", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.draw(frame(), 0);
+    const origin = t.vectors.get("uOrigin");
+    const content = createWorldDirector({ phase: "idle", fraction: null, page: "content", scene: "horizon", material: "lattice" }).snap();
+    r.draw(content, 0);
+    expect(t.vectors.get("uOrigin")).toEqual(origin);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("sends flash and paper ink to rendering and suppresses flash in static policy", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.draw({ ...frame(), flash: 1.1, paperInk: .12 }, .016);
+    expect(t.uniforms.get("uFlash")).toBe(1.1);
+    expect(t.uniforms.get("uPaperInk")).toBe(.12);
+    r.setTier({ kind: "static", grid: 110, particleSide: 0, dprCap: 1, forceSolid: true });
+    r.draw({ ...frame(), flash: 1.1 }, 0);
+    expect(t.uniforms.get("uFlash")).toBe(0);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
   it("acknowledges points only after their real draw pass completes", () => {
     const t = mount({ float: true }); const r = t.renderer!;
     expect(r.draw(frame(), .016).pointsSubmitted).toBe(true);

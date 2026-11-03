@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Box, Check } from "lucide-react";
+import { Box } from "lucide-react";
 import type { Instance } from "../../lib/launcher";
 import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
 import { cn } from "../../lib/utils";
@@ -17,7 +17,7 @@ export function RecentInstances({
   const { t } = useTranslation();
   const [hovered, setHovered] = useState<string>();
   const [focused, setFocused] = useState<string>();
-  if (!instances.length) return null;
+  if (instances.length < 2) return null;
   const recent = [...instances]
     .sort((a, b) => (b.lastPlayed ?? b.createdAt).localeCompare(a.lastPlayed ?? a.createdAt))
     .slice(0, 4);
@@ -47,7 +47,6 @@ export function RecentInstances({
               <Box className="vx-recent-card__icon" size={25} strokeWidth={1.2} aria-hidden="true" />
               <span className="vx-recent-card__name" title={instance.name}>{instance.name}</span>
               <span className="vx-recent-card__meta">{instance.versionId} · {!instance.loader || instance.loader === "vanilla" ? t("home:vanilla") : instance.loader}</span>
-              {selected ? <Check className="vx-recent-card__selected" data-selected-mark size={16} aria-hidden="true" /> : null}
             </button>
           );
         })}
