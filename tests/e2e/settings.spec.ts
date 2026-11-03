@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installLauncherFixture } from "./fixtures";
 import { selectValue } from "./select-helpers";
-import packageJson from "../../package.json";
+import packageJson from "../../package.json" with { type: "json" };
 
 function mockSettings(page: Page) {
   return page.addInitScript(() => {
