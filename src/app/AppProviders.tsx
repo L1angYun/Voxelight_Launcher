@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { I18nextProvider } from "react-i18next";
+import { MotionConfig } from "motion/react";
+import { useMotionTier } from "../design/useMotionTier";
 import { command, events, type SystemAppearance } from "../lib/launcher";
 import { createLauncherI18n } from "../i18n";
 import { LauncherProvider, useLauncher } from "./controller/LauncherProvider";
@@ -87,6 +89,7 @@ function VisualProviders({ children }: { children?: ReactNode }) {
   const { config } = useLauncher();
   const glassBackdrop = useGlassBackdrop();
   const { effects, reducedMotion, reducedTransparency, highContrast, systemLocale } = useAppearance();
+  const { tier } = useMotionTier();
   useCursorHalo(effects, reducedMotion, highContrast);
   const pseudoLocale = import.meta.env.DEV && new URLSearchParams(window.location.search).has("stress-locale");
   const i18n = useMemo(
@@ -95,6 +98,7 @@ function VisualProviders({ children }: { children?: ReactNode }) {
   );
   return (
     <I18nextProvider i18n={i18n}>
+      <MotionConfig reducedMotion={tier === "none" ? "always" : "never"}>
       <OvertureProvider reducedMotion={reducedMotion} soundEnabled={config.soundEnabled}>
         <GlassProvider
           effects={effects}
@@ -107,6 +111,7 @@ function VisualProviders({ children }: { children?: ReactNode }) {
           {children}
         </GlassProvider>
       </OvertureProvider>
+      </MotionConfig>
     </I18nextProvider>
   );
 }
