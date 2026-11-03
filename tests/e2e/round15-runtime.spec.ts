@@ -69,9 +69,10 @@ test("liquid SVG filters are mounted and all seven pages survive navigation", as
   ] as const) {
     await page.locator(`[data-page="${id}"]`).click();
     await expect(page.locator(selector)).toBeInViewport();
+    const chrome = (await page.locator(".vx-window-chrome").boundingBox())!;
     await expect
       .poll(async () => Math.round((await page.locator("#main-content").boundingBox())?.y ?? -1))
-      .toBe(0);
+      .toBe(Math.round(chrome.y + chrome.height));
   }
   expect(errors).toEqual([]);
 });

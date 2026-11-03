@@ -39,9 +39,10 @@ test("all launcher pages remain reachable with a single crystal world behind the
     await expect(page.locator(selector)).toBeInViewport();
     await expect(scene.locator("canvas")).toHaveCount(1);
     expect(await canvas.evaluate((element, original) => element === original, originalCanvas)).toBe(true);
+    const chrome = (await page.locator(".vx-window-chrome").boundingBox())!;
     await expect
       .poll(async () => Math.round((await page.locator("#main-content").boundingBox())?.y ?? -1))
-      .toBe(0);
+      .toBe(Math.round(chrome.y + chrome.height));
     await expect(page.locator(".vx-app-body")).toHaveAttribute(
       "data-current-page",
       id,

@@ -91,6 +91,24 @@ test("completion: bootstrap failure keeps the app usable and retry restores its 
   await expect(page.locator("article[data-instance-id]")).toHaveCount(2);
 });
 
+test("completion: scrolled content stays below the floating navigation at minimum size", async ({ page }, info) => {
+  await page.setViewportSize({ width: 1050, height: 720 });
+  await installLauncherFixture(page, { instanceCount: 30 });
+  await page.goto("/");
+  await navigate(page, "library");
+  const main = page.locator("#main-content");
+  await main.evaluate(element => { element.scrollTop = element.scrollHeight / 2; });
+  expect(await main.evaluate(element => element.scrollTop)).toBeGreaterThan(100);
+  const viewport = await main.boundingBox();
+  const navigation = await page.locator(".vx-window-chrome__bar").boundingBox();
+  expect(viewport!.y).toBeGreaterThanOrEqual(navigation!.y + navigation!.height);
+  await page.screenshot({ path: info.outputPath("scrolled-library-below-navigation.png") });
+  await page.locator("article[data-instance-id] .vx-instance-card__select").last().click();
+  await expect(page.locator(".vx-detail-header h1")).toBeFocused();
+  const heading = await page.locator(".vx-detail-header h1").boundingBox();
+  expect(heading!.y).toBeGreaterThanOrEqual(navigation!.y + navigation!.height);
+});
+
 test("completion: the first home intro frame leaves launch and navigation visible", async ({ page }, info) => {
   await page.addInitScript(() => {
     const probe = window as unknown as { __firstHomeVisibility?: { launch: boolean; navigation: boolean[]; stageOpacity?: string } };
