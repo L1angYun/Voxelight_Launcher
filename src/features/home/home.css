@@ -10,9 +10,16 @@
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
-  width: calc(max(40px, (100% - 1280px) / 2) + var(--home-rail) + 160px);
+  width: calc(max(40px, (100% - 1280px) / 2) + var(--home-rail) + 300px);
   pointer-events: none;
-  background: linear-gradient(90deg, var(--world-ink, var(--bg-base)) 0%, color-mix(in srgb, var(--world-ink, var(--bg-base)) 96%, transparent) calc(100% - 160px), transparent);
+  background: linear-gradient(90deg,
+    var(--world-ink, var(--bg-base)) 0,
+    var(--world-ink, var(--bg-base)) calc(100% - 320px),
+    color-mix(in srgb, var(--world-ink, var(--bg-base)) 88%, transparent) calc(100% - 250px),
+    color-mix(in srgb, var(--world-ink, var(--bg-base)) 62%, transparent) calc(100% - 180px),
+    color-mix(in srgb, var(--world-ink, var(--bg-base)) 32%, transparent) calc(100% - 110px),
+    color-mix(in srgb, var(--world-ink, var(--bg-base)) 10%, transparent) calc(100% - 45px),
+    transparent);
 }
 .vx-home__layout {
   position: relative;
