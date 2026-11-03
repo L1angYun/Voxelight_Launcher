@@ -675,6 +675,13 @@ if (!HARDWARE) {
             const finalDetail = await page.locator(detailIdentity).boundingBox();
             expect(finalDetail).not.toBeNull();
             await assertDrillGeometry(openTrace, finalDetail!, info, "open");
+            if (kind === "instance") {
+              const detailContent = page.locator(".vx-detail-layout");
+              await expect(detailContent).toHaveCSS("opacity", "1");
+              // Finished opacity fills behave like will-change: opacity and can
+              // isolate a nested glass control from the backdrop.
+              await expect(detailContent).toHaveCSS("animation-fill-mode", "none");
+            }
             const backSelector = ".vx-detail-header > button:first-child";
             if (input === "keyboard") {
               await page.keyboard.press("Shift+Tab");
