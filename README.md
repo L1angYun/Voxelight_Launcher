@@ -1,10 +1,12 @@
 # Voxelight Launcher
 
-Voxelight Launcher is a Minecraft Java desktop launcher built with Rust, Tauri 2, React and TypeScript. Its original interface includes the animated WorldScene hero and a skinview3d WebGL character preview. The application entry points are `src/main.tsx` and `src-tauri/src/main.rs`.
+Voxelight Launcher is a Minecraft Java desktop launcher built with Rust, Tauri 2, React and TypeScript. Its original interface includes a WebGL2 voxel-and-point "crystal world" background that responds to launch progress, and a skinview3d WebGL character preview. The application entry points are `src/main.tsx` and `src-tauri/src/main.rs`.
 
 This directory contains only the active Rust application. WinUI is not part of this project.
 
 ![Voxelight Launcher 0.5.0 home](docs/screenshots/0.5.0/home-dark-1440.png)
+
+_Screenshot from 0.5.0. The current interface differs; an updated screenshot will replace it._
 
 ## Open-source license and source
 
@@ -46,7 +48,7 @@ npm ci
 npm run desktop:dev
 ```
 
-Build the Windows desktop application and NSIS installer with `powershell -File scripts/build.ps1` (wraps the Tauri build and configures the Rust PATH). The 0.6.0 installer and matching GPL source archive are collected under `releases/0.6.0/`; earlier releases remain unchanged. See the [0.6.0 implementation and verification report](docs/reports/frontend-completion-0.6.0.md) for measured results and manual checks still outstanding. The NSIS installer uses the standard current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
+Build the Windows desktop application and NSIS installer with `powershell -File scripts/build.ps1` (wraps the Tauri build and configures the Rust PATH). Local builds collect the installer and the matching GPL source archive under `releases/<version>/`; that directory is not tracked in git. See the [0.6.0 implementation and verification report](docs/reports/frontend-completion-0.6.0.md) for measured results and manual checks still outstanding. The NSIS installer uses the standard current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
 
 `scripts/desktop.ps1` is an optional helper when local PowerShell policy permits unsigned local scripts. Do not change that policy merely to build the app: the npm commands above invoke the same Tauri toolchain.
 
