@@ -9,6 +9,8 @@ export async function installLauncherFixture(
     emptyProfile?: boolean;
     noAccount?: boolean;
     noInstances?: boolean;
+    instanceCount?: number;
+    versionDirectoryCount?: number;
     defaultModel?: "classic" | "slim";
     theme?: "dark" | "light" | "system";
     effects?: "lite" | "full";
@@ -100,15 +102,16 @@ export async function installLauncherFixture(
       javaAutoDownload: true,
       defaultSkin: options.defaultModel === "slim" ? "alex" : "steve",
     };
-    const installedVersions = [
-      {
-        id: "1.21.1",
+    const installedVersions = Array.from(
+      { length: Math.max(0, Math.floor(options.versionDirectoryCount ?? 1)) },
+      (_, index) => ({
+        id: index === 0 ? "1.21.1" : `fixture-version-${String(index + 1).padStart(3, "0")}`,
         type: "release",
         installed: true,
         launchable: true,
         javaMajor: 21,
-      },
-    ];
+      }),
+    );
     const instances = options.noInstances ? [] : options.stress ? [
       {
         id: "long-instance",
@@ -134,18 +137,19 @@ export async function installLauncherFixture(
         loader: "vanilla",
         loaderVersion: "",
       },
-    ] : [
-      {
-        id: "fixture-world",
-        name: "合成测试世界",
+    ] : Array.from(
+      { length: Math.max(0, Math.floor(options.instanceCount ?? 1)) },
+      (_, index) => ({
+        id: index === 0 ? "fixture-world" : `fixture-world-${String(index + 1).padStart(3, "0")}`,
+        name: index === 0 ? "合成测试世界" : `合成测试世界 ${String(index + 1).padStart(3, "0")}`,
         versionId: "1.21.1",
-        gameDirectory: "C:\\SyntheticFixture\\world",
+        gameDirectory: index === 0 ? "C:\\SyntheticFixture\\world" : `C:\\SyntheticFixture\\world-${index + 1}`,
         createdAt: "2026-10-25T08:00:00Z",
         category: "",
         notes: "",
         totalPlayTime: 0,
-      },
-    ];
+      }),
+    );
     const history = Array.from({ length: 198 }, (_, index) => ({
       id: `history-${index}`,
       kind: "install",
