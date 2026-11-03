@@ -76,6 +76,22 @@ test("the painted lens stays within the navigation when returning across its ent
   assert.equal(nav().dataset.visualOwner, "lens");
 });
 
+test("low frame cadence advances navigation by elapsed time and reaches rest within five real seconds", async () => {
+  for (const destination of ["library", "settings"]) {
+    await render("home"); flush();
+    await render(destination); advance();
+    for (let index = 0; index < 5; index++) {
+      act(() => {
+        const pending = [...frames.values()]; frames.clear();
+        now += 1000;
+        for (const callback of pending) callback(now);
+      });
+    }
+    assert.equal(nav().dataset.motionSettled, "true", `${destination}: 1Hz must not turn 5 seconds into 400ms of physics`);
+    assert.equal(frames.size, 0, "the caught-up navigation must return to an idle scheduler");
+  }
+});
+
 function rect(x, y, width, height) {
   return { x, y, left: x, top: y, width, height, right: x + width, bottom: y + height, toJSON() {} };
 }
@@ -301,6 +317,24 @@ test("cancels a dragged indicator without navigating", async () => {
   assert.equal(pointerCapture.active.size, 0);
   flush();
   assert.equal(slot().style.transform, "translate3d(0px, 0px, 0)");
+});
+
+test("commits an unmoved captured press once so the current page can reset", async () => {
+  const navigations = [];
+  await render("home", { onNavigate: next => navigations.push(next) }); flush();
+  dispatchPointer("pointerdown", 236, item("home"));
+  dispatchPointer("pointerup", 236, nav());
+  assert.deepEqual(navigations, ["home"], "captured pointerup must commit even when click is retargeted to nav");
+  act(() => item("home").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true })));
+  assert.deepEqual(navigations, ["home"], "a subsequent synthesized button click must not commit a second reset");
+});
+
+test("an unmoved press released outside its original item does not navigate", async () => {
+  const navigations = [];
+  await render("home", { onNavigate: next => navigations.push(next) }); flush();
+  dispatchPointer("pointerdown", 236, item("home"));
+  dispatchPointer("pointerup", 350, nav());
+  assert.deepEqual(navigations, []);
 });
 
 test("ignores content reflows and follows active item resizing inside an unchanged nav", async () => {
