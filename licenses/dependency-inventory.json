@@ -1,6 +1,6 @@
 {
   "project": "Voxelight Launcher",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "packages": [
     {
       "name": "@asamuzakjp/css-color",
@@ -3979,7 +3979,7 @@
       "name": "objc2-core-image",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
-      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/objc2-core-image@0.3.2/LICENSE.md"
@@ -4029,7 +4029,7 @@
       "name": "objc2-foundation",
       "version": "0.3.2",
       "license": "MIT",
-      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/objc2-foundation@0.3.2/LICENSE.md"
@@ -4039,7 +4039,7 @@
       "name": "objc2-io-surface",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
-      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/objc2-io-surface@0.3.2/LICENSE.md"
@@ -4049,7 +4049,7 @@
       "name": "objc2-quartz-core",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
-      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/objc2-quartz-core@0.3.2/LICENSE.md"
@@ -4059,7 +4059,7 @@
       "name": "objc2-ui-kit",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
-      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/objc2-ui-kit@0.3.2/LICENSE.md"
@@ -4069,7 +4069,7 @@
       "name": "objc2-user-notifications",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
-      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/madsmtm/objc2/tree/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/objc2-user-notifications@0.3.2/LICENSE.md"
@@ -4089,7 +4089,7 @@
       "name": "objc2",
       "version": "0.6.5",
       "license": "MIT",
-      "source": "https://github.com/madsmtm/objc2/tree/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/madsmtm/objc2/tree/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/objc2@0.6.5/LICENSE.md"
@@ -4597,7 +4597,7 @@
       "name": "r-efi",
       "version": "5.3.0",
       "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
-      "source": "registry+https://github.com/rust-lang/crates.io-index Cargo.toml.orig (no standalone package notice; tree API returned HTTP 403; using the actual crate declaration instead of assuming repository LICENSE files); verified SPDX licenseText: https://spdx.org/licenses/MIT.json, https://spdx.org/licenses/Apache-2.0.json, https://spdx.org/licenses/LGPL-2.1-or-later.json",
+      "source": "registry+https://github.com/rust-lang/crates.io-index Cargo.toml.orig (no root or crate license at pinned upstream tree https://api.github.com/repos/r-efi/r-efi/git/trees/97b55bed1c2c91dcbf787674849f05337ff80b33?recursive=1); verified SPDX licenseText: https://spdx.org/licenses/MIT.json, https://spdx.org/licenses/Apache-2.0.json, https://spdx.org/licenses/LGPL-2.1-or-later.json",
       "noticeType": "upstream-declaration-and-spdx-license-text",
       "notices": [
         "licenses/cargo/r-efi@5.3.0/Cargo.toml.orig",
@@ -4610,7 +4610,7 @@
       "name": "r-efi",
       "version": "6.0.0",
       "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
-      "source": "registry+https://github.com/rust-lang/crates.io-index Cargo.toml.orig (no standalone package notice; tree API returned HTTP 403; using the actual crate declaration instead of assuming repository LICENSE files); verified SPDX licenseText: https://spdx.org/licenses/MIT.json, https://spdx.org/licenses/Apache-2.0.json, https://spdx.org/licenses/LGPL-2.1-or-later.json",
+      "source": "registry+https://github.com/rust-lang/crates.io-index Cargo.toml.orig (no root or crate license at pinned upstream tree https://api.github.com/repos/r-efi/r-efi/git/trees/7e1b0322d31d625f81a5656096330934f9cd835d?recursive=1); verified SPDX licenseText: https://spdx.org/licenses/MIT.json, https://spdx.org/licenses/Apache-2.0.json, https://spdx.org/licenses/LGPL-2.1-or-later.json",
       "noticeType": "upstream-declaration-and-spdx-license-text",
       "notices": [
         "licenses/cargo/r-efi@6.0.0/Cargo.toml.orig",
@@ -5012,7 +5012,7 @@
       "name": "selectors",
       "version": "0.38.0",
       "license": "MPL-2.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index Cargo.toml.orig (no standalone package notice; tree API returned HTTP 403; using the actual crate declaration instead of assuming repository LICENSE files); verified SPDX licenseText: https://spdx.org/licenses/MPL-2.0.json",
+      "source": "registry+https://github.com/rust-lang/crates.io-index Cargo.toml.orig (no root or crate license at pinned upstream tree https://api.github.com/repos/servo/stylo/git/trees/572ecba2d1600e7c3d490586692a209faf703baa?recursive=1); verified SPDX licenseText: https://spdx.org/licenses/MPL-2.0.json",
       "noticeType": "upstream-declaration-and-spdx-license-text",
       "notices": [
         "licenses/cargo/selectors@0.38.0/Cargo.toml.orig",
@@ -5716,10 +5716,12 @@
       "name": "tauri-plugin",
       "version": "2.7.2",
       "license": "Apache-2.0 OR MIT",
-      "source": "https://github.com/tauri-apps/tauri/tree/59b63ab500da9859f12d8888c3298bc29bba0b92 (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/tauri-apps/tauri/tree/59b63ab500da9859f12d8888c3298bc29bba0b92 (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
-        "licenses/cargo/tauri-plugin@2.7.2/LICENSE-MIT"
+        "licenses/cargo/tauri-plugin@2.7.2/LICENSE-APACHE-2.0",
+        "licenses/cargo/tauri-plugin@2.7.2/LICENSE-MIT",
+        "licenses/cargo/tauri-plugin@2.7.2/LICENSE.spdx"
       ]
     },
     {
@@ -6650,7 +6652,7 @@
       "name": "webview2-com-macros",
       "version": "0.8.1",
       "license": "MIT",
-      "source": "https://github.com/wravery/webview2-rs/tree/dffa41a8a46d3f5565eefbff2de57d38d399f158 (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/wravery/webview2-rs/tree/dffa41a8a46d3f5565eefbff2de57d38d399f158 (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/webview2-com-macros@0.8.1/LICENSE"
@@ -6660,7 +6662,7 @@
       "name": "webview2-com-sys",
       "version": "0.39.1",
       "license": "MIT",
-      "source": "https://github.com/wravery/webview2-rs/tree/edc2caf886175ccaebe86078c9cfe1ae2a187328 (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/wravery/webview2-rs/tree/edc2caf886175ccaebe86078c9cfe1ae2a187328 (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/webview2-com-sys@0.39.1/LICENSE"
@@ -6670,7 +6672,7 @@
       "name": "webview2-com",
       "version": "0.39.1",
       "license": "MIT",
-      "source": "https://github.com/wravery/webview2-rs/tree/edc2caf886175ccaebe86078c9cfe1ae2a187328 (Cargo source commit; pinned raw paths after tree API HTTP 403)",
+      "source": "https://github.com/wravery/webview2-rs/tree/edc2caf886175ccaebe86078c9cfe1ae2a187328 (Cargo source commit)",
       "noticeType": "pinned-upstream-notice",
       "notices": [
         "licenses/cargo/webview2-com@0.39.1/LICENSE"
