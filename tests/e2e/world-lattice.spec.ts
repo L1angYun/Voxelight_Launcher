@@ -670,7 +670,7 @@ test("launch state: home preparation follows real 37% progress and cancellation 
   expect(typography.statuses.every(status => status === "loaded")).toBe(true);
   await expect(scene).toHaveAttribute("data-world-phase", "preparing");
   await expect.poll(async () => Number(await scene.getAttribute("data-world-front"))).toBeGreaterThan(0);
-  await expect.poll(async () => Number(await scene.getAttribute("data-world-front")), { timeout: 8000 }).toBe(61);
+  await expect.poll(async () => Number(await scene.getAttribute("data-world-front")), { timeout: 8000 }).toBe(80);
   await page.getByRole("button", { name: "取消准备", exact: true }).click();
   await expect(scene).toHaveAttribute("data-world-phase", "idle", { timeout: 3000 });
   await expect(scene).toHaveAttribute("data-world-front", "0", { timeout: 3000 });

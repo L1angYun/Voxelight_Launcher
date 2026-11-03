@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 930 });
 });
 
-test("shared points leave no extra card pool while the selected check persists", async ({ page }) => {
+test("shared points own the hovered edge and the selected static frame returns after leaving", async ({ page }) => {
   await installLauncherFixture(page, { worldMaterial: "solid" });
   await page.goto("/");
   await page.locator('button[data-page="library"]').click();
@@ -21,12 +21,14 @@ test("shared points leave no extra card pool while the selected check persists",
   await selected.hover();
   await expect(selected).toHaveAttribute("data-halo-owned", "true");
   await expect(selected.locator(":scope > .vx-lattice-frame")).toHaveCSS("visibility", "hidden");
-  await expect(selected.locator("svg[data-selected-mark]")).toBeVisible();
+  await expect(selected).toHaveAttribute("aria-current", "true");
+  await expect(selected.locator("svg[data-selected-mark]")).toHaveCount(0);
   await expect(page.locator(".vx-lattice-frame__dot")).toHaveCount(0);
   await create.hover();
   await expect(create).toHaveAttribute("data-halo-owned", "true");
   await expect(selected).not.toHaveAttribute("data-halo-owned", "true");
-  await expect(selected.locator("svg[data-selected-mark]")).toBeVisible();
+  await expect(selected.locator('.vx-lattice-frame[data-selected="true"]')).toBeVisible();
+  await expect(selected.locator('.vx-lattice-frame[data-selected="true"]')).toHaveCSS("border-top-style", "dotted");
   await expect(page.locator(".vx-lattice-frame__dot,.vx-lattice-frame.is-dispersing")).toHaveCount(0);
   await page.mouse.move(1390, 885);
   await expect(halo).toHaveAttribute("data-halo-state", "pointer");
@@ -49,7 +51,8 @@ for (const mode of ["lite", "reduced-motion", "forced-colors"] as const) {
     await expect(frame).toHaveCSS("opacity", "1");
     await expect(frame).toHaveCSS("outline-style", "solid");
     await expect(frame).toHaveCSS("outline-width", "2px");
-    await expect(card.locator("svg[data-selected-mark]")).toBeVisible();
+    await expect(frame).toHaveAttribute("data-selected", "true");
+    await expect(frame).toHaveCSS("border-top-style", "dotted");
     await expect(page.locator("canvas.vx-cursor-halo,.vx-lattice-frame__dot")).toHaveCount(0);
     await page.screenshot({ path: resolve(evidence, `keyboard-selection-${mode}.png`) });
   });

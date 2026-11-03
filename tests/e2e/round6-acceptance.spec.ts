@@ -70,7 +70,7 @@ for (const theme of ["dark", "light"] as const) {
   for (const [width, height] of [[1440, 930], [1050, 720]]) {
     test(`round6 ${theme} ${width}: launch dock, character controls and recent selection remain separate`, async ({ page }) => {
       await page.setViewportSize({ width, height });
-      await installLauncherFixture(page, { theme });
+      await installLauncherFixture(page, { theme, instanceCount: 2 });
       await page.goto("/");
       await expect(page.locator(".vx-home__character")).toHaveAttribute("data-character-state", "ready");
       const launch = page.getByRole("button", { name: "启动游戏", exact: true });
@@ -78,6 +78,8 @@ for (const theme of ["dark", "light"] as const) {
       const dock = (await page.locator(".vx-home__stage").boundingBox())!;
       const character = (await page.locator(".vx-home__char-col").boundingBox())!;
       expect(dock.x + dock.width).toBeLessThan(character.x);
+      await expect(page.locator(".vx-recent-card")).toHaveCount(2);
+      await expect(page.locator('.vx-recent-card[aria-pressed="true"]')).toHaveCount(1);
       expect(await page.locator(".vx-home").evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
       await capture(page, `after-home-${theme}-${width}`);
       await page.locator(".vx-home__char-col").hover();
