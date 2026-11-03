@@ -14,8 +14,8 @@ function Harness() {
   return <><button id="notify" onClick={() => notify({ message: "Download failed", kind: "error" })}>notify</button>
     <button id="replace" onClick={() => notify({ message: "Recovered" })}>replace</button>
     <button id="first" onClick={() => setFirst(true)}>first</button><button id="second" onClick={() => setSecond(true)}>second</button>
-    <Dialog open={first} onOpenChange={setFirst} title="First"><button id="selected-tab" role="tab" tabIndex={0}>selected</button>
-      <button id="other-tab" role="tab" tabIndex={-1}>other</button><button id="close-first" onClick={() => setFirst(false)}>close</button></Dialog>
+    <Dialog open={first} onOpenChange={setFirst} title="First"><button id="other-tab" role="tab" tabIndex={-1}>other</button>
+      <button id="selected-tab" role="tab" tabIndex={0}>selected</button><button id="close-first" onClick={() => setFirst(false)}>close</button></Dialog>
     <Dialog open={second} onOpenChange={setSecond} title="Second"><button id="close-second" onClick={() => setSecond(false)}>close</button></Dialog></>;
 }
 async function click(selector: string) { await act(async () => { node.querySelector<HTMLButtonElement>(selector)!.click(); }); }
@@ -48,6 +48,7 @@ it("replaces a notification and lets the visible close action dismiss it", async
 it("keeps inactive roving tabs out of the dialog Tab path", async () => {
   await click("#first");
   const tab = node.querySelector<HTMLButtonElement>("#selected-tab")!;
+  expect(document.activeElement).toBe(tab);
   tab.focus();
   await act(async () => tab.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
   expect(document.activeElement).toBe(node.querySelector("#close-first"));
