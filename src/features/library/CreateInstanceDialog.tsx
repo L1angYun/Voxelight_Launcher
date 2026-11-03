@@ -39,25 +39,39 @@ export function CreateInstanceDialog({
   const [loaderLoading, setLoaderLoading] = useState(false);
   const [instanceName, setInstanceName] = useState(project?.title ?? "");
   const [curseforgeKey, setCurseforgeKey] = useState("");
-  const [packVersions, setPackVersions] = useState<ModpackVersion[]>([]);
-  const [packVersion, setPackVersion] = useState("");
+  const [packChoice, setPackChoice] = useState<{ projectId: string; versions: ModpackVersion[]; selected: string }>({ projectId: "", versions: [], selected: "" });
   const [includeOptional, setIncludeOptional] = useState(false);
   const [error, setError] = useState("");
   const generation = useRef(0);
+  const metadataGeneration = useRef(0);
+  const metadataContext = useRef({ open: isOpen, projectId: project?.project_id });
+  metadataContext.current = { open: isOpen, projectId: project?.project_id };
+  // A different project must never expose the last dialog's install choice,
+  // including the render before its opening effect has reset the request.
+  const packVersions = packChoice.projectId === project?.project_id ? packChoice.versions : [];
+  const packVersion = packChoice.projectId === project?.project_id ? packChoice.selected : "";
 
   useEffect(() => {
+    const request = ++metadataGeneration.current;
     if (!isOpen) return;
+    const current = () => request === metadataGeneration.current && metadataContext.current.open
+      && metadataContext.current.projectId === project?.project_id;
     setMode(project ? "modpack" : initialMode);
     setInstanceName(project?.title ?? "");
     setError("");
     setGameVersion((current) => current || initialManifest?.latestRelease || "");
-    void command<VersionManifest>("list_versions").then(setManifest).catch((cause) => setError(String(cause)));
+    void command<VersionManifest>("list_versions").then((value) => {
+      if (current()) setManifest(value);
+    }).catch((cause) => { if (current()) setError(String(cause)); });
     if (project) {
+      // Reopening the same project intentionally fetches a fresh list. Closing
+      // preserves the current display for exit; opening disables old choices.
+      setPackChoice({ projectId: project.project_id, versions: [], selected: "" });
       void command<ModpackVersion[]>("list_modpack_versions", { projectId: project.project_id }).then((versions) => {
-        setPackVersions(versions);
-        setPackVersion(versions[0]?.id ?? "");
-      }).catch((cause) => setError(String(cause)));
+        if (current()) setPackChoice({ projectId: project.project_id, versions, selected: versions[0]?.id ?? "" });
+      }).catch((cause) => { if (current()) setError(String(cause)); });
     }
+    return () => { metadataGeneration.current++; };
   }, [initialManifest?.latestRelease, initialMode, isOpen, project]);
 
   useEffect(() => {
@@ -116,7 +130,7 @@ export function CreateInstanceDialog({
 
   async function installModpack(event: FormEvent) {
     event.preventDefault();
-    if (!project || !packVersion || !instanceName.trim()) return;
+    if (!isOpen || busy || !project || !packVersion || !instanceName.trim()) return;
     await run("instance.modpack", async () => {
       const result = await command<PackResult>("install_modrinth_modpack", {
         projectId: project.project_id,
@@ -182,7 +196,7 @@ export function CreateInstanceDialog({
       ) : null}
       {mode === "modpack" && project ? (
         <form id={`${modeId}-create-modpack-form`} className="vx-form-stack" onSubmit={installModpack}>
-          <Field label={t("library:modpackVersion")} htmlFor={`${modeId}-create-pack-version`}><Select id={`${modeId}-create-pack-version`} aria-label={t("library:modpackVersion")} value={packVersion} onChange={setPackVersion} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
+          <Field label={t("library:modpackVersion")} htmlFor={`${modeId}-create-pack-version`}><Select id={`${modeId}-create-pack-version`} aria-label={t("library:modpackVersion")} value={packVersion} onChange={(selected) => setPackChoice((current) => current.projectId === project.project_id && current.versions.some((version) => version.id === selected) ? { ...current, selected } : current)} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
           <Field label={t("library:instanceName")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} required maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} /></Field>
           <label className="vx-check-row"><input type="checkbox" checked={includeOptional} onChange={(event) => setIncludeOptional(event.target.checked)} /> {t("library:includeOptional")}</label>
         </form>

@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import { createLauncherI18n } from "../../i18n";
-import { command, defaults, type Bootstrap, type Instance } from "../../lib/launcher";
+import { command, defaults, type Bootstrap, type Instance, type ResourceProject } from "../../lib/launcher";
+import type { ModpackVersion } from "./types";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { instanceTabRegistry } from "../../app/registry";
 import { LibraryPage } from "./LibraryPage";
 import { InstanceDetailPage } from "./InstanceDetailPage";
+import { InstanceContent } from "./InstanceContent";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
 
 const commandMock = vi.mocked(command);
@@ -127,6 +129,109 @@ afterEach(() => {
 });
 
 describe("library and instance details", () => {
+  it("does not announce an empty resource folder before its first request starts", async () => {
+    commandMock.mockImplementation(() => new Promise(() => {}));
+    let emptyOnFirstCommit: boolean | undefined;
+    function FirstCommit() {
+      useLayoutEffect(() => { emptyOnFirstCommit = Boolean(container.querySelector(".vx-empty")); }, []);
+      return createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id });
+    }
+    await render(createElement(FirstCommit));
+    expect(emptyOnFirstCommit).toBe(false);
+  });
+
+  it.each([
+    ["files", "list_local_resources", "重试", "此分类暂无资源"],
+    ["updates", "check_resource_updates", "检查更新", "没有可用更新"],
+    ["history", "list_resource_update_history", "更新历史", "暂无更新历史"],
+  ])("keeps %s pending and failed requests distinct from a successful empty result", async (view, commandName, action, emptyTitle) => {
+    let reject!: (error: Error) => void;
+    let requests = 0;
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name !== commandName) return normal(name, args);
+      requests++;
+      return requests === 1 ? new Promise((_resolve, fail) => { reject = fail; }) : [];
+    });
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const request = () => [...container.querySelectorAll<HTMLButtonElement>(".vx-toolbar button")].find((button) => button.textContent === action)!.click();
+    if (view !== "files") await act(async () => request());
+    expect(container.querySelector(".vx-empty")).toBeNull();
+    await act(async () => reject(new Error("Fixture request failed")));
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector(".vx-empty")).toBeNull();
+    await act(async () => request());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector(".vx-empty h2")?.textContent).toBe(emptyTitle);
+  });
+
+  const pack = (id: string): ResourceProject => ({ project_id: id, slug: id, title: `Pack ${id}`, description: "", icon_url: null, downloads: 0, author: "Fixture", project_type: "modpack", versions: ["1.21.1"] });
+  const packVersion = (id: string): ModpackVersion => ({ id, name: id, versionNumber: id, gameVersions: ["1.21.1"], loaders: ["fabric"], datePublished: "2026-01-01" });
+  const packChoice = () => container.querySelector<HTMLButtonElement>('[role="combobox"][id$="-create-pack-version"]')!;
+  const packInstall = () => container.querySelector<HTMLButtonElement>('.vx-dialog__footer button')!;
+
+  it("disables old pack choices while a different project loads and installs only its matching version", async () => {
+    const a = pack("a"), b = pack("b");
+    let finishB!: (value: ModpackVersion[]) => void;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_modpack_versions") return args?.projectId === "a" ? [packVersion("a-version")] : new Promise((resolve) => { finishB = resolve; });
+      if (name === "install_modrinth_modpack") return { instance, warnings: [] };
+      return mockLauncher.manifest;
+    });
+    const props = { onOpenChange: vi.fn(), onInstalled: vi.fn() };
+    await render(createElement(CreateInstanceDialog, { ...props, open: true, project: a }));
+    expect(packChoice().textContent).toContain("a-version");
+    await render(createElement(CreateInstanceDialog, { ...props, open: false, project: a }));
+    expect(packChoice().textContent).toContain("a-version");
+    await render(createElement(CreateInstanceDialog, { ...props, open: true, project: b }));
+    expect(packChoice().textContent).not.toContain("a-version");
+    expect(packInstall().disabled).toBe(true);
+    await act(async () => finishB([packVersion("b-version")]));
+    expect(packChoice().textContent).toContain("b-version");
+    expect(packInstall().disabled).toBe(false);
+    await act(async () => packInstall().click());
+    expect(commandMock).toHaveBeenCalledWith("install_modrinth_modpack", expect.objectContaining({ projectId: "b", modpackVersionId: "b-version" }));
+  });
+
+  it("ignores project A finishing after project B in a reused creation dialog", async () => {
+    const a = pack("a"), b = pack("b");
+    const requests = new Map<string, (value: ModpackVersion[]) => void>();
+    commandMock.mockImplementation(async (name, args) => name === "list_modpack_versions"
+      ? new Promise((resolve) => { requests.set(String(args?.projectId), resolve); }) : mockLauncher.manifest);
+    const props = { onOpenChange: vi.fn(), onInstalled: vi.fn() };
+    await render(createElement(CreateInstanceDialog, { ...props, open: true, project: a }));
+    await render(createElement(CreateInstanceDialog, { ...props, open: false, project: a }));
+    await render(createElement(CreateInstanceDialog, { ...props, open: true, project: b }));
+    await act(async () => requests.get("b")!([packVersion("b-version")]));
+    await act(async () => requests.get("a")!([packVersion("late-a-version")]));
+    expect(packChoice().textContent).toContain("b-version");
+    expect(packChoice().textContent).not.toContain("late-a-version");
+  });
+
+  it("freezes a closed pack snapshot and refreshes the same project on reopening", async () => {
+    const a = pack("a");
+    const requests: { resolve: (value: ModpackVersion[]) => void; reject: (error: Error) => void }[] = [];
+    commandMock.mockImplementation(async (name) => name === "list_modpack_versions"
+      ? new Promise((resolve, reject) => { requests.push({ resolve, reject }); }) : mockLauncher.manifest);
+    const props = { onOpenChange: vi.fn(), onInstalled: vi.fn() };
+    await render(createElement(CreateInstanceDialog, { ...props, open: true, project: a }));
+    const beforeClose = container.querySelector("dialog")!.textContent;
+    await render(createElement(CreateInstanceDialog, { ...props, open: false, project: a }));
+    await act(async () => requests[0].resolve([packVersion("closed-version")]));
+    expect(container.querySelector("dialog")!.textContent).toBe(beforeClose);
+    await render(createElement(CreateInstanceDialog, { ...props, open: true, project: a }));
+    expect(packInstall().disabled).toBe(true);
+    await act(async () => requests[1].resolve([packVersion("fresh-version")]));
+    expect(packChoice().textContent).toContain("fresh-version");
+    await render(createElement(CreateInstanceDialog, { ...props, open: false, project: a }));
+    expect(packChoice().textContent).toContain("fresh-version");
+    await render(createElement(CreateInstanceDialog, { ...props, open: true, project: a }));
+    expect(packInstall().disabled).toBe(true);
+    await render(null);
+    await act(async () => requests[2].reject(new Error("unmounted request")));
+    expect(container.childElementCount).toBe(0);
+  });
+
   it("composes the collection as a command bar and identity-driven instance sheet", async () => {
     expect(instanceTabRegistry.ids()).toEqual(["overview", "content", "worlds", "logs", "settings"]);
     await render(createElement(LibraryPage));
