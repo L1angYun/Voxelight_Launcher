@@ -115,7 +115,7 @@ test("world context loss keeps launcher usable and restores rendering or a CSS f
 test("home columns do not overlap and the account retry action stays clickable", async ({
   page,
 }) => {
-  await installLauncherFixture(page, { profileFailure: true });
+  await installLauncherFixture(page, { profileFailure: true, instanceCount: 2 });
   await page.goto("/");
 
   const charColumn = await page.locator(".vx-home__char-col").boundingBox();

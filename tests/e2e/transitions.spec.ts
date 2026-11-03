@@ -537,11 +537,14 @@ if (HARDWARE) {
       await expect(page.locator(".vx-home")).toHaveAttribute("data-motion", staticScene ? "reduced" : "full");
       const measured = await capture(page, info, "home-to-library-" + mode, { trigger: navSelector("library") }, () => page.locator(navSelector("library")).click());
       expect(measured.frames.every(frame => identityTransform(frame.stageTransform))).toBe(true);
-      expect(measured.frames.filter(frame => frame.stageOpacity !== null && frame.stageOpacity > 0 && frame.stageOpacity < 1)).toHaveLength(0);
+      if (mode === "reduced-motion" || mode === "high-contrast")
+        expect(measured.frames.filter(frame => frame.stageOpacity !== null && frame.stageOpacity > 0 && frame.stageOpacity < 1)).toHaveLength(0);
+      else expect(measured.contentAnimFrames, "flat content retains the allowed Lite fade").toBeGreaterThan(0);
       const card = page.locator('article[data-instance-id="fixture-world"]');
       await page.keyboard.press("Tab");
       await card.locator(".vx-instance-card__select").focus();
-      await expect(card.locator("[data-selected-mark]")).toBeVisible();
+      await expect(card.locator('.vx-lattice-frame[data-selected="true"]')).toBeVisible();
+      await expect(card.locator('.vx-lattice-frame[data-selected="true"]')).toHaveCSS("border-top-style", "dotted");
       await expect(card.locator(":scope > .vx-lattice-frame")).toHaveAttribute("data-focused", "true");
       await expect(card.locator(":scope > .vx-lattice-frame")).toHaveCSS("outline-style", "solid");
       await navigate(page, "home");

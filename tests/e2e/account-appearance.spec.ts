@@ -24,7 +24,8 @@ test("home renders the ACTIVE account skin and cape, disposes on navigation, and
   await expect(character).toHaveAttribute("data-skin-url", skins.classic);
   await expect(character).toHaveAttribute("data-skin-model", "classic");
   await expect(character).toHaveAttribute("data-cape-url", skins.cape);
-  await expect(page.locator(".vx-home__preview-source")).toHaveText("CyanFixture 的角色预览");
+  await expect(page.locator(".vx-home__preview-source")).toHaveCount(0);
+  await expect(page.locator(".vx-home__character-panel")).toHaveAttribute("aria-label", "CyanFixture 的角色预览");
   for (let cycle = 0; cycle < 2; cycle++) {
     await page.locator('[data-page="library"]').click();
     await expect(page.locator(".vx-home__char-col canvas")).toHaveCount(0);
@@ -91,7 +92,8 @@ test("texture decoding failure cannot offer a default character inside the accou
   await page.goto("/");
   await expect(page.locator(".vx-character-canvas")).toHaveAttribute("data-character-state", "error");
   await expect(page.getByRole("button", { name: "使用 Lumen", exact: true })).toHaveCount(0);
-  await expect(page.locator(".vx-home__preview-source")).toHaveText("CyanFixture 的角色预览");
+  await expect(page.locator(".vx-home__preview-source")).toHaveCount(0);
+  await expect(page.locator(".vx-home__character-panel")).toHaveAttribute("aria-label", "CyanFixture 的角色预览");
 });
 
 test("local previews expose their source and pause offscreen without changing account appearance", async ({ page }) => {

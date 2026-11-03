@@ -16,7 +16,8 @@ for (const [width, height] of [[1440, 930], [1050, 720]]) {
     // locator.click() may scroll its moving target before dispatching input.
     const stage = page.locator('.vx-page-stage[data-page-stage="settings"][data-exiting="false"]');
     await expect(stage).toHaveCSS("opacity", "1");
-    await expect(stage).toHaveCSS("transform", "none");
+    await expect.poll(() => stage.evaluate(element => getComputedStyle(element).transform))
+      .toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
     await page.evaluate(() => document.fonts.ready);
     const main = page.locator("#main-content");
     await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(0);

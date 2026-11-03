@@ -91,7 +91,7 @@ export function collectTextContrastMetadata(targets: ContrastTarget[]): TextCont
     before: { theme: document.documentElement.dataset.theme, intro: document.documentElement.dataset.worldIntro, phase: scene.dataset.worldPhase,
       front: scene.dataset.worldFront, frames: scene.dataset.worldFrames, tier: scene.dataset.worldTier,
       material: scene.dataset.worldMaterial, now, epochMs },
-    scrim: getComputedStyle(document.querySelector(".vx-home__stage")!).backgroundImage,
+    scrim: getComputedStyle(document.querySelector(".vx-home")!, "::before").backgroundImage,
     viewport: { width: innerWidth, height: innerHeight }, epochMs,
   };
 }

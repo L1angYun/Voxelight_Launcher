@@ -12,7 +12,7 @@ const evidence = resolve(process.env.VOXELIGHT_TASK8_EVIDENCE ?? "test-results/w
 const targets: ContrastTarget[] = [
   { name: "title", selector: ".vx-home__console-name", minimum: 3, nominalDuringIntro: true },
   { name: "metadata", selector: ".vx-home__meta li", minimum: 4.5, nominalDuringIntro: true },
-  { name: "preview source", selector: ".vx-home__preview-source", minimum: 4.5 },
+  { name: "preview source", selector: ".vx-home__preview-source", minimum: 4.5, optional: true },
   { name: "operation", selector: ".vx-launch-console__actions .vx-button__label, .vx-launch-console__running .vx-button__label", minimum: 4.5 },
   { name: "preparation", selector: ".vx-launch-console__progress-heading > span, .vx-launch-console__file-count", minimum: 4.5, optional: true },
   { name: "progress value", selector: ".vx-launch-console__progress-text", minimum: 4.5, optional: true },
@@ -143,10 +143,10 @@ for (const theme of ["dark", "light"] as const) for (const [width, height] of [[
     await page.getByRole("button", { name: "启动游戏", exact: true }).click();
     await expect(scene).toHaveAttribute("data-world-phase", "preparing");
     await expect(page.getByText("37%", { exact: true })).toBeVisible();
-    await expect.poll(async () => Number(await scene.getAttribute("data-world-front")), { timeout: 30_000 }).toBe(61);
+    await expect.poll(async () => Number(await scene.getAttribute("data-world-front")), { timeout: 30_000 }).toBe(80);
     reports["front-37"] = await captureState(page, directory, "front-37");
-    expect(Number(reports["front-37"].before.front)).toBe(61);
-    for (const [fraction, percent, low, high] of [[.7, "70%", 115, 116], [.95, "95%", 157, 157]] as const) {
+    expect(Number(reports["front-37"].before.front)).toBe(80);
+    for (const [fraction, percent, low, high] of [[.7, "70%", 124, 125], [.95, "95%", 158, 158]] as const) {
       await page.evaluate(fraction => (window as ControlledWindow).__worldAcceptanceFixture!.progress(fraction), fraction);
       await expect(page.getByText(percent, { exact: true })).toBeVisible();
       await expect.poll(async () => Number(await scene.getAttribute("data-world-front")), { timeout: 30_000 }).toBeGreaterThanOrEqual(low);

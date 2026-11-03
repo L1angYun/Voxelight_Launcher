@@ -180,7 +180,7 @@ test("one world canvas serves full and lite modes while real data points remain 
   for (const effects of ["full", "lite"] as const) {
     const context = await page.context().browser()!.newContext();
     const current = await context.newPage();
-    await installLauncherFixture(current, { effects });
+    await installLauncherFixture(current, { effects, instanceCount: 2 });
     await current.addInitScript(() => {
       const api = (window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
       const original = api.invoke;
@@ -194,9 +194,9 @@ test("one world canvas serves full and lite modes while real data points remain 
     await expect(current.locator(".vx-global-scene canvas")).toHaveCount(1);
     await expect(current.locator(".world-scene__canvas")).toBeVisible();
     await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", effects === "full" ? "animated" : "static");
-    await expect(current.locator(".vx-recent-card .vx-lattice-frame")).toHaveCount(1);
+    await expect(current.locator(".vx-recent-card .vx-lattice-frame")).toHaveCount(2);
     await expect(current.locator(".vx-lattice-frame__dot")).toHaveCount(0);
-    await expect(current.locator(".vx-recent-card svg[data-selected-mark]")).toBeVisible();
+    await expect(current.locator('.vx-recent-card[aria-pressed="true"] .vx-lattice-frame[data-selected="true"]')).toBeVisible();
     await current.locator('button[data-page="downloads"]').click();
     const progress = current.locator('[data-task-id="point-regression"] canvas.vx-lattice-progress');
     await expect(progress).toBeVisible();
