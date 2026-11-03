@@ -26,7 +26,7 @@ function Popup({ popupRef, placement, animate, className, children }: {
 }) {
   const present = useIsPresent();
   const animateExit = usePresenceData() as boolean;
-  const tucked = `translateY(${placement?.side === "top" ? -4 : 4}px) scale(0.97)`;
+  const tucked = `translateY(${placement?.side === "top" ? -MOTION.menu.offset : MOTION.menu.offset}px) scale(${MOTION.menu.scale})`;
   useLayoutEffect(() => {
     const element = popupRef.current;
     if (element && typeof element.showPopover === "function") {

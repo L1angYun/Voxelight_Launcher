@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { clamp, jellyMatrix, Spring } from "../../visual/glass/jelly";
+import { MOTION } from "../../design/motion";
 
 export function useJellyControl<T extends HTMLElement>(staticMotion: boolean) {
   const ref = useRef<T>(null);
@@ -44,10 +45,10 @@ export function useJellyControl<T extends HTMLElement>(staticMotion: boolean) {
     const tick = (now: number) => {
       const dt = previousTime.current ? (now - previousTime.current) / 1000 : 1 / 60;
       previousTime.current = now;
-      springs.press.step(dt, 310, 18);
-      springs.stretch.step(dt, 230, 15);
-      springs.bendX.step(dt, 190, 14);
-      springs.bendY.step(dt, 190, 14);
+      springs.press.step(dt, MOTION.lens.press.stiffness, MOTION.lens.press.damping);
+      springs.stretch.step(dt, MOTION.lens.stretch.stiffness, MOTION.lens.stretch.damping);
+      springs.bendX.step(dt, MOTION.lens.bend.stiffness, MOTION.lens.bend.damping);
+      springs.bendY.step(dt, MOTION.lens.bend.stiffness, MOTION.lens.bend.damping);
       springs.press.value = clamp(springs.press.value, 0, 1.16);
       paint();
       if (Object.values(springs).some((spring) => spring.moving)) frame.current = requestAnimationFrame(tick);
