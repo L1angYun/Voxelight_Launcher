@@ -22,12 +22,14 @@ function ConsoleContent({ children, tier }: { children: ReactNode; tier: MotionT
 }
 
 export function LaunchConsole({
-  instance, instances, version, onSelectInstance, onLaunch, onStop, onCancel, onOpenFolder, busy, running, progress,
+  instance, instances, version, onSelectInstance, pickerOpen, onPickerOpenChange, onLaunch, onStop, onCancel, onOpenFolder, busy, running, progress,
 }: {
   instance?: Instance;
   instances: Instance[];
   version?: InstalledVersion;
   onSelectInstance: (id?: string) => void;
+  pickerOpen: boolean;
+  onPickerOpenChange: (open: boolean) => void;
   onLaunch: () => Promise<void>;
   onStop: () => Promise<void>;
   onCancel: () => Promise<void>;
@@ -68,20 +70,23 @@ export function LaunchConsole({
   const stageKey = progress?.stage ?? "queued";
   const stage = i18n.exists(`home:stages.${stageKey}`) ? t(`home:stages.${stageKey}`) : t("home:preparing");
   return (
-    <div className="vx-launch-console" data-state={state}>
+    <div className="vx-launch-console" data-state={state} data-picker-open={pickerOpen}>
       <motion.div className="vx-launch-console__context" layout={tier === "full" ? "position" : false}
         layoutDependency={state} transition={{ duration: motionDuration(tier, "content"), ease: MOTION.ease }}>
         <div className="vx-launch-console__instance">
           <div ref={selectorJelly.ref} className="vx-jelly-control vx-launch-console__selector-wrap" {...selectorJelly.handlers}>
             <GlassSurface variant="control" className="vx-launch-console__selector">
-              <InstancePicker instance={instance} instances={instances} versionId={version?.id} onSelectInstance={onSelectInstance} />
+              <InstancePicker instance={instance} instances={instances} versionId={version?.id}
+                onSelectInstance={onSelectInstance} onOpenChange={onPickerOpenChange} />
             </GlassSurface>
           </div>
           <IconButton label={t("home:openFolder")} icon={<FolderOpen size={18} />} onClick={onOpenFolder} />
         </div>
       </motion.div>
       {preparing ? (
-        <div className="vx-launch-console__status" aria-live="polite">
+        <motion.div className="vx-launch-console__status" aria-live="polite"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+          transition={{ duration: motionDuration(tier, "content"), ease: MOTION.ease }}>
           <div className="vx-launch-console__progress-heading">
             <span><LoaderCircle className="spin" size={14} aria-hidden="true" />{stage}</span>
             <strong className="vx-launch-console__progress-text">{percent !== null
@@ -93,7 +98,7 @@ export function LaunchConsole({
           <span className="vx-launch-console__file-count">{progress && progress.total > 0 ? t("home:files", {
             completed: number.format(progress.completed), total: number.format(progress.total),
           }) : t("home:filesUnknown", { completed: number.format(progress?.completed ?? 0) })}</span>
-        </div>
+        </motion.div>
       ) : null}
       <div className="vx-launch-console__actions">
         <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" data-visual-owner="lens" {...launchJelly.handlers}>

@@ -15,6 +15,7 @@ export interface ListboxOption {
 }
 export interface AnchoredListboxProps extends AriaAttributes {
   value: string; onChange: (value: string) => void; options: ListboxOption[];
+  onOpenChange?: (open: boolean) => void;
   disabled?: boolean; required?: boolean; id?: string; className?: string;
   triggerClassName?: string; popupClassName?: string; embedded?: boolean; minimumMenuWidth?: number;
   material?: "flat" | "glass";
@@ -51,7 +52,7 @@ function SelectSurface({ glass, variant, className, children }: { glass: boolean
     : <div className={cn(className, "vx-select-flat-surface")}>{children}</div>;
 }
 
-export function AnchoredListbox({ value, onChange, options, disabled = false, required, id, className,
+export function AnchoredListbox({ value, onChange, onOpenChange, options, disabled = false, required, id, className,
   triggerClassName, popupClassName, embedded = false, minimumMenuWidth = 280, material = "flat",
   "aria-label": label, "aria-describedby": describedBy, ...aria }: AnchoredListboxProps) {
   const { effects, reducedMotion, reducedTransparency, highContrast } = useAppearance();
@@ -67,6 +68,13 @@ export function AnchoredListbox({ value, onChange, options, disabled = false, re
   const openRef = useRef(false);
   const search = useRef({ value: "", time: -Infinity });
   const [open, setOpen] = useState(false);
+  const openChangeRef = useRef(onOpenChange);
+  useLayoutEffect(() => { openChangeRef.current = onOpenChange; }, [onOpenChange]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    openChangeRef.current?.(true);
+    return () => openChangeRef.current?.(false);
+  }, [open]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null);
   const [placement, setPlacement] = useState<Placement | null>(null);

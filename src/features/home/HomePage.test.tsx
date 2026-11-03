@@ -354,6 +354,51 @@ describe("HomePage", () => {
     expect(mockLauncher.launch).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps only supplemental Java metadata while retaining the selected instance's accessible name", async () => {
+    mockLauncher.data.instances[0].loader = "fabric";
+    await render();
+    const metadata = container.querySelector(".vx-home__meta")!;
+    expect([...metadata.querySelectorAll("li")].map((item) => item.textContent)).toEqual(["Java 21"]);
+    expect(metadata.getAttribute("aria-label")).toContain("合成测试世界");
+    const picker = container.querySelector('[role="combobox"][aria-label="当前实例"]')!;
+    expect(picker.textContent).toContain("合成测试世界");
+    expect(picker.textContent).toContain("1.21.1");
+    expect(picker.textContent).toContain("fabric");
+  });
+
+  it.each(["Escape", "outside", "selection", "trigger"])("hides the identity only while its picker is open and restores it after %s", async (dismissal) => {
+    await render();
+    const picker = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="当前实例"]')!;
+    const identity = container.querySelector<HTMLElement>(".vx-home__identity")!;
+    const console = container.querySelector<HTMLElement>(".vx-launch-console")!;
+    expect(Number(getComputedStyle(identity).opacity || 1)).toBe(1);
+    await act(async () => picker.click());
+    expect(console.dataset.pickerOpen).toBe("true");
+    expect(Number(getComputedStyle(identity).opacity)).toBe(0);
+    await act(async () => {
+      if (dismissal === "Escape") picker.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      else if (dismissal === "outside") document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      else if (dismissal === "selection") document.querySelector<HTMLElement>('[role="option"][data-instance-id="fixture-world"]')!.click();
+      else picker.click();
+    });
+    expect(console.dataset.pickerOpen).toBe("false");
+    expect(Number(getComputedStyle(identity).opacity || 1)).toBe(1);
+  });
+
+  it("restores the identity when an open instance picker unmounts into the empty state", async () => {
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="当前实例"]')!.click());
+    expect(Number(getComputedStyle(container.querySelector(".vx-home__identity")!).opacity)).toBe(0);
+    mockLauncher.data.instances = [];
+    mockLauncher.selectedInstance = undefined;
+    mockLauncher.selectedVersion = undefined;
+    mockLauncher.selectedVersionId = "";
+    await render();
+    expect(container.querySelector(".vx-launch-console")).toBeNull();
+    expect(Number(getComputedStyle(container.querySelector(".vx-home__identity")!).opacity || 1)).toBe(1);
+    expect(container.querySelector("h1")?.textContent).toBe("暂无实例");
+  });
+
   it("shows a real preparation state and cancels it", async () => {
     vi.useFakeTimers();
     mockLauncher.busy = "game.prepare";
