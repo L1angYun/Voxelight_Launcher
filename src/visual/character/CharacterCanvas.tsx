@@ -272,7 +272,10 @@ export function CharacterCanvas({
     }
     const create = () => {
       timer = undefined;
-      if (!stopped) teardown = setup();
+      if (stopped) return;
+      // An attempted construction is no longer pending, even if it throws.
+      pendingStartRef.current = null;
+      teardown = setup();
     };
     const schedule = () => {
       if (stopped || viewerRef.current) return;
