@@ -114,18 +114,25 @@ function JellyNavigationIndicator({
     const tick = (now: number) => {
       const dt = previousTime.current ? (now - previousTime.current) / 1000 : 1 / 60;
       previousTime.current = now;
-      const speed = Math.hypot(springs.x.velocity, springs.y.velocity);
-      if (speed > 16) angle.current = Math.atan2(springs.y.velocity, springs.x.velocity);
-      springs.stretch.target = Math.min(speed / 2400, 0.25) * 0.7;
-      springs.bendX.target = clamp((springs.x.target - springs.x.value) * 0.12, -11, 11) * 0.7;
-      springs.bendY.target = clamp((springs.y.target - springs.y.value) * 0.12, -11, 11) * 0.7;
-      springs.x.step(dt, NAV_INDICATOR_SPRING.x.stiffness, springs.press.value > 0.1 ? NAV_INDICATOR_SPRING.x.pressedDamping : NAV_INDICATOR_SPRING.x.damping);
-      springs.y.step(dt, NAV_INDICATOR_SPRING.y.stiffness, NAV_INDICATOR_SPRING.y.damping);
-      springs.press.step(dt, NAV_INDICATOR_SPRING.press.stiffness, NAV_INDICATOR_SPRING.press.damping);
-      springs.stretch.step(dt, NAV_INDICATOR_SPRING.stretch.stiffness, NAV_INDICATOR_SPRING.stretch.damping);
-      springs.bendX.step(dt, NAV_INDICATOR_SPRING.bend.stiffness, NAV_INDICATOR_SPRING.bend.damping);
-      springs.bendY.step(dt, NAV_INDICATOR_SPRING.bend.stiffness, NAV_INDICATOR_SPRING.bend.damping);
-      springs.press.value = clamp(springs.press.value, 0, 1.16);
+      // Keep the shared spring's long-stall cap, but do not lose elapsed time
+      // on every low-FPS navigation frame. Measure/paint only once per RAF.
+      let remaining = Math.max(0, Math.min(dt, MOTION.lens.maxElapsedSeconds));
+      while (remaining > 1e-9) {
+        const seconds = Math.min(remaining, MOTION.lens.substepSeconds);
+        const speed = Math.hypot(springs.x.velocity, springs.y.velocity);
+        if (speed > 16) angle.current = Math.atan2(springs.y.velocity, springs.x.velocity);
+        springs.stretch.target = Math.min(speed / 2400, 0.25) * 0.7;
+        springs.bendX.target = clamp((springs.x.target - springs.x.value) * 0.12, -11, 11) * 0.7;
+        springs.bendY.target = clamp((springs.y.target - springs.y.value) * 0.12, -11, 11) * 0.7;
+        springs.x.step(seconds, NAV_INDICATOR_SPRING.x.stiffness, springs.press.value > 0.1 ? NAV_INDICATOR_SPRING.x.pressedDamping : NAV_INDICATOR_SPRING.x.damping);
+        springs.y.step(seconds, NAV_INDICATOR_SPRING.y.stiffness, NAV_INDICATOR_SPRING.y.damping);
+        springs.press.step(seconds, NAV_INDICATOR_SPRING.press.stiffness, NAV_INDICATOR_SPRING.press.damping);
+        springs.stretch.step(seconds, NAV_INDICATOR_SPRING.stretch.stiffness, NAV_INDICATOR_SPRING.stretch.damping);
+        springs.bendX.step(seconds, NAV_INDICATOR_SPRING.bend.stiffness, NAV_INDICATOR_SPRING.bend.damping);
+        springs.bendY.step(seconds, NAV_INDICATOR_SPRING.bend.stiffness, NAV_INDICATOR_SPRING.bend.damping);
+        springs.press.value = clamp(springs.press.value, 0, 1.16);
+        remaining -= seconds;
+      }
       paint();
       const moving = Object.values(springs).some((spring) => spring.moving);
       if (moving) frame.current = requestAnimationFrame(tick);
@@ -432,8 +439,16 @@ export function FloatingNav({
     } catch {
       // The capture can already be gone when the pointer is cancelled by the OS.
     }
-    if (!commit || !drag.moved) return;
+    if (!commit) return;
     suppressNextClick();
+    if (!drag.moved) {
+      // Native pointer capture can retarget click to the nav instead of its
+      // button. Commit this tap here, and suppress any duplicate button click.
+      const bounds = itemRefs.current.get(drag.target)?.getBoundingClientRect();
+      if (bounds && event.clientX >= bounds.left && event.clientX <= bounds.right &&
+        event.clientY >= bounds.top && event.clientY <= bounds.bottom) onNavigate(drag.target);
+      return;
+    }
     if (drag.target !== page) onNavigate(drag.target);
   }
 

@@ -13,6 +13,7 @@ export const MOTION = {
     stretch: { stiffness: 230, damping: 15 },
     bend: { stiffness: 190, damping: 14 },
     settleFrames: 3, navigationFrames: 1,
+    maxElapsedSeconds: 1, substepSeconds: 1 / 120,
   },
   identity: { stiffness: 380, damping: 36 },
   section: { stiffness: 420, damping: 38 },
