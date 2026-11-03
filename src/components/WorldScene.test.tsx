@@ -177,7 +177,7 @@ it("reports solid material when float targets are unavailable without overwritin
   expect(scene().dataset.worldMaterial).toBe("solid");
   expect(fake.draw.mock.calls.at(-1)![0].lat).toBe(0);
 });
-it("measures the character anchor, remeasures on resize, and falls back when absent", async () => {
+it("measures the character anchor and retains its last NDC while another page is mounted", async () => {
   const anchor = document.createElement("div"); anchor.dataset.worldAnchor = "";
   anchor.getBoundingClientRect = () => new DOMRect(300, 100, 200, 400);
   document.body.append(anchor);
@@ -190,7 +190,20 @@ it("measures the character anchor, remeasures on resize, and falls back when abs
     expect(fake.setAnchor.mock.calls.at(-1)![0][0]).toBeCloseTo(.26953125);
     expect(fake.setAnchor.mock.calls.at(-1)![0][1]).toBeCloseTo(-.4322916667);
     anchor.remove(); await render({ page: "content" });
-    expect(fake.setAnchor).toHaveBeenLastCalledWith([.62, -.66]);
+    expect(fake.setAnchor.mock.calls.at(-1)![0][0]).toBeCloseTo(.26953125);
+    expect(fake.setAnchor.mock.calls.at(-1)![0][1]).toBeCloseTo(-.4322916667);
+  } finally { anchor.remove(); }
+});
+it("remeasures a newly committed anchor and paints one static frame on its layout event", async () => {
+  await render({ effects: "lite" });
+  const anchor = document.createElement("div"); anchor.dataset.worldAnchor = "";
+  anchor.getBoundingClientRect = () => new DOMRect(300, 100, 200, 400);
+  document.body.append(anchor);
+  try {
+    const draws = fake.draw.mock.calls.length;
+    await act(async () => window.dispatchEvent(new Event("vx:world-anchor")));
+    expect(fake.setAnchor.mock.calls.at(-1)![0][0]).toBeCloseTo(-.21875);
+    expect(fake.draw.mock.calls.length).toBe(draws + 1);
   } finally { anchor.remove(); }
 });
 it("publishes the actual rounded crystal frontier and returns to zero after cancel", async () => {

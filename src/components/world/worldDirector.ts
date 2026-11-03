@@ -2,6 +2,8 @@
 import type { Vec3 } from "./camera";
 import { LIST_CAM, WORLD_PRESETS } from "./presets";
 import type { WorldMaterial, WorldPage, WorldPhase, WorldSceneId } from "./types";
+import { createSpring, advanceSpring, snapSpring } from "../../visual/glass/jelly";
+import { MOTION } from "../../design/motion";
 
 export const FRONT_MAX = 165;
 export interface WorldInputs {
@@ -43,6 +45,8 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
   let inputs = { ...initial };
   const initialValues = sceneValues(inputs);
   const cameraEye: Vec3 = [...initialValues.eye], cameraAt: Vec3 = [...initialValues.at];
+  const eyeSprings = cameraEye.map(value => createSpring(value));
+  const atSprings = cameraAt.map(value => createSpring(value));
   const frame: WorldFrame = { ...initialValues, front: 0, cry: 0, charge: 0, timeScale: 1, simTime: 0, ring: 0,
     morph: { start: -1, dur: .001, toWord: false, fromWord: false, transit: 0 }, introTime: 0, introActive: false, settled: false, active: false };
   let clock: number | null = null;
@@ -74,7 +78,10 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
       const target = sceneValues(inputs);
       if (inputs.phase === "running") { target.exposure = .3; target.bloom = .1; target.runDim = .3; }
       for (const key of scalarKeys) frame[key] = target[key];
-      for (let index = 0; index < 3; index++) { cameraEye[index] = target.eye[index]; cameraAt[index] = target.at[index]; }
+      for (let index = 0; index < 3; index++) {
+        cameraEye[index] = target.eye[index]; cameraAt[index] = target.at[index];
+        snapSpring(eyeSprings[index], target.eye[index]); snapSpring(atSprings[index], target.at[index]);
+      }
       push = inputs.phase === "preparing" ? 1 : 0;
       frame.eye = cameraEye.map((value, index) => value + (cameraAt[index] - value) * push * .09 * (index === 1 ? .4 : 1)) as Vec3;
       frame.at = [...cameraAt];
@@ -146,8 +153,9 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
       const amount = 1 - Math.exp(-dt * 2.4);
       for (const key of scalarKeys) frame[key] = approach(frame[key], target[key], amount);
       for (let index = 0; index < 3; index++) {
-        cameraEye[index] = approach(cameraEye[index], target.eye[index], amount);
-        cameraAt[index] = approach(cameraAt[index], target.at[index], amount);
+        eyeSprings[index].goal = target.eye[index]; atSprings[index].goal = target.at[index];
+        advanceSpring(eyeSprings[index], dt, MOTION.camera); advanceSpring(atSprings[index], dt, MOTION.camera);
+        cameraEye[index] = eyeSprings[index].position; cameraAt[index] = atSprings[index].position;
       }
       push = approach(push, inputs.phase === "preparing" ? 1 : 0, 1 - Math.exp(-dt * 1.3));
       frame.eye = cameraEye.map((value, index) => value + (cameraAt[index] - value) * push * .09 * (index === 1 ? .4 : 1)) as Vec3;
