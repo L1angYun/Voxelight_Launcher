@@ -18,6 +18,9 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
   const textureSizes = new Map<Handle, number[]>(), framebufferTextures = new Map<Handle, Map<number, Handle>>();
   const boundTextures = new Map<number, Handle>();
   const attached = new Map<Handle, Set<Handle>>(), errors: string[] = [];
+  const waits: { sync: Handle; flags: number; timeout: number }[] = [];
+  const fences: { handle: Handle; passes: number }[] = [];
+  let waitStatus = "ALREADY_SIGNALED", flushes = 0;
   let compiled = 0;
   let failShader = false, failFramebuffer = false, floatAttachment = false;
   let currentInternalFormat = 0;
@@ -34,6 +37,10 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
     createBuffer: () => create("buffer"), deleteBuffer: remove,
     createVertexArray: () => create("vao"), deleteVertexArray: remove,
     createQuery: () => create("query"), deleteQuery: remove,
+    fenceSync: () => { const handle = create("sync"); fences.push({ handle, passes: passes.length }); return handle; },
+    clientWaitSync: (sync: Handle, flags: number, timeout: number) => { expect(live.has(sync)).toBe(true); waits.push({ sync, flags, timeout }); return constant(waitStatus); },
+    deleteSync: remove,
+    flush: () => { flushes++; },
     getExtension: (name: string) => name === "EXT_color_buffer_float" ? options.float ? {} : null
       : name === "EXT_disjoint_timer_query_webgl2" && options.timer ? { TIME_ELAPSED_EXT: 9001, GPU_DISJOINT_EXT: 9002 } : null,
     getParameter: (name: number) => name === constant("MAX_TEXTURE_SIZE") || name === constant("MAX_RENDERBUFFER_SIZE") ? 4096
@@ -86,7 +93,8 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
     "depthMask", "cullFace", "frontFace", "blitFramebuffer", "beginQuery", "endQuery"]) methods[name] = noOp;
   function constant(name: string) { if (!constants.has(name)) constants.set(name, enumSequence++); return constants.get(name)!; }
   const gl = new Proxy(methods, { get: (target, name: string) => /^[A-Z][A-Z_0-9]+$/.test(name) ? constant(name) : target[name] }) as unknown as WebGL2RenderingContext;
-  return { gl, live, textures, instances, floatSizes, pointCounts, blends, passes, uniforms, vectors, errors,
+  return { gl, live, textures, instances, floatSizes, pointCounts, blends, passes, uniforms, vectors, errors, waits, fences,
+    wait: (status: string) => { waitStatus = status; }, flushCount: () => flushes,
     failShader: () => { failShader = true; }, failFramebuffer: () => { failFramebuffer = true; },
     failLargeFloat: () => { failLargeFloat = true; } };
 }
@@ -103,6 +111,70 @@ function mount(options: Parameters<typeof glBoundary>[0] = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("WebGL renderer boundary", () => {
+  it("skips all pass and texture work while one whole-frame fence is pending, then submits the latest state", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    const first = r.draw(frame(), .01);
+    expect(first.submitted).toBe(true);
+    expect(t.fences).toHaveLength(1);
+    expect(t.fences[0].passes).toBe(t.passes.length);
+    expect(t.flushCount()).toBe(1);
+    const draws = t.passes.length;
+    const textures = vi.spyOn(t.gl, "texImage2D");
+    const binds = vi.spyOn(t.gl, "bindTexture");
+    t.wait("TIMEOUT_EXPIRED");
+    expect(r.draw({ ...frame(), profile: .4, simTime: 1 }, .02)).toMatchObject({ submitted: false, pointsSubmitted: false });
+    expect(r.draw({ ...frame(), profile: .6, simTime: 2 }, .02)).toMatchObject({ submitted: false, pointsSubmitted: false });
+    expect(t.passes).toHaveLength(draws);
+    expect(textures).not.toHaveBeenCalled(); expect(binds).not.toHaveBeenCalled();
+    expect(t.fences).toHaveLength(1);
+    expect(t.waits.every(wait => wait.flags === 0 && wait.timeout === 0)).toBe(true);
+    t.wait("CONDITION_SATISFIED");
+    expect(r.draw({ ...frame(), profile: .9, simTime: 3 }, .02).submitted).toBe(true);
+    expect(t.uniforms.get("uProfile")).toBe(.9);
+    expect(t.uniforms.get("uTime")).toBe(3);
+    expect(t.uniforms.get("uT")).toBeCloseTo(.06);
+    expect(t.pointCounts).toEqual([65536, 65536]);
+    expect([...t.live].filter(handle => handle.kind === "sync")).toHaveLength(1);
+    expect(t.live.has(t.fences[0].handle)).toBe(false);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("bypasses backpressure for one-shot static palette and resize updates", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.draw(frame(), .016); t.wait("TIMEOUT_EXPIRED");
+    r.setTier({ kind: "static", grid: 110, particleSide: 0, dprCap: 1, forceSolid: true });
+    r.resize(1280, 720, 1);
+    expect(r.draw({ ...frame(), exposure: .42 }, 0).submitted).toBe(true);
+    r.setPalette({ light: true, ink: [1, 1, 1], point: [0, 0, 0], accent: [.5, .6, .7], haze: [1, 1, 1] });
+    expect(r.draw(frame(), 0).submitted).toBe(true);
+    expect(t.uniforms.get("uLight")).toBe(1);
+    expect(t.waits).toHaveLength(0);
+    expect([...t.live].filter(handle => handle.kind === "sync")).toHaveLength(1);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("never waits on an old fence after context loss and restoration", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    r.draw(frame(), .016);
+    const old = t.fences[0]?.handle;
+    expect(old).toBeDefined();
+    t.canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    expect(t.live.has(old!)).toBe(false);
+    t.canvas.dispatchEvent(new Event("webglcontextrestored"));
+    expect(r.draw(frame(), .016).submitted).toBe(true);
+    expect(t.waits).toHaveLength(0);
+    expect(t.fences.at(-1)!.handle).not.toBe(old);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("falls back on a failed GPU fence wait and releases every resource", () => {
+    const t = mount(); const r = t.renderer!;
+    r.draw(frame(), .016); t.wait("WAIT_FAILED");
+    expect(r.draw(frame(), .016)).toMatchObject({ submitted: false, pointsSubmitted: false });
+    expect(t.callbacks.onLost).toHaveBeenCalledOnce();
+    expect(t.live.size).toBe(0);
+    r.dispose();
+  });
   it("keeps the island at its world position while the content camera moves", () => {
     const t = mount({ float: true }); const r = t.renderer!;
     r.draw(frame(), 0);
@@ -306,6 +378,7 @@ describe("WebGL renderer boundary", () => {
   it("replaces resize and downgrade targets without retaining the old allocations", () => {
     const t = mount(); const r = t.renderer!;
     r.resize(800, 600, 1.5);
+    r.draw(frame(), 0); // Compare submitted states, each owning exactly one frame fence.
     const count = t.live.size;
     for (let i = 0; i < 5; i++) r.resize(900 + i, 620 + i, 1.5);
     expect(t.live.size).toBe(count);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // @vitest-environment jsdom
 import type { Root } from "react-dom/client";
+import type { WorldDrawMetrics } from "./world/renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const bridge = vi.hoisted(() => ({ create: vi.fn() }));
@@ -14,7 +15,7 @@ const inputs = { phase: "idle" as const, fraction: null, page: "home" as const, 
 function renderer() {
   return { capabilities: { webgl2: true as const, floatTargets: true }, material: "lattice" as const,
     melt: 0, press: vi.fn(), release: vi.fn(), shock: vi.fn(), resize: vi.fn(), setTier: vi.fn(), setPalette: vi.fn(), setAnchor: vi.fn(), setPointer: vi.fn(),
-    draw: vi.fn((_frame: any, _dt: number) => ({ cpuMs: 1, gpuMs: 1, pointsSubmitted: true })), dispose: vi.fn() };
+    draw: vi.fn((_frame: any, _dt: number): WorldDrawMetrics => ({ cpuMs: 1, gpuMs: 1, submitted: true, pointsSubmitted: true })), dispose: vi.fn() };
 }
 async function render(props: Partial<Parameters<typeof component.WorldScene>[0]> = {}, strict = false) {
   const element = react.createElement(component.WorldScene, { ...inputs, ...props });
@@ -158,10 +159,10 @@ it("does not acknowledge a formed word from a publish-only paused update", async
 });
 
 it("acknowledges only actual submitted points and retries an unsuccessful supplemental draw", async () => {
-  fake.draw.mockReturnValue({ cpuMs: 1, gpuMs: 1, pointsSubmitted: false });
+  fake.draw.mockReturnValue({ cpuMs: 1, gpuMs: 1, submitted: true, pointsSubmitted: false });
   await render(); await frame(0); await frame(900); await frame(700);
   expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ introTime: 1, morph: { toWord: true } });
-  fake.draw.mockReturnValue({ cpuMs: 1, gpuMs: 1, pointsSubmitted: true });
+  fake.draw.mockReturnValue({ cpuMs: 1, gpuMs: 1, submitted: true, pointsSubmitted: true });
   await frame(50);
   expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ introTime: 1, morph: { toWord: true } });
   await frame(110);
@@ -196,7 +197,7 @@ it.each(["float", "lost"])("checks %s failure before reading a submitted-word ac
   fake.draw.mockImplementationOnce(() => {
     if (failure === "float") fake.capabilities.floatTargets = false;
     else callbacks.onLost();
-    return { cpuMs: 1, gpuMs: 1, get pointsSubmitted() { return acknowledged(); } };
+    return { cpuMs: 1, gpuMs: 1, submitted: failure !== "lost", get pointsSubmitted() { return acknowledged(); } };
   });
   await frame(900);
   expect(acknowledged).not.toHaveBeenCalled();
