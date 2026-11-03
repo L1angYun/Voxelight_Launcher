@@ -2101,7 +2101,7 @@
 .vx-library-drill[data-content-motion] :is(.vx-detail-header > :not(.vx-detail-header__identity), .vx-detail-header__identity > div, .vx-detail-layout),
 .vx-library-page[data-drill-return] :is(.vx-page-heading, .vx-library-commandbar > .vx-search, .vx-library-commandbar__actions,
   .vx-library-view, .vx-instance-card__information, .vx-instance-card__open, .vx-instance-card__footer, .vx-library-empty) {
-  animation: vx-library-content-reveal var(--vx-drill-content-duration) var(--ease-out) both;
+  animation: vx-library-content-reveal var(--vx-drill-content-duration) var(--ease-out);
 }
 @keyframes vx-library-content-reveal { from { opacity: 0; } to { opacity: 1; } }
 
