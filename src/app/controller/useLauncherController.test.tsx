@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -142,6 +142,41 @@ afterEach(async () => {
 });
 
 describe("launcher controller", () => {
+  it("ignores the cancelled initial failure after StrictMode's active bootstrap succeeds", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    let reject!: (reason: Error) => void;
+    let calls = 0;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "bootstrap" && ++calls === 1) return new Promise((_resolve, fail) => { reject = fail; });
+      return normal(name, args);
+    });
+    await act(async () => root.render(createElement(StrictMode, null, createElement(LauncherProvider, null, createElement(Harness)))));
+    expect(current.bootstrapped).toBe(true);
+    await act(async () => reject(new Error("obsolete initial error")));
+    expect(current.bootstrapFailed).toBe(false);
+  });
+  it("exposes a retryable initial bootstrap failure without treating a later reload failure as boot failure", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "bootstrap") throw new Error("offline");
+      return normal(name, args);
+    });
+    await render();
+    expect(current.bootstrapped).toBe(false);
+    expect(current.bootstrapFailed).toBe(true);
+    commandMock.mockImplementation(normal);
+    await act(async () => { await current.reload(); });
+    expect(current.bootstrapped).toBe(true);
+    expect(current.bootstrapFailed).toBe(false);
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "bootstrap") throw new Error("offline again");
+      return normal(name, args);
+    });
+    await act(async () => { await expect(current.reload()).rejects.toThrow("offline again"); });
+    expect(current.bootstrapped).toBe(true);
+    expect(current.bootstrapFailed).toBe(false);
+  });
+
   it("waits for the actual bootstrap config even for an empty library, and stays ready during later reloads", async () => {
     let resolve!: (value: Bootstrap) => void;
     let pending = new Promise<Bootstrap>(done => { resolve = done; });

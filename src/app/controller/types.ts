@@ -22,6 +22,8 @@ export interface LauncherNotice {
 export interface LauncherContextValue {
   /** A native bootstrap snapshot has arrived; defaults alone are not user preferences. */
   bootstrapped: boolean;
+  /** Only the initial bootstrap has failed; regular reloads keep usable pages. */
+  bootstrapFailed?: boolean;
   data: Bootstrap;
   config: Config;
   manifest: VersionManifest | null;

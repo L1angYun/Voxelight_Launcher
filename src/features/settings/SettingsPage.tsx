@@ -5,7 +5,9 @@ import { useLauncher } from "../../app/controller/LauncherProvider";
 import { settingsSectionRegistry } from "../../app/registry";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
-import { ToastRegion } from "../../components/ui/Feedback";
+import { PageHeader, PageShell } from "../../components/ui/PageShell";
+import { RailNav } from "../../components/ui/RailNav";
+import { SectionPanel } from "../../components/ui/SectionPanel";
 import { GeneralSettings } from "./GeneralSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { GameSettings } from "./GameSettings";
@@ -26,7 +28,6 @@ export function SettingsPage() {
     reload,
     busy,
     notice,
-    dismissNotice,
   } = useLauncher();
   const [section, setSection] = useState<Section>("general");
   const [draft, setDraft] = useState(config);
@@ -112,43 +113,32 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="vx-settings-page">
-      <header className="vx-page-heading vx-settings-heading">
-        <div><h1>{t("settings:title")}</h1><p>{t("settings:subtitle")}</p></div>
+    <PageShell className="vx-settings-page">
+      <PageHeader className="vx-page-heading vx-settings-heading" title={t("settings:title")} description={t("settings:subtitle")} actions={
         <div className="vx-action-row vx-settings-save">
           {dirty ? <span className="vx-settings-dirty" role="status">{t("settings:unsaved")}</span> : null}
           <Button variant="ghost" icon={<RotateCcw size={15} />} disabled={!dirty} onClick={reset}>{t("settings:reset")}</Button>
           <Button variant="primary" icon={<Save size={15} />} loading={busy === "settings.save"} disabled={!dirty} onClick={() => void save()}>{t("settings:save")}</Button>
         </div>
-      </header>
+      } />
       {errorText ? <p className="vx-settings-error" role="alert">{errorText}</p> : null}
       {actionNotice ? <p className="vx-settings-notice" role="status">{t(`settings:notice.${actionNotice.code}`, actionNotice.params)}</p> : null}
-      <div className="vx-settings-layout">
-        <nav className="vx-settings-nav" aria-label={t("settings:sections")}>
-          {settingsSectionRegistry.enabled({}).map((item) => {
+      {saveFailed && notice?.kind === "error" ? <p className="vx-settings-error" role="alert">{noticeText}</p> : null}
+      <div className="vx-settings-layout vx-workspace">
+        <RailNav className="vx-settings-nav" label={t("settings:sections")} value={section} onChange={setSection}
+          options={settingsSectionRegistry.enabled({}).map((item) => {
             const Icon = sectionIcons[item.id as Section];
-            return (
-            <button
-              key={item.id}
-              type="button"
-              aria-current={section === item.id ? "page" : undefined}
-              onClick={() => setSection(item.id as Section)}
-            >
-              <Icon size={17} strokeWidth={1.6} aria-hidden="true" />
-              <span>{t(item.labelKey.replace(/^settings\./, ""), { ns: "settings" })}</span>
-            </button>
-          ); })}
-        </nav>
-        <div className="vx-settings-content">
+            return { value: item.id as Section, icon: <Icon size={17} strokeWidth={1.6} aria-hidden="true" />, label: t(item.labelKey.replace(/^settings\./, ""), { ns: "settings" }) };
+          })} />
+        <SectionPanel selectionKey={section} className="vx-settings-content vx-panel">
           {section === "general" ? <GeneralSettings {...sectionProps} /> : null}
           {section === "appearance" ? <AppearanceSettings {...sectionProps} /> : null}
           {section === "game" ? <GameSettings {...sectionProps} /> : null}
           {section === "java" ? <JavaSettings {...sectionProps} /> : null}
           {section === "downloads" ? <DownloadSettings {...sectionProps} /> : null}
           {section === "about" ? <AboutSettings onError={onError} /> : null}
-        </div>
+        </SectionPanel>
       </div>
-      {notice && (saveFailed || notice.kind === "info") ? <ToastRegion message={noticeText} kind={notice.kind} onDismiss={dismissNotice} closeLabel={t("common:actions.close")} /> : null}
-    </div>
+    </PageShell>
   );
 }

@@ -16,6 +16,7 @@ import type { LauncherContextValue, LauncherNotice } from "./types";
 
 export function useLauncherController(): LauncherContextValue {
   const [bootstrapped, setBootstrapped] = useState(false);
+  const [bootstrapFailed, setBootstrapFailed] = useState(false);
   const [data, setData] = useState<Bootstrap>({
     config: defaults,
     accounts: [],
@@ -73,6 +74,7 @@ export function useLauncherController(): LauncherContextValue {
     setData(result);
     setConfig(result.config);
     setBootstrapped(true);
+    setBootstrapFailed(false);
     setSelectedVersionId((previous) =>
       result.installedVersions.some((version) => version.id === previous)
         ? previous
@@ -211,7 +213,10 @@ export function useLauncherController(): LauncherContextValue {
   }, [run, showNotice]);
 
   useEffect(() => {
+    let active = true;
     void reload().catch((error) => {
+      if (!active) return;
+      setBootstrapFailed(true);
       const normalized = normalizeError(error);
       showNotice(normalized.code, "error", normalized.params, normalized);
     });
@@ -236,6 +241,7 @@ export function useLauncherController(): LauncherContextValue {
       }),
     ];
     return () => {
+      active = false;
       for (const promise of disposers) void promise.then((dispose) => dispose());
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
     };
@@ -243,6 +249,7 @@ export function useLauncherController(): LauncherContextValue {
 
   return {
     bootstrapped,
+    bootstrapFailed,
     data,
     config,
     manifest,

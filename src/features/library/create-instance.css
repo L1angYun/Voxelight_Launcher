@@ -1,0 +1,6 @@
+.vx-create-dialog .vx-dialog__body { display: grid; gap: 18px; }
+.vx-create-dialog .vx-dialog__body > .vx-selection { justify-self: start; }
+.vx-create-panel { min-block-size: 26rem; }
+.vx-create-project { margin: 0; color: var(--text-primary); font-weight: 600; }
+.vx-create-loader-slot { position: relative; min-block-size: 68px; }
+.vx-create-loader-status { position: absolute; inset-inline-start: 12px; inset-block-end: 12px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); pointer-events: none; }

@@ -14,6 +14,10 @@ import { InstanceWorlds } from "./InstanceWorlds";
 import { InstanceLogs } from "./InstanceLogs";
 import type { InstalledVersion } from "../../lib/launcher";
 import { InstanceIdentity } from "./InstanceIdentity";
+import { PageHeader, PageShell } from "../../components/ui/PageShell";
+import { Segmented } from "../../components/ui/Segmented";
+import { SectionPanel } from "../../components/ui/SectionPanel";
+import "./detail-sections.css";
 
 const tabIcons = { content: SlidersHorizontal, worlds: Globe2, logs: FileText };
 
@@ -32,8 +36,8 @@ export function VersionDirectoryDetailPage({
     .enabled({})
     .filter((item) => ["content", "worlds", "logs"].includes(item.id));
   return (
-    <div className="vx-detail-page">
-      <header className="vx-detail-header">
+    <PageShell className="vx-detail-page">
+      <PageHeader className="vx-detail-header">
         <IconButton
           label={t("common:actions.back")}
           icon={<ArrowLeft size={18} />}
@@ -62,57 +66,19 @@ export function VersionDirectoryDetailPage({
         <Button variant="primary" icon={<Play size={15} />} onClick={onLaunch}>
           {t("common:actions.launch")}
         </Button>
-      </header>
-      <div className="vx-detail-layout">
+      </PageHeader>
+      <div className="vx-detail-layout vx-workspace">
         <aside className="vx-detail-context">
-          <div
-            className="vx-detail-tabs vx-detail-tabs--versions"
-            role="tablist"
-            aria-orientation="horizontal"
-            aria-label={t("library:detailTabs")}
-          >
-            {tabs.map((item, index) => {
+          <Segmented className="vx-detail-selection" semantic="tabs" orientation="vertical"
+            label={t("library:detailTabs")} value={tab} onChange={setTab}
+            idPrefix="version-tab" panelId="version-detail-panel"
+            options={tabs.map((item) => {
               const id = item.id as typeof tab;
               const Icon = tabIcons[id];
-              return (
-                <button
-                  key={item.id}
-                  role="tab"
-                  id={`version-tab-${id}`}
-                  data-tab={id}
-                  aria-selected={tab === id}
-                  aria-controls="version-detail-panel"
-                  tabIndex={tab === id ? 0 : -1}
-                  className={tab === id ? "is-selected" : ""}
-                  onClick={() => setTab(id)}
-                  onKeyDown={(event) => {
-                    let nextIndex: number | undefined;
-                    if (event.key === "ArrowDown" || event.key === "ArrowRight")
-                      nextIndex = (index + 1) % tabs.length;
-                    else if (
-                      event.key === "ArrowUp" ||
-                      event.key === "ArrowLeft"
-                    )
-                      nextIndex = (index - 1 + tabs.length) % tabs.length;
-                    else if (event.key === "Home") nextIndex = 0;
-                    else if (event.key === "End") nextIndex = tabs.length - 1;
-                    if (nextIndex !== undefined) {
-                      event.preventDefault();
-                      setTab(tabs[nextIndex].id as typeof tab);
-                      document
-                        .getElementById(`version-tab-${tabs[nextIndex].id}`)
-                        ?.focus();
-                    }
-                  }}
-                >
-                  <Icon size={16} aria-hidden="true" />
-                  {t(`library:${item.labelKey}`)}
-                </button>
-              );
-            })}
-          </div>
+              return { value: id, icon: <Icon size={16} aria-hidden="true" />, label: t(`library:${item.labelKey}`) };
+            })} />
         </aside>
-        <div
+        <SectionPanel selectionKey={tab}
           id="version-detail-panel"
           role="tabpanel"
           aria-labelledby={`version-tab-${tab}`}
@@ -123,8 +89,8 @@ export function VersionDirectoryDetailPage({
           ) : null}
           {tab === "worlds" ? <InstanceWorlds versionId={version.id} /> : null}
           {tab === "logs" ? <InstanceLogs versionId={version.id} /> : null}
-        </div>
+        </SectionPanel>
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -202,6 +202,26 @@ afterEach(async () => {
 });
 
 describe("multiplayer", () => {
+  it("offers one create-server action when the managed inventory is empty", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => name === "list_managed_servers" ? [] : normal(name, args));
+    await render();
+    await click("Managed servers");
+    const create = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent?.trim() === "Create server");
+    expect(create).toHaveLength(1);
+    await act(async () => create[0].click());
+    expect(container.querySelector(".vx-managed-create")).not.toBeNull();
+  });
+  it("offers one add-server action in the empty inventory and opens its form", async () => {
+    servers = [];
+    await render();
+    const add = [...container.querySelectorAll<HTMLButtonElement>("button")].filter((candidate) => candidate.textContent?.trim() === "Add server");
+    expect(add).toHaveLength(1);
+    await act(async () => add[0].click());
+    expect(container.querySelector('input[aria-label="Server name"]')).not.toBeNull();
+    expect(container.querySelector('input[aria-label="Server address"]')).not.toBeNull();
+  });
+
   it("keeps unknown status distinct from a real online query and joins the selected address", async () => {
     await render();
     const row = container.querySelector('[data-server-address="play.example.invalid:25565"]')!;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Image, RotateCcw, Upload, UserRound } from "lucide-react";
@@ -11,7 +11,9 @@ import { CharacterCanvas, type CharacterAnimation } from "../../visual/character
 import type { SkinModel } from "../../components/skinTexture";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
-import { GlassSurface } from "../../visual/glass/GlassSystem";
+import { Segmented } from "../../components/ui/Segmented";
+import { SectionPanel } from "../../components/ui/SectionPanel";
+import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { accountErrorCodeText, accountErrorText } from "./utils";
 import { MOTION } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
@@ -32,6 +34,7 @@ export function AppearancePanel({
   onChanged: () => Promise<void>;
 }) {
   const { t } = useTranslation();
+  const sourceId = useId();
   const { reducedMotion } = useAppearance();
   const { tier } = useMotionTier();
   const online = account?.type === "microsoft" || account?.type === "authlib";
@@ -204,17 +207,14 @@ export function AppearancePanel({
     <section className="vx-appearance-panel" aria-labelledby="appearance-panel-title">
       <header className="vx-account-section-heading">
         <h2 id="appearance-panel-title">{t("accounts:appearance.title")}</h2>
-        <GlassSurface className="vx-appearance-mode" variant="control">
-          <div role="tablist" aria-label={t("accounts:preview.source")} onKeyDown={(event) => {
-            const next = event.key === "Home" ? (online ? "account" : "local") : event.key === "End" ? "local" : ["ArrowLeft", "ArrowRight"].includes(event.key) ? (online && previewMode === "local" ? "account" : "local") : undefined;
-            if (next) { event.preventDefault(); changeMode(next); document.getElementById("appearance-tab-" + next)?.focus(); }
-          }}>
-            <button type="button" role="tab" id="appearance-tab-account" aria-controls="appearance-workspace" tabIndex={previewMode === "account" ? 0 : -1} aria-selected={previewMode === "account"} disabled={!online} onClick={() => changeMode("account")}>{t("accounts:preview.account")}</button>
-            <button type="button" role="tab" id="appearance-tab-local" aria-controls="appearance-workspace" tabIndex={previewMode === "local" ? 0 : -1} aria-selected={previewMode === "local"} onClick={() => changeMode("local")}>{t("accounts:preview.local")}</button>
-          </div>
-        </GlassSurface>
+        <Segmented semantic="tabs" label={t("accounts:preview.source")} value={previewMode} onChange={changeMode}
+          idPrefix={`${sourceId}-source-tab`} panelId={`${sourceId}-workspace`}
+          options={[
+            { value: "account", label: t("accounts:preview.account"), disabled: !online },
+            { value: "local", label: t("accounts:preview.local") },
+          ]} />
       </header>
-      <div className="vx-appearance-workspace" id="appearance-workspace" role="tabpanel" aria-labelledby={"appearance-tab-" + previewMode} data-preview-mode={previewMode}>
+      <SectionPanel selectionKey={previewMode} className="vx-appearance-workspace" id={`${sourceId}-workspace`} role="tabpanel" aria-labelledby={`${sourceId}-source-tab-${previewMode}`} data-preview-mode={previewMode}>
       <div className="vx-appearance-stage">
       <div className="vx-appearance-preview" role="region" aria-label={t(previewMode === "local" ? "accounts:preview.localNotice" : "accounts:preview.accountNotice")}>
         {currentSkin ? (
@@ -337,14 +337,14 @@ export function AppearancePanel({
               ))}
             </div>
           </fieldset>
-          {defaultLoading ? <p role="status">{t("common:status.loading")}</p> : null}
+          <LoadingStatus active={defaultLoading}>{t("common:status.loading")}</LoadingStatus>
           {defaultError ? <Button variant="ghost" onClick={refreshDefault}>{t("accounts:actions.retryDefault")}</Button> : null}
           {defaultSkin.sourceVersion ? <p className="vx-appearance-muted">{t("accounts:default.sourceVersion", { version: defaultSkin.sourceVersion })}</p> : null}
           {defaultSkin.isFallback ? <p className="vx-appearance-muted">{t("accounts:default.fallback")}</p> : null}
         </div>
       ) : null}
       </div>
-      </div>
+      </SectionPanel>
     </section>
   );
 }

@@ -1,37 +1,17 @@
 /* Settings is a workbench: one category rail, readable settings rows, persistent save action. */
-.vx-settings-page { width: min(100%, var(--content-max)); margin: 0 auto; padding: 30px 28px 48px; }
-.vx-settings-heading { align-items: baseline; margin-bottom: 26px; }
+.vx-settings-heading { align-items: baseline; }
 .vx-settings-save { justify-content: flex-end; }
 .vx-settings-dirty { max-width: 24ch; color: var(--text-secondary); font-size: var(--text-xs); }
 .vx-settings-error { margin: 0 0 18px; color: var(--danger); }
 .vx-settings-notice { margin: 0 0 18px; color: var(--success); }
-.vx-settings-layout { display: grid; grid-template-rows: max-content minmax(0, 1fr); align-content: start; gap: 0; min-width: 0; min-height: calc(100dvh - 260px); }
+.vx-settings-layout { min-width: 0; min-height: calc(100dvh - 260px); }
 .vx-settings-nav {
   align-self: start;
-  display: flex; flex-wrap: wrap; gap: 0 4px; margin-bottom: 2px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--surface-solid) 38%, transparent);
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
-  padding: 6px 8px 0;
-}
-.vx-settings-nav button {
-  position: relative; display: inline-flex; align-items: center; gap: 9px;
-  min-height: 48px; padding: 12px 10px 16px; color: var(--text-secondary);
-  font-size: var(--text-sm); border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-}
-.vx-settings-nav button:hover { color: var(--text-primary); background: color-mix(in srgb, var(--surface-hover) 60%, transparent); }
-.vx-settings-nav button[aria-current="page"] { color: var(--text-primary); font-weight: 600; }
-.vx-settings-nav button[aria-current="page"]::after {
-  position: absolute; right: 4px; bottom: -1px; left: 4px;
-  height: 3px; border-radius: 3px 3px 0 0; background: var(--accent); content: "";
 }
 .vx-settings-content {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0;
   align-content: start;
   padding: 32px 32px 48px;
-  border: 1px solid var(--border-subtle); border-top: 0;
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
-  background: color-mix(in srgb, var(--surface-solid) 18%, transparent);
 }
 .vx-settings-section { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 0; min-width: 0; }
 .vx-settings-section > header { min-width: 0; }
@@ -89,9 +69,8 @@
 .vx-settings-about a { color: var(--text-primary); overflow-wrap: anywhere; }
 
 @media (max-width: 760px) {
-  .vx-settings-page { padding: 20px 16px 32px; }
-  .vx-settings-nav { gap: 4px 12px; padding: 4px 4px 0; border-radius: 0; }
-  .vx-settings-content { padding: 20px 16px 32px; border-radius: 0; }
+  .vx-settings-nav { flex-direction: row; flex-wrap: wrap; }
+  .vx-settings-content { padding: 20px 16px 32px; }
   .vx-settings-section > header, .vx-settings-group:has(> h3) { grid-template-columns: minmax(0,1fr); gap: 12px; }
   .vx-settings-group > h3, .vx-settings-group > h3 ~ * { grid-column: 1; grid-row: auto; }
   .vx-settings-fields { grid-template-columns: minmax(0,1fr); }

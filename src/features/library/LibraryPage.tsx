@@ -1,9 +1,8 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { LayoutGroup } from "motion/react";
+import { LayoutGroup, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowUpRight,
-  Check,
   Folder,
   Grid2X2,
   LibraryBig,
@@ -15,9 +14,12 @@ import {
 } from "lucide-react";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
-import { Button, IconButton } from "../../components/ui/Button";
+import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
 import { Select } from "../../components/ui/Select";
+import { PageShell, PageHeader } from "../../components/ui/PageShell";
+import { Segmented } from "../../components/ui/Segmented";
+import { SectionPanel } from "../../components/ui/SectionPanel";
 import { InstanceCard } from "./InstanceCard";
 import { InstanceDetailPage } from "./InstanceDetailPage";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
@@ -25,7 +27,7 @@ import { LibraryLaunchStatus } from "./LibraryLaunchStatus";
 import { VersionDirectoryDetailPage } from "./VersionDirectoryDetailPage";
 import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
 import { InstanceIdentity, InstanceIdentityProvider } from "./InstanceIdentity";
-import { motionDuration } from "../../design/motion";
+import { MOTION, motionDuration } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 import type { Instance, InstalledVersion } from "../../lib/launcher";
 import "./library.css";
@@ -36,6 +38,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
   const { t } = useTranslation();
   const { tier } = useMotionTier();
   const contentDuration = motionDuration(tier, "content");
+  const [searching, setSearching] = useState(false);
   const groupId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const listScroll = useRef(0);
@@ -205,39 +208,12 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
     <InstanceDetailPage key={actualDetailKey} instance={selectedInstance} onBack={() => setSelectedId(undefined)}
       onChanged={reload} onLaunch={() => void launchInstance(selectedInstance)} />
   ) : (
-    <div className="vx-library-page" data-drill-return={revealListing && contentDuration > 0 ? "" : undefined}>
-      <header className="vx-page-heading" onAnimationEnd={(event) => {
-        if (event.target === event.currentTarget && event.animationName === "vx-library-content-reveal") setRevealListing(false);
-      }}>
-        <div className="vx-page-heading__copy">
-          <h1 tabIndex={-1}>{t("library:title")}</h1>
-          <p>
-            {scope === "versions"
-              ? t("library:subtitleVersions", { count: scopeCount })
-              : t("library:subtitle", { count: scopeCount })}
-          </p>
-        </div>
-        <div
-          className="vx-segmented vx-library-scope"
-          role="group"
-          aria-label={t("library:scopeLabel")}
-        >
-          <button
-            type="button"
-            aria-pressed={scope === "instances"}
-            onClick={() => setScope("instances")}
-          >
-            {t("library:scope.instances")}
-          </button>
-          <button
-            type="button"
-            aria-pressed={scope === "versions"}
-            onClick={() => setScope("versions")}
-          >
-            {t("library:scope.versions")}
-          </button>
-        </div>
-      </header>
+    <PageShell className="vx-library-page" data-drill-return={revealListing && contentDuration > 0 ? "" : undefined}
+      onAnimationEnd={(event) => { if (event.animationName === "vx-library-content-reveal") setRevealListing(false); }}>
+      <PageHeader className="vx-page-heading" title={t("library:title")}
+        description={scope === "versions" ? t("library:subtitleVersions", { count: scopeCount }) : t("library:subtitle", { count: scopeCount })}
+        actions={<Segmented semantic="toggle" className="vx-library-scope" label={t("library:scopeLabel")} value={scope}
+          onChange={setScope} options={[{value:"instances",label:t("library:scope.instances")},{value:"versions",label:t("library:scope.versions")}]} />} />
       <div className="vx-library-commandbar">
         <label className="vx-search">
           <Search size={16} aria-hidden="true" />
@@ -248,6 +224,8 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
                 : t("library:search")
             }
             value={query}
+            onFocus={() => setSearching(true)}
+            onBlur={() => setSearching(false)}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={
               scope === "versions"
@@ -268,24 +246,9 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
               { value: "version", label: t("library:sortVersion") },
             ]}
           />
-          <div
-            className="vx-library-view"
-            role="group"
-            aria-label={t("library:viewLabel")}
-          >
-            <IconButton
-              label={t("library:gridView")}
-              icon={<Grid2X2 size={16} />}
-              aria-pressed={view === "grid"}
-              onClick={() => setView("grid")}
-            />
-            <IconButton
-              label={t("library:listView")}
-              icon={<List size={16} />}
-              aria-pressed={view === "list"}
-              onClick={() => setView("list")}
-            />
-          </div>
+          <Segmented className="vx-library-view" semantic="toggle" label={t("library:viewLabel")} value={view} onChange={setView}
+            options={[{value:"grid",label:<span className="sr-only">{t("library:gridView")}</span>,icon:<Grid2X2 size={16} />},
+              {value:"list",label:<span className="sr-only">{t("library:listView")}</span>,icon:<List size={16} />}]} />
         </div>
         <div className="vx-library-commandbar__actions">
           <Button
@@ -304,6 +267,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
           </Button>
         </div>
       </div>
+      <SectionPanel selectionKey={`${scope}:${view}`}>
       {scope === "versions" ? (
         versions.length ? (
           <div className={`vx-instance-sheet vx-instance-sheet--${view}`}>
@@ -311,6 +275,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
               <VersionDirectoryCard
                 key={version.id}
                 version={version}
+                layoutOrder={tier === "full" && versions.length <= 40 && !searching ? `${sort}:${view}` : undefined}
                 selected={!activeInstance && version.id === selectedVersionId}
                 onOpen={() => openDetail("version-directory", version.id)}
                 onLaunch={() => void launchVersion(version.id)}
@@ -348,6 +313,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
             <InstanceCard
               key={instance.id}
               instance={instance}
+              layoutOrder={tier === "full" && instances.length <= 40 && !searching ? `${sort}:${view}` : undefined}
               selected={instance.id === activeInstance?.id}
               running={running.some((game) => game.instanceId === instance.id)}
               onOpen={() => openDetail("instance", instance.id)}
@@ -371,6 +337,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
           }
         />
       )}
+      </SectionPanel>
       <CreateInstanceDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
@@ -382,7 +349,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
         onInstalled={installed}
         initialMode="import"
       />
-    </div>
+    </PageShell>
   );
   return <LayoutGroup id={groupId}>
     <InstanceIdentityProvider tier={tier}>
@@ -453,11 +420,13 @@ function VersionDirectoryCard({
   selected,
   onOpen,
   onLaunch,
+  layoutOrder,
 }: {
   version: InstalledVersion;
   selected: boolean;
   onOpen: () => void;
   onLaunch: () => void;
+  layoutOrder?: string;
 }) {
   const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
@@ -474,8 +443,9 @@ function VersionDirectoryCard({
     ? t("library:versionRuntimeSummary", { channel, java })
     : channel;
   return (
-    <article
+    <motion.article
       className={`vx-instance-card${selected ? " is-selected" : ""}`}
+      {...(layoutOrder ? { layout: "position" as const, layoutDependency: layoutOrder, transition: { layout: { duration: motionDuration("full", "enter"), ease: MOTION.ease } } } : {})}
       data-visual-owner="lattice"
       data-version-directory={version.id}
       aria-current={selected ? "true" : undefined}
@@ -493,7 +463,6 @@ function VersionDirectoryCard({
         selected={selected}
         signature={version.id}
       />
-      {selected ? <Check className="vx-lattice-selection" data-selected-mark size={16} aria-hidden="true" /> : null}
       <button
         type="button"
         className="vx-instance-card__select"
@@ -538,6 +507,6 @@ function VersionDirectoryCard({
           {t("common:actions.launch")}
         </Button>
       </div>
-    </article>
+    </motion.article>
   );
 }

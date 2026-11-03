@@ -4,8 +4,6 @@ import { Globe, Play, Plus, Radio, RefreshCw, Search, Server, Trash2, Wifi, Wifi
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { EmptyState } from "../../components/ui/Feedback";
-import { GlassSurface } from "../../visual/glass/GlassSystem";
-import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
 import type { useMultiplayer } from "./useMultiplayer";
 
 export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer> }) {
@@ -31,7 +29,7 @@ export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer>
 
   return (
     <div className="vx-server-list-page">
-      <GlassSurface className="vx-multiplayer-toolbar" variant="control">
+      <div className="vx-multiplayer-toolbar vx-panel">
         <label>{t("multiplayer:environment")}
           <Select
             aria-label={t("multiplayer:environment")}
@@ -47,7 +45,7 @@ export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer>
           <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={Boolean(busy)} onClick={() => void refreshServers()}>{t("multiplayer:refresh")}</Button>
           <Button variant="primary" icon={<Plus size={15} />} aria-expanded={formOpen} onClick={() => setFormOpen((value) => !value)}>{t("multiplayer:addServer")}</Button>
         </div>
-      </GlassSurface>
+      </div>
       {!selectedVersionId ? <p className="vx-multiplayer-inline-notice">{t("multiplayer:environmentRequired")}</p> : null}
       {formOpen ? <form className="vx-server-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <label>{t("multiplayer:fields.serverName")}<input aria-label={t("multiplayer:fields.serverName")} required value={name} onChange={(event) => setName(event.target.value)} /></label>
@@ -81,12 +79,12 @@ export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer>
               <span aria-hidden="true">{t("multiplayer:players", { online: currentStatus.playersOnline, max: currentStatus.playersMax ?? "—" })}</span>
             </div> : null}
           </section>
-          <GlassSurface className="vx-server-row__actions" variant="control">
+          <div className="vx-server-row__actions">
             <Button variant="ghost" icon={<Search size={15} />} loading={busy === "ping-" + selected.address} disabled={Boolean(busy)} onClick={() => void pingServer(selected.address)}>{t("multiplayer:checkStatus")}</Button>
             <Button variant="primary" icon={<Play size={14} />} disabled={!selectedVersionId || Boolean(busy)} onClick={() => void join(selected.address)}>{t("multiplayer:join")}</Button>
-          </GlassSurface>
+          </div>
           <div className="vx-server-row__management"><Button variant="ghost" icon={<Trash2 size={14} />} disabled={Boolean(busy)} onClick={() => { if (window.confirm(t("multiplayer:confirmRemove", { name: selected.name }))) void removeServer(selected.index); }}>{t("multiplayer:removeServer")}</Button></div>
-        </article> : <EmptyState icon={<Globe size={28} strokeWidth={1.2} />} title={t("multiplayer:emptyServers.title")} description={t("multiplayer:emptyServers.description")} action={!formOpen ? <Button variant="primary" onClick={() => setFormOpen(true)}>{t("multiplayer:addServer")}</Button> : undefined} />}
+        </article> : <EmptyState icon={<Globe size={28} strokeWidth={1.2} />} title={t("multiplayer:emptyServers.title")} description={t("multiplayer:emptyServers.description")} />}
       </div>
     </div>
   );

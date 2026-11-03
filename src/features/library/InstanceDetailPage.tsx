@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
@@ -21,6 +21,12 @@ import { InstanceLogs } from "./InstanceLogs";
 import { InstanceSettings } from "./InstanceSettings";
 import type { InstanceTab } from "./types";
 import { InstanceIdentity } from "./InstanceIdentity";
+import { PageHeader, PageShell } from "../../components/ui/PageShell";
+import { Segmented } from "../../components/ui/Segmented";
+import { SectionPanel } from "../../components/ui/SectionPanel";
+import "./detail-sections.css";
+import { motionDuration } from "../../design/motion";
+import { useMotionTier } from "../../design/useMotionTier";
 import { loaderText } from "./utils";
 
 const tabIcons = {
@@ -43,11 +49,11 @@ export function InstanceDetailPage({
   onLaunch: () => void;
 }) {
   const { t } = useTranslation();
+  const { tier } = useMotionTier();
   const { run } = useLauncher();
   const [tab, setTab] = useState<InstanceTab>("overview");
   useEffect(() => setTab("overview"), [instance.id]);
   const tabs = instanceTabRegistry.enabled({});
-  const select = (next: InstanceTab) => setTab(next);
   const remove = () => {
     if (!window.confirm(t("library:removeConfirm", { name: instance.name })))
       return;
@@ -58,8 +64,8 @@ export function InstanceDetailPage({
     });
   };
   return (
-    <div className="vx-detail-page">
-      <header className="vx-detail-header">
+    <PageShell className="vx-detail-page">
+      <PageHeader className="vx-detail-header">
         <IconButton
           label={t("common:actions.back")}
           icon={<ArrowLeft size={18} />}
@@ -84,7 +90,7 @@ export function InstanceDetailPage({
         <Button variant="primary" icon={<Play size={15} />} onClick={onLaunch}>
           {t("common:actions.launch")}
         </Button>
-        <details className="vx-detail-manage">
+        <details className="vx-detail-manage" style={{ "--menu-enter": `${motionDuration(tier, "menuEnter")}s`, "--menu-exit": `${motionDuration(tier, "menuExit")}s` } as CSSProperties}>
           <summary
             aria-label={t("library:manageInstance", { name: instance.name })}
             title={t("common:actions.manage")}
@@ -97,57 +103,19 @@ export function InstanceDetailPage({
             </button>
           </div>
         </details>
-      </header>
-      <div className="vx-detail-layout">
+      </PageHeader>
+      <div className="vx-detail-layout vx-workspace">
         <aside className="vx-detail-context">
-          <div
-            className="vx-detail-tabs"
-            role="tablist"
-            aria-orientation="horizontal"
-            aria-label={t("library:detailTabs")}
-          >
-            {tabs.map((item, index) => {
-              const id = item.id as InstanceTab;
+          <Segmented className="vx-detail-selection" semantic="tabs" orientation="vertical"
+            label={t("library:detailTabs")} value={tab} onChange={setTab}
+            idPrefix="instance-tab" panelId="instance-detail-panel"
+            options={tabs.map((item) => {
+              const id = item.id as typeof tab;
               const Icon = tabIcons[id];
-              return (
-                <button
-                  key={item.id}
-                  role="tab"
-                  id={`instance-tab-${id}`}
-                  data-tab={id}
-                  aria-selected={tab === id}
-                  aria-controls="instance-detail-panel"
-                  tabIndex={tab === id ? 0 : -1}
-                  className={tab === id ? "is-selected" : ""}
-                  onClick={() => select(id)}
-                  onKeyDown={(event) => {
-                    let nextIndex: number | undefined;
-                    if (event.key === "ArrowDown" || event.key === "ArrowRight")
-                      nextIndex = (index + 1) % tabs.length;
-                    else if (
-                      event.key === "ArrowUp" ||
-                      event.key === "ArrowLeft"
-                    )
-                      nextIndex = (index - 1 + tabs.length) % tabs.length;
-                    else if (event.key === "Home") nextIndex = 0;
-                    else if (event.key === "End") nextIndex = tabs.length - 1;
-                    if (nextIndex !== undefined) {
-                      event.preventDefault();
-                      select(tabs[nextIndex].id as InstanceTab);
-                      document
-                        .getElementById(`instance-tab-${tabs[nextIndex].id}`)
-                        ?.focus();
-                    }
-                  }}
-                >
-                  <Icon size={16} aria-hidden="true" />
-                  {t(`library:${item.labelKey}`)}
-                </button>
-              );
-            })}
-          </div>
+              return { value: id, icon: <Icon size={16} aria-hidden="true" />, label: t(`library:${item.labelKey}`) };
+            })} />
         </aside>
-        <div
+        <SectionPanel selectionKey={tab}
           id="instance-detail-panel"
           role="tabpanel"
           aria-labelledby={`instance-tab-${tab}`}
@@ -177,8 +145,8 @@ export function InstanceDetailPage({
           {tab === "settings" ? (
             <InstanceSettings instance={instance} onChanged={onChanged} />
           ) : null}
-        </div>
+        </SectionPanel>
       </div>
-    </div>
+    </PageShell>
   );
 }
