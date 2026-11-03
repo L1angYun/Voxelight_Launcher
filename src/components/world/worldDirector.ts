@@ -164,7 +164,9 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
       const target = sceneValues(inputs);
       if (frame.introActive) target.island = 0;
       if (inputs.phase === "running") { target.exposure = .3; target.bloom = .1; target.runDim = .3; }
-      const amount = 1 - Math.exp(-dt * 2.4);
+      // Material and exposure follow wall time; only particle physics and the
+      // camera integrator retain the stall cap below.
+      const amount = 1 - Math.exp(-statusDt * 2.4);
       for (const key of scalarKeys) frame[key] = approach(frame[key], target[key], amount);
       for (let index = 0; index < 3; index++) {
         eyeSprings[index].goal = target.eye[index]; atSprings[index].goal = target.at[index];

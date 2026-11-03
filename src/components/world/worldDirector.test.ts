@@ -31,6 +31,19 @@ function timeline(inputs: WorldInputs = initial) {
 }
 
 describe("crystal world director", () => {
+  it("converges material and exposure in real time at 60 Hz and 5 Hz while capping simulation", () => {
+    const fast = timeline(); const slow = timeline();
+    const content: WorldInputs = { ...initial, material: "solid", page: "content" };
+    fast.director.setInputs(content); slow.director.setInputs(content);
+    const at60 = fast.advance(3, 60); const at5 = slow.advance(3, 5);
+    expect(at60.lat).toBeLessThan(.01);
+    expect(at5.lat).toBeLessThan(.01);
+    expect(at5.lat).toBeCloseTo(at60.lat, 6);
+    expect(at5.exposure).toBeCloseTo(at60.exposure, 6);
+    expect(at5.paperInk).toBeCloseTo(at60.paperInk, 6);
+    expect(at5.simTime).toBeCloseTo(.75, 6);
+    expect(at60.simTime).toBeCloseTo(3, 6);
+  });
   it("starts a preparation frontier outside the home island even at zero progress", () => {
     const time = timeline();
     time.director.setInputs({ ...initial, phase: "preparing", fraction: 0 });
