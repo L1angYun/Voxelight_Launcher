@@ -47,7 +47,7 @@ export function WorldScene(props: WorldSceneProps) {
     const reduce = query("(prefers-reduced-motion: reduce)"), contrast = query("(prefers-contrast: more)"), forced = query("(forced-colors: active)"), fine = query("(any-pointer: fine)");
     let disposed = false, lost = false, visible = true, animation: number | null = null;
     let drawn = 0, lastDraw: number | null = null, downgrades = 0, lastKey = "", lastPalette = "";
-    let needsSubmission = false;
+    let needsSubmission = false, gpuComplete = false;
     let previousTick: number | null = null, lastGpuAt: number | null = null, lastCpuMs = 0;
     let budgetSource: "gpu" | "raf" | null = null;
     let width = 1, height = 1, tier: Tier;
@@ -97,6 +97,7 @@ export function WorldScene(props: WorldSceneProps) {
     function publish(frame: WorldFrame) {
       html.dataset.worldIntro = introPending || frame.introActive ? "on" : "off";
       host!.dataset.worldFrames = String(drawn);
+      host!.dataset.worldSettled = String(frame.settled && gpuComplete && !needsSubmission && !lost);
       host!.dataset.worldMaterial = renderer?.material ?? "solid";
       host!.dataset.worldPhase = current.current.phase;
       host!.dataset.worldFront = String(Math.round(frame.front));
@@ -111,14 +112,14 @@ export function WorldScene(props: WorldSceneProps) {
       publishWorldAvailability(lost || !renderer ? "css" : renderer.capabilities.floatTargets ? "available" : "solid-only");
       syncPointerBindings();
     }
-    function fallback() { lost = true; introConsumed = true; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
+    function fallback() { lost = true; gpuComplete = false; introConsumed = true; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.worldSettled = "false"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
     function sample(source: "gpu" | "raf", costMs: number, elapsedMs: number) {
       if (tier.kind !== "animated" || elapsedMs <= 0) return;
       if (source !== budgetSource) { budget = createFrameBudget(16.7); budgetSource = source; }
       host!.dataset.worldBudgetSource = source;
       if (budget.sample(costMs, elapsedMs) !== "downgrade") return;
       const next = nextTier(tier);
-      if (next) { downgrades++; tier = next; renderer?.setTier(tier); fit(); }
+      if (next) { downgrades++; tier = next; renderer?.setTier(tier); fit(); needsSubmission = true; gpuComplete = false; }
     }
     function paint(now: number, dt: number, scheduled = false) {
       if (!renderer || !permitted()) return;
@@ -145,6 +146,7 @@ export function WorldScene(props: WorldSceneProps) {
         lastDraw = now;
         if (lost) return;
         needsSubmission = !result.submitted;
+        gpuComplete = false;
         if (result.submitted) drawn++;
         if (floatSupport !== renderer.capabilities.floatTargets) { update(true); return; }
         if (drawFrame.introActive && drawFrame.morph.toWord && drawFrame.introTime >= .8 && drawFrame.introTime < 1.4 && result?.pointsSubmitted) {
@@ -161,12 +163,20 @@ export function WorldScene(props: WorldSceneProps) {
             lastGpuAt = now;
           }
         }
+        // Static policy may observe completion once, but never schedules a
+        // completion loop. Animated final frames are checked on later ticks.
+        if (tier.kind === "static" && frame.settled && result.submitted) gpuComplete = renderer.pollFrameComplete();
         publish(frame);
       } catch { fallback(); }
     }
     function tick(now: number) {
       animation = null;
-      if (!permitted() || tier.kind !== "animated" || lastFrame.settled && !needsSubmission) { publish(lastFrame); return; }
+      if (!permitted() || tier.kind !== "animated") { publish(lastFrame); return; }
+      if (lastFrame.settled && !needsSubmission) {
+        if (!gpuComplete) gpuComplete = renderer!.pollFrameComplete();
+        if (lost) return;
+        publish(lastFrame); start(); return;
+      }
       const callbackGap = previousTick === null ? 0 : Math.max(0, now - previousTick);
       previousTick = now;
       paint(now, lastDraw === null ? 0 : Math.max(0, Math.min(.05, (now - lastDraw) / 1000)), true);
@@ -177,7 +187,7 @@ export function WorldScene(props: WorldSceneProps) {
       start();
     }
     function start() {
-      if (renderer && permitted() && tier.kind === "animated" && (!lastFrame.settled || needsSubmission) && animation === null)
+      if (renderer && permitted() && tier.kind === "animated" && (!lastFrame.settled || needsSubmission || !gpuComplete) && animation === null)
         animation = requestAnimationFrame(tick);
     }
     function measureLayout() {
@@ -209,7 +219,7 @@ export function WorldScene(props: WorldSceneProps) {
       if (!force && key === lastKey && paletteKey === lastPalette) return;
       const launchStarted = previousPhase === "idle" && input.phase === "preparing";
       previousPhase = input.phase;
-      lastKey = key; stop();
+      lastKey = key; stop(); needsSubmission = true; gpuComplete = false;
       if (!permitted()) introWordHoldUntil = null;
       tier = selectTier({ webgl2: Boolean(renderer) && !lost, floatTargets: Boolean(renderer?.capabilities.floatTargets), effects: input.effects ?? "full", reducedMotion, highContrast });
       for (let index = 0; index < downgrades; index++) tier = nextTier(tier) ?? tier;
@@ -298,7 +308,7 @@ export function WorldScene(props: WorldSceneProps) {
   }, []);
   useEffect(() => runtime.current?.update(), [props.phase, props.fraction, props.page, props.scene, props.material, props.paused, props.effects, props.reducedMotion]);
   return <div ref={hostRef} className={["world-scene", props.className].filter(Boolean).join(" ")} aria-hidden="true"
-    data-world-tier="css" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-motion="reduced" data-paused={Boolean(props.paused)}>
+    data-world-tier="css" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-world-settled="false" data-motion="reduced" data-paused={Boolean(props.paused)}>
     <canvas ref={canvasRef} className="world-scene__canvas" />
   </div>;
 }

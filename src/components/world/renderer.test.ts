@@ -111,6 +111,61 @@ function mount(options: Parameters<typeof glBoundary>[0] = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("WebGL renderer boundary", () => {
+  it("reports the last submitted material across allocation changes and busy skips", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    expect(r.draw(frame(), .016).submitted).toBe(true);
+    expect(r.material).toBe("lattice");
+    r.setTier({ ...fullTier, grid: 110, particleSide: 160 });
+    expect(r.material).toBe("lattice");
+    const passes = t.passes.length;
+    t.wait("TIMEOUT_EXPIRED");
+    expect(r.draw(frame(), .016).submitted).toBe(false);
+    expect(r.material).toBe("lattice");
+    expect(t.passes).toHaveLength(passes);
+    t.wait("CONDITION_SATISFIED");
+    expect(r.draw(frame(), .016).submitted).toBe(true);
+    expect(r.material).toBe("lattice");
+    expect(t.pointCounts).toEqual([65536, 25600]);
+    t.wait("TIMEOUT_EXPIRED");
+    expect(r.draw({ ...frame(), lat: 0 }, .016).submitted).toBe(false);
+    expect(r.material).toBe("lattice");
+    t.wait("ALREADY_SIGNALED");
+    expect(r.draw({ ...frame(), lat: 0 }, .016).submitted).toBe(true);
+    expect(r.material).toBe("solid");
+    expect(t.pointCounts).toEqual([65536, 25600]);
+    expect(t.instances).toEqual([25600, 12100, 12100]);
+    r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("polls final frame completion without submitting draws or changing textures", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    expect(r.pollFrameComplete).toBeTypeOf("function");
+    r.draw(frame(), .016);
+    const passes = t.passes.length;
+    const textures = vi.spyOn(t.gl, "texImage2D");
+    t.wait("TIMEOUT_EXPIRED");
+    expect(r.pollFrameComplete()).toBe(false);
+    expect(r.pollFrameComplete()).toBe(false);
+    expect(t.passes).toHaveLength(passes); expect(textures).not.toHaveBeenCalled();
+    expect(t.fences).toHaveLength(1); expect(t.flushCount()).toBe(1);
+    t.wait("CONDITION_SATISFIED");
+    expect(r.pollFrameComplete()).toBe(true);
+    expect([...t.live].filter(handle => handle.kind === "sync")).toHaveLength(0);
+    const waits = t.waits.length;
+    expect(r.pollFrameComplete()).toBe(true);
+    expect(t.waits).toHaveLength(waits);
+    expect(t.waits.every(wait => wait.flags === 0 && wait.timeout === 0)).toBe(true);
+    r.dispose(); expect(r.pollFrameComplete()).toBe(false); expect(t.live.size).toBe(0);
+  });
+
+  it("fails closed when a completion-only fence poll fails", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    expect(r.pollFrameComplete).toBeTypeOf("function");
+    r.draw(frame(), .016); t.wait("WAIT_FAILED");
+    expect(r.pollFrameComplete()).toBe(false);
+    expect(t.callbacks.onLost).toHaveBeenCalledOnce();
+    expect(r.material).toBe("solid"); expect(t.live.size).toBe(0);
+  });
   it("skips all pass and texture work while one whole-frame fence is pending, then submits the latest state", () => {
     const t = mount({ float: true }); const r = t.renderer!;
     const first = r.draw(frame(), .01);
@@ -160,7 +215,9 @@ describe("WebGL renderer boundary", () => {
     expect(old).toBeDefined();
     t.canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
     expect(t.live.has(old!)).toBe(false);
+    expect(r.material).toBe("solid");
     t.canvas.dispatchEvent(new Event("webglcontextrestored"));
+    expect(r.material).toBe("solid");
     expect(r.draw(frame(), .016).submitted).toBe(true);
     expect(t.waits).toHaveLength(0);
     expect(t.fences.at(-1)!.handle).not.toBe(old);

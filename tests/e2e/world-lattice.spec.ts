@@ -707,8 +707,8 @@ test("launch state: success fills the world, freezes its rendered frames, and St
   await expect.poll(async () => {
     const before = Number(await scene.getAttribute("data-world-frames"));
     await page.waitForTimeout(700);
-    return Number(await scene.getAttribute("data-world-frames")) - before;
-  }, { timeout: 15_000 }).toBe(0);
+    return { delta: Number(await scene.getAttribute("data-world-frames")) - before, settled: await scene.getAttribute("data-world-settled") };
+  }, { timeout: 15_000 }).toEqual({ delta: 0, settled: "true" });
   await withWorldView(page, async capture => {
     const before = await capture(testInfo.outputPath("launch-running-frozen.png"));
     const frames = Number(await scene.getAttribute("data-world-frames"));
