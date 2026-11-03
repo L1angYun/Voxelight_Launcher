@@ -188,7 +188,9 @@ async function installRecorder(page: Page) {
       const value = sample(timestamp, callbackStartedAt);
       if (value) current.frameMap.set(timestamp, value);
       const anchor = current.actionCompletedAt;
-      if (anchor !== null && performance.now() - anchor >= 1100) {
+      // Slow renderers can spend the whole interval between two callbacks.
+      // Keep collecting actual frames within the existing outer timeout.
+      if (anchor !== null && performance.now() - anchor >= 1100 && current.frameMap.size > 2) {
         current.finishedAt = performance.now(); current.done = true; scheduled = null;
       } else scheduled = nativeRaf.call(window, tick);
     };
