@@ -168,6 +168,26 @@ afterEach(() => {
 });
 
 describe("CharacterCanvas", () => {
+  it("reports an immediate constructor failure once and waits for explicit retry", async () => {
+    const construct = vi.spyOn(viewerBackend, "createPlayer").mockImplementation(() => { throw new Error("WebGL unavailable"); });
+    const onError = vi.fn();
+    const props = { skinUrl: "skin.png", deferMs: 0, label: "Preview", onError };
+    await render(props);
+    expect(construct).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledExactlyOnceWith("renderer.unavailable");
+    expect(container.querySelector("canvas")).toBeNull();
+
+    await render({ ...props, skinUrl: "replacement.png" });
+    expect(construct).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledOnce();
+
+    construct.mockRestore();
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-character-retry]")!.click());
+    expect(viewers).toHaveLength(1);
+    expect(loadSkin).toHaveBeenCalledExactlyOnceWith("replacement.png", "auto");
+    expect(container.querySelector('[data-character-state="ready"]')).not.toBeNull();
+  });
+
   it("defers the WebGL viewer and resource loads until its requested creation delay", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await render({ skinUrl: "skin.png", capeUrl: "cape.png", deferMs: 280, label: "Preview" });
