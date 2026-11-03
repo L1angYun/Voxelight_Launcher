@@ -46,7 +46,7 @@ npm ci
 npm run desktop:dev
 ```
 
-Build the Windows desktop application and NSIS installer with `npm run desktop:build`. Verified 0.5.0 artifacts are collected under `releases/0.5.0/`; earlier releases remain unchanged. The NSIS installer uses the standard current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
+Build the Windows desktop application and NSIS installer with `powershell -File scripts/build.ps1` (wraps the Tauri build and configures the Rust PATH). The 0.6.0 installer and matching GPL source archive are collected under `releases/0.6.0/`; earlier releases remain unchanged. See the [0.6.0 implementation and verification report](docs/reports/frontend-completion-0.6.0.md) for measured results and manual checks still outstanding. The NSIS installer uses the standard current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
 
 `scripts/desktop.ps1` is an optional helper when local PowerShell policy permits unsigned local scripts. Do not change that policy merely to build the app: the npm commands above invoke the same Tauri toolchain.
 
