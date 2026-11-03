@@ -23,7 +23,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   const [files, setFiles] = useState<LocalResource[]>([]);
   const [updates, setUpdates] = useState<ResourceUpdate[] | null>(null);
   const [history, setHistory] = useState<ResourceHistory[] | null>(null);
-  const [busy, setBusy] = useState("");
+  const [busy, setBusy] = useState(versionId && desktop ? "files" : "");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const generation = useRef(0);

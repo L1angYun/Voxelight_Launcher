@@ -16,6 +16,8 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
   const id = useId();
   const manager = useResourceManager(versionId, instanceId);
   const { kind, setKind, view, setView, files, updates, history, busy, error, notice } = manager;
+  const waitingForView = busy === view || (view === "files" && busy === "import");
+  const showEmpty = !waitingForView && !error;
   return (
     <div className="vx-detail-stack">
       <div className="vx-toolbar">
@@ -50,23 +52,23 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
             <div><strong>{file.name}</strong><small>{file.fileName} · {sizeText(file.size, i18n.language)}</small></div>
             <Button variant={file.enabled ? "secondary" : "ghost"} aria-pressed={file.enabled} onClick={() => void manager.toggle(file)}>{file.enabled ? t("library:enabled") : t("library:disabled")}</Button>
           </div>
-        ))}</div> : <EmptyState title={t("library:noResources")} description={t("library:noResourcesDescription")} />
+        ))}</div> : showEmpty ? <EmptyState title={t("library:noResources")} description={t("library:noResourcesDescription")} /> : null
       ) : null}
       {view === "updates" ? (
-        updates === null ? <EmptyState title={t("library:updatesNotChecked")} /> : updates.length ? <div className="vx-resource-list">{updates.map((update) => (
+        updates === null ? (showEmpty ? <EmptyState title={t("library:updatesNotChecked")} /> : null) : updates.length ? <div className="vx-resource-list">{updates.map((update) => (
           <div className="vx-resource-row" key={update.fileName}>
             <div><strong>{update.name}</strong><small>{update.currentVersion} → {update.newVersion}</small></div>
             <Button variant="secondary" onClick={() => void manager.applyUpdate(update)}>{t("library:update")}</Button>
           </div>
-        ))}</div> : <EmptyState title={t("library:noUpdates")} />
+        ))}</div> : showEmpty ? <EmptyState title={t("library:noUpdates")} /> : null
       ) : null}
       {view === "history" ? (
-        history === null ? <EmptyState title={t("library:historyNotLoaded")} /> : history.length ? <div className="vx-resource-list">{history.map((entry) => (
+        history === null ? (showEmpty ? <EmptyState title={t("library:historyNotLoaded")} /> : null) : history.length ? <div className="vx-resource-list">{history.map((entry) => (
           <div className="vx-resource-row" key={entry.updateId}>
             <div><strong>{entry.name}</strong><small>{formatDate(entry.createdAt, i18n.language)} · {t(`library:historyStatus.${entry.status}`)}</small></div>
             {entry.status === "committed" ? <Button variant="ghost" onClick={() => void manager.rollback(entry, t("library:rollbackConfirm", { name: entry.name }))}>{t("library:rollback")}</Button> : null}
           </div>
-        ))}</div> : <EmptyState title={t("library:noHistory")} />
+        ))}</div> : showEmpty ? <EmptyState title={t("library:noHistory")} /> : null
       ) : null}
       </SectionPanel>
     </div>
