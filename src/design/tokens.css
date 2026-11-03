@@ -47,6 +47,8 @@
   --shadow-glass: 0 20px 64px rgba(0, 0, 0, 0.28);
   --duration-fast: 140ms;
   --duration-normal: 180ms;
+  --duration-exit: 80ms;
+  --duration-slow: 240ms;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
