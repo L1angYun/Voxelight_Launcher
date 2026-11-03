@@ -6,6 +6,7 @@ import { useAppearance } from "../../app/AppearanceProvider";
 import { GlassSurface } from "../../visual/glass/GlassSystem";
 import { cn } from "../../lib/utils";
 import { useJellyControl } from "./useJellyControl";
+import { MOTION } from "../../design/motion";
 import "./AnchoredListbox.css";
 
 export interface ListboxOption {
@@ -16,6 +17,7 @@ export interface AnchoredListboxProps extends AriaAttributes {
   value: string; onChange: (value: string) => void; options: ListboxOption[];
   disabled?: boolean; required?: boolean; id?: string; className?: string;
   triggerClassName?: string; popupClassName?: string; embedded?: boolean; minimumMenuWidth?: number;
+  material?: "flat" | "glass";
 }
 interface Placement { left: number; top: number; width: number; maxHeight: number; anchorX: number; side: "top" | "bottom" }
 
@@ -36,20 +38,25 @@ function Popup({ popupRef, placement, animate, className, children }: {
     data-placement={placement?.side} data-present={present} data-animate={present ? animate : animateExit}
     inert={!present || undefined} aria-hidden={!present || undefined}
     initial={animate ? { transform: tucked } : false} animate={{ transform: "translateY(0px) scale(1)" }}
-    exit="closed" variants={{ closed: (enabled: boolean) => ({ transform: tucked, transition: { duration: enabled ? 0.1 : 0 } }) }}
-    transition={{ duration: animate ? 0.15 : 0, ease: [0.23, 1, 0.32, 1] }}
+    exit="closed" variants={{ closed: (enabled: boolean) => ({ transform: tucked, transition: { duration: enabled ? MOTION.duration.menuExit : 0 } }) }}
+    transition={{ duration: animate ? MOTION.duration.menuEnter : 0, ease: MOTION.ease }}
     style={{ position: "fixed", left: placement?.left ?? 16, top: placement?.top ?? 16, width: placement?.width ?? 280,
       maxHeight: placement?.maxHeight ?? 360, visibility: placement ? "visible" : "hidden", pointerEvents: present ? "auto" : "none",
       transformOrigin: `${placement?.anchorX ?? 0}px ${placement?.side === "top" ? "bottom" : "top"}` }}
     onPointerDown={(event) => event.stopPropagation()}>{children}</motion.div>;
 }
 
+function SelectSurface({ glass, variant, className, children }: { glass: boolean; variant: "control" | "dialog"; className: string; children: ReactNode }) {
+  return glass ? <GlassSurface variant={variant} className={className}>{children}</GlassSurface>
+    : <div className={cn(className, "vx-select-flat-surface")}>{children}</div>;
+}
+
 export function AnchoredListbox({ value, onChange, options, disabled = false, required, id, className,
-  triggerClassName, popupClassName, embedded = false, minimumMenuWidth = 280,
+  triggerClassName, popupClassName, embedded = false, minimumMenuWidth = 280, material = "flat",
   "aria-label": label, "aria-describedby": describedBy, ...aria }: AnchoredListboxProps) {
   const { effects, reducedMotion, reducedTransparency, highContrast } = useAppearance();
   const staticMotion = effects !== "full" || reducedMotion || reducedTransparency || highContrast;
-  const jelly = useJellyControl<HTMLDivElement>(staticMotion);
+  const jelly = useJellyControl<HTMLDivElement>(staticMotion || material === "flat");
   const generatedId = useId();
   const buttonId = id ?? `select-${generatedId}`;
   const listId = `${buttonId}-listbox`;
@@ -170,11 +177,11 @@ export function AnchoredListbox({ value, onChange, options, disabled = false, re
       {selected?.metadata ? <span className="vx-select__metadata" title={selected.metadata}>{selected.metadata}</span> : null}
     </span><ChevronDown className="vx-select__chevron" size={16} aria-hidden="true" />
   </button>;
-  return <div className={cn("vx-select", embedded && "vx-select--embedded", className)} ref={embedded ? undefined : jelly.ref} {...(embedded ? {} : jelly.handlers)}>
-    {embedded ? button : <GlassSurface variant="control" className="vx-select__surface">{button}</GlassSurface>}
+  return <div className={cn("vx-select", `vx-select--${material}`, embedded && "vx-select--embedded", className)} ref={embedded ? undefined : jelly.ref} {...(embedded ? {} : jelly.handlers)}>
+    {embedded ? button : <SelectSurface glass={material === "glass"} variant="control" className="vx-select__surface">{button}</SelectSurface>}
     {portalRoot ? createPortal(<AnimatePresence custom={animatePopup}>
       {open ? <Popup key={listId} popupRef={popupRef} placement={placement} animate={animatePopup} className={popupClassName}>
-        <GlassSurface variant="dialog" className="vx-listbox-surface">
+        <SelectSurface glass={material === "glass"} variant="dialog" className="vx-listbox-surface">
           <ul ref={listRef} id={listId} role="listbox" aria-label={label} className="vx-select__listbox" style={{ maxHeight: Math.max(0, (placement?.maxHeight ?? 360) - 14) }}>
             {options.map((option, index) => <li key={option.value} {...option.dataAttributes} id={`${listId}-${index}`} role="option"
               aria-selected={index === selectedIndex} aria-disabled={option.disabled || undefined} data-active={index === active}
@@ -187,7 +194,7 @@ export function AnchoredListbox({ value, onChange, options, disabled = false, re
               {index === selectedIndex ? <Check size={16} data-selected-mark aria-hidden="true" /> : null}
             </li>)}
           </ul>
-        </GlassSurface>
+        </SelectSurface>
       </Popup> : null}
     </AnimatePresence>, portalRoot) : null}
   </div>;

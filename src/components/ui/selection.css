@@ -1,0 +1,41 @@
+.vx-selection {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  min-width: 0;
+  border: 1px solid var(--hairline, var(--border-subtle));
+  border-radius: var(--radius-md);
+  background: var(--surface-panel, var(--bg-raised));
+}
+.vx-selection > button {
+  position: relative;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-align: start;
+}
+.vx-selection > button[data-selected] { color: var(--text-primary); font-weight: 600; }
+.vx-selection > button:disabled { opacity: .45; }
+.vx-selection__label { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: inherit; gap: 9px; }
+.vx-selection__mark { position: absolute; inset: 0; z-index: 0; border-radius: inherit; background: var(--surface-solid); box-shadow: inset 0 0 0 1px var(--hairline, var(--border-subtle)); pointer-events: none; }
+.vx-rail-nav { display: flex; flex-direction: column; align-items: stretch; padding: 8px; }
+.vx-rail-nav > button { min-height: 42px; padding: 10px 12px; }
+.vx-section-panel { min-width: 0; opacity: 1; transition: opacity var(--section-duration, 0s) var(--ease-out); }
+@starting-style { .vx-section-panel:not([data-section-motion="none"]) { opacity: 0; } }
+@media (hover: hover) and (pointer: fine) {
+  .vx-selection > button:not(:disabled):hover { color: var(--text-primary); }
+  .vx-selection > button:not(:disabled):not([data-selected]):hover { background: var(--surface-hover); }
+}
+[data-high-contrast="true"] .vx-selection__mark { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+@media (forced-colors: active) {
+  .vx-selection__mark { background: ButtonFace; outline: 2px solid Highlight; outline-offset: -2px; }
+}
+@media (prefers-reduced-motion: reduce) { .vx-section-panel { transition-duration: 0s; } }

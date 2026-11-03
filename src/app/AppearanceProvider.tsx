@@ -134,6 +134,7 @@ export function AppearanceProvider({
     root.style.setProperty("--accent-soft", accentScale.soft);
     root.style.setProperty("--accent-border", accentScale.border);
     root.style.setProperty("--accent-foreground", accentScale.foreground);
+    root.style.setProperty("--accent-ink", accentScale.ink);
   }, [accentScale, config.accentSource, config.effects, highContrast, reducedMotion, reducedTransparency, resolvedTheme]);
 
   return <AppearanceContext.Provider value={value}>{children}</AppearanceContext.Provider>;

@@ -6,10 +6,11 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   tone?: "default" | "danger";
   icon?: ReactNode;
   loading?: boolean;
+  size?: "sm" | "md" | "lg";
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = "secondary", tone = "default", icon, loading = false, className, children, disabled, type = "button", ...props },
+  { variant = "secondary", tone = "default", icon, loading = false, size = "md", className, children, disabled, type = "button", ...props },
   ref,
 ) {
   return (
@@ -17,7 +18,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       {...props}
       ref={ref}
       type={type}
-      className={cn("vx-button", `vx-button--${variant}`, `vx-button--tone-${tone}`, className)}
+      className={cn("vx-button", `vx-button--${variant}`, `vx-button--tone-${tone}`, `vx-button--${size}`, className)}
       data-variant={variant}
       data-tone={tone}
       disabled={disabled || loading}
@@ -32,7 +33,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 export const IconButton = forwardRef<HTMLButtonElement, ButtonProps & { label: string; icon: ReactNode }>(
   function IconButton({ label, icon, ...props }, ref) {
     return (
-      <Button {...props} ref={ref} variant={props.variant ?? "ghost"} icon={icon} aria-label={label} title={label}>
+      <Button {...props} className={cn("vx-button--icon", props.className)} ref={ref} variant={props.variant ?? "ghost"} icon={icon} aria-label={label} title={label}>
         <span className="sr-only">{label}</span>
       </Button>
     );
