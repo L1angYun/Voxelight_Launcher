@@ -42,10 +42,10 @@ export function Dialog({
   const descriptionId = useId();
 
   const focusFirst = useCallback((dialog: HTMLDialogElement) => {
-    const preferred = dialog.querySelector<HTMLElement>(
-      "[data-dialog-autofocus], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled):not([data-dialog-close])",
-    );
-    (preferred ?? focusable(dialog)[0] ?? dialog).focus();
+    const items = focusable(dialog);
+    const preferred = items.find(element => element.hasAttribute("data-dialog-autofocus"))
+      ?? items.find(element => element.matches("input, select, textarea, button:not([data-dialog-close])"));
+    (preferred ?? items[0] ?? dialog).focus();
   }, []);
 
   useEffect(() => {
