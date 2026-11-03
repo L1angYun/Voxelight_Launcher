@@ -29,6 +29,8 @@ export interface WorldRenderer {
   release(): void;
   shock(ndc: [number, number]): void;
   draw(frame: WorldFrame, dtSeconds: number): WorldDrawMetrics;
+  /** Nonblocking completion check; never submits another frame. */
+  pollFrameComplete(): boolean;
   dispose(): void;
 }
 type Callbacks = { onLost(): void; onRestored(): void };
@@ -98,6 +100,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   let palette = DEFAULT_PALETTE, tier = { ...DEFAULT_TIER };
   let core: CoreResources | null = null, field: FieldResources | null = null, surface: SurfaceResources | null = null;
   let particles: ParticleResources | null = null, actualMaterial: WorldMaterial = "solid";
+  let lastSubmittedMaterial: WorldMaterial = "solid";
   let cssWidth = 2, cssHeight = 2, requestedDpr = 1;
   let anchor: [number, number] = [.62, -.66], pointer: [number, number] | null = null;
   let islandOrigin: [number, number] | null = null;
@@ -288,8 +291,20 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     if (frameFence) gl.deleteSync(frameFence);
     frameFence = null;
   }
+  function pollFrameComplete(): boolean {
+    if (lost || terminal || disposed) return false;
+    if (!frameFence) return true;
+    try {
+      const ready = gl.clientWaitSync(frameFence, 0, 0);
+      if (ready === gl.TIMEOUT_EXPIRED) return false;
+      if (ready !== gl.ALREADY_SIGNALED && ready !== gl.CONDITION_SATISFIED) throw new Error("World GPU fence wait failed");
+      clearFrameFence();
+      return true;
+    } catch { fail(); return false; }
+  }
   function releaseResources() {
     clearFrameFence(); pendingSimulationDt = 0;
+    lastSubmittedMaterial = "solid";
     clearQueries(); releaseParticles(); clearInteraction(); surface?.scope.dispose(); field?.scope.dispose(); core?.scope.dispose();
     surface = null; field = null; core = null;
   }
@@ -489,7 +504,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   }
   return {
     capabilities,
-    get material(): WorldMaterial { return actualMaterial; },
+    get material(): WorldMaterial { return lastSubmittedMaterial; },
     get melt() { return meltAmount; },
     resize(width, height, dpr) {
       cssWidth = Number.isFinite(width) && width > 0 ? width : 2;
@@ -524,13 +539,12 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       try {
         if (frameFence) {
           if (tier.kind === "animated") {
-            const ready = gl.clientWaitSync(frameFence, 0, 0);
-            if (ready === gl.TIMEOUT_EXPIRED) return { cpuMs: Math.max(0, performance.now() - started), gpuMs: null, submitted: false, pointsSubmitted: false };
-            if (ready !== gl.ALREADY_SIGNALED && ready !== gl.CONDITION_SATISFIED) throw new Error("World GPU fence wait failed");
+            if (!pollFrameComplete()) return { cpuMs: Math.max(0, performance.now() - started), gpuMs: null, submitted: false, pointsSubmitted: false };
+          } else {
+            // Static paints are mandatory one-shot updates. Their new fence
+            // also covers older queued commands without blocking the UI.
+            clearFrameFence();
           }
-          // Static paints are mandatory one-shot updates. Their new fence also
-          // covers older queued commands without blocking the UI thread.
-          clearFrameFence();
         }
         gpuMs = pollGpu();
         if (timer && pendingQueries.length < 4) {
@@ -550,8 +564,10 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
         fail();
       }
       const valid = submitted && !lost && !gl.isContextLost();
+      if (valid) lastSubmittedMaterial = actualMaterial;
       return { cpuMs: Math.max(0, performance.now() - started), gpuMs, submitted: valid, pointsSubmitted: pointsSubmitted && valid };
     },
+    pollFrameComplete,
     dispose() {
       if (disposed) return;
       disposed = true;

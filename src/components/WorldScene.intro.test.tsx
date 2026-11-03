@@ -15,7 +15,8 @@ const inputs = { phase: "idle" as const, fraction: null, page: "home" as const, 
 function renderer() {
   return { capabilities: { webgl2: true as const, floatTargets: true }, material: "lattice" as const,
     melt: 0, press: vi.fn(), release: vi.fn(), shock: vi.fn(), resize: vi.fn(), setTier: vi.fn(), setPalette: vi.fn(), setAnchor: vi.fn(), setPointer: vi.fn(),
-    draw: vi.fn((_frame: any, _dt: number): WorldDrawMetrics => ({ cpuMs: 1, gpuMs: 1, submitted: true, pointsSubmitted: true })), dispose: vi.fn() };
+    draw: vi.fn((_frame: any, _dt: number): WorldDrawMetrics => ({ cpuMs: 1, gpuMs: 1, submitted: true, pointsSubmitted: true })),
+    pollFrameComplete: vi.fn(() => true), dispose: vi.fn() };
 }
 async function render(props: Partial<Parameters<typeof component.WorldScene>[0]> = {}, strict = false) {
   const element = react.createElement(component.WorldScene, { ...inputs, ...props });

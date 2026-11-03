@@ -163,8 +163,8 @@ for (const theme of ["dark", "light"] as const) for (const [width, height] of [[
     await expect.poll(async () => {
       const before = Number(await scene.getAttribute("data-world-frames"));
       await page.waitForTimeout(700);
-      return Number(await scene.getAttribute("data-world-frames")) - before;
-    }, { timeout: 15_000 }).toBe(0);
+      return { delta: Number(await scene.getAttribute("data-world-frames")) - before, settled: await scene.getAttribute("data-world-settled") };
+    }, { timeout: 15_000 }).toEqual({ delta: 0, settled: "true" });
     reports["running-settled"] = await captureState(page, directory, "running-settled");
     for (const report of Object.values(reports)) {
       expect(report.before.theme).toBe(theme); expect(report.after.theme).toBe(theme);

@@ -4,6 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WorldScene } from "./WorldScene";
+import type { WorldDrawMetrics } from "./world/renderer";
 
 const bridge = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("./world/renderer", () => ({ createWorldRenderer: bridge.create }));
@@ -18,7 +19,8 @@ function renderer() {
   return { capabilities: { webgl2: true as const, floatTargets: true }, material: "solid" as const,
     melt: 0, press: vi.fn(), release: vi.fn(), shock: vi.fn(),
     resize: vi.fn(), setTier: vi.fn(), setPalette: vi.fn(), setAnchor: vi.fn(), setPointer: vi.fn(),
-    draw: vi.fn((_frame: any, _dt: number) => ({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true })), dispose: vi.fn() };
+    draw: vi.fn((_frame: any, _dt: number): WorldDrawMetrics => ({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true })),
+    pollFrameComplete: vi.fn(() => true), dispose: vi.fn() };
 }
 async function render(props: Partial<Parameters<typeof WorldScene>[0]> = {}) {
   await act(async () => root.render(createElement(WorldScene, { ...inputs, ...props })));
@@ -130,6 +132,35 @@ it("renders every available full-policy RAF callback without an idle frame cap",
   const count = fake.draw.mock.calls.length;
   await advance(100, 120);
   expect(fake.draw.mock.calls.length - count).toBe(12);
+  expect(fake.pollFrameComplete).not.toHaveBeenCalled();
+});
+it("reports settled only after the final GPU fence completes without submitting more frames", async () => {
+  await render(); fake.pollFrameComplete.mockReturnValue(false);
+  await render({ phase: "running" }); await advance(5000);
+  const count = fake.draw.mock.calls.length;
+  expect(fake.draw.mock.calls.at(-1)![0].settled).toBe(true);
+  expect(scene().dataset.worldSettled).toBe("false");
+  expect(fake.pollFrameComplete).toHaveBeenCalled();
+  await advance(700);
+  expect(fake.draw).toHaveBeenCalledTimes(count);
+  expect(scene().dataset.worldSettled).toBe("false");
+  fake.pollFrameComplete.mockReturnValue(true); await advance(20);
+  expect(scene().dataset.worldSettled).toBe("true");
+  expect(fake.draw).toHaveBeenCalledTimes(count);
+  expect(frames.size).toBe(0);
+});
+it("does not poll completion while paused or create a static completion loop", async () => {
+  await render(); fake.pollFrameComplete.mockReturnValue(false);
+  await render({ phase: "running" }); await advance(5000);
+  await render({ phase: "running", paused: true });
+  const polls = fake.pollFrameComplete.mock.calls.length;
+  await advance(700);
+  expect(fake.pollFrameComplete).toHaveBeenCalledTimes(polls); expect(frames.size).toBe(0);
+  await render({ phase: "running", effects: "lite" });
+  const draws = fake.draw.mock.calls.length;
+  await advance(700);
+  expect(fake.draw).toHaveBeenCalledTimes(draws); expect(frames.size).toBe(0);
+  expect(scene().dataset.worldSettled).toBe("false");
 });
 it("counts only actual submissions while skipped callbacks advance the attempt clock", async () => {
   await render(); const count = scene().dataset.worldFrames;

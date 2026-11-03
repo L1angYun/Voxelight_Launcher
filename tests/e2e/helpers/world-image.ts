@@ -6,7 +6,7 @@ import { decodePng, type DecodedPng } from "./glass-pixel-probe.mjs";
 export async function withWorldView<T>(page: Page, run: (capture: (path?: string) => Promise<DecodedPng>) => Promise<T>): Promise<T> {
   const style = await page.addStyleTag({ content: `
     .vx-window-chrome, .vx-window-chrome *, .vx-app-main, .vx-app-main *, .vx-skip-link,
-    .vx-glass-canvas, .vx-cursor-halo { visibility: hidden !important; }
+    .vx-glass-canvas, .vx-cursor-halo, .vx-toast-host, .vx-toast-host * { visibility: hidden !important; }
     .world-scene { background-image: none !important; }
   ` });
   try {
