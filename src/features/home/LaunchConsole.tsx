@@ -1,5 +1,5 @@
 import { FolderOpen, LoaderCircle, Play, Square, X } from "lucide-react";
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useTranslation } from "react-i18next";
 import type { Instance, InstalledVersion, Progress } from "../../lib/launcher";
@@ -45,8 +45,20 @@ export function LaunchConsole({
   const preparing = busy === "game.prepare";
   const state = preparing ? "preparing" : running ? "running" : "idle";
   const cancelAvailableAt = useRef(Infinity);
+  const [cancelReady, setCancelReady] = useState(false);
   useLayoutEffect(() => {
-    cancelAvailableAt.current = preparing ? performance.now() + MOTION.delay.cancelGuardMs : Infinity;
+    setCancelReady(false);
+    cancelAvailableAt.current = Infinity;
+    if (!preparing) return;
+    cancelAvailableAt.current = performance.now() + MOTION.delay.cancelGuardMs;
+    let timer: ReturnType<typeof setTimeout>;
+    const unlock = () => {
+      const remaining = cancelAvailableAt.current - performance.now();
+      if (remaining > 0) timer = setTimeout(unlock, Math.max(1, remaining));
+      else setCancelReady(true);
+    };
+    timer = setTimeout(unlock, MOTION.delay.cancelGuardMs);
+    return () => { clearTimeout(timer); cancelAvailableAt.current = Infinity; };
   }, [preparing]);
   const useBytes = Boolean(progress && progress.bytesTotal > 0);
   const completed = (useBytes ? progress?.bytesCompleted : progress?.completed) ?? 0;
@@ -84,11 +96,11 @@ export function LaunchConsole({
         </div>
       ) : null}
       <div className="vx-launch-console__actions">
-        <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" {...launchJelly.handlers}>
-          <GlassSurface variant="control" className="vx-launch-console__launch">
+        <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" data-visual-owner="lens" {...launchJelly.handlers}>
+          <GlassSurface variant="control" className="vx-launch-console__launch" />
             <AnimatePresence initial={false}>
               <ConsoleContent key={state} tier={tier}>
-                {preparing ? <Button variant="ghost" size="lg" icon={<X size={16} />}
+                {preparing ? <Button variant="ghost" size="lg" icon={<X size={16} />} disabled={!cancelReady}
                   onClick={() => { if (performance.now() >= cancelAvailableAt.current) void onCancel(); }}>
                   {t("home:cancelPreparation")}
                 </Button> : running ? <div className="vx-launch-console__running" role="status">
@@ -100,7 +112,6 @@ export function LaunchConsole({
                 </Button>}
               </ConsoleContent>
             </AnimatePresence>
-          </GlassSurface>
         </div>
       </div>
       {busy && !preparing && !running ? <p className="vx-launch-console__busy" role="status">{t(`shell:operations.${busy}`, { defaultValue: t("common:status.loading") })}</p> : null}

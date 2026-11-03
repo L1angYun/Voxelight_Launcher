@@ -370,28 +370,59 @@ describe("HomePage", () => {
     await render();
     expect(container.textContent).toContain("37%");
     const cancel = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("取消准备"))!;
+    expect(cancel.disabled).toBe(true);
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
     await act(async () => vi.advanceTimersByTime(249));
+    expect(cancel.disabled).toBe(true);
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
     await act(async () => vi.advanceTimersByTime(1));
+    expect(cancel.disabled).toBe(false);
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).toHaveBeenCalledTimes(1);
+  });
+
+  it("rearms cancellation availability when another preparation starts before the old guard expires", async () => {
+    vi.useFakeTimers();
+    mockLauncher.busy = "game.prepare";
+    await render();
+    await act(async () => vi.advanceTimersByTime(100));
+    mockLauncher.busy = ""; await render();
+    await act(async () => vi.advanceTimersByTime(50));
+    mockLauncher.busy = "game.prepare"; await render();
+    const cancel = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("取消准备"))!;
+    await act(async () => vi.advanceTimersByTime(100));
+    expect(cancel.disabled).toBe(true);
+    await act(async () => cancel.click());
+    expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(149));
+    expect(cancel.disabled).toBe(true);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(cancel.disabled).toBe(false);
+    await act(async () => cancel.click());
+    expect(mockLauncher.cancelPreparation).toHaveBeenCalledOnce();
+    await act(async () => root.render(null));
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("keeps the same glass action surface throughout preparation and running", async () => {
     await render();
     const surface = container.querySelector(".vx-launch-console__launch");
     expect(surface).not.toBeNull();
+    const content = container.querySelector(".vx-launch-console__launch-wrap")!;
+    expect(surface!.contains(content.querySelector("button"))).toBe(false);
+    expect(getComputedStyle(surface!).height).toBe("56px");
     mockLauncher.busy = "game.prepare";
     await render();
     expect(container.querySelector(".vx-launch-console__launch")).toBe(surface);
-    expect(surface!.textContent).toContain("取消准备");
+    expect(content.textContent).toContain("取消准备");
+    expect(surface!.contains(content.querySelector("button"))).toBe(false);
     mockLauncher.busy = ""; mockLauncher.gamePid = 42;
     await render();
     expect(container.querySelector(".vx-launch-console__launch")).toBe(surface);
-    expect(surface!.textContent).toContain("停止");
+    expect(content.textContent).toContain("停止");
+    expect(surface!.contains(content.querySelector("button"))).toBe(false);
   });
 
   it("rests the character after a real launch and resumes it after the game ends", async () => {
