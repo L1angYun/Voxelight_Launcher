@@ -1,13 +1,23 @@
-/* Original layout: a compact launch dock beside an open character stage. */
+/* A compact lower launch console leaves the character and horizon open. */
 .vx-home {
+  --home-rail: 320px;
   position: relative;
   height: calc(100dvh - var(--shell-height, 82px));
   min-height: 0;
   color: var(--text-primary);
 }
+.vx-home::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(max(40px, (100% - 1280px) / 2) + var(--home-rail) + 160px);
+  pointer-events: none;
+  background: linear-gradient(90deg, var(--world-ink, var(--bg-base)) 0%, color-mix(in srgb, var(--world-ink, var(--bg-base)) 96%, transparent) calc(100% - 160px), transparent);
+}
 .vx-home__layout {
+  position: relative;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: var(--home-rail) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 32px;
   width: min(calc(100% - 80px), 1280px);
@@ -21,12 +31,10 @@
   grid-row: 1 / 3;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 32px;
+  justify-content: flex-end;
+  gap: 24px;
   min-width: 0;
   padding: 32px 24px 24px;
-  border-radius: 24px;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--world-ink, var(--bg-base)) 96%, transparent) 0% 94%, transparent 100%);
 }
 .vx-home__identity { min-width: 0; }
 .vx-home__identity { transition: opacity var(--duration-normal) var(--ease-out); }
@@ -39,7 +47,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
-  margin: 0 0 24px;
+  margin: 0 0 16px;
   font-size: 28px;
   font-weight: 650;
   line-height: 1.35;
@@ -104,9 +112,10 @@
 .vx-home__character { position: relative; z-index: 1; width: 100%; height: 100%; }
 .vx-home__character .vx-character-canvas__mount { height: 100%; }
 .vx-home__character-orbit { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.vx-home__feet { position: absolute; left: calc(50% - 1px); bottom: 16%; width: 2px; height: 2px; pointer-events: none; }
 .vx-home__character-floor {
   position: absolute;
-  inset: auto 12% 4%;
+  inset: auto 22% 12%;
   height: 10%;
   border-radius: 50%;
   background: radial-gradient(ellipse, color-mix(in srgb, var(--text-primary) 10%, transparent), transparent 70%);
@@ -118,11 +127,9 @@
   justify-content: center;
   align-items: baseline;
   gap: 8px;
-  margin: 12px 0 0;
-  padding: 8px 16px;
-  border-radius: 12px;
+  margin: 24px 0 0;
+  padding: 0 16px;
   color: var(--text-secondary);
-  background: var(--bg-base);
   font-size: 12px;
   line-height: 1.6;
   text-align: center;
@@ -150,33 +157,35 @@
 .vx-jelly-control { min-width: 0; }
 .vx-jelly-control > .vx-glass-surface { transform: var(--jelly-matrix, matrix(1, 0, 0, 1, 0, 0)); transform-origin: 50% 50%; }
 .vx-launch-console__selector-wrap { flex: 1; }
-.vx-launch-console__selector { display: flex; align-items: center; width: 100%; min-width: 0; min-height: 48px; border-radius: 16px; }
-.vx-launch-console__instance > .vx-button { flex: 0 0 40px; width: 40px; height: 44px; padding: 10px; border-radius: 12px; }
+.vx-launch-console__selector { display: flex; align-items: center; width: 100%; min-width: 0; min-height: 48px; border-radius: var(--radius-pill); }
+.vx-launch-console__instance > .vx-button { flex: 0 0 40px; width: 40px; height: 44px; padding: 10px; }
 .vx-launch-console__actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .vx-launch-console__launch-wrap { flex: 1; }
-.vx-launch-console__launch { width: 100%; border-radius: 18px; }
+.vx-launch-console__launch { width: 100%; height: 56px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--accent) 90%, transparent); color: var(--accent-foreground); }
+.vx-launch-console__content { position: absolute; inset: 0; border-radius: inherit; }
+.vx-launch-console__content[inert] { pointer-events: none; }
 .vx-launch-console__launch .vx-button {
   width: 100%;
   min-height: 56px;
   padding: 16px 24px;
   border-radius: inherit;
   background: transparent;
-  color: var(--text-primary);
+  color: var(--accent-foreground);
   font-size: 16px;
   font-weight: 650;
   box-shadow: none;
 }
-.vx-launch-console__launch .vx-button__icon { color: var(--accent); }
-.vx-launch-console__launch .vx-button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.vx-launch-console__launch .vx-button__icon { color: inherit; }
+.vx-launch-console__launch .vx-button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-foreground) 7%, transparent); color: var(--accent-foreground); }
 .vx-launch-console__launch .vx-button:disabled { opacity: .55; }
 .vx-launch-console__status { display: grid; gap: 8px; min-width: 0; font-size: 12px; }
 .vx-launch-console__progress-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .vx-launch-console__progress-heading > span { display: inline-flex; align-items: center; gap: 8px; }
 .vx-launch-console__progress-text { font-family: var(--font-matrix); font-weight: 900; font-variant-numeric: tabular-nums; font-size: 18px; }
 .vx-launch-console__file-count { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.vx-launch-console__running { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; }
+.vx-launch-console__running { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 56px; padding-inline: 20px 10px; }
 .vx-launch-console__running > span { display: inline-flex; align-items: baseline; gap: 8px; font-size: 13px; }
-.vx-launch-console__running i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--accent); }
+.vx-launch-console__running .vx-button { width: auto; min-height: 32px; padding: 8px 12px; font-size: 13px; }
 .vx-launch-console__busy { margin: 0; color: var(--text-secondary); font-size: 13px; }
 
 .vx-home__recent { grid-column: 2; grid-row: 2; min-width: 0; }
@@ -186,7 +195,7 @@
 .vx-recent-card {
   position: relative;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 16px;
+  grid-template-columns: 24px minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: baseline;
   column-gap: 12px;
@@ -195,20 +204,20 @@
   min-height: 80px;
   padding: 16px;
   border: 0;
-  border-radius: 16px;
-  background: var(--bg-raised);
+  border: 1px solid var(--hairline, var(--border-subtle));
+  border-radius: var(--radius-md);
+  background: var(--surface-card, var(--bg-raised));
   color: var(--text-primary);
   text-align: start;
 }
 .vx-recent-card__icon { grid-column: 1; grid-row: 1 / 3; align-self: center; width: 24px; height: 24px; color: var(--text-secondary); }
 .vx-recent-card__name { grid-column: 2; grid-row: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 550; }
-.vx-recent-card__meta { grid-column: 2 / 4; grid-row: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.vx-recent-card__selected { grid-column: 3; grid-row: 1; align-self: center; color: var(--accent); }
+.vx-recent-card__meta { grid-column: 2; grid-row: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .vx-recent-card:hover { background: var(--surface-solid); }
-.vx-home > .vx-toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: min(420px, calc(100vw - 48px)); }
 
 @media (max-width: 1180px) {
-  .vx-home__layout { width: calc(100% - 48px); column-gap: 24px; row-gap: 24px; padding-block: 24px; grid-template-columns: 296px minmax(0, 1fr); }
+  .vx-home { --home-rail: 296px; }
+  .vx-home__layout { column-gap: 24px; row-gap: 24px; padding-block: 24px; }
   .vx-home__stage { padding: 24px 20px 20px; }
   .vx-recent__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .vx-recent-card { column-gap: 8px; padding: 12px; min-height: 72px; }
@@ -224,12 +233,12 @@
   .vx-home__character-panel { height: 290px; }
 }
 @media (max-width: 620px) {
-  .vx-home__layout { width: calc(100% - 32px); grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto; }
+  .vx-home__layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto; }
   .vx-home__stage { grid-row: 1; min-height: 300px; }
   .vx-home__char-col { grid-column: 1; grid-row: 2; width: min(100%, 320px); }
   .vx-home__recent { grid-column: 1; grid-row: 3; }
 }
-.vx-home[data-motion-tier="none"] * { animation: none !important; transition: none !important; }
+.vx-home[data-motion-tier="none"] :where(.vx-home__layout, .vx-home__layout *) { animation: none !important; transition: none !important; }
 .vx-home[data-motion-tier="fade"] .spin { animation: none !important; }
 .vx-home[data-motion-tier="fade"] .vx-button:active { transform: none; }
 .vx-home[data-returning="true"][data-motion-tier="fade"] :is(.vx-home__identity, .vx-home__preview-source, .vx-home__recent) {
@@ -237,11 +246,22 @@
 }
 @keyframes vx-home-content-reveal { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .vx-home *, .vx-home *::before, .vx-home *::after { animation: none !important; transition: none !important; }
+  .vx-home__layout, .vx-home__layout *, .vx-home__layout *::before, .vx-home__layout *::after { animation: none !important; transition: none !important; }
 }
 @media (forced-colors: active) {
   .vx-home__character-floor { display: none; }
   .vx-recent-card[aria-pressed="true"] { outline: 2px solid Highlight; }
 }
-[data-reduced-transparency="true"] .vx-home__stage,
-[data-high-contrast="true"] .vx-home__stage { background: var(--bg-raised); }
+[data-reduced-transparency="true"] .vx-home::before,
+[data-high-contrast="true"] .vx-home::before { background: var(--bg-base); width: calc(max(40px, (100% - 1280px) / 2) + var(--home-rail) + 24px); }
+[data-reduced-transparency="true"] .vx-launch-console .vx-launch-console__launch,
+[data-high-contrast="true"] .vx-launch-console .vx-launch-console__launch { background: var(--accent); }
+@media (prefers-reduced-transparency: reduce) {
+  .vx-home::before { background: var(--bg-base); }
+  .vx-launch-console .vx-launch-console__launch { background: var(--accent); }
+}
+@media (forced-colors: active) {
+  .vx-home::before { background: Canvas; }
+  .vx-launch-console .vx-launch-console__launch { background: ButtonFace; color: ButtonText; border-color: ButtonText; }
+  .vx-launch-console__launch .vx-button { color: ButtonText; }
+}

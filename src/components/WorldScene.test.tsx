@@ -104,7 +104,7 @@ it("uses CSS during context loss and resumes only after restoration", async () =
 it("updates page composition and phase on the existing renderer", async () => {
   await render(); await render({ page: "content", scene: "massif", phase: "preparing", fraction: .5 });
   await advance(3000); const frame = fake.draw.mock.calls.at(-1)![0];
-  expect(frame.front).toBeCloseTo(82.5, 0); expect(frame.profile).toBeGreaterThan(.99);
+  expect(frame.front).toBeCloseTo(97.5, 0); expect(frame.profile).toBeGreaterThan(.99);
   expect(scene().dataset.worldPhase).toBe("preparing"); expect(bridge.create).toHaveBeenCalledTimes(1);
 });
 it("downgrades after two real seconds even when physical simulation dt is capped", async () => {
@@ -228,7 +228,21 @@ it("observes a replacement home anchor even when its geometry matches the prior 
 });
 it("publishes the actual rounded crystal frontier and returns to zero after cancel", async () => {
   await render({ phase: "preparing", fraction: .37 }); await advance(3000);
-  expect(scene().dataset.worldFront).toBe("61");
+  expect(scene().dataset.worldFront).toBe("80");
   await render(); await advance(3000);
   expect(scene().dataset.worldFront).toBe("0");
+});
+it("shocks once from the character anchor on a new preparation, without replay on progress", async () => {
+  await render();
+  await render({ phase: "preparing", fraction: 0 });
+  expect(fake.shock).toHaveBeenCalledExactlyOnceWith(fake.setAnchor.mock.calls.at(-1)![0]);
+  await render({ phase: "preparing", fraction: .6 });
+  expect(fake.shock).toHaveBeenCalledTimes(1);
+});
+it("does not create a launch shock for initial preparation or a static scene", async () => {
+  await render({ phase: "preparing", fraction: .3 });
+  expect(fake.shock).not.toHaveBeenCalled();
+  await render({ effects: "lite" });
+  await render({ effects: "lite", phase: "preparing", fraction: 0 });
+  expect(fake.shock).not.toHaveBeenCalled();
 });

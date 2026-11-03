@@ -177,7 +177,7 @@ uniform sampler2D uPos, uVel, uField;
 uniform mat4 uVP;
 uniform vec3 uEye;
 uniform vec2 uOffset;
-uniform float uN, uS, uSpan, uDpr, uFogD, uRunDim;
+uniform float uN, uS, uSpan, uDpr, uFogD, uRunDim, uFront;
 ${CRYSTAL_GLSL}
 out float vAlpha, vHot;
 void main() {
@@ -189,12 +189,13 @@ void main() {
   float cr = crystal(c, f.a, maskM(c)), speed = length(V.xyz), dist = length(P.xyz - uEye);
   float fog = exp(-pow(dist / (uFogD * 1.12), 3.));
   float flying = smoothstep(.6, 3.5, length(P.xz - c));
-  float alpha = (.13 + .62 * f.b * (.55 + .45 * smoothstep(3., 20., h))) * (1. - smoothstep(.35, .9, cr));
+  float alpha = (.42 + 1.47 * f.b * (.55 + .45 * smoothstep(3., 20., h))) * (1. + .5 * smoothstep(10., 26., h)) * (1. - smoothstep(.35, .9, cr));
   alpha = max(alpha, flying * .55) * fog * uRunDim;
   vAlpha = mix(alpha, .95, P.w) * uLat;
   vHot = clamp((speed - 7.) * .035 + V.w * 1.2, 0., 1.);
+  if (uFront > 0.) vHot = max(vHot, exp(-pow((length(c - uOrigin) - uFront) / 3.2, 2.)));
   gl_Position = uVP * vec4(P.xyz, 1.);
-  gl_PointSize = uDpr * (1.15 + P.w * .9 + min(speed, 30.) * .035) * clamp(58. / max(dist, .001), .72, 2.7);
+  gl_PointSize = uDpr * (1.15 + P.w * .9 + min(speed, 30.) * .035) * clamp(58. / max(dist, .001), 1.05, 2.7) * (1. + .45 * smoothstep(8., 26., h));
 }`;
 
 export const POINT_FRAGMENT = `#version 300 es
@@ -202,10 +203,10 @@ precision highp float;
 in float vAlpha, vHot;
 out vec4 o;
 uniform vec3 uAccent, uPoint;
-uniform float uLight;
+uniform float uLight, uPaperInk;
 void main() {
   float d = 1. - smoothstep(.3, .5, length(gl_PointCoord - .5));
-  float alpha = d * vAlpha;
+  float alpha = d * vAlpha * mix(1., uPaperInk, uLight);
   if (alpha < .004) discard;
   vec3 color = mix(uPoint, uAccent, vHot);
   o = uLight > .5 ? vec4(color, alpha) : vec4(color * alpha * (1. + vHot), 1.);
@@ -234,6 +235,8 @@ void main() {
   vec3 p = vec3(c.x + aPos.x * s, aPos.y > 0. ? h : h - depth, c.y + aPos.z * s);
   vN = aNor; vW = p; vL = aPos; vH = h; vM = m; vHeat = f.a; vLit = f.b;
   float d = length(c - uOrigin);
+  float isl = 1. - smoothstep(uIsland, uIsland + 18., d);
+  vLit = max(vLit, 1.1 * uLat * isl);
   vChg = uCharge * (1. - smoothstep(uFront - 30., uFront, d));
   if (uFront > 0.) vHeat = max(vHeat, uCharge * exp(-pow((d - uFront) / 2.4, 2.)));
   gl_Position = uVP * vec4(p, 1.);
@@ -245,11 +248,12 @@ in vec3 vN, vW, vL;
 in float vH, vM, vHeat, vLit, vChg;
 out vec4 o;
 uniform vec3 uEye, uAccent, uSun, uHaze, uPoint;
-uniform float uExposure, uFogD, uDim, uLight;
+uniform float uExposure, uFogD, uDim, uLight, uLat, uPaperInk;
 void main() {
   float diff = max(dot(vN, uSun), 0.) * vLit;
   vec3 alb = mix(vec3(.26, .27, .28), vec3(1., .97, .9), smoothstep(4., 17., vH));
   alb = mix(uPoint * .62, alb, smoothstep(0., .35, vM));
+  alb = max(alb, vec3(.5, .49, .46) * uLat);
   vec3 col = alb * (vec3(.05, .06, .085) + vec3(2.5, 2.1, 1.62) * diff);
   col += alb * vec3(.03, .05, .08) * max(vN.z, 0.);
   if (vN.y > .5) col += smoothstep(.45, .5, max(abs(vL.x), abs(vL.z))) * .035 * (.2 + vLit);
@@ -257,8 +261,8 @@ void main() {
   col = mix(col, col * .55 + uAccent * .3 * (.25 + vLit), vChg * .55);
   col = mix(col, uAccent * (1. + vHeat * 1.2), clamp(vHeat * 1.05, 0., 1.) * uDim);
   // On paper, retain diffuse relief without dark fog or emitted light.
-  vec3 paper = mix(uHaze, uPoint, .12 + .54 * (1. - diff)) * mix(.75, 1., uExposure);
-  paper = mix(paper, uAccent, clamp(vHeat * .55 + vChg * .2, 0., .65));
+  vec3 paper = mix(uHaze, uPoint, (.12 + .54 * (1. - diff)) * uPaperInk) * mix(1., mix(.75, 1., uExposure), uPaperInk);
+  paper = mix(paper, uAccent, clamp(vHeat * .55 + vChg * .2, 0., .65) * uPaperInk);
   col = mix(col, paper, uLight);
   float fog = (1. - exp(-pow(length(vW - uEye) / uFogD, 2.4))) * .96;
   o = vec4(mix(col, uHaze, fog), 1.);
@@ -307,10 +311,11 @@ precision highp float;
 in vec2 vUv;
 out vec4 o;
 uniform sampler2D uTex, uBloom;
-uniform float uAmt;
+uniform float uAmt, uFlash;
 float dither(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 void main() {
   vec3 c = texture(uTex, vUv).rgb + texture(uBloom, vUv).rgb * uAmt;
+  c *= 1. + uFlash;
   c += (dither(gl_FragCoord.xy) - .5) / 255.;
   o = vec4(c, 1.);
 }`;

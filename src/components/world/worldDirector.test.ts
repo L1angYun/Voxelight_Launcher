@@ -31,6 +31,47 @@ function timeline(inputs: WorldInputs = initial) {
 }
 
 describe("crystal world director", () => {
+  it("starts a preparation frontier outside the home island even at zero progress", () => {
+    const time = timeline();
+    time.director.setInputs({ ...initial, phase: "preparing", fraction: 0 });
+    expect(time.director.step(0, time.now)).toMatchObject({ front: 30, cry: 30, ring: 30 });
+    expect(time.advance(2).front).toBe(30);
+  });
+
+  it("dissolves the home island on content pages and lowers paper ink", () => {
+    const time = timeline();
+    time.director.setInputs({ ...initial, page: "content" });
+    const early = time.advance(.1);
+    expect(early.island).toBeLessThan(9);
+    expect(early.island).toBeGreaterThan(-18);
+    expect(time.director.snap()).toMatchObject({ island: -18, paperInk: .12 });
+    time.director.setInputs(initial);
+    expect(time.director.snap()).toMatchObject({ island: 9, paperInk: 1 });
+  });
+
+  it("flashes only on a successful home preparation and retires by 1400 ms", () => {
+    const time = timeline();
+    time.director.setInputs({ ...initial, phase: "preparing", fraction: .8 });
+    time.advance(1);
+    time.director.setInputs({ ...initial, phase: "running" });
+    expect(time.director.step(0, time.now).flash).toBeCloseTo(1.1);
+    expect(time.advance(.45).flash).toBeCloseTo(1.1 / Math.E);
+    expect(time.advance(.949).flash).toBeGreaterThan(0);
+    expect(time.advance(.001).flash).toBe(0);
+  });
+
+  it("never flashes initial running, direct idle-to-running, content launches or static policy", () => {
+    expect(timeline({ ...initial, phase: "running" }).frame.flash).toBe(0);
+    const idle = timeline(); idle.director.setInputs({ ...initial, phase: "running" });
+    expect(idle.advance(.1).flash).toBe(0);
+    const content = timeline({ ...initial, page: "content", phase: "preparing" });
+    content.director.setInputs({ ...initial, page: "content", phase: "running" });
+    expect(content.advance(.1).flash).toBe(0);
+    const reduced = timeline({ ...initial, phase: "preparing" });
+    reduced.director.setInputs({ ...initial, phase: "running" });
+    expect(reduced.director.snap().flash).toBe(0);
+    expect(reduced.advance(.1).flash).toBe(0);
+  });
   it("starts the camera at zero speed and approaches with the 36/12 critical spring", () => {
     const time = timeline();
     const start = time.frame.eye[1];
@@ -57,11 +98,11 @@ describe("crystal world director", () => {
     const time = timeline(); time.director.setInputs({ ...initial, phase: "preparing", fraction: .37 });
     time.director.step(0, time.now);
     for (let index = 0; index < 12; index++) time.wake(.05, 250);
-    expect(time.frame.front).toBeCloseTo(61.05, 0);
+    expect(time.frame.front).toBeCloseTo(79.95, 0);
     expect(time.frame.simTime).toBeCloseTo(.6, 5);
   });
   it("renders the selected scene and material correctly before the first animated frame", () => {
-    expect(timeline().frame).toMatchObject({ eye: [-6, 14, 37], at: [2, 18.5, -40], fov: 36, profile: 0, mask: 0, lat: 1, island: 9, fogD: 150, bloom: .8, horizon: -1, exposure: 1 });
+    expect(timeline().frame).toMatchObject({ eye: [-6, 14, 37], at: [2, 11, -40], fov: 36, profile: 0, mask: 0, lat: 1, island: 9, fogD: 150, bloom: .8, horizon: -1, exposure: 1 });
     expect(timeline({ ...initial, scene: "massif", material: "solid" }).frame)
       .toMatchObject({ eye: [-22, 33, 62], at: [-3, 8, -12], fov: 34, profile: 1, mask: 1, lat: 0, island: 0, fogD: 190, bloom: .7, horizon: -1, exposure: .95 });
     expect(timeline({ ...initial, material: "solid" }).frame).toMatchObject({ bloom: .6, horizon: .6, lat: 0 });
@@ -71,11 +112,11 @@ describe("crystal world director", () => {
     const time = timeline();
     time.director.setInputs({ ...initial, phase: "preparing", fraction: .5 });
     const half = time.advance(3).front;
-    expect(half).toBeCloseTo(82.5, 0);
+    expect(half).toBeCloseTo(97.5, 0);
     time.director.setInputs({ ...initial, phase: "preparing", fraction: .2 });
     const next = time.advance(1);
     expect(next.front).toBeGreaterThanOrEqual(half);
-    expect(next.front).toBeCloseTo(82.5, 0);
+    expect(next.front).toBeCloseTo(97.5, 0);
     expect(next.ring).toBe(next.front);
     expect(next.cry).toBeGreaterThanOrEqual(next.front);
   });
@@ -85,8 +126,8 @@ describe("crystal world director", () => {
     time.director.setInputs({ ...initial, phase: "preparing", fraction: null });
     expect(time.advance(1).front).toBeGreaterThan(0);
     const frame = time.advance(119);
-    expect(frame.front).toBeCloseTo(24.75, 0);
-    expect(frame.front).toBeLessThanOrEqual(24.75 + 1e-6);
+    expect(frame.front).toBeCloseTo(50.25, 0);
+    expect(frame.front).toBeLessThanOrEqual(50.25 + 1e-6);
   });
 
   it("keeps confirmed progress when a later stage has an unknown total", () => {
@@ -128,8 +169,8 @@ describe("crystal world director", () => {
     time.director.setInputs(initial);
     time.director.setInputs({ ...initial, phase: "preparing", fraction: .05 });
     const restart = time.advance(2);
-    expect(restart.front).toBeCloseTo(8.25, 0);
-    expect(restart.cry).toBeLessThan(9);
+    expect(restart.front).toBeCloseTo(36.75, 0);
+    expect(restart.cry).toBeLessThan(37);
   });
 
   it("dims and settles a running world and ignores later pointer activity", () => {
@@ -172,7 +213,7 @@ describe("crystal world director", () => {
     time.director.setInputs({ ...initial, phase: "preparing", fraction: .1 });
     const pushed = time.advance(10);
     expect(pushed.eye[0]).toBeCloseTo(-5.28, 3);
-    expect(pushed.eye[1]).toBeCloseTo(14.162, 3);
+    expect(pushed.eye[1]).toBeCloseTo(13.892, 3);
     expect(pushed.eye[2]).toBeCloseTo(30.07, 3);
   });
 

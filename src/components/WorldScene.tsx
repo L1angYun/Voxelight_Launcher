@@ -52,6 +52,7 @@ export function WorldScene(props: WorldSceneProps) {
     let width = 1, height = 1, tier: Tier;
     let lastLayoutKey = "", trackedAnchor: Element | null = null;
     let lastAnchorNdc: [number, number] = [.62, -.66];
+    let previousPhase = current.current.phase;
     let renderer: WorldRenderer | null = null;
     let pointerBound = false;
     let introPending = false, introTimer: ReturnType<typeof setTimeout> | null = null;
@@ -98,6 +99,7 @@ export function WorldScene(props: WorldSceneProps) {
       host!.dataset.worldMaterial = renderer?.material ?? "solid";
       host!.dataset.worldPhase = current.current.phase;
       host!.dataset.worldFront = String(Math.round(frame.front));
+      host!.dataset.worldFlash = String(frame.flash);
       host!.dataset.worldTier = lost || !renderer ? "css" : tier.kind;
       host!.dataset.worldGrid = String(tier.grid);
       host!.dataset.worldParticles = String(renderer?.material === "lattice" ? tier.particleSide ** 2 : 0);
@@ -200,6 +202,8 @@ export function WorldScene(props: WorldSceneProps) {
       const nextPalette = palette(), paletteKey = JSON.stringify(nextPalette);
       const key = JSON.stringify([input.phase, input.fraction, input.page, input.scene, input.material, input.paused, input.effects, reducedMotion, highContrast, document.hidden, visible, lost, Boolean(fine?.matches)]);
       if (!force && key === lastKey && paletteKey === lastPalette) return;
+      const launchStarted = previousPhase === "idle" && input.phase === "preparing";
+      previousPhase = input.phase;
       lastKey = key; stop();
       if (!permitted()) introWordHoldUntil = null;
       tier = selectTier({ webgl2: Boolean(renderer) && !lost, floatTargets: Boolean(renderer?.capabilities.floatTargets), effects: input.effects ?? "full", reducedMotion, highContrast });
@@ -213,6 +217,7 @@ export function WorldScene(props: WorldSceneProps) {
         renderer?.setTier(tier);
         if (paletteKey !== lastPalette) { renderer?.setPalette(nextPalette); lastPalette = paletteKey; }
         fit(); publish(director.step(0, performance.now()));
+        if (launchStarted && permitted() && tier.kind === "animated") renderer?.shock(lastAnchorNdc);
         if (renderer && permitted() && tier.kind !== "css") paint(performance.now(), 0);
         start();
       } catch { fallback(); }

@@ -98,6 +98,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   let particles: ParticleResources | null = null, actualMaterial: WorldMaterial = "solid";
   let cssWidth = 2, cssHeight = 2, requestedDpr = 1;
   let anchor: [number, number] = [.62, -.66], pointer: [number, number] | null = null;
+  let islandOrigin: [number, number] | null = null;
   let pointerStrength = 0, pointerMovedAt = -Infinity, terrainTime = 0;
   let lastHit: [number, number] | null = null, holding = false, holdTime = 0, meltAmount = 0;
   let meltAt: [number, number] = [99999, 99999], shockAt: [number, number] = [99999, 99999];
@@ -378,7 +379,10 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     terrainTime += animated ? dt * frame.timeScale : 0;
     const aspect = cssWidth / cssHeight;
     const camera = makeCamera(frame.eye, frame.at, frame.fov, aspect);
-    const origin = groundHit(camera, aspect, anchor[0], anchor[1]) ?? [16, 6];
+    // Keep the departing island in world space while the content camera rises.
+    if (frame.page === "home" || islandOrigin === null)
+      islandOrigin = groundHit(camera, aspect, anchor[0], anchor[1]) ?? [16, 6];
+    const origin = islandOrigin;
     const hit = animated && pointer ? groundHit(camera, aspect, pointer[0], pointer[1]) : null;
     const pointerGoal = hit && performance.now() - pointerMovedAt < 260 ? 1 : 0;
     pointerStrength = animated ? pointerStrength + (pointerGoal - pointerStrength) * (1 - Math.exp(-dt * 8)) : 0;
@@ -432,6 +436,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     vector3(c.voxel, "uHaze", haze); vector3(c.voxel, "uPoint", palette.point);
     scalar(c.voxel, "uExposure", frame.exposure); scalar(c.voxel, "uFogD", frame.fogD); scalar(c.voxel, "uDim", frame.dim * (1 - .7 * lat));
     scalar(c.voxel, "uLight", Number(palette.light));
+    scalar(c.voxel, "uPaperInk", frame.paperInk);
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 30, f.grid * f.grid);
 
     if (lat > 0 && particles) {
@@ -445,6 +450,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       scalar(points, "uN", f.grid); scalar(points, "uS", p.side); scalar(points, "uSpan", SPAN);
       scalar(points, "uDpr", s.width / cssWidth); scalar(points, "uFogD", frame.fogD); scalar(points, "uRunDim", frame.runDim);
       vector3(points, "uPoint", palette.point); vector3(points, "uAccent", palette.accent); scalar(points, "uLight", Number(palette.light));
+      scalar(points, "uPaperInk", frame.paperInk); scalar(points, "uFront", frame.ring);
       crystalUniforms(points, frame, lat, origin); gl.drawArrays(gl.POINTS, 0, p.side * p.side);
       pointsSubmitted = true;
       gl.disable(gl.BLEND); gl.depthMask(true);
@@ -467,7 +473,8 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     }
     fullscreen(c.composite, null, s.width, s.height);
     bind(c.composite, "uTex", s.scene.texture); bind(c.composite, "uBloom", bloomAmount > 0 ? s.bloom[0].texture : s.scene.texture, 1);
-    scalar(c.composite, "uAmt", bloomAmount); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    scalar(c.composite, "uAmt", bloomAmount); scalar(c.composite, "uFlash", animated && !palette.light ? frame.flash : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE0); gl.bindVertexArray(null);
     return pointsSubmitted;
   }
