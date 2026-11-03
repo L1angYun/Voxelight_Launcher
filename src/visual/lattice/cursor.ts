@@ -238,8 +238,21 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     savedOwnership = null;
   }
 
+  function syncOwnedFrameVisibility() {
+    if (!savedFrame) return;
+    const focused = document.activeElement;
+    const keyboardFocused = keyboardElement || focused instanceof HTMLElement &&
+      target?.contains(focused) && focused.matches(":focus-visible");
+    const value = keyboardFocused ? savedFrame.value : "hidden";
+    const priority = keyboardFocused ? savedFrame.priority : "";
+    if (savedFrame.element.style.getPropertyValue("visibility") === value &&
+      savedFrame.element.style.getPropertyPriority("visibility") === priority) return;
+    if (keyboardFocused) restoreStyle(savedFrame);
+    else savedFrame.element.style.setProperty("visibility", "hidden");
+  }
+
   function setTarget(next: HTMLElement | null) {
-    if (target === next) return;
+    if (target === next) { syncOwnedFrameVisibility(); return; }
     if (target) targetResize?.unobserve(target);
     releaseOwnership();
     target = next;
@@ -251,7 +264,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       savedOwnership = next.getAttribute("data-halo-owned");
       next.dataset.haloOwned = "true";
       savedFrame = saveStyle(outline, "visibility");
-      outline.style.setProperty("visibility", "hidden");
+      syncOwnedFrameVisibility();
     }
     dots.stagger(MOTION.cursor.staggerSeconds, (index) =>
       Math.hypot(dots.x[index] - px, dots.y[index] - py),
