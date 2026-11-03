@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, Upload, UserRound } from "lucide-react";
@@ -14,9 +14,11 @@ import { CreateInstanceDialog } from "../library/CreateInstanceDialog";
 import { LaunchConsole } from "./LaunchConsole";
 import { RecentInstances } from "./RecentInstances";
 import { HomeAnimationSelector } from "./HomeAnimationSelector";
+import { MOTION } from "../../design/motion";
+import { useMotionTier } from "../../design/useMotionTier";
 import "./home.css";
 
-export function HomePage() {
+export function HomePage({ returning = false }: { returning?: boolean }) {
   const { t, i18n } = useTranslation();
   const {
     data,
@@ -39,7 +41,8 @@ export function HomePage() {
     reload,
     dismissNotice,
   } = useLauncher();
-  const { effects, reducedMotion, highContrast } = useAppearance();
+  const { effects } = useAppearance();
+  const { tier, sceneStatic: staticScene } = useMotionTier();
   const { play } = useOverture();
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -49,6 +52,21 @@ export function HomePage() {
   const [charAreaHovered, setCharAreaHovered] = useState(false);
   const [headPointer, setHeadPointer] = useState<{ x: number; y: number } | null>(null);
   const characterAreaRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    let active = true;
+    const publishAnchor = () => { if (active) window.dispatchEvent(new Event("vx:world-anchor")); };
+    publishAnchor();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(publishAnchor);
+    if (layoutRef.current) observer?.observe(layoutRef.current);
+    if (!observer) window.addEventListener("resize", publishAnchor);
+    return () => {
+      active = false;
+      observer?.disconnect();
+      window.removeEventListener("resize", publishAnchor);
+    };
+  }, []);
 
   const currentInstance = useMemo(
     () =>
@@ -117,7 +135,6 @@ export function HomePage() {
     ? t("home:accountPreview", { username: activeAccount?.username })
     : t("home:defaultPreview");
 
-  const staticScene = reducedMotion || highContrast || effects === "lite";
   const preparing = busy === "game.prepare";
   const running = Boolean(selectedRunningGame || gamePid);
   const currentProgress =
@@ -202,9 +219,11 @@ export function HomePage() {
       className="vx-home"
       data-effects={effects}
       data-motion={staticScene ? "reduced" : "full"}
+      data-motion-tier={tier}
+      data-returning={returning}
       data-state={stageState}
     >
-      <div className="vx-home__layout">
+      <div className="vx-home__layout" ref={layoutRef}>
         <section className="vx-home__stage" aria-labelledby="home-instance-title">
           <div className="vx-home__identity">
             <h1 id="home-instance-title" className="vx-home__console-name" title={stageTitle}>
@@ -265,7 +284,8 @@ export function HomePage() {
             <HomeAnimationSelector value={currentAnimation === "none" ? "idle" : currentAnimation}
               onChange={setManualAnimation} visible={charAreaHovered} disabled={running || preparing || staticScene} />
           </div>
-          <section className="vx-home__character-panel" aria-label={previewLabel}>
+          <section className="vx-home__character-panel" aria-label={previewLabel}
+            data-character-reveal={returning && tier !== "none" && !previewUnavailable ? "on" : "off"}>
             <div className="vx-home__character-orbit" aria-hidden="true">
               <span className="vx-home__character-floor" />
             </div>
@@ -275,6 +295,7 @@ export function HomePage() {
                 skinUrl={onlineAccount ? accountAppearance.skinUrl : defaultSkin.dataUrl}
                 capeUrl={onlineAccount ? accountAppearance.capeUrl : null}
                 model={onlineAccount ? accountAppearance.model : defaultSkin.model}
+                deferMs={returning && tier !== "none" ? MOTION.delay.characterMs : 0}
                 paused={staticScene}
                 animation={currentAnimation}
                 headPointer={headPointer}

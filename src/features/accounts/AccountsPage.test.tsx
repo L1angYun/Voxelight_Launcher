@@ -22,6 +22,9 @@ let mockLauncher: LauncherContextValue;
 let root: Root;
 let container: HTMLDivElement;
 let reducedMotion = false;
+let highContrast = false;
+let reducedTransparency = false;
+let effects: "full" | "lite" = "full";
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/launcher")>()),
@@ -36,7 +39,7 @@ vi.mock("../../app/controller/LauncherProvider", () => ({
   useLauncher: () => mockLauncher,
 }));
 vi.mock("../../app/AppearanceProvider", () => ({
-  useAppearance: () => ({ reducedMotion }),
+  useAppearance: () => ({ effects, reducedMotion, reducedTransparency, highContrast }),
 }));
 vi.mock("../../visual/character/CharacterCanvas", () => ({
   CharacterCanvas: (props: unknown) => {
@@ -178,6 +181,9 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockLauncher = fixture();
   reducedMotion = false;
+  highContrast = false;
+  reducedTransparency = false;
+  effects = "full";
   mocks.character.mockReset();
   mocks.open.mockReset();
   mocks.openUrl.mockReset();
@@ -218,6 +224,24 @@ afterEach(async () => {
 });
 
 describe("accounts and appearance", () => {
+  it.each([
+    { mode: "full", effects: "full" as const, reduce: false, contrast: false, transparency: false, delay: 280 },
+    { mode: "lite", effects: "lite" as const, reduce: false, contrast: false, transparency: false, delay: 280 },
+    { mode: "reduced transparency", effects: "full" as const, reduce: false, contrast: false, transparency: true, delay: 280 },
+    { mode: "reduced motion", effects: "full" as const, reduce: true, contrast: false, transparency: false, delay: 0 },
+    { mode: "high contrast", effects: "full" as const, reduce: false, contrast: true, transparency: false, delay: 0 },
+  ])("uses the appropriate character creation delay for $mode", async (preference) => {
+    effects = preference.effects;
+    reducedMotion = preference.reduce;
+    highContrast = preference.contrast;
+    reducedTransparency = preference.transparency;
+    await render();
+    expect(mocks.character).toHaveBeenLastCalledWith(expect.objectContaining({ deferMs: preference.delay }));
+    if (preference.transparency) {
+      expect(mocks.character).toHaveBeenLastCalledWith(expect.objectContaining({ autoRotate: true, animation: "idle" }));
+    }
+  });
+
   it("keeps the no-account default clearly labeled as a local preview", async () => {
     setAccounts([]);
     await render();

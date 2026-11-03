@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlayerObject, WalkingAnimation } from "skinview3d";
@@ -164,9 +164,72 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("CharacterCanvas", () => {
+  it("defers the WebGL viewer and resource loads until its requested creation delay", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await render({ skinUrl: "skin.png", capeUrl: "cape.png", deferMs: 280, label: "Preview" });
+    expect(viewers).toHaveLength(0);
+    expect(loadSkin).not.toHaveBeenCalled();
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(container.querySelector('[data-character-state="loading"]')).not.toBeNull();
+    await act(async () => vi.advanceTimersByTime(279));
+    expect(viewers).toHaveLength(0);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(viewers).toHaveLength(1);
+    expect(loadSkin).toHaveBeenCalledExactlyOnceWith("skin.png", "auto");
+    expect(loadCape).toHaveBeenCalledWith("cape.png", "cape");
+    expect(container.querySelector('[data-character-state="ready"]')).not.toBeNull();
+  });
+
+  it("cancels pending creation when its canvas is removed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await render({ skinUrl: "skin.png", deferMs: 280, label: "Preview" });
+    await act(async () => vi.advanceTimersByTime(100));
+    await act(async () => root.render(null));
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(viewers).toHaveLength(0);
+    expect(loadSkin).not.toHaveBeenCalled();
+  });
+
+  it.each(["skin", "cape"] as const)("restarts only the pending delay when its %s URL changes", async (resource) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const props = { skinUrl: "old-skin.png", capeUrl: "old-cape.png", deferMs: 280, interactive: true, label: "Preview" };
+    await render(props);
+    await act(async () => vi.advanceTimersByTime(200));
+    const next = { ...props, ...(resource === "skin" ? { skinUrl: "new-skin.png" } : { capeUrl: "new-cape.png" }) };
+    await render(next);
+    await act(async () => vi.advanceTimersByTime(279));
+    expect(viewers).toHaveLength(0);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(viewers).toHaveLength(1);
+    expect(loadSkin).toHaveBeenCalledExactlyOnceWith(next.skinUrl, "auto");
+    expect(loadCape).toHaveBeenCalledWith(next.capeUrl, "cape");
+    const viewer = viewers[0];
+    await render({ ...next, skinUrl: "later-skin.png", capeUrl: "later-cape.png" });
+    expect(viewers).toHaveLength(1);
+    expect(viewer.disposed).toBe(false);
+    expect(loadSkin).toHaveBeenLastCalledWith("later-skin.png", "auto");
+    expect(loadCape).toHaveBeenLastCalledWith("later-cape.png", "cape");
+  });
+
+  it("cleans StrictMode's first timer and creates one deferred interactive viewer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(async () => root.render(createElement(StrictMode, null,
+      createElement(CharacterCanvas, { skinUrl: "skin.png", deferMs: 280, interactive: true, label: "Preview" }))));
+    expect(viewers).toHaveLength(0);
+    await act(async () => vi.advanceTimersByTime(280));
+    expect(viewers).toHaveLength(1);
+    expect(loadSkin).toHaveBeenCalledExactlyOnceWith("skin.png", "auto");
+    expect(container.querySelector("canvas")!.tabIndex).toBe(0);
+    expect(viewers[0].autoRotate).toBe(true);
+    await act(async () => root.render(null));
+    expect(viewers[0].disposed).toBe(true);
+    expect(container.querySelector("canvas")).toBeNull();
+  });
+
   it("uses grounded vanilla running proportions without artificial jumping or whole-body lean", async () => {
     await render({ skinUrl: "skin.png", animation: "run", headPointer: { x: 1, y: 1 }, label: "Preview" });
     const viewer = viewers[0];

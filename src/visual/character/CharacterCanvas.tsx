@@ -64,6 +64,7 @@ export function CharacterCanvas({
   retryLabel,
   errorLabel,
   resetToken = 0,
+  deferMs = 0,
 }: {
   skinUrl?: string | null;
   capeUrl?: string | null;
@@ -81,6 +82,8 @@ export function CharacterCanvas({
   retryLabel?: string;
   errorLabel?: string;
   resetToken?: number;
+  /** Delay only viewer construction; existing viewers still apply resources immediately. */
+  deferMs?: number;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
@@ -88,6 +91,9 @@ export function CharacterCanvas({
   const viewerRef = useRef<WebGLSkinViewer | null>(null);
   const loaderRef = useRef<SkinTextureLoader | null>(null);
   const capeLoaderRef = useRef<CapeTextureLoader | null>(null);
+  const pendingStartRef = useRef<(() => void) | null>(null);
+  const deferRef = useRef(deferMs);
+  deferRef.current = deferMs;
   const cameraTouched = useRef(false);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
@@ -116,150 +122,182 @@ export function CharacterCanvas({
   }, []);
 
   useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-    let active = true;
-    let instance: WebGLSkinViewer;
-    let observer: ResizeObserver | undefined;
-    let intersectionObserver: IntersectionObserver | undefined;
-    const canvas = document.createElement("canvas");
-    canvasRef.current = canvas;
-    canvas.setAttribute("role", "img");
-    canvas.setAttribute("aria-label", label);
-    canvas.tabIndex = interactive ? 0 : -1;
-    mount.append(canvas);
-    const reportFailure = (message: string) => {
-      if (!active) return;
-      setError(message);
-      setLoading(false);
-      onErrorRef.current?.(message);
-    };
-    try {
-      instance = new WebGLSkinViewer({
-        canvas,
-        width: Math.max(1, mount.clientWidth),
-        height: Math.max(1, mount.clientHeight),
-        pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-        zoom: 0.76,
-        renderPaused: true,
-      });
-      instance.controls.enablePan = false;
-      instance.controls.enableDamping = false;
-      instance.controls.enableRotate = interactive;
-      instance.controls.enableZoom = interactive;
-      instance.controls.minDistance = 30;
-      instance.controls.maxDistance = 140;
-      instance.autoRotateSpeed = 0.32;
-      instance.playerWrapper.rotation.y = -0.28;
-      viewerRef.current = instance;
-      loaderRef.current = new SkinTextureLoader(instance);
-      capeLoaderRef.current = new CapeTextureLoader(instance);
-      setError(null);
-      setViewer(instance);
-    } catch {
-      canvas.remove();
-      reportFailure("renderer.unavailable");
+    let stopped = false;
+    let timer: number | undefined;
+    let teardown: (() => void) | undefined;
+    function setup() {
+      const mount = mountRef.current;
+      if (!mount) return;
+      let active = true;
+      let instance: WebGLSkinViewer;
+      let observer: ResizeObserver | undefined;
+      let intersectionObserver: IntersectionObserver | undefined;
+      const canvas = document.createElement("canvas");
+      canvasRef.current = canvas;
+      canvas.setAttribute("role", "img");
+      canvas.setAttribute("aria-label", label);
+      canvas.tabIndex = interactive ? 0 : -1;
+      mount.append(canvas);
+      const reportFailure = (message: string) => {
+        if (!active) return;
+        setError(message);
+        setLoading(false);
+        onErrorRef.current?.(message);
+      };
+      try {
+        instance = new WebGLSkinViewer({
+          canvas,
+          width: Math.max(1, mount.clientWidth),
+          height: Math.max(1, mount.clientHeight),
+          pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+          zoom: 0.76,
+          renderPaused: true,
+        });
+        instance.controls.enablePan = false;
+        instance.controls.enableDamping = false;
+        instance.controls.enableRotate = interactive;
+        instance.controls.enableZoom = interactive;
+        instance.controls.minDistance = 30;
+        instance.controls.maxDistance = 140;
+        instance.autoRotateSpeed = 0.32;
+        instance.playerWrapper.rotation.y = -0.28;
+        viewerRef.current = instance;
+        loaderRef.current = new SkinTextureLoader(instance);
+        capeLoaderRef.current = new CapeTextureLoader(instance);
+        setError(null);
+        setViewer(instance);
+      } catch {
+        canvas.remove();
+        reportFailure("renderer.unavailable");
+        return () => {
+          active = false;
+        };
+      }
+
+      const render = () => {
+        if (active && !instance.disposed) instance.render();
+      };
+      const resize = () => {
+        if (!active || instance.disposed) return;
+        const { width, height } = mount.getBoundingClientRect();
+        if (width < 1 || height < 1) return;
+        instance.setSize(Math.round(width), Math.round(height));
+        if (!cameraTouched.current) instance.zoom = Math.max(0.3, Math.min(0.76, width / height));
+        render();
+      };
+      const touchCamera = () => {
+        cameraTouched.current = true;
+      };
+      const release = () => canvas.dispatchEvent(new MouseEvent("mouseup"));
+      const contextLost = (event: Event) => {
+        event.preventDefault();
+        reportFailure("renderer.unavailable");
+      };
+      const keydown = (event: globalThis.KeyboardEvent) => {
+        if (!interactive || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-"].includes(event.key)) return;
+        event.preventDefault();
+        cameraTouched.current = true;
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight")
+          instance.playerWrapper.rotation.y += event.key === "ArrowLeft" ? -0.12 : 0.12;
+        else if (event.key === "ArrowUp" || event.key === "ArrowDown")
+          instance.playerWrapper.rotation.x = Math.max(
+            -0.6,
+            Math.min(0.6, instance.playerWrapper.rotation.x + (event.key === "ArrowUp" ? -0.08 : 0.08)),
+          );
+        else {
+          const distance = instance.camera.position.length();
+          const next = Math.max(30, Math.min(140, distance * (event.key === "-" ? 1.1 : 0.9)));
+          instance.camera.position.multiplyScalar(next / distance);
+          instance.controls.update();
+        }
+        render();
+      };
+      instance.controls.addEventListener("change", render);
+      instance.controls.addEventListener("start", touchCamera);
+      canvas.addEventListener("keydown", keydown);
+      canvas.addEventListener("webglcontextlost", contextLost);
+      window.addEventListener("pointerup", release);
+      window.addEventListener("pointercancel", release);
+      window.addEventListener("blur", release);
+      window.addEventListener("resize", resize);
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(resize);
+        observer.observe(mount);
+      }
+      inView.current = true;
+      if (typeof IntersectionObserver !== "undefined") {
+        intersectionObserver = new IntersectionObserver(([entry]) => {
+          if (!active) return;
+          inView.current = entry.isIntersecting;
+          setVisible(!document.hidden && inView.current);
+        }, { threshold: 0.01 });
+        intersectionObserver.observe(mount);
+      }
+      resize();
+
       return () => {
         active = false;
+        observer?.disconnect();
+        intersectionObserver?.disconnect();
+        window.removeEventListener("resize", resize);
+        window.removeEventListener("pointerup", release);
+        window.removeEventListener("pointercancel", release);
+        window.removeEventListener("blur", release);
+        canvas.removeEventListener("keydown", keydown);
+        canvas.removeEventListener("webglcontextlost", contextLost);
+        instance.controls.removeEventListener("change", render);
+        instance.controls.removeEventListener("start", touchCamera);
+        loaderRef.current?.dispose();
+        loaderRef.current = null;
+        capeLoaderRef.current?.dispose();
+        capeLoaderRef.current = null;
+        viewerRef.current = null;
+        const geometries = new Set<BufferGeometry>();
+        const materials = new Set<Material>();
+        instance.scene.traverse((object: Object3D) => {
+          const mesh = object as typeof object & { geometry?: BufferGeometry; material?: Material | Material[] };
+          if (mesh.geometry) geometries.add(mesh.geometry);
+          if (mesh.material)
+            for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) materials.add(material);
+        });
+        instance.dispose();
+        for (const geometry of geometries) geometry.dispose();
+        for (const material of materials) material.dispose();
+        instance.composer.dispose();
+        instance.fxaaPass.material.dispose();
+        instance.renderer.forceContextLoss();
+        canvas.remove();
+        canvasRef.current = null;
       };
     }
-
-    const render = () => {
-      if (active && !instance.disposed) instance.render();
+    const create = () => {
+      timer = undefined;
+      if (!stopped) teardown = setup();
     };
-    const resize = () => {
-      if (!active || instance.disposed) return;
-      const { width, height } = mount.getBoundingClientRect();
-      if (width < 1 || height < 1) return;
-      instance.setSize(Math.round(width), Math.round(height));
-      if (!cameraTouched.current) instance.zoom = Math.max(0.3, Math.min(0.76, width / height));
-      render();
+    const schedule = () => {
+      if (stopped || viewerRef.current) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      setLoading(true);
+      setError(null);
+      setCapeError(null);
+      if (deferRef.current > 0) timer = window.setTimeout(create, deferRef.current);
+      else create();
     };
-    const touchCamera = () => {
-      cameraTouched.current = true;
-    };
-    const release = () => canvas.dispatchEvent(new MouseEvent("mouseup"));
-    const contextLost = (event: Event) => {
-      event.preventDefault();
-      reportFailure("renderer.unavailable");
-    };
-    const keydown = (event: globalThis.KeyboardEvent) => {
-      if (!interactive || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-"].includes(event.key)) return;
-      event.preventDefault();
-      cameraTouched.current = true;
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight")
-        instance.playerWrapper.rotation.y += event.key === "ArrowLeft" ? -0.12 : 0.12;
-      else if (event.key === "ArrowUp" || event.key === "ArrowDown")
-        instance.playerWrapper.rotation.x = Math.max(
-          -0.6,
-          Math.min(0.6, instance.playerWrapper.rotation.x + (event.key === "ArrowUp" ? -0.08 : 0.08)),
-        );
-      else {
-        const distance = instance.camera.position.length();
-        const next = Math.max(30, Math.min(140, distance * (event.key === "-" ? 1.1 : 0.9)));
-        instance.camera.position.multiplyScalar(next / distance);
-        instance.controls.update();
-      }
-      render();
-    };
-    instance.controls.addEventListener("change", render);
-    instance.controls.addEventListener("start", touchCamera);
-    canvas.addEventListener("keydown", keydown);
-    canvas.addEventListener("webglcontextlost", contextLost);
-    window.addEventListener("pointerup", release);
-    window.addEventListener("pointercancel", release);
-    window.addEventListener("blur", release);
-    window.addEventListener("resize", resize);
-    if (typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(resize);
-      observer.observe(mount);
-    }
-    inView.current = true;
-    if (typeof IntersectionObserver !== "undefined") {
-      intersectionObserver = new IntersectionObserver(([entry]) => {
-        if (!active) return;
-        inView.current = entry.isIntersecting;
-        setVisible(!document.hidden && inView.current);
-      }, { threshold: 0.01 });
-      intersectionObserver.observe(mount);
-    }
-    resize();
-
+    pendingStartRef.current = schedule;
+    schedule();
     return () => {
-      active = false;
-      observer?.disconnect();
-      intersectionObserver?.disconnect();
-      window.removeEventListener("resize", resize);
-      window.removeEventListener("pointerup", release);
-      window.removeEventListener("pointercancel", release);
-      window.removeEventListener("blur", release);
-      canvas.removeEventListener("keydown", keydown);
-      canvas.removeEventListener("webglcontextlost", contextLost);
-      instance.controls.removeEventListener("change", render);
-      instance.controls.removeEventListener("start", touchCamera);
-      loaderRef.current?.dispose();
-      loaderRef.current = null;
-      capeLoaderRef.current?.dispose();
-      capeLoaderRef.current = null;
-      viewerRef.current = null;
-      const geometries = new Set<BufferGeometry>();
-      const materials = new Set<Material>();
-      instance.scene.traverse((object: Object3D) => {
-        const mesh = object as typeof object & { geometry?: BufferGeometry; material?: Material | Material[] };
-        if (mesh.geometry) geometries.add(mesh.geometry);
-        if (mesh.material)
-          for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) materials.add(material);
-      });
-      instance.dispose();
-      for (const geometry of geometries) geometry.dispose();
-      for (const material of materials) material.dispose();
-      instance.composer.dispose();
-      instance.fxaaPass.material.dispose();
-      instance.renderer.forceContextLoss();
-      canvas.remove();
-      canvasRef.current = null;
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (pendingStartRef.current === schedule) pendingStartRef.current = null;
+      teardown?.();
     };
   }, [attempt, interactive, label]);
+
+  useEffect(() => {
+    // Resource changes reschedule a pending construction only. Once present,
+    // the viewer keeps its controls, camera and current animation.
+    if (!viewerRef.current) pendingStartRef.current?.();
+  }, [skinUrl, capeUrl, deferMs]);
 
   useEffect(() => {
     if (!viewer || viewer.disposed) return;

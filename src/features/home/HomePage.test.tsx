@@ -7,6 +7,9 @@ import { createLauncherI18n } from "../../i18n";
 import { command, defaults, type Bootstrap, type Config } from "../../lib/launcher";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { HomePage } from "./HomePage";
+import { readFileSync } from "node:fs";
+
+const homeStyles = readFileSync("src/features/home/home.css", "utf8");
 
 const commandMock = vi.mocked(command);
 let mockLauncher: LauncherContextValue;
@@ -15,6 +18,10 @@ let container: HTMLDivElement;
 let mockEffects: "lite" | "full" = "full";
 let mockReducedMotion = false;
 let mockHighContrast = false;
+let mockReducedTransparency = false;
+let mockCharacterState = "loading";
+const resizeObservers: { callback: ResizeObserverCallback; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }[] = [];
+let style: HTMLStyleElement;
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/launcher")>()),
@@ -27,7 +34,7 @@ vi.mock("../../app/AppearanceProvider", () => ({
   useAppearance: () => ({
     effects: mockEffects,
     reducedMotion: mockReducedMotion,
-    reducedTransparency: false,
+    reducedTransparency: mockReducedTransparency,
     highContrast: mockHighContrast,
   }),
 }));
@@ -45,7 +52,10 @@ vi.mock("../../components/WorldScene", () => ({
   WorldScene: () => createElement("div", { "data-testid": "world-scene" }),
 }));
 vi.mock("../../visual/character/CharacterCanvas", () => ({
-  CharacterCanvas: ({ paused }: { paused: boolean }) => createElement("div", { "data-testid": "character-canvas", "data-paused": paused }),
+  CharacterCanvas: ({ paused, deferMs }: { paused: boolean; deferMs?: number }) => createElement("div", {
+    "data-testid": "character-canvas", className: "vx-character-canvas", "data-paused": paused,
+    "data-defer-ms": deferMs, "data-character-state": mockCharacterState,
+  }),
 }));
 vi.mock("../../visual/glass/GlassSystem", () => ({
   GlassSurface: ({ children }: { children: React.ReactNode }) => createElement("div", null, children),
@@ -148,11 +158,11 @@ function fixture(): LauncherContextValue {
   };
 }
 
-async function render() {
+async function render(props: { returning?: boolean } = {}) {
   const i18n = createLauncherI18n("zh-CN", "zh-CN");
   await i18n.initPromise;
   await act(async () => {
-    root.render(createElement(I18nextProvider, { i18n }, createElement(HomePage)));
+    root.render(createElement(I18nextProvider, { i18n }, createElement(HomePage, props)));
   });
 }
 
@@ -173,6 +183,14 @@ beforeEach(() => {
   mockEffects = "full";
   mockReducedMotion = false;
   mockHighContrast = false;
+  mockReducedTransparency = false;
+  mockCharacterState = "loading";
+  resizeObservers.length = 0;
+  vi.stubGlobal("ResizeObserver", class {
+    observe = vi.fn();
+    disconnect = vi.fn();
+    constructor(public callback: ResizeObserverCallback) { resizeObservers.push(this); }
+  });
   defaultSkinMock.mockReset();
   defaultSkinMock.mockReturnValue({
     skin: { id: "steve", name: "Steve", dataUrl: "steve.png", model: "classic" },
@@ -201,16 +219,77 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  style = document.createElement("style");
+  style.textContent = homeStyles;
+  document.head.append(style);
 });
 
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  style.remove();
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("HomePage", () => {
+  it("skips character creation delay and reveal on the first home mount", async () => {
+    await render();
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-defer-ms")).toBe("0");
+    expect(Number(getComputedStyle(container.querySelector(".vx-home__character-panel")!).opacity || 1)).toBe(1);
+  });
+
+  it("defers a returning character and reveals only its non-glass panel after ready", async () => {
+    await render({ returning: true });
+    const panel = container.querySelector<HTMLElement>(".vx-home__character-panel")!;
+    const column = container.querySelector<HTMLElement>(".vx-home__char-col")!;
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-defer-ms")).toBe("280");
+    expect(Number(getComputedStyle(panel).opacity || 1)).toBe(0);
+    expect(Number(getComputedStyle(column).opacity || 1)).toBe(1);
+    mockCharacterState = "ready";
+    await render({ returning: true });
+    expect(Number(getComputedStyle(panel).opacity || 1)).toBe(1);
+    expect(Number(getComputedStyle(container.querySelector(".vx-home__stage")!).opacity || 1)).toBe(1);
+  });
+
+  it("keeps transparent-mode character motion independent from the UI fade tier", async () => {
+    mockReducedTransparency = true;
+    await render({ returning: true });
+    expect(container.querySelector('.vx-home')?.getAttribute("data-motion-tier")).toBe("fade");
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-paused")).toBe("false");
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-defer-ms")).toBe("280");
+  });
+
+  it.each(["reduced motion", "high contrast"])("uses no character wait or reveal when %s takes priority on a return", async (preference) => {
+    mockReducedMotion = preference === "reduced motion";
+    mockHighContrast = preference === "high contrast";
+    await render({ returning: true });
+    expect(Number(getComputedStyle(container.querySelector(".vx-home__character-panel")!).opacity || 1)).toBe(1);
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-paused")).toBe("true");
+    expect(container.querySelector('[data-testid="character-canvas"]')?.getAttribute("data-defer-ms")).toBe("0");
+  });
+
+  it("publishes the mounted world anchor and republishes after home layout resizing", async () => {
+    const anchors: Element[] = [];
+    const listener = () => { const anchor = document.querySelector("[data-world-anchor]"); if (anchor) anchors.push(anchor); };
+    window.addEventListener("vx:world-anchor", listener);
+    try {
+      await render();
+      expect(anchors).toHaveLength(1);
+      expect(anchors[0]).toBe(container.querySelector(".vx-home__char-col"));
+      const layout = container.querySelector(".vx-home__layout")!;
+      const observer = resizeObservers.find((item) => item.observe.mock.calls.some(([target]) => target === layout));
+      expect(observer).toBeDefined();
+      await act(async () => observer!.callback([{ target: layout } as ResizeObserverEntry], {} as ResizeObserver));
+      expect(anchors).toHaveLength(2);
+      await act(async () => root.render(null));
+      expect(observer!.disconnect).toHaveBeenCalledOnce();
+      observer!.callback([{ target: layout } as ResizeObserverEntry], {} as ResizeObserver);
+      expect(anchors).toHaveLength(2);
+    } finally { window.removeEventListener("vx:world-anchor", listener); }
+  });
+
   it("puts the instance heading before the character and reserves its own animation controls", async () => {
     await render();
     const heading = container.querySelector("h1");
