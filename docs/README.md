@@ -1,9 +1,11 @@
 # 文档与目录入口
 
-当前背景方案以 2026-11-01 的结晶世界设计为准；较早报告保留其原始日期、版本和测试结果，不代表当前版本重新执行过这些验收。
+当前界面以 2026-11-03 的转场与统一设计及续作授权为准，背景基础采用 2026-11-01 的结晶世界设计。较早报告保留其原始日期、版本和测试结果，不代表当前版本重新执行过这些验收。
 
 ## 当前设计和验证
 
+- [0.6.0 前端统一、性能与完整复核](reports/frontend-completion-0.6.0.md)
+- [全部工作项续作计划与授权](superpowers/plans/2026-11-03-frontend-completion.md)
 - [结晶世界设计](superpowers/specs/2026-11-01-voxelight-crystal-world-design.md)
 - [实施计划与完成状态](superpowers/plans/2026-11-01-voxelight-crystal-world.md)
 - [已确认的概念实现](superpowers/reference/2026-11-01-crystal-world-concept.html)
