@@ -19,18 +19,12 @@ import { WindowChrome } from "./WindowChrome";
 import { useAppearance } from "./AppearanceProvider";
 import { GlassSurface } from "../visual/glass/GlassSystem";
 import { clamp, jellyMatrix, Spring } from "../visual/glass/jelly";
+import { MOTION } from "../design/motion";
 import "./shell.css";
 
 export type NavigationPage = "home" | "library" | "discover" | "multiplayer" | "downloads" | "accounts" | "settings";
 
-const NAV_LAYOUT_SETTLE_FRAMES = 3;
-const NAV_INDICATOR_SPRING = {
-  x: { stiffness: 260, damping: 17, pressedDamping: 22 },
-  y: { stiffness: 260, damping: 17 },
-  press: { stiffness: 310, damping: 18 },
-  stretch: { stiffness: 230, damping: 15 },
-  bend: { stiffness: 190, damping: 14 },
-} as const;
+const NAV_INDICATOR_SPRING = MOTION.lens;
 
 const icons: Record<string, typeof Play> = {
   home: Play,
@@ -74,6 +68,7 @@ function JellyNavigationIndicator({
   const initialized = useRef(false);
   const measuredActiveId = useRef<string | null>(null);
   const angle = useRef(0);
+  const navigationSize = useRef({ width: 0, height: 0 });
   const springs = useMemo(() => ({
     x: new Spring(),
     y: new Spring(),
@@ -94,7 +89,10 @@ function JellyNavigationIndicator({
     const energy = Math.abs(springs.stretch.value) + Math.hypot(springs.bendX.value, springs.bendY.value) * 0.015;
     indicator.style.width = `${rect.width}px`;
     indicator.style.height = `${rect.height}px`;
-    indicator.style.transform = `translate3d(${springs.x.value}px, ${springs.y.value}px, 0)`;
+    const overspill = Math.max(0, (Math.abs(matrix.m11) * rect.width + Math.abs(matrix.m12) * rect.height - rect.width) / 2);
+    const x = clamp(springs.x.value, overspill, Math.max(overspill, navigationSize.current.width - rect.width - overspill));
+    const y = clamp(springs.y.value, 0, Math.max(0, navigationSize.current.height - rect.height));
+    indicator.style.transform = `translate3d(${x}px, ${y}px, 0)`;
     indicator.style.setProperty("--jelly-matrix", matrix.css);
     indicator.style.setProperty("--jelly-bend-x", `${springs.bendX.value}px`);
     indicator.style.setProperty("--jelly-bend-y", `${springs.bendY.value}px`);
@@ -158,6 +156,7 @@ function JellyNavigationIndicator({
     const item = itemRefs.current.get(activeId);
     if (!nav || !item) return null;
     const navBounds = nav.getBoundingClientRect();
+    navigationSize.current = { width: navBounds.width, height: navBounds.height };
     const bounds = item.getBoundingClientRect();
     return {
       x: bounds.left - navBounds.left,
@@ -201,9 +200,9 @@ function JellyNavigationIndicator({
   const measureRef = useRef(measure);
   measureRef.current = measure;
 
-  const scheduleMeasure = useCallback((snap = false) => {
+  const scheduleMeasure = useCallback((snap = false, frames: number = MOTION.lens.settleFrames) => {
     snapNextMeasure.current ||= snap;
-    measureFramesRemaining.current = NAV_LAYOUT_SETTLE_FRAMES;
+    measureFramesRemaining.current = frames;
     setSettled(false);
     if (typeof requestAnimationFrame === "undefined") {
       measureRef.current(snapNextMeasure.current);
@@ -225,7 +224,8 @@ function JellyNavigationIndicator({
   }, [setSettled]);
 
   useLayoutEffect(() => {
-    if (!dragging) scheduleMeasure();
+    if (!dragging) scheduleMeasure(false, measuredActiveId.current !== null && measuredActiveId.current !== activeId
+      ? MOTION.lens.navigationFrames : MOTION.lens.settleFrames);
   }, [activeId, dragging, scheduleMeasure, staticMotion]);
 
   useEffect(() => {
@@ -494,6 +494,7 @@ export function FloatingNav({
       <nav
         ref={navRef}
         className="vx-floating-nav"
+        data-visual-owner="lens"
         data-motion-settled="false"
         data-hover-other={dragPage === undefined && hoveredPage !== undefined && hoveredPage !== page ? "true" : "false"}
         data-dragging="false"

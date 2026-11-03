@@ -58,6 +58,24 @@ function loadSource(file, cache = new Map()) {
 
 const { FloatingNav } = loadSource(resolve(projectRoot, "src/app/FloatingNav.tsx"));
 
+test("navigation selection starts after one measurement frame", async () => {
+  await render("home"); flush();
+  await render("settings"); advance(2);
+  const x = Number(slot().style.transform.match(/translate3d\(([-\d.]+)/)[1]);
+  assert.ok(x > 0, "the selected lens must travel on the second RAF, after one measurement RAF");
+});
+
+test("the painted lens stays within the navigation when returning across its entire width", async () => {
+  await render("settings"); flush();
+  await render("home");
+  for (let index = 0; index < 90; index++) {
+    advance();
+    const x = Number(slot().style.transform.match(/translate3d\(([-\d.]+)/)[1]);
+    assert.ok(x >= 0 && x + Number.parseFloat(slot().style.width) <= geometry.navWidth, `lens escaped navigation at ${x}`);
+  }
+  assert.equal(nav().dataset.visualOwner, "lens");
+});
+
 function rect(x, y, width, height) {
   return { x, y, left: x, top: y, width, height, right: x + width, bottom: y + height, toJSON() {} };
 }
