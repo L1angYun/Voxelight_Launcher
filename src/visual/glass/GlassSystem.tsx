@@ -333,10 +333,11 @@ export function GlassSurface({
       const width = element.offsetWidth || bounds.width;
       const height = element.offsetHeight || bounds.height;
       if (width <= 0 || height <= 0) return;
-      const radius = Number.parseFloat(getComputedStyle(element).borderTopLeftRadius) || presets[variant].radius;
-      const bevel = Number.parseFloat(getComputedStyle(element).getPropertyValue("--vx-lens-edge-width")) || 20;
-      const refraction = Number.parseFloat(getComputedStyle(element).getPropertyValue("--vx-lens-refraction")) || 0.9;
-      const rawDispersion = Number.parseFloat(getComputedStyle(element).getPropertyValue("--vx-lens-dispersion"));
+      const computed = getComputedStyle(element);
+      const radius = Number.parseFloat(computed.borderTopLeftRadius) || presets[variant].radius;
+      const bevel = Number.parseFloat(computed.getPropertyValue("--vx-lens-edge-width")) || 20;
+      const refraction = Number.parseFloat(computed.getPropertyValue("--vx-lens-refraction")) || 0.9;
+      const rawDispersion = Number.parseFloat(computed.getPropertyValue("--vx-lens-dispersion"));
       const dispersion = Number.isFinite(rawDispersion) ? rawDispersion : 0.65;
       setShape((previous) => previous?.width === width && previous.height === height && previous.radius === radius
         && previous.bevel === bevel && previous.refraction === refraction && previous.dispersion === dispersion
