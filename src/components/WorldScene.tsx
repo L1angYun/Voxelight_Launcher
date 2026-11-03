@@ -256,8 +256,11 @@ export function WorldScene(props: WorldSceneProps) {
       }
     }
     const changed = () => update();
-    const resized = () => { if (measureLayout().key !== lastLayoutKey) update(true); };
-    const anchorCommitted = () => { if (measureLayout().key !== lastLayoutKey) update(true); };
+    const resized = () => {
+      const next = measureLayout();
+      if (next.key !== lastLayoutKey || next.anchor !== trackedAnchor) update(true);
+    };
+    const anchorCommitted = resized;
     const mutations = new MutationObserver(records => { if (records.some(record => record.target === html)) update(); });
     mutations.observe(html, { attributes: true, attributeFilter: ["data-theme", "data-effects", "data-high-contrast", "data-reduced-motion", "style", "class"] });
     const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resized);
