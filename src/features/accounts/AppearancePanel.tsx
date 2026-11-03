@@ -13,6 +13,8 @@ import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { GlassSurface } from "../../visual/glass/GlassSystem";
 import { accountErrorCodeText, accountErrorText } from "./utils";
+import { MOTION } from "../../design/motion";
+import { useMotionTier } from "../../design/useMotionTier";
 
 const defaultChoices: DefaultSkinId[] = ["steve", "alex"];
 
@@ -31,6 +33,7 @@ export function AppearancePanel({
 }) {
   const { t } = useTranslation();
   const { reducedMotion } = useAppearance();
+  const { tier } = useMotionTier();
   const online = account?.type === "microsoft" || account?.type === "authlib";
   const editable = account?.type === "microsoft";
   const [previewMode, setPreviewMode] = useState<"account" | "local">(online ? "account" : "local");
@@ -216,6 +219,7 @@ export function AppearancePanel({
       <div className="vx-appearance-preview" role="region" aria-label={t(previewMode === "local" ? "accounts:preview.localNotice" : "accounts:preview.accountNotice")}>
         {currentSkin ? (
           <CharacterCanvas
+            deferMs={tier === "none" ? 0 : MOTION.delay.characterMs}
             skinUrl={currentSkin}
             capeUrl={previewMode === "account" ? appearance.capeUrl : null}
             model={currentModel}

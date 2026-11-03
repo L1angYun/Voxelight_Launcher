@@ -29,7 +29,7 @@
   background: linear-gradient(90deg, color-mix(in srgb, var(--world-ink, var(--bg-base)) 96%, transparent) 0% 94%, transparent 100%);
 }
 .vx-home__identity { min-width: 0; }
-.vx-home__identity { transition: opacity 180ms var(--ease-out); }
+.vx-home__identity { transition: opacity var(--duration-normal) var(--ease-out); }
 [data-world-intro="on"] .vx-home__identity { opacity: 0; transition: none; }
 [data-reduced-motion="true"] .vx-home__identity,
 [data-effects="lite"] .vx-home__identity { transition: none; }
@@ -95,6 +95,12 @@
   min-width: 0;
   overflow: visible;
 }
+.vx-home__character-panel[data-character-reveal="on"] { opacity: 0; }
+.vx-home__character-panel[data-character-reveal="on"]:has(.vx-character-canvas[data-character-state="ready"]) {
+  opacity: 1;
+  transition: opacity var(--duration-slow) var(--ease-out);
+}
+.vx-home__character-panel[data-character-reveal="on"]:has(.vx-character-canvas[data-character-state="error"]) { opacity: 1; transition: none; }
 .vx-home__character { position: relative; z-index: 1; width: 100%; height: 100%; }
 .vx-home__character .vx-character-canvas__mount { height: 100%; }
 .vx-home__character-orbit { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
@@ -223,7 +229,13 @@
   .vx-home__char-col { grid-column: 1; grid-row: 2; width: min(100%, 320px); }
   .vx-home__recent { grid-column: 1; grid-row: 3; }
 }
-.vx-home[data-motion="reduced"] *, .vx-home[data-effects="lite"] * { animation: none !important; transition: none !important; }
+.vx-home[data-motion-tier="none"] * { animation: none !important; transition: none !important; }
+.vx-home[data-motion-tier="fade"] .spin { animation: none !important; }
+.vx-home[data-motion-tier="fade"] .vx-button:active { transform: none; }
+.vx-home[data-returning="true"][data-motion-tier="fade"] :is(.vx-home__identity, .vx-home__preview-source, .vx-home__recent) {
+  animation: vx-home-content-reveal var(--duration-fast) var(--ease-out) both;
+}
+@keyframes vx-home-content-reveal { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .vx-home *, .vx-home *::before, .vx-home *::after { animation: none !important; transition: none !important; }
 }
