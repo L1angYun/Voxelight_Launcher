@@ -8,6 +8,7 @@ import { createLauncherI18n } from "../../i18n";
 import { command, defaults, searchResources, type Bootstrap, type ResourceProject } from "../../lib/launcher";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { DiscoverPage } from "./DiscoverPage";
+import { ToastProvider } from "../../components/ui/ToastProvider";
 import type { ResourceProjectDetails } from "./types";
 
 const commandMock = vi.mocked(command);
@@ -110,7 +111,7 @@ async function render() {
   const i18n = createLauncherI18n("zh-CN", "zh-CN");
   await i18n.initPromise;
   await act(async () => root.render(createElement(I18nextProvider, { i18n },
-    createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(DiscoverPage)))));
+    createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(ToastProvider, null, createElement(DiscoverPage))))));
 }
 
 beforeEach(() => {
@@ -120,6 +121,7 @@ beforeEach(() => {
   });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockLauncher = fixture();
+  project.project_type = "mod";
   commandMock.mockReset();
   commandMock.mockImplementation(async (name) => {
     if (name === "get_modrinth_project_details" || name === "get_curseforge_project_details") return details;
@@ -144,6 +146,47 @@ afterEach(() => {
 });
 
 describe("DiscoverPage", () => {
+  it("keeps same-source results visible but inert until the new type finishes loading", async () => {
+    await render();
+    let resolveSearch!: (items: ResourceProject[]) => void;
+    searchMock.mockImplementationOnce(() => new Promise((resolve) => { resolveSearch = resolve; }));
+    const previousCard = container.querySelector('[data-project-id="sodium"]')!;
+    const install = previousCard.querySelector<HTMLButtonElement>('button[aria-label*="安装"]')!;
+    await act(async () => container.querySelector<HTMLButtonElement>('#discover-type-resourcepack')!.click());
+    expect(previousCard.isConnected).toBe(true);
+    expect(container.querySelector('.vx-project-grid')?.hasAttribute("inert")).toBe(true);
+    expect(container.querySelector('.vx-project-grid')?.getAttribute("aria-busy")).toBe("true");
+    await act(async () => install.click());
+    expect(commandMock).not.toHaveBeenCalledWith("install_resource", expect.anything());
+    await act(async () => resolveSearch([{ ...project, project_id: "fresh-pack", title: "Fresh pack", project_type: "resourcepack" }]));
+    expect(container.querySelector('[data-project-id="fresh-pack"]')).not.toBeNull();
+    expect(container.querySelector('.vx-project-grid')?.hasAttribute("inert")).toBe(false);
+  });
+
+  it("hides old results immediately when a different source is requested", async () => {
+    await render();
+    commandMock.mockImplementation(async (name) => name === "search_curseforge" ? await new Promise(() => {}) : null);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="来源"]')!.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="curseforge"]')!.click());
+    expect(container.querySelector('[data-project-id="sodium"]')).toBeNull();
+    expect(container.querySelector('.vx-project-grid')?.getAttribute("aria-busy")).toBe("true");
+  });
+
+  it("keeps the complete drawer content mounted through its native close transition", async () => {
+    await render();
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("查看详情"))!.click());
+    const drawer = container.querySelector<HTMLDialogElement>(".vx-project-details")!;
+    expect(drawer.open).toBe(true);
+    expect(drawer.textContent).toContain("1.0");
+    expect(drawer.textContent).toContain("未知关系");
+    await act(async () => drawer.querySelector<HTMLButtonElement>("[data-dialog-close]")!.click());
+    expect(drawer.isConnected).toBe(true);
+    expect(drawer.open).toBe(false);
+    expect(drawer.textContent).toContain("Sodium");
+    expect(drawer.textContent).toContain("1.0");
+    expect(drawer.textContent).toContain("未知关系");
+  });
+
   it("loads real compatible versions and keeps unknown dependency types distinct", async () => {
     await render();
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("查看详情"))!.click());

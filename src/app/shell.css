@@ -85,11 +85,11 @@ input, textarea, [contenteditable="true"] { user-select: text; }
   transition: color var(--duration-fast), background-color var(--duration-fast);
 }
 .vx-floating-nav__item.is-active { color: var(--text-primary); cursor: grab; touch-action: pan-y; }
-.vx-floating-nav__item.is-active > svg { color: var(--accent); }
+.vx-floating-nav__item.is-active > svg { color: var(--accent-ink, var(--accent)); }
 .vx-floating-nav[data-dragging="true"] .vx-floating-nav__item.is-active,
 .vx-floating-nav[data-dragging="true"] .vx-floating-nav__item.is-drag-target { cursor: grabbing; }
 .vx-floating-nav__item.is-drag-target { color: var(--text-primary); }
-.vx-floating-nav__item.is-drag-target > svg { color: var(--accent); }
+.vx-floating-nav__item.is-drag-target > svg { color: var(--accent-ink, var(--accent)); }
 .vx-floating-nav__label { display: inline; }
 .vx-floating-nav__count { display: inline-grid; min-width: 18px; height: 18px; place-items: center; padding-inline: 4px; border-radius: 5px; background: var(--text-primary); color: var(--bg-base); font-size: 10px; font-variant-numeric: tabular-nums; }
 .vx-floating-nav__avatar { display: inline-flex; width: 19px; height: 19px; overflow: hidden; border-radius: 5px; }
@@ -120,7 +120,7 @@ input, textarea, [contenteditable="true"] { user-select: text; }
 
 .vx-window-chrome__controls { display: flex; align-items: center; justify-content: flex-end; gap: 1px; padding-left: 4px; }
 .vx-window-chrome__controls .vx-button { min-width: 31px; min-height: 34px; padding: 6px; border-radius: 8px; color: var(--text-secondary); }
-.vx-app-main { position: relative; z-index: 1; isolation: isolate; height: 100%; min-height: 0; padding-top: var(--shell-height); overflow-x: hidden; overflow-y: auto; scrollbar-gutter: auto; scroll-padding-top: 20px; }
+.vx-app-main { position: absolute; inset: var(--shell-height) 0 0; z-index: 1; isolation: isolate; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; scroll-padding-top: 16px; }
 .vx-page-stage { min-width: 0; min-height: calc(100dvh - var(--shell-height)); }
 .vx-page-stage[data-exiting="true"] { pointer-events: none; }
 .vx-launch-status[data-exiting="true"] { pointer-events: none; }

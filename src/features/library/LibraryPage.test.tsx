@@ -134,7 +134,8 @@ describe("library and instance details", () => {
     expect(card.dataset.visualOwner).toBe("lattice");
     expect(card.querySelector("[data-launch]")!.getAttribute("data-variant")).toBe("secondary");
     expect(card.querySelectorAll(".vx-lattice-frame__dot")).toHaveLength(0);
-    expect(card.querySelector("svg[data-selected-mark]")).not.toBeNull();
+    expect(card.querySelector(':scope > .vx-lattice-frame[data-selected="true"]')).not.toBeNull();
+    expect(card.querySelector("svg[data-selected-mark]")).toBeNull();
     expect(card.querySelector(".vx-instance-card__path")?.getAttribute("title")).toBe(instance.gameDirectory);
     expect(card.querySelector(".vx-instance-card__name")?.getAttribute("title")).toBe(instance.name);
     expect(card.querySelector(".vx-instance-card__technical")?.getAttribute("title")).toContain("1.21.1");
@@ -169,7 +170,7 @@ describe("library and instance details", () => {
   it("passes loader and instance creation arguments through the shared create flow", async () => {
     await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }));
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Fabric")!.click());
-    const name = container.querySelector<HTMLInputElement>("#create-instance-name")!;
+    const name = container.querySelector<HTMLInputElement>('[id$="-create-instance-name"]')!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
       setter.call(name, "Fabric 世界");
@@ -178,6 +179,54 @@ describe("library and instance details", () => {
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("安装并准备"))!.click());
     expect(commandMock).toHaveBeenCalledWith("install_loader", { loader: "fabric", gameVersion: "1.21.1", loaderVersion: "0.16.9" });
     expect(commandMock).toHaveBeenCalledWith("create_instance", { name: "Fabric 世界", versionId: "fabric-loader-0.16.9-1.21.1" });
+  });
+
+  it("keeps fields and submit forms scoped to each mounted creation dialog", async () => {
+    await render(createElement("div", null,
+      createElement(CreateInstanceDialog, { open: false, onOpenChange: vi.fn(), onInstalled: vi.fn() }),
+      createElement(CreateInstanceDialog, { open: false, onOpenChange: vi.fn(), onInstalled: vi.fn() })));
+    const ids = [...container.querySelectorAll<HTMLElement>("[id]")].map((element) => element.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const submit of container.querySelectorAll<HTMLButtonElement>('button[form]')) {
+      expect(submit.form?.closest("dialog")).toBe(submit.closest("dialog"));
+    }
+  });
+
+  it("switches creation panels by keyboard without turning loader choices into tabs", async () => {
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }));
+    const tabs = [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    tabs[0].focus();
+    await act(async () => tabs[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(tabs[1]);
+    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+    expect(tabs[0].tabIndex).toBe(-1);
+    const importPanel = container.querySelector('[role="tabpanel"]')!;
+    expect(importPanel.getAttribute("aria-labelledby")).toBe(tabs[1].id);
+    expect(importPanel.querySelector('input[type="password"]')).not.toBeNull();
+    await act(async () => tabs[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true })));
+    const fabric = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Fabric")!;
+    expect(fabric.getAttribute("aria-pressed")).toBe("false");
+    expect(fabric.tabIndex).toBe(0);
+    fabric.focus();
+    const arrow = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+    await act(async () => fabric.dispatchEvent(arrow));
+    expect(arrow.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(fabric);
+  });
+
+  it("gives resource views one tab stop and replaces the old content panel", async () => {
+    await render(createElement(InstanceDetailPage, { instance, onBack: vi.fn(), onChanged: vi.fn(), onLaunch: vi.fn() }));
+    await act(async () => container.querySelector<HTMLElement>('[data-tab="content"]')!.click());
+    const lists = [...container.querySelectorAll('[role="tablist"]')];
+    const tabs = [...lists[1].querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs.filter((tab) => tab.tabIndex === 0)).toHaveLength(1);
+    tabs[0].focus();
+    await act(async () => tabs[0].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(tabs[2]);
+    expect(tabs[2].getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelectorAll('[role="tabpanel"]')).toHaveLength(2);
+    const resourcePanel = document.getElementById(tabs[2].getAttribute("aria-controls")!);
+    expect(resourcePanel?.getAttribute("aria-labelledby")).toBe(tabs[2].id);
   });
 
   it("opens an installed version directory without turning it into an instance", async () => {
@@ -201,8 +250,9 @@ describe("library and instance details", () => {
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "版本目录")!.click());
     const card = container.querySelector<HTMLElement>('[data-version-directory="1.21.1"]')!;
     expect(card.getAttribute("aria-current")).toBe("true");
-    const marker = card.querySelector("svg[data-selected-mark]");
+    const marker = card.querySelector(':scope > .vx-lattice-frame[data-selected="true"]');
     expect(marker).not.toBeNull();
-    expect(card.querySelector(":scope > .vx-lattice-frame")!.contains(marker)).toBe(false);
+    expect(marker?.getAttribute("aria-hidden")).toBe("true");
+    expect(card.querySelector("svg[data-selected-mark]")).toBeNull();
   });
 });

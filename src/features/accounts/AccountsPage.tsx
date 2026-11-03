@@ -4,6 +4,7 @@ import { useLauncher } from "../../app/controller/LauncherProvider";
 import { AccountList } from "./AccountList";
 import { AppearancePanel } from "./AppearancePanel";
 import { LoginDialog } from "./LoginDialog";
+import { PageShell, PageHeader } from "../../components/ui/PageShell";
 import "./accounts.css";
 
 export function AccountsPage() {
@@ -19,9 +20,9 @@ export function AccountsPage() {
   const [loginOpen, setLoginOpen] = useState(false);
 
   return (
-    <div className="vx-accounts-page">
-      <header className="vx-accounts-heading"><h1>{t("accounts:title")}</h1></header>
-      <div className="vx-accounts-layout">
+    <PageShell className="vx-accounts-page">
+      <PageHeader className="vx-accounts-heading" title={t("accounts:title")} />
+      <div className="vx-accounts-layout vx-workspace">
         <AccountList
           accounts={data.accounts}
           activeAccount={activeAccount}
@@ -38,6 +39,6 @@ export function AccountsPage() {
         />
       </div>
       <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} config={config} onChanged={reload} />
-    </div>
+    </PageShell>
   );
 }

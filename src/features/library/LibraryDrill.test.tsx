@@ -180,7 +180,7 @@ describe("library drill focus and scroll", () => {
       if (!launcher.data.instances.some((instance) => instance.id === created.id)) launcher.data.instances = [...launcher.data.instances, { ...created }];
     });
     await render(); main.scrollTop = 420; await click("创建实例");
-    const input = container.querySelector<HTMLInputElement>("#create-instance-name")!;
+    const input = container.querySelector<HTMLInputElement>('dialog[open] [id$="-create-instance-name"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, created.name);
       input.dispatchEvent(new Event("input", { bubbles: true }));

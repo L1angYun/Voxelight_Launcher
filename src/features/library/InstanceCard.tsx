@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { motion } from "motion/react";
+import { MOTION, motionDuration } from "../../design/motion";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
   Activity,
   ArrowUpRight,
-  Check,
   Clock3,
   Folder,
   Play,
@@ -35,12 +36,14 @@ export function InstanceCard({
   running = false,
   onOpen,
   onLaunch,
+  layoutOrder,
 }: {
   instance: Instance;
   selected?: boolean;
   running?: boolean;
   onOpen: () => void;
   onLaunch: () => void;
+  layoutOrder?: string;
 }) {
   const { t, i18n } = useTranslation();
   const [hovered, setHovered] = useState(false);
@@ -51,8 +54,9 @@ export function InstanceCard({
       ? playtimeText(instance.totalPlayTime, t)
       : null;
   return (
-    <article
+    <motion.article
       className={cn("vx-instance-card", selected && "is-selected", running && "is-running")}
+      {...(layoutOrder ? { layout: "position" as const, layoutDependency: layoutOrder, transition: { layout: { duration: motionDuration("full", "enter"), ease: MOTION.ease } } } : {})}
       data-instance-id={instance.id}
       data-visual-owner="lattice"
       data-running={running}
@@ -63,7 +67,6 @@ export function InstanceCard({
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     >
       <LatticeFrame hovered={hovered} focused={focused} selected={selected} signature={instance.id} />
-      {selected ? <Check className="vx-lattice-selection" data-selected-mark size={16} aria-hidden="true" /> : null}
       <button
         type="button"
         className="vx-instance-card__select"
@@ -115,6 +118,6 @@ export function InstanceCard({
         ) : null}
         <Button className="vx-instance-card__launch" variant="secondary" data-launch icon={<Play size={14} />} onClick={onLaunch}>{t("common:actions.launch")}</Button>
       </div>
-    </article>
+    </motion.article>
   );
 }

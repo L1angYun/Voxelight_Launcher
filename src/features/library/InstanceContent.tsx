@@ -1,14 +1,19 @@
 import { useTranslation } from "react-i18next";
+import { useId } from "react";
 import { Download, History, RefreshCw, Upload } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
 import { Select } from "../../components/ui/Select";
+import { Segmented } from "../../components/ui/Segmented";
+import { SectionPanel } from "../../components/ui/SectionPanel";
+import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { useResourceManager } from "./useInstanceContent";
 import { errorText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
 
 export function InstanceContent({ versionId, instanceId }: { versionId: string; instanceId?: string }) {
   const { t, i18n } = useTranslation();
+  const id = useId();
   const manager = useResourceManager(versionId, instanceId);
   const { kind, setKind, view, setView, files, updates, history, busy, error, notice } = manager;
   return (
@@ -32,14 +37,13 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
           <Button variant="ghost" icon={<History size={15} />} onClick={() => void manager.showHistory()}>{t("library:history")}</Button>
         </div>
       </div>
-      <div className="vx-segmented" role="tablist" aria-label={t("library:resourceViews")}>
-        {(["files", "updates", "history"] as const).map((value) => (
-          <button key={value} role="tab" aria-selected={view === value} className={view === value ? "is-selected" : ""} onClick={() => setView(value)}>{t(`library:${value}`)}</button>
-        ))}
-      </div>
-      {busy ? <p role="status">{t("common:status.loading")}</p> : null}
+      <Segmented semantic="tabs" label={t("library:resourceViews")} value={view} onChange={setView}
+        idPrefix={`${id}-resource-tab`} panelId={`${id}-resource-panel`}
+        options={(["files", "updates", "history"] as const).map((value) => ({ value, label: t(`library:${value}`) }))} />
+      <LoadingStatus active={Boolean(busy)}>{t("common:status.loading")}</LoadingStatus>
       {error ? <p role="alert">{errorText(error, t)}</p> : null}
       {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}
+      <SectionPanel selectionKey={`${kind}:${view}`} role="tabpanel" id={`${id}-resource-panel`} aria-labelledby={`${id}-resource-tab-${view}`}>
       {view === "files" ? (
         files.length ? <div className="vx-resource-list">{files.map((file) => (
           <div className="vx-resource-row" key={file.fileName}>
@@ -64,6 +68,7 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
           </div>
         ))}</div> : <EmptyState title={t("library:noHistory")} />
       ) : null}
+      </SectionPanel>
     </div>
   );
 }

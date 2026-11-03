@@ -5,6 +5,7 @@ import { Play, Plus, RefreshCw, Square } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { EmptyState } from "../../components/ui/Feedback";
+import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { formatDate } from "../../i18n/format";
 import { defaultServerSettings, type ServerSettings, type useMultiplayer } from "./useMultiplayer";
 
@@ -67,10 +68,10 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
         <p>{t("multiplayer:managedDescription")}</p>
         <div className="vx-action-row">
           <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={Boolean(busy)} onClick={() => void refreshManaged()}>{t("multiplayer:refresh")}</Button>
-          <Button variant="primary" icon={<Plus size={15} />} disabled={Boolean(busy)} onClick={() => setCreating((value) => !value)}>{t("multiplayer:createServer")}</Button>
+          {managedServers.length > 0 || creating ? <Button variant="primary" icon={<Plus size={15} />} disabled={Boolean(busy)} onClick={() => setCreating((value) => !value)}>{t("multiplayer:createServer")}</Button> : null}
         </div>
       </div>
-      {busy ? <p role="status">{t("multiplayer:managedBusy")}</p> : null}
+      <LoadingStatus active={Boolean(busy)}>{t("multiplayer:managedBusy")}</LoadingStatus>
 
       {creating ? (
         <form

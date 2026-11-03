@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { command, type Instance, type ResourceProject, type VersionManifest } from "../../lib/launcher";
@@ -7,7 +7,11 @@ import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Field } from "../../components/ui/Field";
 import { Select } from "../../components/ui/Select";
+import { Segmented } from "../../components/ui/Segmented";
+import { SectionPanel } from "../../components/ui/SectionPanel";
+import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import type { Loader, LoaderResult, LoaderVersion, ModpackVersion, PackResult } from "./types";
+import "./create-instance.css";
 
 export function CreateInstanceDialog({
   open: isOpen,
@@ -23,6 +27,7 @@ export function CreateInstanceDialog({
   project?: ResourceProject;
 }) {
   const { t } = useTranslation();
+  const modeId = useId();
   const { manifest: initialManifest, run, reload, selectInstance, selectVersion, busy } = useLauncher();
   const [mode, setMode] = useState<"version" | "import" | "modpack">(project ? "modpack" : initialMode);
   const [manifest, setManifest] = useState<VersionManifest | undefined>(initialManifest ?? undefined);
@@ -132,52 +137,57 @@ export function CreateInstanceDialog({
       title={title}
       description={t("library:createDescription")}
       closeLabel={t("common:actions.close")}
-      footer={mode === "version" ? <Button variant="primary" type="submit" form="create-instance-form" onClick={install} disabled={busy !== "" || !gameVersion || (loader !== "vanilla" && !loaderVersion)}>{t("library:installPrepare")}</Button> : mode === "modpack" ? <Button variant="primary" type="submit" form="create-modpack-form" onClick={installModpack} disabled={busy !== "" || !packVersion || !instanceName.trim()}>{t("library:installModpack")}</Button> : <Button variant="secondary" onClick={() => void importPack()}>{t("library:importPack")}</Button>}
+      className="vx-create-dialog"
+      footer={mode === "version" ? <Button variant="primary" type="submit" form={`${modeId}-create-instance-form`} onClick={install} disabled={busy !== "" || !gameVersion || (loader !== "vanilla" && !loaderVersion)}>{t("library:installPrepare")}</Button> : mode === "modpack" ? <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={busy !== "" || !packVersion || !instanceName.trim()}>{t("library:installModpack")}</Button> : <Button variant="secondary" onClick={() => void importPack()}>{t("library:importPack")}</Button>}
     >
-      <div className="vx-segmented" role="tablist" aria-label={t("library:createModes")}>
-        {!project ? <button role="tab" aria-selected={mode === "version"} className={mode === "version" ? "is-selected" : ""} onClick={() => setMode("version")}>{t("library:versionMode")}</button> : null}
-        {!project ? <button role="tab" aria-selected={mode === "import"} className={mode === "import" ? "is-selected" : ""} onClick={() => setMode("import")}>{t("library:importMode")}</button> : null}
-        {project ? <span>{project.title}</span> : null}
-      </div>
+      {!project ? <Segmented semantic="tabs" label={t("library:createModes")} value={mode} onChange={setMode}
+        idPrefix={`${modeId}-mode`} panelId={`${modeId}-panel`}
+        options={[{ value: "version", label: t("library:versionMode") }, { value: "import", label: t("library:importMode") }]} />
+        : <p className="vx-create-project">{project.title}</p>}
       {error ? <p role="alert">{error}</p> : null}
+      <SectionPanel selectionKey={mode} className="vx-create-panel" role={!project ? "tabpanel" : undefined}
+        id={`${modeId}-panel`} aria-labelledby={!project ? `${modeId}-mode-${mode}` : undefined}>
       {mode === "version" ? (
-        <form id="create-instance-form" className="vx-form-stack" onSubmit={install}>
-          <div className="vx-segmented" role="group" aria-label={t("library:channel")}>
-            {["release", "snapshot"].map((value) => <button key={value} type="button" aria-pressed={channel === value} className={channel === value ? "is-selected" : ""} onClick={() => { setChannel(value); setGameVersion(manifest?.versions.find((version) => version.type === value)?.id ?? manifest?.latestRelease ?? ""); }}>{t(`library:${value}`)}</button>)}
-          </div>
-          <Field label={t("library:version")} htmlFor="create-game-version">
-            <Select id="create-game-version" aria-label={t("library:version")} value={gameVersion} onChange={setGameVersion} required options={[
+        <form id={`${modeId}-create-instance-form`} className="vx-form-stack" onSubmit={install}>
+          <Segmented semantic="toggle" label={t("library:channel")} value={channel}
+            options={["release", "snapshot"].map((value) => ({ value, label: t(`library:${value}`) }))}
+            onChange={(value) => { setChannel(value); setGameVersion(manifest?.versions.find((version) => version.type === value)?.id ?? manifest?.latestRelease ?? ""); }} />
+          <Field label={t("library:version")} htmlFor={`${modeId}-create-game-version`}>
+            <Select id={`${modeId}-create-game-version`} aria-label={t("library:version")} value={gameVersion} onChange={setGameVersion} required options={[
               { value: "", label: t("library:selectVersion") },
               ...(manifest?.latestRelease ? [{ value: manifest.latestRelease, label: manifest.latestRelease }] : []),
               ...(manifest?.versions.filter((version) => version.type === channel && version.id !== manifest.latestRelease).map((version) => ({ value: version.id, label: version.id })) ?? []),
             ]} />
           </Field>
           <Field label={t("library:loader")}>
-            <div className="vx-segmented" role="group" aria-label={t("library:loader")}>
-              {(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => <button key={value} type="button" aria-pressed={loader === value} className={loader === value ? "is-selected" : ""} onClick={() => setLoader(value)}>{value === "vanilla" ? t("library:vanilla") : value === "neoforge" ? "NeoForge" : value[0].toUpperCase() + value.slice(1)}</button>)}
-            </div>
+            <Segmented semantic="toggle" label={t("library:loader")} value={loader} onChange={setLoader}
+              options={(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => ({ value, label: value === "vanilla" ? t("library:vanilla") : value === "neoforge" ? "NeoForge" : value[0].toUpperCase() + value.slice(1) }))} />
           </Field>
-          {loader !== "vanilla" ? <Field label={t("library:loaderVersion")} htmlFor="create-loader-version"><Select id="create-loader-version" aria-label={t("library:loaderVersion")} value={loaderVersion} onChange={setLoaderVersion} disabled={loaderLoading || !loaderVersions.length} required options={[
-            { value: "", label: loaderLoading ? t("common:status.loading") : t("library:noLoaderVersions") },
+          <div className="vx-create-loader-slot">
+          {loader !== "vanilla" ? <SectionPanel selectionKey={loader}><Field label={t("library:loaderVersion")} htmlFor={`${modeId}-create-loader-version`}><Select id={`${modeId}-create-loader-version`} aria-label={t("library:loaderVersion")} value={loaderVersion} onChange={setLoaderVersion} disabled={loaderLoading || !loaderVersions.length} required options={[
+            { value: "", label: loaderLoading ? "\u00a0" : t("library:noLoaderVersions") },
             ...loaderVersions.map((version) => ({ value: version.id, label: `${version.id}${version.recommended ? ` / ${t("library:recommended")}` : ""}` })),
-          ]} /></Field> : null}
-          <Field label={t("library:instanceNameOptional")} htmlFor="create-instance-name"><input id="create-instance-name" maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
+          ]} /></Field></SectionPanel> : null}
+          <LoadingStatus active={loader !== "vanilla" && loaderLoading} className="vx-create-loader-status">{t("common:status.loading")}</LoadingStatus>
+          </div>
+          <Field label={t("library:instanceNameOptional")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
         </form>
       ) : null}
       {mode === "import" ? (
         <div className="vx-form-stack">
-          <Field label={t("library:instanceNameOptional")} htmlFor="create-instance-name"><input id="create-instance-name" maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
-          <Field label={t("library:curseforgeKeyOptional")} htmlFor="create-curseforge-key"><input id="create-curseforge-key" type="password" autoComplete="off" value={curseforgeKey} onChange={(event) => setCurseforgeKey(event.target.value)} /></Field>
+          <Field label={t("library:instanceNameOptional")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
+          <Field label={t("library:curseforgeKeyOptional")} htmlFor={`${modeId}-create-curseforge-key`}><input id={`${modeId}-create-curseforge-key`} type="password" autoComplete="off" value={curseforgeKey} onChange={(event) => setCurseforgeKey(event.target.value)} /></Field>
           <p className="vx-muted">{t("library:importHint")}</p>
         </div>
       ) : null}
       {mode === "modpack" && project ? (
-        <form id="create-modpack-form" className="vx-form-stack" onSubmit={installModpack}>
-          <Field label={t("library:modpackVersion")} htmlFor="create-pack-version"><Select id="create-pack-version" aria-label={t("library:modpackVersion")} value={packVersion} onChange={setPackVersion} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
-          <Field label={t("library:instanceName")} htmlFor="create-instance-name"><input id="create-instance-name" required maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} /></Field>
+        <form id={`${modeId}-create-modpack-form`} className="vx-form-stack" onSubmit={installModpack}>
+          <Field label={t("library:modpackVersion")} htmlFor={`${modeId}-create-pack-version`}><Select id={`${modeId}-create-pack-version`} aria-label={t("library:modpackVersion")} value={packVersion} onChange={setPackVersion} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
+          <Field label={t("library:instanceName")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} required maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} /></Field>
           <label className="vx-check-row"><input type="checkbox" checked={includeOptional} onChange={(event) => setIncludeOptional(event.target.checked)} /> {t("library:includeOptional")}</label>
         </form>
       ) : null}
+      </SectionPanel>
     </Dialog>
   );
 }

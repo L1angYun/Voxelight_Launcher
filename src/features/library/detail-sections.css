@@ -1,0 +1,10 @@
+.vx-detail-selection { display: flex; flex-direction: column; align-items: stretch; }
+.vx-detail-selection > button { min-height: 42px; padding: 10px 12px; }
+.vx-detail-manage::details-content {
+  opacity: 0;
+  transition: opacity var(--menu-exit, 0s) var(--ease-out), content-visibility var(--menu-exit, 0s) allow-discrete;
+}
+.vx-detail-manage[open]::details-content { opacity: 1; transition-duration: var(--menu-enter, 0s); }
+@starting-style { .vx-detail-manage[open]::details-content { opacity: 0; } }
+.vx-detail-manage .vx-detail-manage__menu { border: 1px solid var(--hairline); border-radius: var(--radius-md); }
+@media (prefers-reduced-motion: reduce) { .vx-detail-manage::details-content { transition-duration: 0s; } }
