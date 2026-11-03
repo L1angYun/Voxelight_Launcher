@@ -111,6 +111,13 @@ function mount(options: Parameters<typeof glBoundary>[0] = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("WebGL renderer boundary", () => {
+  it("passes interpolated page appearance through to points instead of switching from the page name", () => {
+    const t = mount({ float: true });
+    expect(t.renderer!.draw({ ...frame(), page: "content", home: .37, pointGain: .559 }, .016).submitted).toBe(true);
+    expect(t.uniforms.get("uHome")).toBe(.37);
+    expect(t.uniforms.get("uPointGain")).toBe(.559);
+    t.renderer!.dispose(); expect(t.live.size).toBe(0);
+  });
   it("reports the last submitted material across allocation changes and busy skips", () => {
     const t = mount({ float: true }); const r = t.renderer!;
     expect(r.draw(frame(), .016).submitted).toBe(true);

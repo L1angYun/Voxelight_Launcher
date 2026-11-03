@@ -31,6 +31,34 @@ function timeline(inputs: WorldInputs = initial) {
 }
 
 describe("crystal world director", () => {
+  it("interpolates point brightness and size between pages without a page-switch flash", () => {
+    const time = timeline();
+    expect(time.frame).toMatchObject({ home: 1, pointGain: 1 });
+    time.director.setInputs({ ...initial, page: "content" });
+    expect(time.director.step(0, time.now)).toMatchObject({ page: "content", home: 1, pointGain: 1 });
+    const entering = time.advance(.1);
+    expect(entering.home).toBeGreaterThan(0); expect(entering.home).toBeLessThan(1);
+    expect(entering.pointGain).toBeGreaterThan(.3); expect(entering.pointGain).toBeLessThan(1);
+    time.director.setInputs(initial);
+    const reversing = time.director.step(0, time.now);
+    expect(reversing.home).toBe(entering.home); expect(reversing.pointGain).toBe(entering.pointGain);
+    const returning = time.advance(.1);
+    expect(returning.home).toBeGreaterThan(entering.home);
+    expect(returning.pointGain).toBeGreaterThan(entering.pointGain);
+    expect(time.director.snap()).toMatchObject({ home: 1, pointGain: 1 });
+    time.director.setInputs({ ...initial, page: "content" });
+    expect(time.director.snap()).toMatchObject({ home: 0, pointGain: .3 });
+  });
+  it("keeps page point attenuation consistent at 60 Hz and 5 Hz", () => {
+    const fast = timeline(), slow = timeline();
+    fast.director.setInputs({ ...initial, page: "content" });
+    slow.director.setInputs({ ...initial, page: "content" });
+    const at60 = fast.advance(3, 60), at5 = slow.advance(3, 5);
+    expect(at60.home).toBeLessThan(.001); expect(at60.pointGain).toBeCloseTo(.3, 2);
+    expect(at5.home).toBeCloseTo(at60.home, 6);
+    expect(at5.pointGain).toBeCloseTo(at60.pointGain, 6);
+    expect(createWorldDirector({ ...initial, page: "content" }).step(0, 0)).toMatchObject({ home: 0, pointGain: .3 });
+  });
   it("converges material and exposure in real time at 60 Hz and 5 Hz while capping simulation", () => {
     const fast = timeline(); const slow = timeline();
     const content: WorldInputs = { ...initial, material: "solid", page: "content" };
@@ -115,7 +143,7 @@ describe("crystal world director", () => {
     expect(time.frame.simTime).toBeCloseTo(.6, 5);
   });
   it("renders the selected scene and material correctly before the first animated frame", () => {
-    expect(timeline().frame).toMatchObject({ eye: [-6, 14, 37], at: [2, 11, -40], fov: 36, profile: 0, mask: 0, lat: 1, island: 9, fogD: 150, bloom: .8, horizon: -1, exposure: 1 });
+    expect(timeline().frame).toMatchObject({ eye: [-6, 14, 37], at: [2, 13, -40], fov: 36, profile: 0, mask: 0, lat: 1, island: 9, fogD: 150, bloom: .8, horizon: -1, exposure: 1 });
     expect(timeline({ ...initial, scene: "massif", material: "solid" }).frame)
       .toMatchObject({ eye: [-22, 33, 62], at: [-3, 8, -12], fov: 34, profile: 1, mask: 1, lat: 0, island: 0, fogD: 190, bloom: .7, horizon: -1, exposure: .95 });
     expect(timeline({ ...initial, material: "solid" }).frame).toMatchObject({ bloom: .6, horizon: .6, lat: 0 });
@@ -226,7 +254,7 @@ describe("crystal world director", () => {
     time.director.setInputs({ ...initial, phase: "preparing", fraction: .1 });
     const pushed = time.advance(10);
     expect(pushed.eye[0]).toBeCloseTo(-5.28, 3);
-    expect(pushed.eye[1]).toBeCloseTo(13.892, 3);
+    expect(pushed.eye[1]).toBeCloseTo(13.964, 3);
     expect(pushed.eye[2]).toBeCloseTo(30.07, 3);
   });
 

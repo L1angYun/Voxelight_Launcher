@@ -78,7 +78,7 @@ float maskM(vec2 c) {
 }
 float crystal(vec2 c, float heat, float m) {
   float d = length(c - uOrigin);
-  float island = 1. - smoothstep(uIsland, uIsland + 18., d);
+  float island = 1. - smoothstep(uIsland, uIsland + 10., d);
   float front = uCry > 0. ? 1. - smoothstep(uCry - 16., uCry, d) : 0.;
   float trail = smoothstep(.56, .7, heat) * .8;
   float core = uMask * m * m;
@@ -177,7 +177,7 @@ uniform sampler2D uPos, uVel, uField;
 uniform mat4 uVP;
 uniform vec3 uEye;
 uniform vec2 uOffset;
-uniform float uN, uS, uSpan, uDpr, uFogD, uRunDim, uFront;
+uniform float uN, uS, uSpan, uDpr, uFogD, uRunDim, uFront, uPointGain, uHome;
 ${CRYSTAL_GLSL}
 out float vAlpha, vHot;
 void main() {
@@ -189,13 +189,13 @@ void main() {
   float cr = crystal(c, f.a, maskM(c)), speed = length(V.xyz), dist = length(P.xyz - uEye);
   float fog = exp(-pow(dist / (uFogD * 1.12), 3.));
   float flying = smoothstep(.6, 3.5, length(P.xz - c));
-  float alpha = (.42 + 1.47 * f.b * (.55 + .45 * smoothstep(3., 20., h))) * (1. + .5 * smoothstep(10., 26., h)) * (1. - smoothstep(.35, .9, cr));
-  alpha = max(alpha, flying * .55) * fog * uRunDim;
+  float alpha = (.42 + 1.47 * f.b * (.55 + .45 * smoothstep(3., 20., h))) * (1. + .5 * uHome * smoothstep(10., 26., h)) * (1. - smoothstep(.35, .9, cr));
+  alpha = min(max(alpha, flying * .55) * fog * uRunDim * uPointGain, .85);
   vAlpha = mix(alpha, .95, P.w) * uLat;
   vHot = clamp((speed - 7.) * .035 + V.w * 1.2, 0., 1.);
   if (uFront > 0.) vHot = max(vHot, exp(-pow((length(c - uOrigin) - uFront) / 3.2, 2.)));
   gl_Position = uVP * vec4(P.xyz, 1.);
-  gl_PointSize = uDpr * (1.15 + P.w * .9 + min(speed, 30.) * .035) * clamp(58. / max(dist, .001), 1.05, 2.7) * (1. + .45 * smoothstep(8., 26., h));
+  gl_PointSize = uDpr * (1.15 + P.w * .9 + min(speed, 30.) * .035) * clamp(58. / max(dist, .001), mix(.72, 1.05, uHome), 2.7) * (1. + .45 * uHome * smoothstep(8., 26., h));
 }`;
 
 export const POINT_FRAGMENT = `#version 300 es
@@ -221,7 +221,7 @@ uniform vec2 uOffset;
 uniform float uN, uSpan, uFront, uCharge;
 ${CRYSTAL_GLSL}
 out vec3 vN, vW, vL;
-out float vH, vM, vHeat, vLit, vChg;
+out float vH, vM, vHeat, vLit, vChg, vIsland;
 void main() {
   ivec2 id = ivec2(gl_InstanceID % int(uN), gl_InstanceID / int(uN));
   vec4 f = texelFetch(uField, id, 0);
@@ -231,11 +231,12 @@ void main() {
   float crE = cr * cr * (3. - 2. * cr);
   float pitch = uSpan / uN;
   float s = mix(.13, .97, m * m) * pitch * mix(1., step(.03, cr) * mix(.16, 1., crE), uLat);
-  float depth = mix(s, 9., m * mix(1., crE, uLat));
+  float depth = mix(s, 3., m * mix(1., crE * crE * crE, uLat));
   vec3 p = vec3(c.x + aPos.x * s, aPos.y > 0. ? h : h - depth, c.y + aPos.z * s);
   vN = aNor; vW = p; vL = aPos; vH = h; vM = m; vHeat = f.a; vLit = f.b;
   float d = length(c - uOrigin);
-  float isl = 1. - smoothstep(uIsland, uIsland + 18., d);
+  float isl = 1. - smoothstep(uIsland, uIsland + 10., d);
+  vIsland = isl;
   vLit = max(vLit, 1.1 * uLat * isl);
   vChg = uCharge * (1. - smoothstep(uFront - 30., uFront, d));
   if (uFront > 0.) vHeat = max(vHeat, uCharge * exp(-pow((d - uFront) / 2.4, 2.)));
@@ -245,7 +246,7 @@ void main() {
 export const VOXEL_FRAGMENT = `#version 300 es
 precision highp float;
 in vec3 vN, vW, vL;
-in float vH, vM, vHeat, vLit, vChg;
+in float vH, vM, vHeat, vLit, vChg, vIsland;
 out vec4 o;
 uniform vec3 uEye, uAccent, uSun, uHaze, uPoint;
 uniform float uExposure, uFogD, uDim, uLight, uLat, uPaperInk;
@@ -253,7 +254,7 @@ void main() {
   float diff = max(dot(vN, uSun), 0.) * vLit;
   vec3 alb = mix(vec3(.26, .27, .28), vec3(1., .97, .9), smoothstep(4., 17., vH));
   alb = mix(uPoint * .62, alb, smoothstep(0., .35, vM));
-  alb = max(alb, vec3(.5, .49, .46) * uLat);
+  alb = max(alb, vec3(1.2, 1.176, 1.104) * uLat * vIsland);
   vec3 col = alb * (vec3(.05, .06, .085) + vec3(2.5, 2.1, 1.62) * diff);
   col += alb * vec3(.03, .05, .08) * max(vN.z, 0.);
   if (vN.y > .5) col += smoothstep(.45, .5, max(abs(vL.x), abs(vL.z))) * .035 * (.2 + vLit);

@@ -473,6 +473,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       vector3(points, "uEye", frame.eye); vector2(points, "uOffset", OFFSET);
       scalar(points, "uN", f.grid); scalar(points, "uS", p.side); scalar(points, "uSpan", SPAN);
       scalar(points, "uDpr", s.width / cssWidth); scalar(points, "uFogD", frame.fogD); scalar(points, "uRunDim", frame.runDim);
+      scalar(points, "uPointGain", frame.pointGain); scalar(points, "uHome", frame.home);
       vector3(points, "uPoint", palette.point); vector3(points, "uAccent", palette.accent); scalar(points, "uLight", Number(palette.light));
       scalar(points, "uPaperInk", frame.paperInk); scalar(points, "uFront", frame.ring);
       crystalUniforms(points, frame, lat, origin); gl.drawArrays(gl.POINTS, 0, p.side * p.side);

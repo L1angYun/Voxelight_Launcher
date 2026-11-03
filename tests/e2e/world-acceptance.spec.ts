@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-import { expect, test, type Page } from "@playwright/test";
+import { chromium, expect, test, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
@@ -7,8 +7,54 @@ import { selectValue } from "./select-helpers";
 import { captureTextContrast, type ContrastTarget, type WorldContrastReport } from "./helpers/world-contrast-probe";
 import { prepareIntroContrast } from "./helpers/world-intro-compositor";
 import { installWorldResourceProbe, snapshotWorldResources, type WorldResourceSnapshot } from "./helpers/world-resource-probe";
+import { decodePng } from "./helpers/glass-pixel-probe.mjs";
+import { worldAppearanceMetrics } from "./helpers/world-appearance";
+import appearanceBaseline from "./data/world-appearance-baseline.json" with { type: "json" };
 
 const evidence = resolve(process.env.VOXELIGHT_TASK8_EVIDENCE ?? "test-results/world-acceptance");
+
+const appearanceTest = test.extend({
+  context: async ({ baseURL }, use) => {
+    const browser = await chromium.launch({ channel: "chromium", args: ["--use-angle=d3d11"] });
+    const context = await browser.newContext({ baseURL, deviceScaleFactor: 1 });
+    try { await use(context); } finally { await context.close(); await browser.close(); }
+  },
+});
+
+appearanceTest.describe("review A appearance budgets", () => {
+  for (const theme of ["dark", "light"] as const) for (const width of [1280, 1050]) {
+    appearanceTest(`${theme} ${width}: home lower-world coverage stays within its visual budget`, async ({ page }, info) => {
+      await page.setViewportSize({ width, height: 720 });
+      await installLauncherFixture(page, { theme });
+      await page.goto("/"); await page.waitForTimeout(3500);
+      await page.locator('.vx-floating-nav [data-page="home"]').click(); await page.waitForTimeout(700);
+      await expect(page.locator(".world-scene")).toHaveAttribute("data-world-grid", "160");
+      await expect(page.locator(".world-scene")).toHaveAttribute("data-world-particles", "65536");
+      const metrics = worldAppearanceMetrics(decodePng(await page.screenshot({ path: info.outputPath("home-appearance.png"), scale: "css" })), theme === "dark" ? [7, 8, 11] : [243, 241, 235]);
+      await writeFile(info.outputPath("appearance.json"), JSON.stringify(metrics, null, 2));
+      const baseline = appearanceBaseline.cases.find(entry => entry.theme === theme && entry.width === width)!;
+      // The revised review explicitly permits five percentage points above
+      // the approved pre-0.6.0 image, using this same full-compositor metric.
+      expect(metrics.home.fraction).toBeLessThanOrEqual(baseline.covered / baseline.samples + appearanceBaseline.marginPercentagePoints / 100);
+    });
+  }
+  appearanceTest("dark 1280: content title bands stay quiet across all content pages", async ({ page }, info) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await installLauncherFixture(page, { theme: "dark" });
+    await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
+    await page.goto("/"); await page.waitForTimeout(3500);
+    await page.locator('.vx-floating-nav [data-page="home"]').click(); await page.waitForTimeout(700);
+    const results = [];
+    for (const id of ["library", "discover", "multiplayer", "downloads", "accounts", "settings"]) {
+      await page.locator(`.vx-floating-nav [data-page="${id}"]`).click(); await page.waitForTimeout(700);
+      const metrics = worldAppearanceMetrics(decodePng(await page.screenshot({ path: info.outputPath(`content-${id}.png`), scale: "css" })), [7, 8, 11]);
+      results.push({ page: id, ...metrics });
+      expect.soft(metrics.title.fraction, `${id}: title band pixels brighter than 60/255`).toBeLessThan(.005);
+    }
+    await writeFile(info.outputPath("content-appearance.json"), JSON.stringify(results, null, 2));
+  });
+});
+
 const targets: ContrastTarget[] = [
   { name: "title", selector: ".vx-home__console-name", minimum: 3, nominalDuringIntro: true },
   { name: "metadata", selector: ".vx-home__meta li", minimum: 4.5, nominalDuringIntro: true },

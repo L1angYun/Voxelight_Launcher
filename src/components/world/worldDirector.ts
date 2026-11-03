@@ -12,7 +12,7 @@ export interface WorldInputs {
   phase: WorldPhase; fraction: number | null; page: WorldPage; scene: WorldSceneId; material: WorldMaterial;
 }
 export interface WorldFrame {
-  page: WorldPage; flash: number; paperInk: number;
+  page: WorldPage; flash: number; paperInk: number; pointGain: number; home: number;
   eye: Vec3; at: Vec3; fov: number; profile: number; mask: number; lat: number; island: number;
   exposure: number; fogD: number; bloom: number; horizon: number; runDim: number; dim: number;
   front: number; cry: number; charge: number; timeScale: number; simTime: number; ring: number;
@@ -30,7 +30,7 @@ export interface WorldDirector {
   noteInteraction(now: number): void;
   step(dtSeconds: number, now: number): WorldFrame;
 }
-const scalarKeys = ["fov", "profile", "mask", "lat", "island", "exposure", "fogD", "bloom", "horizon", "runDim", "dim", "paperInk"] as const;
+const scalarKeys = ["fov", "profile", "mask", "lat", "island", "exposure", "fogD", "bloom", "horizon", "runDim", "dim", "paperInk", "pointGain", "home"] as const;
 function sceneValues(input: WorldInputs) {
   const preset = WORLD_PRESETS[input.scene];
   const content = input.page === "content" ? LIST_CAM[input.scene] : null;
@@ -40,6 +40,7 @@ function sceneValues(input: WorldInputs) {
     island: content ? -18 : input.material === "lattice" ? preset.island : 0, exposure: content?.exposure ?? preset.exposure,
     fogD: preset.fogD, bloom: (content?.bloom ?? preset.bloom)[input.material], horizon: content?.horizon ?? preset.horizon[input.material],
     runDim: content ? .5 : 1, dim: content ? .55 : 1, paperInk: content ? .12 : 1,
+    pointGain: content ? .3 : 1, home: content ? 0 : 1,
   };
 }
 const approach = (value: number, target: number, amount: number) => Math.abs(value - target) < 1e-6 ? target : value + (target - value) * amount;

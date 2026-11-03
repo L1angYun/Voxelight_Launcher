@@ -1,0 +1,43 @@
+{
+  "reference": "d5e31ad",
+  "method": "D3D11 DPR1 full screenshot; RGB arithmetic mean; ROI [380,440,width,height); abs difference from background >10",
+  "marginPercentagePoints": 5,
+  "cases": [
+    {
+      "theme": "dark",
+      "width": 1280,
+      "height": 720,
+      "covered": 51189,
+      "samples": 252000,
+      "image": "before-d5e31ad/still-dark-1280-home.png",
+      "sha256": "FB795FA23994FE0B624A28948AA960A4583A956FAED944E103C965034537AF46"
+    },
+    {
+      "theme": "dark",
+      "width": 1050,
+      "height": 720,
+      "covered": 60596,
+      "samples": 187600,
+      "image": "before-d5e31ad/still-dark-1050-home.png",
+      "sha256": "ED4A402738461A88156B24FD784ADFDD9CAC14128CEC4CA3EC92FA67D954FAED"
+    },
+    {
+      "theme": "light",
+      "width": 1280,
+      "height": 720,
+      "covered": 74760,
+      "samples": 252000,
+      "image": "before-d5e31ad/still-light-1280-home.png",
+      "sha256": "52C4EC9CBB6C204E1C4468749370D15270BAED3E29EA04B14736A46FA49CF6A0"
+    },
+    {
+      "theme": "light",
+      "width": 1050,
+      "height": 720,
+      "covered": 75933,
+      "samples": 187600,
+      "image": "before-d5e31ad-light1050/still-light-1050-home.png",
+      "sha256": "41A5511D7740C15F42909E0E2E2FEB13EDAF2B54F8ABD46EE3B0BCDDFF9FC8BD"
+    }
+  ]
+}
