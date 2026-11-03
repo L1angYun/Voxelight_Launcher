@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { AppProviders } from "./AppProviders";
 import { FloatingNav, type NavigationPage } from "./FloatingNav";
@@ -16,14 +17,30 @@ import { useLauncher } from "./controller/LauncherProvider";
 import { useAppearance } from "./AppearanceProvider";
 import { useOverture } from "../visual/overture/OvertureProvider";
 import { PageErrorBoundary } from "./PageErrorBoundary";
+import { pageVariants } from "../design/motion";
+import { useMotionTier } from "../design/useMotionTier";
+import { navigationRegistry } from "./registry";
 import "../design/global.css";
 import "./shell.css";
 
 const implementedPages = new Set<NavigationPage>(["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]);
 
+function PageStage({ page, direction, children }: { page: NavigationPage; direction: number; children: ReactNode }) {
+  const present = useIsPresent();
+  const { tier } = useMotionTier();
+  return <motion.div className="vx-page-stage" data-page-stage={page} data-motion-tier={tier} data-exiting={!present}
+    inert={!present} custom={direction} variants={pageVariants(tier, page === "home")}
+    initial="enter" animate="ready" exit="exit">
+    {children}
+  </motion.div>;
+}
+
 function AppShell() {
   const { t } = useTranslation();
   const [page, setPage] = useState<NavigationPage>("home");
+  const [direction, setDirection] = useState(1);
+  const [navResetTick, setNavResetTick] = useState(0);
+  const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
   const { bootstrapped, activeAccount, accountAppearance, config, busy, progress, running, gamePid } = useLauncher();
@@ -51,8 +68,15 @@ function AppShell() {
         <FloatingNav
           page={page}
           onNavigate={(nextPage) => {
+            if (nextPage === page) {
+              setNavResetTick(tick => tick + 1);
+              mainRef.current?.scrollTo({ top: 0, behavior: "auto" });
+              return;
+            }
+            const order = navigationRegistry.ids();
+            setDirection(order.indexOf(nextPage) >= order.indexOf(page) ? 1 : -1);
+            if (nextPage !== "home") hasLeftHome.current = true;
             setPage(nextPage);
-            mainRef.current?.scrollTo({ top: 0, behavior: "auto" });
           }}
           implemented={implementedPages}
           activeTaskCount={downloadTasks.activeCount}
@@ -60,21 +84,25 @@ function AppShell() {
           accountSkinUrl={accountAppearance.skinUrl}
         />
         <main ref={mainRef} id="main-content" className="vx-app-main" data-current-page={page} tabIndex={-1}>
+          <AnimatePresence mode="wait" initial={false} custom={direction}
+            onExitComplete={() => mainRef.current?.scrollTo({ top: 0, behavior: "auto" })}>
+          <PageStage key={page} page={page} direction={direction}>
           <PageErrorBoundary
-            key={page}
             page={page}
             title={t("common:errors.internalUnexpected")}
             description={t("common:errors.missing")}
             retryLabel={t("common:actions.retry")}
           >
-            {page === "home" ? <HomePage /> : null}
-            {page === "library" ? <LibraryPage /> : null}
+            {page === "home" ? <HomePage returning={hasLeftHome.current} /> : null}
+            {page === "library" ? <LibraryPage navResetTick={navResetTick} /> : null}
             {page === "discover" ? <DiscoverPage /> : null}
             {page === "multiplayer" ? <MultiplayerPage /> : null}
             {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
             {page === "accounts" ? <AccountsPage /> : null}
             {page === "settings" ? <SettingsPage /> : null}
           </PageErrorBoundary>
+          </PageStage>
+          </AnimatePresence>
         </main>
       </div>
     </>

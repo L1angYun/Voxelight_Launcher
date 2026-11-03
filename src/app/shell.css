@@ -121,6 +121,9 @@ input, textarea, [contenteditable="true"] { user-select: text; }
 .vx-window-chrome__controls { display: flex; align-items: center; justify-content: flex-end; gap: 1px; padding-left: 4px; }
 .vx-window-chrome__controls .vx-button { min-width: 31px; min-height: 34px; padding: 6px; border-radius: 8px; color: var(--text-secondary); }
 .vx-app-main { position: relative; z-index: 1; isolation: isolate; height: 100%; min-height: 0; padding-top: var(--shell-height); overflow-x: hidden; overflow-y: auto; scrollbar-gutter: auto; scroll-padding-top: 20px; }
+.vx-page-stage { min-width: 0; min-height: calc(100dvh - var(--shell-height)); }
+.vx-page-stage[data-exiting="true"] { pointer-events: none; }
+.vx-launch-status[data-exiting="true"] { pointer-events: none; }
 .vx-page-error {
   display: grid;
   min-height: calc(100dvh - var(--shell-height));
