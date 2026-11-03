@@ -18,7 +18,7 @@ function renderer() {
   return { capabilities: { webgl2: true as const, floatTargets: true }, material: "solid" as const,
     melt: 0, press: vi.fn(), release: vi.fn(), shock: vi.fn(),
     resize: vi.fn(), setTier: vi.fn(), setPalette: vi.fn(), setAnchor: vi.fn(), setPointer: vi.fn(),
-    draw: vi.fn((_frame: any, _dt: number) => ({ cpuMs: 2, gpuMs: null })), dispose: vi.fn() };
+    draw: vi.fn((_frame: any, _dt: number) => ({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true })), dispose: vi.fn() };
 }
 async function render(props: Partial<Parameters<typeof WorldScene>[0]> = {}) {
   await act(async () => root.render(createElement(WorldScene, { ...inputs, ...props })));
@@ -108,7 +108,7 @@ it("updates page composition and phase on the existing renderer", async () => {
   expect(scene().dataset.worldPhase).toBe("preparing"); expect(bridge.create).toHaveBeenCalledTimes(1);
 });
 it("downgrades after two real seconds even when physical simulation dt is capped", async () => {
-  fake.draw.mockReturnValue({ cpuMs: 20, gpuMs: null });
+  fake.draw.mockReturnValue({ cpuMs: 20, gpuMs: null, submitted: true, pointsSubmitted: true });
   await render(); await advance(2100, 10);
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
 });
@@ -121,7 +121,7 @@ it("snaps static scene, page and running targets without adding animation frames
   expect(frames.size).toBe(0);
 });
 it("detects an unthrottled RAF bottleneck when GPU timing is unavailable", async () => {
-  fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null });
+  fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: true, pointsSubmitted: true });
   await render(); await advance(2200, 10);
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
 });
@@ -130,6 +130,40 @@ it("renders every available full-policy RAF callback without an idle frame cap",
   const count = fake.draw.mock.calls.length;
   await advance(100, 120);
   expect(fake.draw.mock.calls.length - count).toBe(12);
+});
+it("counts only actual submissions while skipped callbacks advance the attempt clock", async () => {
+  await render(); const count = scene().dataset.worldFrames;
+  fake.draw.mockClear(); fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: false, pointsSubmitted: false });
+  await advance(200, 100);
+  expect(fake.draw).toHaveBeenCalledTimes(20);
+  expect(scene().dataset.worldFrames).toBe(count);
+  for (const [, dt] of fake.draw.mock.calls) expect(dt).toBeCloseTo(.01, 6);
+  fake.draw.mockReturnValue({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true });
+  await advance(10, 100);
+  expect(Number(scene().dataset.worldFrames)).toBe(Number(count) + 1);
+});
+it("keeps retrying the final settled running frame until the GPU accepts it", async () => {
+  await render(); const count = Number(scene().dataset.worldFrames);
+  fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: false, pointsSubmitted: false });
+  await render({ phase: "running" }); await advance(5000);
+  expect(fake.draw.mock.calls.at(-1)![0].settled).toBe(true);
+  expect(Number(scene().dataset.worldFrames)).toBe(count);
+  expect(frames.size).toBe(1);
+  fake.draw.mockReturnValue({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true });
+  await advance(20);
+  expect(Number(scene().dataset.worldFrames)).toBe(count + 1);
+  expect(frames.size).toBe(0);
+});
+it("does not poll a backpressured frame while paused or hidden", async () => {
+  await render();
+  fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: false, pointsSubmitted: false });
+  await advance(50); await render({ paused: true });
+  expect(frames.size).toBe(0);
+  const count = fake.draw.mock.calls.length; await advance(200);
+  expect(fake.draw.mock.calls.length).toBe(count);
+  await render();
+  await act(async () => { hidden = true; document.dispatchEvent(new Event("visibilitychange")); });
+  expect(frames.size).toBe(0);
 });
 async function pointer(type: string, target: Element, init: Partial<MouseEventInit> = {}) {
   await act(async () => {

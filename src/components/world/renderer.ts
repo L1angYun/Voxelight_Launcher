@@ -11,6 +11,8 @@ export type RGB = readonly [number, number, number];
 export interface WorldPalette { ink: RGB; point: RGB; accent: RGB; haze: RGB; light: boolean }
 export interface WorldDrawMetrics {
   cpuMs: number; gpuMs: number | null;
+  /** A complete scene was submitted; a busy GPU leaves this false. */
+  submitted: boolean;
   /** The points pass and final composite were submitted without a rendering failure. */
   pointsSubmitted: boolean;
 }
@@ -106,6 +108,8 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   let lost = false, terminal = false, disposed = false, lossCount = 0;
   let timer: TimerExtension | null = null;
   let pendingQueries: WebGLQuery[] = [];
+  let frameFence: WebGLSync | null = null;
+  let pendingSimulationDt = 0;
 
   function ownTexture(scope: ResourceScope) { return scope.own(gl.createTexture(), value => gl.deleteTexture(value)); }
   function ownFramebuffer(scope: ResourceScope) { return scope.own(gl.createFramebuffer(), value => gl.deleteFramebuffer(value)); }
@@ -280,7 +284,12 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
   function clearQueries() { for (const query of pendingQueries) gl.deleteQuery(query); pendingQueries = []; }
+  function clearFrameFence() {
+    if (frameFence) gl.deleteSync(frameFence);
+    frameFence = null;
+  }
   function releaseResources() {
+    clearFrameFence(); pendingSimulationDt = 0;
     clearQueries(); releaseParticles(); clearInteraction(); surface?.scope.dispose(); field?.scope.dispose(); core?.scope.dispose();
     surface = null; field = null; core = null;
   }
@@ -506,25 +515,42 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       if (particleMaterialAllowed() && !lost && !terminal && !disposed) pendingShock = [...ndc];
     },
     draw(frame, dtSeconds) {
-      if (lost || terminal || disposed || !core || !field || !surface || tier.kind === "css") return { cpuMs: 0, gpuMs: null, pointsSubmitted: false };
+      if (lost || terminal || disposed || !core || !field || !surface || tier.kind === "css") return { cpuMs: 0, gpuMs: null, submitted: false, pointsSubmitted: false };
       const started = performance.now();
       let gpuMs: number | null = null, query: WebGLQuery | null = null;
-      let pointsSubmitted = false;
+      let submitted = false, pointsSubmitted = false;
+      pendingSimulationDt = tier.kind === "animated"
+        ? Math.min(.05, pendingSimulationDt + (Number.isFinite(dtSeconds) ? Math.max(0, Math.min(.05, dtSeconds)) : 0)) : 0;
       try {
+        if (frameFence) {
+          if (tier.kind === "animated") {
+            const ready = gl.clientWaitSync(frameFence, 0, 0);
+            if (ready === gl.TIMEOUT_EXPIRED) return { cpuMs: Math.max(0, performance.now() - started), gpuMs: null, submitted: false, pointsSubmitted: false };
+            if (ready !== gl.ALREADY_SIGNALED && ready !== gl.CONDITION_SATISFIED) throw new Error("World GPU fence wait failed");
+          }
+          // Static paints are mandatory one-shot updates. Their new fence also
+          // covers older queued commands without blocking the UI thread.
+          clearFrameFence();
+        }
         gpuMs = pollGpu();
         if (timer && pendingQueries.length < 4) {
           query = gl.createQuery();
           if (query) gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
         }
-        const dt = Number.isFinite(dtSeconds) ? Math.max(0, Math.min(.05, dtSeconds)) : 0;
+        const dt = pendingSimulationDt; pendingSimulationDt = 0;
         pointsSubmitted = drawPasses(frame, dt);
         if (query && timer) { gl.endQuery(timer.TIME_ELAPSED_EXT); pendingQueries.push(query); query = null; }
+        frameFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!frameFence) throw new Error("World GPU fence allocation failed");
+        gl.flush();
+        submitted = true;
       } catch {
         pointsSubmitted = false;
         if (query && timer) { gl.endQuery(timer.TIME_ELAPSED_EXT); gl.deleteQuery(query); }
         fail();
       }
-      return { cpuMs: Math.max(0, performance.now() - started), gpuMs, pointsSubmitted: pointsSubmitted && !lost && !gl.isContextLost() };
+      const valid = submitted && !lost && !gl.isContextLost();
+      return { cpuMs: Math.max(0, performance.now() - started), gpuMs, submitted: valid, pointsSubmitted: pointsSubmitted && valid };
     },
     dispose() {
       if (disposed) return;

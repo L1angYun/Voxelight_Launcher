@@ -47,6 +47,7 @@ export function WorldScene(props: WorldSceneProps) {
     const reduce = query("(prefers-reduced-motion: reduce)"), contrast = query("(prefers-contrast: more)"), forced = query("(forced-colors: active)"), fine = query("(any-pointer: fine)");
     let disposed = false, lost = false, visible = true, animation: number | null = null;
     let drawn = 0, lastDraw: number | null = null, downgrades = 0, lastKey = "", lastPalette = "";
+    let needsSubmission = false;
     let previousTick: number | null = null, lastGpuAt: number | null = null, lastCpuMs = 0;
     let budgetSource: "gpu" | "raf" | null = null;
     let width = 1, height = 1, tier: Tier;
@@ -139,8 +140,12 @@ export function WorldScene(props: WorldSceneProps) {
       try {
         const floatSupport = renderer.capabilities.floatTargets;
         const result = renderer.draw(drawFrame, dt);
+        // Logical time follows every attempt; skipped GPU submissions must not
+        // repeatedly accumulate the same elapsed interval.
+        lastDraw = now;
         if (lost) return;
-        drawn++; lastDraw = now;
+        needsSubmission = !result.submitted;
+        if (result.submitted) drawn++;
         if (floatSupport !== renderer.capabilities.floatTargets) { update(true); return; }
         if (drawFrame.introActive && drawFrame.morph.toWord && drawFrame.introTime >= .8 && drawFrame.introTime < 1.4 && result?.pointsSubmitted) {
           if (supplement && !introWordSubmitted && introDeadline !== null)
@@ -161,7 +166,7 @@ export function WorldScene(props: WorldSceneProps) {
     }
     function tick(now: number) {
       animation = null;
-      if (!permitted() || tier.kind !== "animated" || lastFrame.settled) { publish(lastFrame); return; }
+      if (!permitted() || tier.kind !== "animated" || lastFrame.settled && !needsSubmission) { publish(lastFrame); return; }
       const callbackGap = previousTick === null ? 0 : Math.max(0, now - previousTick);
       previousTick = now;
       paint(now, lastDraw === null ? 0 : Math.max(0, Math.min(.05, (now - lastDraw) / 1000)), true);
@@ -172,7 +177,7 @@ export function WorldScene(props: WorldSceneProps) {
       start();
     }
     function start() {
-      if (renderer && permitted() && tier.kind === "animated" && !lastFrame.settled && animation === null)
+      if (renderer && permitted() && tier.kind === "animated" && (!lastFrame.settled || needsSubmission) && animation === null)
         animation = requestAnimationFrame(tick);
     }
     function measureLayout() {
