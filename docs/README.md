@@ -8,6 +8,7 @@
 - [实施计划与完成状态](superpowers/plans/2026-11-01-voxelight-crystal-world.md)
 - [已确认的概念实现](superpowers/reference/2026-11-01-crystal-world-concept.html)
 - [实施与自动验收报告](crystal-world-implementation-report.md)
+- [0.5.1 前端转场复核](reports/frontend-transitions-0.5.1.md)
 - [RTX 实测数据及 Intel 人工验收步骤](world-performance.md)
 - [仍有效的液态 UI 设计](superpowers/specs/2026-10-26-voxelight-liquid-ui-design.md)
 
