@@ -9,6 +9,8 @@ export const MOTION = {
   cursor: { stiffness: 140, damping: 12, staggerSeconds: .14, maxElapsedSeconds: .25, settleHeat: .01 },
   ease: [.23, 1, .32, 1] as const,
   page: { enterOffset: 10, exitOffset: 6 },
+  menu: { offset: 4, scale: .97 },
+  toast: { offset: 8 },
   lens: {
     x: { stiffness: 340, damping: 30, pressedDamping: 34 },
     y: { stiffness: 340, damping: 30 },

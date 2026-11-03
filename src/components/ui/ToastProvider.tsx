@@ -53,9 +53,9 @@ export function ToastProvider({ children }: { children?: ReactNode }) {
     {host ? createPortal(<div className="vx-toast-host"><AnimatePresence initial={false}>
       {toast ? <motion.div key="notification" className={`vx-toast vx-toast--${toast.kind ?? "info"}`}
         role={toast.kind === "error" ? "alert" : "status"} aria-atomic="true"
-        initial={{ opacity: 0, transform: tier === "full" ? "translateY(8px)" : "none" }}
+        initial={{ opacity: 0, transform: tier === "full" ? `translateY(${MOTION.toast.offset}px)` : "none" }}
         animate={{ opacity: 1, transform: "none" }}
-        exit={{ opacity: 0, transform: tier === "full" ? "translateY(8px)" : "none", transition: { duration: motionDuration(tier, "exit") } }}
+        exit={{ opacity: 0, transform: tier === "full" ? `translateY(${MOTION.toast.offset}px)` : "none", transition: { duration: motionDuration(tier, "exit") } }}
         transition={{ duration: motionDuration(tier, "enter"), ease: MOTION.ease }}>
         <span>{toast.message}</span><IconButton label={t("common:a11y.dismissNotification")} icon={<X size={16} />} onClick={() => dismiss()} />
       </motion.div> : null}

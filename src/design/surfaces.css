@@ -35,12 +35,12 @@
 .vx-toast-host .vx-toast { pointer-events: auto; background: color-mix(in srgb, var(--surface-solid) 82%, transparent); backdrop-filter: blur(12px); }
 .vx-toast--error { border-color: var(--hairline); }
 .vx-toast--error > span { color: var(--danger); }
-.vx-dialog { opacity: 0; transform: translateY(8px) scale(.98); transition: opacity var(--duration-exit) var(--ease-out), transform var(--duration-exit) var(--ease-out), display var(--duration-exit) allow-discrete, overlay var(--duration-exit) allow-discrete; }
+.vx-dialog { opacity: 0; transform: translateY(var(--overlay-offset)) scale(var(--overlay-scale)); transition: opacity var(--duration-exit) var(--ease-out), transform var(--duration-exit) var(--ease-out), display var(--duration-exit) allow-discrete, overlay var(--duration-exit) allow-discrete; }
 .vx-dialog[open] { opacity: 1; transform: none; transition-duration: var(--duration-normal); }
 .vx-dialog::backdrop { opacity: 0; transition: opacity var(--duration-exit) var(--ease-out), display var(--duration-exit) allow-discrete, overlay var(--duration-exit) allow-discrete; }
 .vx-dialog[open]::backdrop { opacity: 1; transition-duration: var(--duration-normal); }
 @starting-style {
-  .vx-dialog[open] { opacity: 0; transform: translateY(8px) scale(.98); }
+  .vx-dialog[open] { opacity: 0; transform: translateY(var(--overlay-offset)) scale(var(--overlay-scale)); }
   .vx-dialog[open]::backdrop { opacity: 0; }
 }
 [data-effects="lite"] .vx-dialog { transform: none; }
