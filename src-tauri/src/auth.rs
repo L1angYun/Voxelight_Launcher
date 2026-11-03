@@ -192,7 +192,11 @@ impl AuthService {
     pub fn new(data_dir: PathBuf) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .https_only(true)
-            .user_agent("VoxelightLauncher/0.5.0 (native authentication)")
+            .user_agent(concat!(
+                "VoxelightLauncher/",
+                env!("CARGO_PKG_VERSION"),
+                " (native authentication)"
+            ))
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(35))
             .redirect(reqwest::redirect::Policy::none())

@@ -831,7 +831,7 @@ fn mirror_download_client() -> Result<&'static reqwest::Client, String> {
         return Ok(client);
     }
     let client = reqwest::Client::builder()
-        .user_agent("VoxelightLauncher/0.5.0")
+        .user_agent(concat!("VoxelightLauncher/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(180))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {

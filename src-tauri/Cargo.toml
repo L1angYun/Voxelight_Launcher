@@ -1,6 +1,6 @@
 [package]
 name = "voxelight-launcher"
-version = "0.5.0"
+version = "0.5.1"
 description = "Voxelight Launcher with a Rust core and React interface"
 authors = ["Voxelight Launcher contributors"]
 license = "GPL-3.0-only"

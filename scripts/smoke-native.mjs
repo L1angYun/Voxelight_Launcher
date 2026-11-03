@@ -171,7 +171,7 @@ async function verifyLoader(
 
 async function modrinth(endpoint) {
   const response = await fetch(`https://api.modrinth.com/v2/${endpoint}`, {
-    headers: { "User-Agent": "VoxelightLauncher/0.5.0 integration-test" },
+    headers: { "User-Agent": `VoxelightLauncher/${report.version} integration-test` },
   });
   if (!response.ok) throw new Error(`Modrinth HTTP ${response.status}`);
   return response.json();

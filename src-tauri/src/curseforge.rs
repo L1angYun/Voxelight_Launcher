@@ -274,7 +274,11 @@ fn service_key(state: &LauncherState) -> Result<String, String> {
 }
 fn api_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("VoxelightLauncher/0.5.0 (Tauri desktop)")
+        .user_agent(concat!(
+            "VoxelightLauncher/",
+            env!("CARGO_PKG_VERSION"),
+            " (Tauri desktop)"
+        ))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none())
@@ -714,7 +718,11 @@ async fn download(
         ));
     }
     let client = reqwest::Client::builder()
-        .user_agent("VoxelightLauncher/0.5.0 (Tauri desktop)")
+        .user_agent(concat!(
+            "VoxelightLauncher/",
+            env!("CARGO_PKG_VERSION"),
+            " (Tauri desktop)"
+        ))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(600))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {

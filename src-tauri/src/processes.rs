@@ -326,7 +326,22 @@ pub fn export_diagnostics(
     if destination.exists() {
         return Err("报告文件已存在，请选择新文件名以保留原文件".into());
     }
-    let report=format!("Voxelight Launcher 0.5.0 诊断报告\n时间：{}\n游戏版本：{}\n实例：{:?}\n结论：{}\n原因：{}\n建议：\n{}\n\n日志节选（已过滤常见凭证字段）：\n{}\n",chrono::Utc::now().to_rfc3339(),version_id,instance_id,diagnosis.title,diagnosis.reason,diagnosis.suggestions.join("\n"),diagnosis.excerpt);
+    let report = format!(
+        concat!(
+            "Voxelight Launcher ",
+            env!("CARGO_PKG_VERSION"),
+            " 诊断报告\n",
+            "时间：{}\n游戏版本：{}\n实例：{:?}\n结论：{}\n原因：{}\n建议：\n{}\n\n",
+            "日志节选（已过滤常见凭证字段）：\n{}\n"
+        ),
+        chrono::Utc::now().to_rfc3339(),
+        version_id,
+        instance_id,
+        diagnosis.title,
+        diagnosis.reason,
+        diagnosis.suggestions.join("\n"),
+        diagnosis.excerpt
+    );
     std::fs::write(destination, report).map_err(|e| e.to_string())?;
     Ok(output_path)
 }
