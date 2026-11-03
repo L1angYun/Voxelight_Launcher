@@ -67,12 +67,13 @@ export function InstanceDetailPage({
         />
         <div className="vx-detail-header__identity">
           <InstanceIdentity
+            placement="detail"
             name={instance.name}
             identity={instance.id}
             iconPath={instance.iconPath}
           />
           <div>
-            <h1 title={instance.name}>{instance.name}</h1>
+            <h1 tabIndex={-1} title={instance.name}>{instance.name}</h1>
             <p>
               {instance.versionId}
               <span aria-hidden="true"> · </span>

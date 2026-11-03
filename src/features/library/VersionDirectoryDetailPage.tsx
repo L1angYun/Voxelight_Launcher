@@ -41,11 +41,13 @@ export function VersionDirectoryDetailPage({
         />
         <div className="vx-detail-header__identity">
           <InstanceIdentity
+            kind="version-directory"
+            placement="detail"
             name={t("library:minecraft")}
             identity={version.id}
           />
           <div>
-            <h1>{t("library:minecraftVersion", { version: version.id })}</h1>
+            <h1 tabIndex={-1}>{t("library:minecraftVersion", { version: version.id })}</h1>
             <p>
               {t("library:versionDirectory")}
               {version.javaMajor ? (

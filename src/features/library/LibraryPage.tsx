@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { LayoutGroup } from "motion/react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowUpRight,
@@ -23,12 +24,24 @@ import { CreateInstanceDialog } from "./CreateInstanceDialog";
 import { LibraryLaunchStatus } from "./LibraryLaunchStatus";
 import { VersionDirectoryDetailPage } from "./VersionDirectoryDetailPage";
 import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
-import { InstanceIdentity } from "./InstanceIdentity";
+import { InstanceIdentity, InstanceIdentityProvider } from "./InstanceIdentity";
+import { motionDuration } from "../../design/motion";
+import { useMotionTier } from "../../design/useMotionTier";
 import type { Instance, InstalledVersion } from "../../lib/launcher";
 import "./library.css";
 
-export function LibraryPage(_props: { navResetTick?: number } = {}) {
+type DetailKind = "instance" | "version-directory";
+
+export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
   const { t } = useTranslation();
+  const { tier } = useMotionTier();
+  const contentDuration = motionDuration(tier, "content");
+  const groupId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listScroll = useRef(0);
+  const previousDetail = useRef<{ key: string; kind: DetailKind; id: string } | null>(null);
+  const previousResetTick = useRef(navResetTick);
+  const resetReturn = useRef(false);
   const {
     data,
     running,
@@ -54,12 +67,72 @@ export function LibraryPage(_props: { navResetTick?: number } = {}) {
   const [scope, setScope] = useState<"instances" | "versions">("instances");
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [revealListing, setRevealListing] = useState(false);
   const selectedInstance = data.instances.find(
     (instance) => instance.id === selectedId,
   );
   const versionDirectory = data.installedVersions.find(
     (version) => version.id === selectedVersionDirectory,
   );
+  const detailKind = versionDirectory ? "version-directory" : selectedInstance ? "instance" : undefined;
+  const detailId = versionDirectory?.id ?? selectedInstance?.id;
+  const actualDetailKey = detailKind && detailId ? `${detailKind}:${detailId}` : null;
+
+  function openDetail(kind: DetailKind, id: string) {
+    // The browser can clamp scroll as soon as the shorter detail tree replaces
+    // the listing, so snapshot it before requesting that replacement.
+    if (!actualDetailKey) listScroll.current = rootRef.current?.closest("main")?.scrollTop ?? 0;
+    resetReturn.current = false;
+    setSelectedId(kind === "instance" ? id : undefined);
+    setSelectedVersionDirectory(kind === "version-directory" ? id : undefined);
+  }
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const main = root.closest("main");
+    if (previousResetTick.current !== navResetTick) {
+      previousResetTick.current = navResetTick;
+      if (main) main.scrollTop = 0;
+      resetReturn.current = true;
+      setSelectedId(undefined);
+      setSelectedVersionDirectory(undefined);
+      if (actualDetailKey) return;
+    }
+
+    const previous = previousDetail.current;
+    if (actualDetailKey && detailKind && detailId) {
+      if (previous?.key === actualDetailKey) return;
+      previousDetail.current = { key: actualDetailKey, kind: detailKind, id: detailId };
+      if (main) main.scrollTop = 0;
+      root.querySelector<HTMLElement>(".vx-detail-header h1")?.focus({ preventScroll: true });
+      return;
+    }
+    const resetting = resetReturn.current;
+    resetReturn.current = false;
+    if (!previous) return;
+    previousDetail.current = null;
+    // An external reload can remove the resolved entity without changing the
+    // selected ID. Clear it so a later reload cannot reopen a stale detail.
+    if (selectedId !== undefined) setSelectedId(undefined);
+    if (selectedVersionDirectory !== undefined) setSelectedVersionDirectory(undefined);
+
+    const card = [...root.querySelectorAll<HTMLButtonElement>(".vx-instance-card__select")].find((button) =>
+      previous.kind === "instance" ? button.closest<HTMLElement>("[data-instance-id]")?.dataset.instanceId === previous.id
+        : button.dataset.versionId === previous.id);
+    const heading = root.querySelector<HTMLElement>(".vx-library-page h1");
+    let focusTarget = card ?? heading;
+    if (main) {
+      main.scrollTop = card && !resetting ? listScroll.current : 0;
+      if (resetting && card) {
+        const viewport = main.getBoundingClientRect();
+        const bounds = card.getBoundingClientRect();
+        if (bounds.height && viewport.height && (bounds.top < viewport.top || bounds.bottom > viewport.bottom)) focusTarget = heading;
+      }
+    }
+    focusTarget?.focus({ preventScroll: true });
+    setRevealListing(contentDuration > 0);
+  }, [actualDetailKey, contentDuration, detailId, detailKind, navResetTick, selectedId, selectedVersionDirectory]);
   const scopeCount =
     scope === "versions"
       ? data.installedVersions.length
@@ -104,7 +177,7 @@ export function LibraryPage(_props: { navResetTick?: number } = {}) {
     await reload();
     if (instanceId) selectInstance(instanceId);
     else selectVersion(versionId);
-    setSelectedId(instanceId);
+    if (instanceId) openDetail("instance", instanceId);
     setCreateOpen(false);
     setImportOpen(false);
     play({
@@ -125,35 +198,19 @@ export function LibraryPage(_props: { navResetTick?: number } = {}) {
       onCancel={cancelPreparation}
     />
   );
-  if (versionDirectory)
-    return (
-      <>
-        <VersionDirectoryDetailPage
-          version={versionDirectory}
-          onBack={() => setSelectedVersionDirectory(undefined)}
-          onLaunch={() => void launchVersion(versionDirectory.id)}
-        />
-        {launchStatus}
-      </>
-    );
-  if (selectedInstance)
-    return (
-      <>
-        <InstanceDetailPage
-          instance={selectedInstance}
-          onBack={() => setSelectedId(undefined)}
-          onChanged={reload}
-          onLaunch={() => void launchInstance(selectedInstance)}
-        />
-        {launchStatus}
-      </>
-    );
-
-  return (
-    <div className="vx-library-page">
-      <header className="vx-page-heading">
+  const content = versionDirectory ? (
+    <VersionDirectoryDetailPage key={actualDetailKey} version={versionDirectory}
+      onBack={() => setSelectedVersionDirectory(undefined)} onLaunch={() => void launchVersion(versionDirectory.id)} />
+  ) : selectedInstance ? (
+    <InstanceDetailPage key={actualDetailKey} instance={selectedInstance} onBack={() => setSelectedId(undefined)}
+      onChanged={reload} onLaunch={() => void launchInstance(selectedInstance)} />
+  ) : (
+    <div className="vx-library-page" data-drill-return={revealListing && contentDuration > 0 ? "" : undefined}>
+      <header className="vx-page-heading" onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget && event.animationName === "vx-library-content-reveal") setRevealListing(false);
+      }}>
         <div className="vx-page-heading__copy">
-          <h1>{t("library:title")}</h1>
+          <h1 tabIndex={-1}>{t("library:title")}</h1>
           <p>
             {scope === "versions"
               ? t("library:subtitleVersions", { count: scopeCount })
@@ -255,10 +312,7 @@ export function LibraryPage(_props: { navResetTick?: number } = {}) {
                 key={version.id}
                 version={version}
                 selected={!activeInstance && version.id === selectedVersionId}
-                onOpen={() => {
-                  setSelectedVersionDirectory(version.id);
-                  setSelectedId(undefined);
-                }}
+                onOpen={() => openDetail("version-directory", version.id)}
                 onLaunch={() => void launchVersion(version.id)}
               />
             ))}
@@ -296,10 +350,7 @@ export function LibraryPage(_props: { navResetTick?: number } = {}) {
               instance={instance}
               selected={instance.id === activeInstance?.id}
               running={running.some((game) => game.instanceId === instance.id)}
-              onOpen={() => {
-                setSelectedId(instance.id);
-                setSelectedVersionDirectory(undefined);
-              }}
+              onOpen={() => openDetail("instance", instance.id)}
               onLaunch={() => void launchInstance(instance)}
             />
           ))}
@@ -331,9 +382,17 @@ export function LibraryPage(_props: { navResetTick?: number } = {}) {
         onInstalled={installed}
         initialMode="import"
       />
-      {launchStatus}
     </div>
   );
+  return <LayoutGroup id={groupId}>
+    <InstanceIdentityProvider tier={tier}>
+      <div className="vx-library-drill" ref={rootRef} data-content-motion={contentDuration > 0 ? "" : undefined}
+        style={{ "--vx-drill-content-duration": `${contentDuration}s` } as CSSProperties}>
+        {content}
+        {launchStatus}
+      </div>
+    </InstanceIdentityProvider>
+  </LayoutGroup>;
 }
 
 function CreateInstanceTile({ onCreate }: { onCreate: () => void }) {
@@ -444,6 +503,7 @@ function VersionDirectoryCard({
       >
         <span className="vx-instance-card__identity">
           <InstanceIdentity
+            kind="version-directory"
             name={t("library:minecraft")}
             identity={version.id}
           />
