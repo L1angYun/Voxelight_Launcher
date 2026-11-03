@@ -1725,11 +1725,6 @@
   height: 64px;
 }
 
-.vx-detail-header .vx-instance-identity,
-.vx-detail-context__signature .vx-instance-identity {
-  --identity-color: var(--accent);
-}
-
 .vx-instance-identity::before {
   inset: 4px;
   border: 0;
@@ -2101,6 +2096,14 @@
   width: 48px;
   height: 54px;
 }
+
+/* Only non-identity layers reveal; the actual badge belongs to shared layout. */
+.vx-library-drill[data-content-motion] :is(.vx-detail-header > :not(.vx-detail-header__identity), .vx-detail-header__identity > div, .vx-detail-layout),
+.vx-library-page[data-drill-return] :is(.vx-page-heading, .vx-library-commandbar > .vx-search, .vx-library-commandbar__actions,
+  .vx-library-view, .vx-instance-card__information, .vx-instance-card__open, .vx-instance-card__footer, .vx-library-empty) {
+  animation: vx-library-content-reveal var(--vx-drill-content-duration) var(--ease-out) both;
+}
+@keyframes vx-library-content-reveal { from { opacity: 0; } to { opacity: 1; } }
 
 @media (hover: hover) and (pointer: fine) {
   .vx-instance-card:hover,
