@@ -51,6 +51,7 @@ export function WorldScene(props: WorldSceneProps) {
     let budgetSource: "gpu" | "raf" | null = null;
     let width = 1, height = 1, tier: Tier;
     let lastLayoutKey = "", trackedAnchor: Element | null = null;
+    let lastAnchorNdc: [number, number] = [.62, -.66];
     let renderer: WorldRenderer | null = null;
     let pointerBound = false;
     let introPending = false, introTimer: ReturnType<typeof setTimeout> | null = null;
@@ -178,7 +179,8 @@ export function WorldScene(props: WorldSceneProps) {
       const anchor = document.querySelector("[data-world-anchor]");
       const bounds = anchor?.getBoundingClientRect();
       const ndc: [number, number] = bounds && bounds.width > 0 && bounds.height > 0
-        ? [(bounds.left + bounds.width / 2 - rect.left) / nextWidth * 2 - 1, 1 - (bounds.bottom - rect.top) / nextHeight * 2] : [.62, -.66];
+        ? [(bounds.left + bounds.width / 2 - rect.left) / nextWidth * 2 - 1, 1 - (bounds.bottom - rect.top) / nextHeight * 2] : lastAnchorNdc;
+      if (bounds && bounds.width > 0 && bounds.height > 0) lastAnchorNdc = ndc;
       return { width: nextWidth, height: nextHeight, ndc, anchor, key: JSON.stringify([nextWidth, nextHeight, ...ndc, window.devicePixelRatio || 1]) };
     }
     function fit() {
@@ -255,6 +257,7 @@ export function WorldScene(props: WorldSceneProps) {
     }
     const changed = () => update();
     const resized = () => { if (measureLayout().key !== lastLayoutKey) update(true); };
+    const anchorCommitted = () => { if (measureLayout().key !== lastLayoutKey) update(true); };
     const mutations = new MutationObserver(records => { if (records.some(record => record.target === html)) update(); });
     mutations.observe(html, { attributes: true, attributeFilter: ["data-theme", "data-effects", "data-high-contrast", "data-reduced-motion", "style", "class"] });
     const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resized);
@@ -268,6 +271,7 @@ export function WorldScene(props: WorldSceneProps) {
     document.addEventListener("visibilitychange", changed);
     document.addEventListener("pointerdown", skipIntro, { capture: true, passive: true });
     window.addEventListener("resize", resized);
+    window.addEventListener("vx:world-anchor", anchorCommitted);
     runtime.current = { update }; update();
     return () => {
       disposed = true; endIntro(); stop(); runtime.current = null;
@@ -275,6 +279,7 @@ export function WorldScene(props: WorldSceneProps) {
       mutations.disconnect(); resize?.disconnect(); intersection?.disconnect();
       queries.forEach(value => value?.removeEventListener?.("change", changed));
       document.removeEventListener("visibilitychange", changed); document.removeEventListener("pointerdown", skipIntro, true); window.removeEventListener("resize", resized);
+      window.removeEventListener("vx:world-anchor", anchorCommitted);
       renderer?.dispose();
     };
   }, []);

@@ -31,6 +31,20 @@ function timeline(inputs: WorldInputs = initial) {
 }
 
 describe("crystal world director", () => {
+  it("starts the camera at zero speed and approaches with the 36/12 critical spring", () => {
+    const time = timeline();
+    const start = time.frame.eye[1];
+    time.director.setInputs({ ...initial, page: "content" });
+    const target = time.director.snap().eye[1];
+    time.director.setInputs(initial); time.director.snap();
+    time.director.setInputs({ ...initial, page: "content" });
+    const first = time.advance(.001).eye[1];
+    expect(Math.abs((first - start) / (target - start))).toBeLessThan(.0001);
+    const halfway = time.advance(.499).eye[1];
+    expect((halfway - start) / (target - start)).toBeGreaterThan(.8);
+    expect((halfway - start) / (target - start)).toBeLessThan(.85);
+    expect((time.advance(.5).eye[1] - start) / (target - start)).toBeGreaterThan(.97);
+  });
   it("retreats on real elapsed time while a slow frame still caps simulation advancement", () => {
     const time = timeline({ ...initial, phase: "preparing", fraction: 1 }); time.advance(3);
     time.director.setInputs(initial);
