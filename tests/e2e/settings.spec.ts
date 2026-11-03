@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installLauncherFixture } from "./fixtures";
 import { selectValue } from "./select-helpers";
+import packageJson from "../../package.json";
 
 function mockSettings(page: Page) {
   return page.addInitScript(() => {
@@ -134,7 +135,7 @@ test("service secrets, presets and background stay in their owning groups", asyn
   await page.getByRole("button", { name: "选择首页背景", exact: true }).click();
   await page.getByRole("button", { name: "恢复默认背景", exact: true }).click();
   await page.locator(".vx-settings-nav").getByRole("button", { name: "关于", exact: true }).click();
-  await expect(page.getByText("0.5.0", { exact: true })).toBeVisible();
+  await expect(page.getByText(packageJson.version, { exact: true })).toBeVisible();
   await expect(page.getByLabel("CurseForge API Key", { exact: true })).toHaveCount(0);
   const recorded = await calls(page);
   expect(recorded.some((call) => call.name === "set_service_secret" && call.args?.secret === "fixture-secret")).toBe(true);

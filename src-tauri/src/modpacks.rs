@@ -156,7 +156,11 @@ fn client(download: bool) -> Result<reqwest::Client, String> {
         reqwest::redirect::Policy::none()
     };
     reqwest::Client::builder()
-        .user_agent("VoxelightLauncher/0.5.0 (Tauri desktop)")
+        .user_agent(concat!(
+            "VoxelightLauncher/",
+            env!("CARGO_PKG_VERSION"),
+            " (Tauri desktop)"
+        ))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(if download { 900 } else { 60 }))
         .redirect(policy)

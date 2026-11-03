@@ -16,6 +16,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+const config = JSON.parse(
+  readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"),
+);
 const output = path.join(root, "licenses");
 const write = process.argv.includes("--write");
 const permitted = new Set([
@@ -212,7 +215,7 @@ async function retrieve(url) {
     try {
       response = await fetch(url, {
         signal: AbortSignal.timeout(30000),
-        headers: { "User-Agent": "VoxelightLauncher/0.5.0" },
+        headers: { "User-Agent": `VoxelightLauncher/${config.version}` },
       });
     } catch (error) {
       lastError = error;
@@ -1018,9 +1021,6 @@ for (const relative of [
   if (existsSync(path.join(root, relative)))
     failures.push(`Excluded source or asset is still present: ${relative}`);
 }
-const config = JSON.parse(
-  readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"),
-);
 if (
   config.bundle.license !== "GPL-3.0-only" ||
   config.bundle.licenseFile !== "../LICENSE"
