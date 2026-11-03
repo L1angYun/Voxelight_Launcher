@@ -206,6 +206,26 @@ it("remeasures a newly committed anchor and paints one static frame on its layou
     expect(fake.draw.mock.calls.length).toBe(draws + 1);
   } finally { anchor.remove(); }
 });
+it("observes a replacement home anchor even when its geometry matches the prior node", async () => {
+  const observed = new Set<Element>();
+  vi.stubGlobal("ResizeObserver", class {
+    observe(element: Element) { observed.add(element); }
+    unobserve(element: Element) { observed.delete(element); }
+    disconnect() { observed.clear(); }
+  });
+  const first = document.createElement("div"); first.dataset.worldAnchor = "";
+  first.getBoundingClientRect = () => new DOMRect(300, 100, 200, 400);
+  document.body.append(first);
+  await render({ effects: "lite" });
+  const replacement = first.cloneNode() as HTMLElement;
+  replacement.getBoundingClientRect = first.getBoundingClientRect;
+  first.remove(); document.body.append(replacement);
+  try {
+    await act(async () => window.dispatchEvent(new Event("vx:world-anchor")));
+    expect(observed.has(replacement)).toBe(true);
+    expect(observed.has(first)).toBe(false);
+  } finally { first.remove(); replacement.remove(); }
+});
 it("publishes the actual rounded crystal frontier and returns to zero after cancel", async () => {
   await render({ phase: "preparing", fraction: .37 }); await advance(3000);
   expect(scene().dataset.worldFront).toBe("61");
