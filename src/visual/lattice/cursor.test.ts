@@ -376,20 +376,42 @@ describe("Lattice cursor halo", () => {
   });
 
   it("can form a keyboard focus contour without a preceding pointer event", () => {
-    const { element, button } = card();
+    const { element, button, outline } = card();
     halo = mountCursorHalo(document.body);
     document.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Tab", bubbles: true }),
     );
     button.focus();
+    expect(outline.style.visibility).toBe("visible");
     settle();
     expect(circles).toHaveLength(30);
     expect(element.dataset.haloOwned).toBe("true");
+    expect(outline.style.visibility).toBe("visible");
     document.body.tabIndex = -1;
     document.body.focus();
     frame(2100);
     expect(callbacks.size).toBe(0);
     expect(element.hasAttribute("data-halo-owned")).toBe(false);
+  });
+
+  it("keeps the keyboard fallback visible when a pointer-owned card receives focus", () => {
+    const { element, button, outline } = card();
+    halo = mountCursorHalo(document.body);
+    pointer(button, 530, 300); settle();
+    expect(outline.style.visibility).toBe("hidden");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    button.focus();
+    expect(button.matches(":focus-visible")).toBe(true);
+    expect(outline.style.visibility).toBe("visible");
+    settle(2000);
+    expect(circles).toHaveLength(30);
+    expect(callbacks.size).toBe(0);
+    pointer(button, 531, 301);
+    expect(outline.style.visibility).toBe("visible");
+    document.body.tabIndex = -1; document.body.focus();
+    pointer(button, 530, 300);
+    expect(element.dataset.haloOwned).toBe("true");
+    expect(outline.style.visibility).toBe("hidden");
   });
 
   it("retains point positions while keyboard focus transfers between cards", () => {
