@@ -12,9 +12,16 @@ for (const [width, height] of [[1440, 930], [1050, 720]]) {
     await installLauncherFixture(page);
     await page.goto("/");
     await page.locator('button[data-page="settings"]').click();
+    // This compares section geometry in the settled page. During entry,
+    // locator.click() may scroll its moving target before dispatching input.
+    const stage = page.locator('.vx-page-stage[data-page-stage="settings"][data-exiting="false"]');
+    await expect(stage).toHaveCSS("opacity", "1");
+    await expect(stage).toHaveCSS("transform", "none");
     await page.evaluate(() => document.fonts.ready);
+    const main = page.locator("#main-content");
+    await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(0);
     const tabs = page.locator(".vx-settings-nav button");
-    const measurements: Array<{ section: string; settingsHeight: number; globalHeight: number; settingsY: number }> = [];
+    const measurements: Array<{ section: string; settingsHeight: number; globalHeight: number; settingsY: number; scrollTop: number }> = [];
     await mkdir(evidence, { recursive: true });
     for (let index = 0; index < 6; index++) {
       const tab = tabs.nth(index);
@@ -23,7 +30,8 @@ for (const [width, height] of [[1440, 930], [1050, 720]]) {
       await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       const settings = (await page.locator(".vx-settings-nav").boundingBox())!;
       const chrome = (await page.locator(".vx-window-chrome__bar").boundingBox())!;
-      measurements.push({ section: (await tab.textContent())!.trim(), settingsHeight: settings.height, globalHeight: chrome.height, settingsY: settings.y });
+      measurements.push({ section: (await tab.textContent())!.trim(), settingsHeight: settings.height, globalHeight: chrome.height,
+        settingsY: settings.y, scrollTop: await main.evaluate(element => element.scrollTop) });
       await page.screenshot({ path: resolve(evidence, `settings-section-${index}-${width}.png`) });
     }
     await writeFile(resolve(evidence, `settings-heights-${width}.json`), JSON.stringify(measurements, null, 2));
