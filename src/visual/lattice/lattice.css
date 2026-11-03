@@ -19,6 +19,11 @@
   outline-offset: 1px;
   opacity: 1;
 }
+.vx-lattice-frame[data-selected="true"] {
+  color: var(--text-primary);
+  border: 2px dotted currentColor;
+  opacity: 1;
+}
 
 .vx-lattice-selection {
   position: absolute;
@@ -33,11 +38,13 @@
 canvas.vx-lattice-progress {
   display: block;
   width: 100%;
+  height: var(--lattice-progress-height, 32px);
   min-width: 0;
 }
 
 @media (prefers-contrast: more), (forced-colors: active) {
   .vx-lattice-frame,
+  .vx-lattice-frame[data-selected="true"],
   .vx-lattice-selection {
     color: Highlight;
   }

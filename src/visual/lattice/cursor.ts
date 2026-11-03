@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // One foreground point pool: pointer orbit, rounded control outline, then back.
 import { DOT_SUBSTEP_SECONDS, DotField, seededRandom } from "./dots";
+import { MOTION } from "../../design/motion";
 
 export const CURSOR_HALO_POINT_COUNT = 30;
-export const CURSOR_HALO_RADIUS_PX = 12;
+export const CURSOR_HALO_RADIUS_PX = 18;
 export const CURSOR_HALO_OUTSET_PX = 6;
-const HALO_STIFFNESS = 140;
-const HALO_DAMPING = 12;
 const TWO_PI = Math.PI * 2;
 const CONTROLS = [
   "a[href]",
@@ -188,8 +187,8 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   const g = context;
   container.append(canvas);
   const dots = new DotField(CURSOR_HALO_POINT_COUNT, seededRandom(42));
-  dots.stiffness = HALO_STIFFNESS;
-  dots.damping = HALO_DAMPING;
+  dots.stiffness = MOTION.cursor.stiffness;
+  dots.damping = MOTION.cursor.damping;
 
   let enabled = true;
   let disposed = false;
@@ -197,7 +196,6 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   let inside = false;
   let px = 0;
   let py = 0;
-  let spin = 0;
   let previousTime: number | null = null;
   let frame: number | null = null;
   let target: HTMLElement | null = null;
@@ -208,6 +206,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   let savedFrame: SavedStyle | null = null;
   let savedOutline: SavedStyle | null = null;
   let savedOwnership: string | null = null;
+  const targetResize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => schedule());
 
   const allowed = () => {
     const root = document.documentElement;
@@ -241,9 +240,11 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
 
   function setTarget(next: HTMLElement | null) {
     if (target === next) return;
+    if (target) targetResize?.unobserve(target);
     releaseOwnership();
     target = next;
     if (!next) return;
+    targetResize?.observe(next);
     const outline = frameOf(next);
     if (outline) {
       ownedCard = next;
@@ -252,7 +253,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       savedFrame = saveStyle(outline, "visibility");
       outline.style.setProperty("visibility", "hidden");
     }
-    dots.stagger(0.14, (index) =>
+    dots.stagger(MOTION.cursor.staggerSeconds, (index) =>
       Math.hypot(dots.x[index] - px, dots.y[index] - py),
     );
   }
@@ -286,9 +287,11 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     }
   }
 
-  function schedule() {
-    if (frame === null && allowed() && (inside || target))
+  function schedule(resetClock = true) {
+    if (frame === null && allowed() && (inside || target)) {
+      if (resetClock) previousTime = performance.now();
       frame = requestAnimationFrame(tick);
+    }
   }
 
   function tick(now: number) {
@@ -309,7 +312,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     const elapsed =
       previousTime === null
         ? 1 / 60
-        : Math.max(0, Math.min(0.25, (now - previousTime) / 1000));
+        : Math.max(0, Math.min(MOTION.cursor.maxElapsedSeconds, (now - previousTime) / 1000));
     previousTime = now;
     const bounds = target?.getBoundingClientRect();
     const targetStyle = target ? getComputedStyle(target) : null;
@@ -325,13 +328,13 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
             bounds.width + pad * 2,
             bounds.height + pad * 2,
             radius,
-            index / dots.count + spin * 0.035,
+            index / dots.count,
           );
           dots.setHome(index, bounds.left - pad + x, bounds.top - pad + y, 0.95);
         }
       } else {
         for (let index = 0; index < dots.count; index += 1) {
-          const angle = (index / dots.count) * TWO_PI + spin * 0.6;
+          const angle = (index / dots.count) * TWO_PI;
           dots.setHome(
             index,
             px + Math.cos(angle) * CURSOR_HALO_RADIUS_PX,
@@ -346,23 +349,22 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     if (remaining === 0) updateHomes();
     while (remaining > 1e-9) {
       const seconds = Math.min(remaining, DOT_SUBSTEP_SECONDS);
-      spin += seconds;
       updateHomes();
       dots.step(seconds);
       remaining -= seconds;
     }
     const style = getComputedStyle(document.documentElement);
     const accent = style.getPropertyValue("--accent").trim() || "#b4f17a";
-    const cold = style.getPropertyValue("--optical-cold").trim() || accent;
+    const ink = style.getPropertyValue("--text-primary").trim() || "#ece7da";
     g.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    g.fillStyle = target ? cold : accent;
+    g.fillStyle = target ? ink : accent;
     for (let index = 0; index < dots.count; index += 1) {
       g.globalAlpha = dots.alpha[index];
       g.beginPath();
       g.arc(
         dots.x[index],
         dots.y[index],
-        1.25 + dots.heat[index] * 0.8,
+        (target ? 1.25 : .8) + dots.heat[index] * 0.8,
         0,
         TWO_PI,
       );
@@ -393,7 +395,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
         ? "focus"
         : "target"
       : "pointer";
-    schedule();
+    if (dots.moving() || dots.heat.some(value => value > MOTION.cursor.settleHeat)) schedule(false);
   }
 
   function move(event: PointerEvent) {
@@ -491,7 +493,10 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     if (event.relatedTarget === null) clear();
   }
   function policyChanged() {
-    if (!allowed()) clear();
+    if (!allowed() || target && nativeLayer(target)) { clear(); return; }
+    if (target && (!target.isConnected || !usable(target))) {
+      setTarget(null); schedule();
+    }
   }
   function fit() {
     const ratio = Math.min(2, window.devicePixelRatio || 1);
@@ -500,6 +505,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     g.setTransform(ratio, 0, 0, ratio, 0, 0);
     schedule();
   }
+  const scrolled = () => schedule();
 
   const listeners: Array<[string, EventListener]> = [
     ["pointermove", move as EventListener],
@@ -516,17 +522,24 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     document.addEventListener(event, callback);
   window.addEventListener("blur", clear);
   window.addEventListener("resize", fit);
+  document.addEventListener("scroll", scrolled, true);
   const queries = [fine, reduced, contrast, forced];
   queries.forEach((query) => query.addEventListener?.("change", policyChanged));
-  const observer = new MutationObserver(policyChanged);
+  const observer = new MutationObserver(records => {
+    policyChanged();
+    if (records.some(record => record.target === document.documentElement ||
+      target && record.target instanceof Element && record.target.contains(target))) schedule();
+  });
   observer.observe(document.documentElement, {
     subtree: true,
+    childList: true,
     attributes: true,
     attributeFilter: [
       "data-effects",
       "data-reduced-motion",
       "data-high-contrast",
       "data-overture-playing",
+      "data-theme", "style", "class", "hidden", "disabled", "inert", "aria-hidden", "aria-disabled", "open",
     ],
   });
   fit();
@@ -541,6 +554,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       disposed = true;
       clear();
       observer.disconnect();
+      targetResize?.disconnect();
       for (const [event, callback] of listeners)
         document.removeEventListener(event, callback);
       queries.forEach((query) =>
@@ -548,6 +562,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       );
       window.removeEventListener("blur", clear);
       window.removeEventListener("resize", fit);
+      document.removeEventListener("scroll", scrolled, true);
       canvas.remove();
     },
   };

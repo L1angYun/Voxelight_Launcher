@@ -1,37 +1,15 @@
-import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity, Download, History } from "lucide-react";
 import { EmptyState } from "../../components/ui/Feedback";
+import { PageHeader, PageShell } from "../../components/ui/PageShell";
+import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { TaskList } from "./TaskList";
 import type { DownloadTasksModel } from "./useDownloadTasks";
 import "./downloads.css";
 
-const activeStatuses = new Set(["queued", "running", "paused"]);
-const activeOrder: Record<string, number> = {
-  running: 0,
-  queued: 1,
-  paused: 2,
-};
-
 export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   const { t, i18n } = useTranslation();
-  const { tasks, rates, busyTaskId, loading, error, act } = model;
-  const { active, history } = useMemo(() => {
-    const active = tasks
-      .filter((task) => activeStatuses.has(task.status))
-      .sort(
-        (a, b) =>
-          (activeOrder[a.status] ?? 3) - (activeOrder[b.status] ?? 3) ||
-          b.updatedAt.localeCompare(a.updatedAt),
-      );
-    const history = tasks
-      .filter((task) => !activeStatuses.has(task.status))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return {
-      active,
-      history,
-    };
-  }, [tasks]);
+  const { tasks, active, history, rates, busyTaskId, loading, error, act } = model;
   const errorText = error
     ? i18n.exists(`downloads:errors.${error.code}`)
       ? t(`downloads:errors.${error.code}`, error.params)
@@ -47,21 +25,15 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   };
 
   return (
-    <div className="vx-downloads-page">
-      <header className="vx-page-heading">
-        <div>
-          <h1>{t("downloads:title")}</h1>
-        </div>
-      </header>
+    <PageShell className="vx-downloads-page">
+      <PageHeader className="vx-page-heading" title={t("downloads:title")} />
 
       {errorText ? (
         <p className="vx-downloads-error" role="alert">
           {errorText}
         </p>
       ) : null}
-      {loading && tasks.length === 0 ? (
-        <p role="status">{t("common:status.loading")}</p>
-      ) : null}
+      <LoadingStatus active={loading && tasks.length === 0}>{t("common:status.loading")}</LoadingStatus>
       {!loading && tasks.length === 0 && !errorText ? (
         <EmptyState
           className="vx-downloads-empty"
@@ -98,7 +70,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
             )}
           </section>
           <section
-            className="vx-task-section vx-task-section--history"
+            className="vx-task-section vx-task-section--history vx-panel"
             aria-labelledby="downloads-history"
           >
             <header className="vx-task-section__heading">
@@ -123,7 +95,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
           </section>
         </div>
       ) : null}
-    </div>
+    </PageShell>
   );
 }
 

@@ -9,10 +9,12 @@ import { InstanceCard } from "../../features/library/InstanceCard";
 import { ProjectCard } from "../../features/discover/ProjectCard";
 import { RecentInstances } from "../../features/home/RecentInstances";
 import { LatticeFrame } from "./LatticeFrame";
+import { readFileSync } from "node:fs";
 
 let root: Root;
 let container: HTMLDivElement;
 let scheduled: FrameRequestCallback[];
+let style: HTMLStyleElement;
 
 function render(node: ReactNode) {
   act(() => root.render(node));
@@ -38,11 +40,13 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  style = document.createElement("style"); style.textContent = readFileSync("src/visual/lattice/lattice.css", "utf8"); document.head.append(style);
 });
 
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  style.remove();
   delete document.documentElement.dataset.effects;
   delete document.documentElement.dataset.reducedMotion;
   delete document.documentElement.dataset.cursorHalo;
@@ -93,18 +97,18 @@ const project: ResourceProject = {
 const recipes = [
   ["instance", (selected: boolean) => createElement(InstanceCard, { instance, selected, onOpen: vi.fn(), onLaunch: vi.fn() })],
   ["project", (selected: boolean) => createElement(ProjectCard, { project, selected, targetName: "Alpha", onOpen: vi.fn(), onInstall: vi.fn() })],
-  ["recent instance", (selected: boolean) => createElement(RecentInstances, { instances: [instance], selectedId: selected ? "alpha" : undefined, onSelect: vi.fn() })],
+  ["recent instance", (selected: boolean) => createElement(RecentInstances, { instances: [instance, { ...instance, id: "beta", name: "Beta" }], selectedId: selected ? "alpha" : undefined, onSelect: vi.fn() })],
 ] as const;
 
 describe("persistent card selection", () => {
-  it.each(recipes)("keeps one non-color selection mark outside the owned frame on a %s card", async (_name, card) => {
+  it.each(recipes)("keeps a static dotted selection boundary without an overlapping check on a %s card", async (_name, card) => {
     await renderCard(card(true));
     const surface = container.querySelector<HTMLElement>("[data-visual-owner='lattice']")!;
-    const marker = surface.querySelector("svg[data-selected-mark]");
-    expect(marker).not.toBeNull();
-    expect(surface.querySelectorAll("svg[data-selected-mark]")).toHaveLength(1);
-    expect(surface.querySelector(":scope > .vx-lattice-frame")!.contains(marker)).toBe(false);
+    const frame = surface.querySelector<HTMLElement>(":scope > .vx-lattice-frame")!;
+    expect(getComputedStyle(frame).opacity).toBe("1");
+    expect(getComputedStyle(frame).borderStyle).toBe("dotted");
+    expect(surface.querySelector("svg[data-selected-mark]")).toBeNull();
     await renderCard(card(false));
-    expect(container.querySelector("svg[data-selected-mark]")).toBeNull();
+    expect(getComputedStyle(container.querySelector(".vx-lattice-frame")!).opacity).toBe("0");
   });
 });

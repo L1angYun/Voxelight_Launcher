@@ -23,6 +23,8 @@ export type DownloadTaskAction = "pause" | "resume" | "cancel" | "retry";
 
 export interface DownloadTasksModel {
   tasks: DownloadTask[];
+  active: DownloadTask[];
+  history: DownloadTask[];
   rates: Record<string, number>;
   activeCount: number;
   busyTaskId: string | null;
@@ -33,6 +35,7 @@ export interface DownloadTasksModel {
 }
 
 const liveStatuses = new Set(["queued", "running", "paused"]);
+const activeOrder: Record<string, number> = { running: 0, queued: 1, paused: 2 };
 
 export function taskActions(status: string, kind = "install"): DownloadTaskAction[] {
   if (["failed", "interrupted", "cancelled"].includes(status)) {
@@ -116,10 +119,19 @@ export function useDownloadTasks(): DownloadTasksModel {
     }
   }, [applyTasks, refresh]);
 
-  const activeCount = useMemo(
-    () => tasks.filter((task) => liveStatuses.has(task.status)).length,
-    [tasks],
-  );
+  // This model outlives the Downloads page, so returning to it reuses prepared groups.
+  const { active, history } = useMemo(() => {
+    const active: DownloadTask[] = [], history: DownloadTask[] = [];
+    const updated = new Map<string, number>();
+    for (const task of tasks) {
+      (liveStatuses.has(task.status) ? active : history).push(task);
+      updated.set(task.id, Date.parse(task.updatedAt) || 0);
+    }
+    const newest = (a: DownloadTask, b: DownloadTask) => updated.get(b.id)! - updated.get(a.id)!;
+    active.sort((a, b) => (activeOrder[a.status] ?? 3) - (activeOrder[b.status] ?? 3) || newest(a, b));
+    history.sort(newest);
+    return { active, history };
+  }, [tasks]);
 
-  return { tasks, rates, activeCount, busyTaskId, loading, error, act, refresh };
+  return { tasks, active, history, rates, activeCount: active.length, busyTaskId, loading, error, act, refresh };
 }
