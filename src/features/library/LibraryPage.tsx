@@ -27,7 +27,7 @@ import { InstanceIdentity } from "./InstanceIdentity";
 import type { Instance, InstalledVersion } from "../../lib/launcher";
 import "./library.css";
 
-export function LibraryPage() {
+export function LibraryPage(_props: { navResetTick?: number } = {}) {
   const { t } = useTranslation();
   const {
     data,
