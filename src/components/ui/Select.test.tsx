@@ -24,6 +24,7 @@ let root: Root;
 let container: HTMLDivElement;
 let onChange: Mock<(value: string) => void>;
 let dialogChanges: Mock<(open: boolean) => void>;
+let openChanges: Mock<(open: boolean) => void>;
 const anchor = { y: 600 };
 
 function trigger() { return container.querySelector<HTMLButtonElement>('[role="combobox"]')!; }
@@ -35,7 +36,7 @@ async function key(value: string) {
 async function render({ choices = options, disabled = false, dialog = false, material }: { choices?: SelectOption[]; disabled?: boolean; dialog?: boolean; material?: "flat" | "glass" } = {}) {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
-  const control = createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, disabled, material });
+  const control = createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, onOpenChange: openChanges, disabled, material });
   await act(async () => root.render(createElement(I18nextProvider, { i18n }, dialog
     ? createElement(Dialog, { open: true, onOpenChange: dialogChanges, title: "Install" }, control)
     : createElement("div", { style: { overflow: "hidden", transform: "translateX(0)" } }, control))));
@@ -46,6 +47,7 @@ beforeEach(() => {
   anchor.y = 600;
   onChange = vi.fn<(value: string) => void>();
   dialogChanges = vi.fn<(open: boolean) => void>();
+  openChanges = vi.fn<(open: boolean) => void>();
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1050 });
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 720 });
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function () { this.open = true; } });
@@ -67,6 +69,26 @@ afterEach(() => {
 });
 
 describe("shared Select", () => {
+  it("reports a single open lifecycle while keyboard navigation changes the active option", async () => {
+    await render();
+    await key("ArrowDown");
+    await key("ArrowDown");
+    await key("Home");
+    expect(openChanges.mock.calls).toEqual([[true]]);
+    await key("Escape");
+    expect(openChanges.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it.each(["unmount", "disabled"])("reports closure when an open select becomes %s", async (reason) => {
+    await render();
+    await key("ArrowDown");
+    expect(openChanges.mock.calls).toEqual([[true]]);
+    if (reason === "unmount") await act(async () => root.render(null));
+    else await render({ disabled: true });
+    expect(openChanges.mock.calls).toEqual([[true], [false]]);
+    expect(listbox()).toBeNull();
+  });
+
   it("keeps ordinary controls flat and only opts named lens controls into glass", async () => {
     await render();
     await key("ArrowDown");

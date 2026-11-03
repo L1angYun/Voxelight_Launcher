@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { motion } from "motion/react";
 import { Plus, Upload, UserRound } from "lucide-react";
 import { command } from "../../lib/launcher";
 import { useDefaultSkin } from "../../lib/defaultSkin";
@@ -13,7 +14,7 @@ import { CreateInstanceDialog } from "../library/CreateInstanceDialog";
 import { LaunchConsole } from "./LaunchConsole";
 import { RecentInstances } from "./RecentInstances";
 import { HomeAnimationSelector } from "./HomeAnimationSelector";
-import { MOTION } from "../../design/motion";
+import { MOTION, motionDuration } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 import "./home.css";
 
@@ -46,6 +47,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   const [importOpen, setImportOpen] = useState(false);
   const [useVersionDirectory, setUseVersionDirectory] = useState(false);
   const [launchRequested, setLaunchRequested] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [manualAnimation, setManualAnimation] = useState<CharacterAnimation | null>(null);
   const [charAreaHovered, setCharAreaHovered] = useState(false);
   const [headPointer, setHeadPointer] = useState<{ x: number; y: number } | null>(null);
@@ -53,6 +55,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   const layoutRef = useRef<HTMLDivElement>(null);
   const preparing = busy === "game.prepare";
   const running = Boolean(selectedRunningGame || gamePid);
+  const selectedLaunchPhase = preparing ? "preparing" : running ? "running" : "idle";
   const anyRunning = running || runningGames.length > 0;
   const launchPhase = anyRunning ? "running" : preparing ? "preparing" : "idle";
   const previousLaunchPhase = useRef(launchPhase);
@@ -129,10 +132,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   }, [currentInstance, selectInstance, selectedInstance]);
 
   const versionLabel = currentInstance?.versionId ?? selectedVersionId;
-  const loaderLabel =
-    currentInstance?.loader && currentInstance.loader !== "vanilla"
-      ? currentInstance.loader
-      : t("home:vanilla");
   const javaLabel = selectedVersion?.javaMajor
     ? t("home:javaVersion", { major: selectedVersion.javaMajor })
     : t("home:javaUnknown");
@@ -229,18 +228,18 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     >
       <div className="vx-home__layout" ref={layoutRef}>
         <section className="vx-home__stage" aria-labelledby="home-instance-title">
-          <div className="vx-home__identity">
+          <motion.div className="vx-home__identity" data-picker-open={pickerOpen}
+            layout={tier === "full" ? "position" : false} layoutDependency={selectedLaunchPhase}
+            transition={{ duration: motionDuration(tier, "content"), ease: MOTION.ease }}>
             <h1 id="home-instance-title" className="vx-home__console-name" title={stageTitle}>
               {currentInstance || useVersionDirectory ? stageTitle : t("home:noInstance")}
             </h1>
             {(currentInstance || useVersionDirectory) && versionLabel ? (
-              <ul className="vx-home__meta" aria-label={t("home:instance")}>
-                <li>{versionLabel}</li>
-                <li>{loaderLabel}</li>
+              <ul className="vx-home__meta" aria-label={`${t("home:instance")} ${stageTitle}`}>
                 <li>{javaLabel}</li>
               </ul>
             ) : null}
-          </div>
+          </motion.div>
           <div className="vx-home__console-wrap">
             {currentInstance || useVersionDirectory ? (
               <LaunchConsole
@@ -248,6 +247,8 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
                 instances={data.instances}
                 version={selectedVersion}
                 onSelectInstance={chooseInstance}
+                pickerOpen={pickerOpen}
+                onPickerOpenChange={setPickerOpen}
                 onLaunch={beginLaunch}
                 onStop={stop}
                 onCancel={cancelPreparation}

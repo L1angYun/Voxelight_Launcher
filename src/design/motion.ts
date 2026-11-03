@@ -53,7 +53,7 @@ export function sectionTransition(tier: MotionTier) {
 }
 
 export function pageVariants(tier: MotionTier, home: boolean) {
-  const animated = tier === "full" || (tier === "fade" && !home);
+  const animated = !home && tier !== "none";
   const shift = (offset: number) => tier === "full" && !home ? `translateX(${offset}px)` : "none";
   return {
     enter: (direction: number) => ({ opacity: animated ? 0 : 1, transform: shift(direction * MOTION.page.enterOffset) }),

@@ -20,8 +20,16 @@ describe("frontend motion policy", () => {
   it("starts content from the selected navigation side and keeps home still", () => {
     expect(pageVariants("full", false).enter(1)).toMatchObject({ opacity: 0, transform: "translateX(10px)" });
     expect(pageVariants("full", false).enter(-1)).toMatchObject({ opacity: 0, transform: "translateX(-10px)" });
-    expect(pageVariants("full", true).enter(1)).toMatchObject({ opacity: 0, transform: "none" });
+    expect(pageVariants("full", true).enter(1)).toMatchObject({ opacity: 1, transform: "none" });
     expect(pageVariants("full", false).exit(-1)).toMatchObject({ opacity: 0, transform: "translateX(6px)" });
+  });
+  it.each(["full", "fade", "none"] as const)("keeps home glass opaque throughout every %s page transition", (tier) => {
+    const variants = pageVariants(tier, true);
+    expect(variants.ready).toMatchObject({ opacity: 1, transform: "none", transition: { duration: 0 } });
+    for (const direction of [-1, 1]) {
+      expect(variants.enter(direction)).toEqual({ opacity: 1, transform: "none" });
+      expect(variants.exit(direction)).toMatchObject({ opacity: 1, transform: "none", transition: { duration: 0 } });
+    }
   });
   it("fades flat Lite content, keeps its home glass stable and makes reduced motion immediate", () => {
     expect(pageVariants("fade", false).enter(1)).toMatchObject({ opacity: 0, transform: "none" });
