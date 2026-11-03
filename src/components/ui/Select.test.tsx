@@ -8,7 +8,7 @@ import { Select, type SelectOption } from "./Select";
 import { Dialog } from "./Dialog";
 
 vi.mock("../../visual/glass/GlassSystem", () => ({
-  GlassSurface: ({ children, className, style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) => createElement("div", { className, style }, children),
+  GlassSurface: ({ children, className, style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) => createElement("div", { className, style, "data-test-glass": true }, children),
 }));
 vi.mock("../../app/AppearanceProvider", () => ({
   useAppearance: () => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }),
@@ -32,10 +32,10 @@ function active() { return document.getElementById(trigger().getAttribute("aria-
 async function key(value: string) {
   await act(async () => trigger().dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true })));
 }
-async function render({ choices = options, disabled = false, dialog = false }: { choices?: SelectOption[]; disabled?: boolean; dialog?: boolean } = {}) {
+async function render({ choices = options, disabled = false, dialog = false, material }: { choices?: SelectOption[]; disabled?: boolean; dialog?: boolean; material?: "flat" | "glass" } = {}) {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
-  const control = createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, disabled });
+  const control = createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, disabled, material });
   await act(async () => root.render(createElement(I18nextProvider, { i18n }, dialog
     ? createElement(Dialog, { open: true, onOpenChange: dialogChanges, title: "Install" }, control)
     : createElement("div", { style: { overflow: "hidden", transform: "translateX(0)" } }, control))));
@@ -67,6 +67,16 @@ afterEach(() => {
 });
 
 describe("shared Select", () => {
+  it("keeps ordinary controls flat and only opts named lens controls into glass", async () => {
+    await render();
+    await key("ArrowDown");
+    expect(document.querySelectorAll("[data-test-glass]")).toHaveLength(0);
+    await key("Escape");
+    await render({ material: "glass" });
+    await key("ArrowDown");
+    expect(document.querySelectorAll("[data-test-glass]")).toHaveLength(2);
+    expect(listbox()).not.toBeNull();
+  });
   it("has one visible control and no native select, and selects real rendered options", async () => {
     await render();
     expect(container.querySelector("select")).toBeNull();

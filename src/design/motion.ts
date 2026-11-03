@@ -2,8 +2,11 @@
 export type MotionTier = "full" | "fade" | "none";
 const testing = typeof process !== "undefined" && process.env.VITEST === "true";
 export const MOTION = {
-  duration: { exit: .08, enter: .18, content: .14, slow: .24 },
-  delay: { characterMs: 280 },
+  duration: { exit: .08, enter: .18, content: .14, slow: .24, menuEnter: .15, menuExit: .10 },
+  delay: { characterMs: 280, loadingMs: 150, cancelGuardMs: 250, characterIdleMs: 1500 },
+  overture: { flashStrength: 1.1, decayMs: 450, maxMs: 1400 },
+  world: { frontStart: 30 },
+  cursor: { stiffness: 140, damping: 12, staggerSeconds: .14, maxElapsedSeconds: .25, settleHeat: .01 },
   ease: [.23, 1, .32, 1] as const,
   page: { enterOffset: 10, exitOffset: 6 },
   lens: {
@@ -41,12 +44,19 @@ export function identityTransition(tier: MotionTier) {
     : { duration: motionDuration(tier, "content"), ease: MOTION.ease };
 }
 
+export function sectionTransition(tier: MotionTier) {
+  return tier === "full" && !testing
+    ? { type: "spring" as const, ...MOTION.section }
+    : { duration: 0 };
+}
+
 export function pageVariants(tier: MotionTier, home: boolean) {
-  const animated = tier === "full";
+  const animated = tier === "full" || (tier === "fade" && !home);
+  const shift = (offset: number) => tier === "full" && !home ? `translateX(${offset}px)` : "none";
   return {
-    enter: (direction: number) => ({ opacity: animated ? 0 : 1, x: animated && !home ? direction * MOTION.page.enterOffset : 0 }),
-    ready: { opacity: 1, x: 0, transition: { duration: animated ? motionDuration(tier, "enter") : 0, ease: MOTION.ease } },
-    exit: (direction: number) => ({ opacity: animated ? 0 : 1, x: animated && !home ? -direction * MOTION.page.exitOffset : 0,
+    enter: (direction: number) => ({ opacity: animated ? 0 : 1, transform: shift(direction * MOTION.page.enterOffset) }),
+    ready: { opacity: 1, transform: "none", transition: { duration: animated ? motionDuration(tier, "enter") : 0, ease: MOTION.ease } },
+    exit: (direction: number) => ({ opacity: animated ? 0 : 1, transform: shift(-direction * MOTION.page.exitOffset),
       transition: { duration: animated ? motionDuration(tier, "exit") : 0, ease: MOTION.ease } }),
   };
 }

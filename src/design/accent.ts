@@ -5,6 +5,7 @@ export interface AccentScale {
   soft: string;
   border: string;
   foreground: string;
+  ink: string;
 }
 
 interface Oklch {
@@ -108,6 +109,14 @@ export function buildAccentScale(color: string, theme: "dark" | "light"): Accent
     l: clamp(oklch.l + (theme === "dark" ? -0.06 : -0.1)),
   });
   const foreground = contrast("#101418", base) >= contrast("#ffffff", base) ? "#101418" : "#ffffff";
+  const surfaces = theme === "light" ? ["#f3f1eb", "#faf9f5", "#eae7e0"] : ["#141516", "#242527", "#0d0f14"];
+  // Signal fills retain the user's exact color. Text has a separate bounded
+  // lightness search, tested against the lightest/darkest content surfaces.
+  let ink = base;
+  for (let step = 1; step <= 100 && surfaces.some(surface => contrast(ink, surface) < 4.5); step++) {
+    ink = oklchToHex({ ...oklch, l: oklch.l + ((theme === "light" ? 0 : 1) - oklch.l) * step / 100 });
+  }
+  if (surfaces.some(surface => contrast(ink, surface) < 4.5)) ink = theme === "light" ? "#000000" : "#ffffff";
   return {
     base,
     hover,
@@ -115,5 +124,6 @@ export function buildAccentScale(color: string, theme: "dark" | "light"): Accent
     soft: mix(base, background, 0.16),
     border: mix(base, background, 0.42),
     foreground,
+    ink,
   };
 }

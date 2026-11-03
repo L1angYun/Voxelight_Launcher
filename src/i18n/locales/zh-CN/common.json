@@ -41,6 +41,7 @@
     "empty": "暂无内容"
   },
   "errors": {
+    "bootstrapFailed": "启动器数据加载失败，可以重试。",
     "internalUnexpected": "发生未预期错误，请查看诊断信息。",
     "missing": "无法显示此内容。",
     "desktopRequired": "请使用桌面版执行此操作。"

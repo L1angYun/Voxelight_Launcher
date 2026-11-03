@@ -18,15 +18,16 @@ describe("frontend motion policy", () => {
     expect(MOTION.camera).toEqual({ stiffness: 36, damping: 12 });
   });
   it("starts content from the selected navigation side and keeps home still", () => {
-    expect(pageVariants("full", false).enter(1)).toMatchObject({ opacity: 0, x: 10 });
-    expect(pageVariants("full", false).enter(-1)).toMatchObject({ opacity: 0, x: -10 });
-    expect(pageVariants("full", true).enter(1)).toMatchObject({ opacity: 0, x: 0 });
-    expect(pageVariants("full", false).exit(-1)).toMatchObject({ opacity: 0, x: 6 });
+    expect(pageVariants("full", false).enter(1)).toMatchObject({ opacity: 0, transform: "translateX(10px)" });
+    expect(pageVariants("full", false).enter(-1)).toMatchObject({ opacity: 0, transform: "translateX(-10px)" });
+    expect(pageVariants("full", true).enter(1)).toMatchObject({ opacity: 0, transform: "none" });
+    expect(pageVariants("full", false).exit(-1)).toMatchObject({ opacity: 0, transform: "translateX(6px)" });
   });
-  it("never fades a Lite stage containing glass and makes reduced motion immediate", () => {
+  it("fades flat Lite content, keeps its home glass stable and makes reduced motion immediate", () => {
+    expect(pageVariants("fade", false).enter(1)).toMatchObject({ opacity: 0, transform: "none" });
+    expect(pageVariants("fade", true).enter(1)).toMatchObject({ opacity: 1, transform: "none" });
     for (const home of [false, true]) {
-      expect(pageVariants("fade", home).enter(1)).toMatchObject({ opacity: 1, x: 0 });
-      expect(pageVariants("none", home).exit(1)).toMatchObject({ opacity: 1, x: 0 });
+      expect(pageVariants("none", home).exit(1)).toMatchObject({ opacity: 1, transform: "none" });
     }
     expect(motionDuration("none", "enter")).toBe(0);
   });
