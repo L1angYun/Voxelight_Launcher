@@ -10,6 +10,7 @@ export function useDiscover() {
   const [resourceType, updateResourceType] = useState<DiscoverType>("mod");
   const [query, setQuery] = useState("");
   const [search, updateSearch] = useState("");
+  const [retryNonce, setRetryNonce] = useState(0);
   const [result, setResult] = useState<{ key: string; source?: ResourceSource; items: ResourceProject[] }>({ key: "", items: [] });
   const [requestState, setRequestState] = useState({ key: "", pending: true, error: "" });
   const [actionError, setActionError] = useState("");
@@ -40,7 +41,9 @@ export function useDiscover() {
     if (next !== resourceType) { blocked.current = true; updateResourceType(next); }
   }, [resourceType]);
   const setSearch = useCallback((next: string) => {
-    if (next !== search) { blocked.current = true; updateSearch(next); }
+    blocked.current = true;
+    if (next !== search) updateSearch(next);
+    else setRetryNonce((nonce) => nonce + 1);
   }, [search]);
   const clearNotice = useCallback(() => setNotice(""), []);
   const closeProject = useCallback(() => {
@@ -72,6 +75,7 @@ export function useDiscover() {
       }
     }).catch((cause) => {
       if (request === searchGeneration.current && latestContext.current === contextKey) {
+        setResult({ key: contextKey, source, items: [] });
         setRequestState({ key: contextKey, pending: false, error: normalizeError(cause).code });
       }
     }).finally(() => {
@@ -83,7 +87,7 @@ export function useDiscover() {
     return () => {
       searchGeneration.current++;
     };
-  }, [closeProject, contextKey, resourceType, search, selectedInstance?.loader, selectedVersionId, source]);
+  }, [closeProject, contextKey, resourceType, retryNonce, search, selectedInstance?.loader, selectedVersionId, source]);
 
   const canUseProject = useCallback((project: ResourceProject) => !blocked.current
     && latestContext.current === contextKey && result.key === contextKey && result.items.includes(project), [contextKey, result]);

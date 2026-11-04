@@ -27,10 +27,15 @@ type TraceParams = { trigger: string; source?: string; target?: string };
 type FrameBoundary = { rafTimestamp: number; callbackStartedAt: number; observedAt: number };
 type ProjectionWrite = { at: number; rafTimestamp: number | null; callbackStartedAt: number | null;
   transform: string; transformOrigin: string; bounds: Rect };
+type IdentityHit = { matches: boolean; hit: string | null; pointerEvents: string;
+  cardFlight: boolean; cardZIndex: string | null; ancestry: {
+  element: string; position: string; zIndex: string; opacity: string; transform: string; isolation: string;
+}[] };
 type Sample = {
   at: number; rafTimestamp: number | null; callbackStartedAt: number | null;
   stageOpacity: number | null; stageTransform: string | null; stageAnimationCount: number;
   mainAnimationCount: number; source: Rect | null; target: Rect | null; targetTransform: string | null;
+  identityHit: IdentityHit | null;
   mainScrollTop: number; lens: Rect | null; nav: Rect | null; logo: Rect | null;
   characterOpacity: number | null; characterState: string | null; worldAnchor: Rect | null;
 };
@@ -119,6 +124,24 @@ async function installRecorder(page: Page) {
       const stage = main?.querySelector<HTMLElement>(":scope > .vx-page-stage");
       const style = stage ? getComputedStyle(stage) : null;
       const target = current.params.target ? document.querySelector<HTMLElement>(current.params.target) : null;
+      const identify = (element: Element) => element.localName + (element.id ? "#" + element.id : "") +
+        Array.from(element.classList).map(value => "." + value).join("");
+      let identityHit: IdentityHit | null = null;
+      if (target) {
+        const bounds = target.getBoundingClientRect();
+        const card = target.closest<HTMLElement>(".vx-instance-card");
+        const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        const matches = hit !== null && (hit === target || target.contains(hit));
+        const ancestry: IdentityHit["ancestry"] = [];
+        if (!matches) for (let ancestor: Element | null = target; ancestor; ancestor = ancestor.parentElement) {
+          const computed = getComputedStyle(ancestor);
+          ancestry.push({ element: identify(ancestor), position: computed.position, zIndex: computed.zIndex,
+            opacity: computed.opacity, transform: computed.transform, isolation: computed.isolation });
+        }
+        identityHit = { matches, hit: hit ? identify(hit) : null, pointerEvents: getComputedStyle(target).pointerEvents,
+          cardFlight: card?.hasAttribute("data-identity-flight") ?? false,
+          cardZIndex: card ? getComputedStyle(card).zIndex : null, ancestry };
+      }
       const mainAnimations = main?.getAnimations({ subtree: true }).filter(animation => {
         const element = (animation.effect as KeyframeEffect | null)?.target;
         return animation.playState === "running" && element instanceof Element && Boolean(main?.contains(element)) && !element.closest("dialog");
@@ -130,6 +153,7 @@ async function installRecorder(page: Page) {
         mainAnimationCount: mainAnimations.length,
         source: rect(current.params.source), target: rect(current.params.target),
         targetTransform: target ? getComputedStyle(target).transform : null,
+        identityHit,
         mainScrollTop: main?.scrollTop ?? 0,
         lens: rect(".vx-floating-nav__indicator-slot"), nav: rect(".vx-floating-nav"), logo: rect(".vx-window-chrome__identity"),
         characterOpacity: document.querySelector(".vx-home__character-panel")
@@ -640,6 +664,15 @@ async function assertDrillGeometry(recorded: Recorded, finalRect: Rect, info: Te
   }
 }
 
+function assertDrillIdentityVisible(recorded: Recorded, label: string) {
+  const frames = recorded.frames.filter(frame => frame.target !== null && frame.at >= recorded.inputAt!);
+  expect(frames.length, label + " needs real RAF identity samples").toBeGreaterThan(2);
+  expect.soft(frames.filter(frame => !frame.identityHit?.matches).map(frame => ({
+    at: frame.at, rafTimestamp: frame.rafTimestamp, bounds: frame.target,
+    hit: frame.identityHit?.hit, pointerEvents: frame.identityHit?.pointerEvents,
+  })), label + " identity center must hit the identity or its descendant on every real RAF").toEqual([]);
+}
+
 if (!HARDWARE) {
   drillTest.describe("hardware drill geometry", () => {
     // Built-in browser launch options are worker-scoped. Keep the override
@@ -667,6 +700,8 @@ if (!HARDWARE) {
             const detailIdentity = ".vx-detail-header " + identity;
             const layoutId = kind + "-identity-" + id;
             await expect(page.locator(cardIdentity)).toHaveAttribute("data-layout-id", layoutId);
+            await expect(page.locator(cardSelector)).not.toHaveAttribute("data-identity-flight");
+            await expect(page.locator(cardSelector)).toHaveCSS("z-index", "auto");
             const main = page.locator("#main-content");
             if (input === "keyboard") await tabTo(page, openSelector);
             else await page.locator(openSelector).scrollIntoViewIfNeeded();
@@ -680,6 +715,7 @@ if (!HARDWARE) {
             const finalDetail = await page.locator(detailIdentity).boundingBox();
             expect(finalDetail).not.toBeNull();
             await assertDrillGeometry(openTrace, finalDetail!, info, "open");
+            assertDrillIdentityVisible(openTrace, "open");
             if (kind === "instance") {
               const detailContent = page.locator(".vx-detail-layout");
               await expect(detailContent).toHaveCSS("opacity", "1");
@@ -699,6 +735,13 @@ if (!HARDWARE) {
             const finalCard = await page.locator(cardIdentity).boundingBox();
             expect(finalCard).not.toBeNull();
             await assertDrillGeometry(backTrace, finalCard!, info, "back");
+            assertDrillIdentityVisible(backTrace, "back");
+            const returnFlight = backTrace.frames.filter(frame => frame.target && !identityTransform(frame.targetTransform));
+            expect(returnFlight.length, "return must sample the temporary card elevation").toBeGreaterThan(1);
+            expect(returnFlight.every(frame => frame.identityHit?.cardFlight && frame.identityHit.cardZIndex === "2"),
+              "only the returning card must stay elevated throughout its identity flight").toBe(true);
+            await expect(page.locator(".vx-instance-card[data-identity-flight]")).toHaveCount(0);
+            await expect(page.locator(cardSelector)).toHaveCSS("z-index", "auto");
           });
         }
       }
@@ -728,6 +771,8 @@ if (!HARDWARE) {
         () => page.keyboard.press("Enter"));
       await expect(page.locator(open)).toBeFocused();
       expect(await page.locator(cardIdentity).getAttribute("data-layout-id")).toBeNull();
+      await expect(page.locator(".vx-instance-card[data-identity-flight]")).toHaveCount(0);
+      await expect(page.locator(card)).toHaveCSS("z-index", "auto");
       for (const trace of [opened, returned]) {
         expect(trace.sourceAtInput).not.toBeNull();
         const destinationFrames = trace.frames.filter(frame => frame.target !== null);

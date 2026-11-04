@@ -173,6 +173,12 @@
     color-mix(in srgb, var(--surface-solid) 36%, transparent);
 }
 
+/* The returning badge must also escape its card's isolated stacking context. */
+.vx-instance-card[data-identity-flight] {
+  position: relative;
+  z-index: 2;
+}
+
 .vx-instance-card__select {
   position: relative;
   z-index: 3;
@@ -355,6 +361,11 @@
 
 .vx-instance-identity[data-tone="warm"] {
   --identity-color: var(--optical-warm);
+}
+
+.vx-instance-identity[data-layout-id] {
+  position: relative;
+  z-index: 3;
 }
 
 .vx-instance-identity::before {
@@ -547,6 +558,8 @@
 
 .vx-detail-header {
   align-items: flex-start;
+  position: relative;
+  z-index: 2;
   margin-bottom: 30px;
 }
 

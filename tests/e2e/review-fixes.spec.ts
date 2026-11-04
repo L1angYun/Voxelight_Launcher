@@ -2,6 +2,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import { installLauncherFixture } from "./fixtures";
+import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 
 test.use({ viewport: { width: 1280, height: 720 }, channel: "chromium", launchOptions: { args: ["--use-angle=d3d11"] } });
 
@@ -126,4 +127,74 @@ for (const mode of ["lite", "reduced"] as const) test(`review B: ${mode} keeps c
   expect(rows.some(row => row.cancelDisabled === true)).toBe(true);
   expect(rows.some(row => row.cancelDisabled === false)).toBe(true);
   expect(rows.filter(row => row.cancelDisabled === false).every(row => row.cancelOpacity === 1)).toBe(true);
+});
+
+test("review C: light selected sections remain visibly distinct without losing forced-color outlines", async ({ page }, info) => {
+  await installLauncherFixture(page, { theme: "light" });
+  await page.goto("/");
+  await page.locator('.vx-floating-nav [data-page="settings"]').click();
+  await expect(page.locator('[data-page-stage="settings"]')).toHaveCSS("opacity", "1");
+  const buttons = page.locator(".vx-settings-nav button");
+  await expect(buttons.first()).toHaveAttribute("aria-current", "page");
+  await page.mouse.move(1100, 680);
+  const selected = await buttons.first().boundingBox(), inactive = await buttons.nth(1).boundingBox();
+  const image = decodePng(await page.screenshot({ path: info.outputPath("light-section-selection.png"), scale: "css" }));
+  const median = (rect: NonNullable<typeof selected>) => {
+    const values = [];
+    for (let y = Math.floor(rect.y + rect.height / 2) - 4; y < Math.floor(rect.y + rect.height / 2) + 4; y++)
+      for (let x = Math.floor(rect.x + rect.width) - 28; x < Math.floor(rect.x + rect.width) - 20; x++) {
+        const at = (y * image.width + x) * 4;
+        values.push((image.pixels[at] + image.pixels[at + 1] + image.pixels[at + 2]) / 3);
+      }
+    return values.sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  };
+  const measured = { selected: median(selected!), inactive: median(inactive!) };
+  await writeFile(info.outputPath("selection-contrast.json"), JSON.stringify(measured, null, 2));
+  expect(Math.abs(measured.selected - measured.inactive)).toBeGreaterThanOrEqual(10);
+  await page.emulateMedia({ forcedColors: "active" });
+  await expect(page.locator(".vx-settings-nav .vx-selection__mark")).toHaveCSS("outline-style", "solid");
+  await expect(page.locator(".vx-settings-nav .vx-selection__mark")).toHaveCSS("outline-width", "2px");
+});
+
+test("review C: the real cursor canvas fades over a lens and restores keyboard feedback", async ({ page }, info) => {
+  await prepareHome(page);
+  const nav = await page.locator('.vx-floating-nav [data-page="home"]').boundingBox();
+  const x = nav!.x + nav!.width / 2, y = nav!.y + nav!.height / 2;
+  await page.mouse.move(x, 110);
+  await expect(page.locator(".vx-cursor-halo")).toHaveAttribute("data-halo-state", "pointer");
+  await page.evaluate((x) => {
+    const host = window as unknown as { __lensFade: Promise<{ at: number; alpha: number; state: string | undefined }[]> };
+    host.__lensFade = new Promise(resolve => {
+      document.addEventListener("pointermove", () => {
+        const start = performance.now(), rows: { at: number; alpha: number; state: string | undefined }[] = [];
+        const canvas = document.querySelector<HTMLCanvasElement>(".vx-cursor-halo")!, context = canvas.getContext("2d")!;
+        const ratio = canvas.width / innerWidth;
+        const sample = (now: number) => {
+          const pixels = context.getImageData(Math.floor((x - 40) * ratio), 0, Math.ceil(80 * ratio), Math.ceil(180 * ratio)).data;
+          let alpha = 0;
+          for (let index = 3; index < pixels.length; index += 4) alpha = Math.max(alpha, pixels[index]);
+          rows.push({ at: Math.max(0, now - start), alpha, state: canvas.dataset.haloState });
+          if (now - start < 260) requestAnimationFrame(sample); else resolve(rows);
+        };
+        sample(start);
+      }, { once: true, capture: true });
+    });
+  }, x);
+  await page.mouse.move(x, y);
+  const rows = await page.evaluate(() => (window as unknown as { __lensFade: Promise<{ at: number; alpha: number; state: string | undefined }[]> }).__lensFade);
+  await writeFile(info.outputPath("lens-cursor-alpha.json"), JSON.stringify(rows, null, 2));
+  expect(rows[0].alpha).toBeGreaterThan(200);
+  expect(rows.some(row => row.alpha > 0 && row.alpha < 200)).toBe(true);
+  const invisible = rows.find(row => row.alpha === 0 && row.state === "lens");
+  expect(invisible).toBeTruthy();
+  const largestGap = Math.max(...rows.slice(1).map((row, index) => row.at - rows[index].at));
+  // This reader can run before the canvas writer in a RAF batch. Account for
+  // that observation frame and the deadline's next actual presentation frame.
+  expect(invisible!.at).toBeLessThanOrEqual(120 + 2 * largestGap + 1);
+  expect(rows.at(-1)!.alpha).toBe(0);
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".vx-cursor-halo")).toHaveAttribute("data-halo-state", "focus");
+  await page.mouse.move(x, 110);
+  await expect(page.locator(".vx-cursor-halo")).toHaveAttribute("data-halo-state", "pointer");
+  await page.screenshot({ path: info.outputPath("cursor-after-lens.png") });
 });

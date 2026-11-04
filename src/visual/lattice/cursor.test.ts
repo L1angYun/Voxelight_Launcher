@@ -72,6 +72,16 @@ function card() {
   };
 }
 
+function lens() {
+  const element = document.createElement("div");
+  element.dataset.visualOwner = "lens";
+  element.innerHTML = '<button><span>Glass</span></button>';
+  const button = element.querySelector("button")!;
+  box(button, 10, 10, 200, 50);
+  document.body.append(element);
+  return { element, button, label: button.firstElementChild! };
+}
+
 function advanceAtRate(start: number, milliseconds: number, hz: number): number {
   const interval = 1000 / hz;
   let count = 0;
@@ -337,26 +347,133 @@ describe("Lattice cursor halo", () => {
     expectCompleteCardContour(circles);
   });
 
-  it("respects opt-out ancestry and lets Lens controls keep their own primary material", () => {
+  it("respects opt-out ancestry while retaining the pointer orbit", () => {
     const excluded = document.createElement("div");
     excluded.dataset.noHalo = "";
     excluded.innerHTML = "<button>Excluded</button>";
-    const lens = document.createElement("div");
-    lens.dataset.visualOwner = "lens";
-    lens.innerHTML = "<button>Glass</button>";
-    document.body.append(excluded, lens);
+    document.body.append(excluded);
     halo = mountCursorHalo(document.body);
-    for (const element of [
-      excluded.firstElementChild!,
-      lens.firstElementChild!,
-    ]) {
-      box(element as HTMLElement, 10, 10, 200, 50);
-      pointer(element, 100, 100);
-      settle();
-      expect(circles).toHaveLength(31);
-      expect(
-        circles.every((point) => Math.hypot(point.x - 100, point.y - 100) < 20),
-      ).toBe(true);
+    const button = excluded.querySelector("button")!;
+    box(button, 10, 10, 200, 50);
+    pointer(button, 100, 100);
+    settle();
+    expect(circles).toHaveLength(31);
+    expect(
+      circles.every((point) => Math.hypot(point.x - 100, point.y - 100) < 20),
+    ).toBe(true);
+  });
+
+  it("fades the pointer pool over a Lens within 120 ms and keeps it idle while hidden", () => {
+    const { label } = lens();
+    halo = mountCursorHalo(document.body);
+    pointer(document.body, 100, 100);
+    frame(0);
+    const initialAlpha = circles.map(point => point.alpha);
+    pointer(label, 100, 100);
+    frame(60);
+    expect(circles).toHaveLength(31);
+    circles.forEach((point, index) => {
+      expect(point.alpha).toBeGreaterThan(0);
+      expect(point.alpha).toBeLessThan(initialAlpha[index]);
+    });
+    expect(callbacks.size).toBe(1);
+    frame(120);
+    expect(circles.filter(point => point.alpha > 0)).toHaveLength(0);
+    expect(callbacks.size).toBe(0);
+    const draws = vi.mocked(context.clearRect).mock.calls.length;
+    pointer(label, 110, 110);
+    pointer(label, 110, 110, "pointerdown");
+    frame(1000);
+    expect(callbacks.size).toBe(0);
+    expect(vi.mocked(context.clearRect).mock.calls.length).toBe(draws);
+  });
+
+  it("fades back after leaving a Lens and reverses an interrupted fade without jumping", () => {
+    const { label } = lens();
+    halo = mountCursorHalo(document.body);
+    pointer(document.body, 100, 100);
+    frame(0);
+    pointer(label, 100, 100);
+    frame(120);
+    expect(circles.filter(point => point.alpha > 0)).toHaveLength(0);
+    pointer(document.body, 100, 100);
+    frame(180);
+    expect(circles).toHaveLength(31);
+    expect(circles.every(point => point.alpha > 0 && point.alpha < .9)).toBe(true);
+    frame(240);
+    expect(circles.every(point => point.alpha > .89)).toBe(true);
+    expect(callbacks.size).toBe(0);
+    pointer(label, 100, 100);
+    frame(300);
+    const intermediateAlpha = circles[0].alpha;
+    expect(intermediateAlpha).toBeGreaterThan(0);
+    expect(intermediateAlpha).toBeLessThan(.9);
+    pointer(document.body, 100, 100);
+    frame(300);
+    expect(circles[0].alpha).toBeCloseTo(intermediateAlpha);
+    frame(330);
+    expect(circles[0].alpha).toBeGreaterThan(intermediateAlpha);
+    expect(circles[0].alpha).toBeLessThan(.9);
+    frame(420);
+    expect(circles.every(point => point.alpha > .89)).toBe(true);
+    expect(callbacks.size).toBe(0);
+  });
+
+  it("shows keyboard contours above a hidden Lens pointer and restores native focus on handoff", () => {
+    const glass = lens();
+    const { element, button, outline } = card();
+    button.style.outline = "3px solid red";
+    glass.button.style.outline = "2px solid blue";
+    const original = button.style.outline;
+    const glassOutline = glass.button.style.outline;
+    halo = mountCursorHalo(document.body);
+    pointer(document.body, 100, 100);
+    frame(0);
+    pointer(glass.label, 100, 100);
+    frame(120);
+    expect(circles.filter(point => point.alpha > 0)).toHaveLength(0);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    button.focus();
+    expect(outline.style.visibility).toBe("visible");
+    frame(136);
+    expect(circles).toHaveLength(30);
+    expect(circles.every(point => point.alpha > .8)).toBe(true);
+    settle(137);
+    expectCompleteCardContour(circles);
+    expect(outline.style.visibility).toBe("visible");
+    expect(element.getAttribute("aria-current")).toBe("true");
+    expect(button.style.outline).toBe("none");
+    expect(callbacks.size).toBe(0);
+    glass.button.focus();
+    const changedAt = now;
+    frame(changedAt + 60);
+    expect(circles.every(point => point.alpha > 0 && point.alpha < .8)).toBe(true);
+    frame(changedAt + 120);
+    expect(circles.filter(point => point.alpha > 0)).toHaveLength(0);
+    expect(callbacks.size).toBe(0);
+    expect(element.hasAttribute("data-halo-owned")).toBe(false);
+    expect(outline.style.visibility).toBe("visible");
+    expect(button.style.outline).toBe(original);
+    expect(glass.button.style.outline).toBe(glassOutline);
+  });
+
+  it("approaches a new pointer position within 300 ms without overshooting it", () => {
+    halo = mountCursorHalo(document.body);
+    pointer(document.body, 400, 300);
+    frame(0);
+    const destination = circles.slice(0, 30).map(point => ({ x: point.x + 200, y: point.y + 100 }));
+    pointer(document.body, 600, 400);
+    for (let elapsed = 1000 / 60; elapsed < 1000; elapsed += 1000 / 60) {
+      frame(elapsed);
+      circles.slice(0, 30).forEach((point, index) => {
+        expect(point.x).toBeLessThanOrEqual(destination[index].x + .01);
+        expect(point.y).toBeLessThanOrEqual(destination[index].y + .01);
+      });
+      if (Math.abs(elapsed - 300) < 1e-6) {
+        const distance = circles.slice(0, 30).reduce((sum, point, index) =>
+          sum + Math.hypot(point.x - destination[index].x, point.y - destination[index].y), 0) / 30;
+        expect(distance).toBeLessThan(15);
+      }
     }
   });
 
