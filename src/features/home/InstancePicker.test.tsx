@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -224,13 +225,17 @@ describe("InstancePicker", () => {
     await render();
     await act(async () => trigger().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
     const option = listbox()!.querySelector<HTMLElement>('[data-instance-id="beta"]')!;
-    await act(async () => option.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
-    expect(onSelect).toHaveBeenCalledExactlyOnceWith("beta");
-    expect(trigger().getAttribute("aria-expanded")).toBe("false");
-    expect(listbox()).toBeNull();
-    const exiting = document.querySelector(".vx-instance-picker__popover");
-    expect(exiting?.getAttribute("aria-hidden")).toBe("true");
-    expect(exiting?.hasAttribute("inert")).toBe(true);
+    await act(async () => {
+      flushSync(() => option.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+      expect(onSelect).toHaveBeenCalledExactlyOnceWith("beta");
+      expect(trigger().getAttribute("aria-expanded")).toBe("false");
+      expect(listbox()).toBeNull();
+      // Inspect the exit commit before the test MotionConfig completes it.
+      const exiting = document.querySelector(".vx-instance-picker__popover");
+      expect(exiting?.getAttribute("aria-hidden")).toBe("true");
+      expect(exiting?.hasAttribute("inert")).toBe(true);
+    });
+    expect(document.querySelector(".vx-instance-picker__popover")).toBeNull();
   });
 
   it("keeps the glass positioning ancestor opaque throughout a pointer entrance", async () => {

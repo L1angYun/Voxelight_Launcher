@@ -65,6 +65,28 @@ it("static tier draws exactly one frame and schedules no animation", async () =>
   expect(fake.draw).toHaveBeenCalledTimes(1); expect(frames.size).toBe(0);
   await advance(); expect(fake.draw).toHaveBeenCalledTimes(1);
 });
+it("static settled targets never query completion or schedule an observation frame", async () => {
+  await render({ effects: "lite", phase: "running" });
+  expect(fake.draw).toHaveBeenCalledTimes(1);
+  expect(fake.draw.mock.calls[0][0].settled).toBe(true);
+  expect(fake.pollFrameComplete).not.toHaveBeenCalled();
+  expect(scene().dataset.worldSettled).toBe("false");
+  expect(frames.size).toBe(0);
+  await advance(1000);
+  expect(fake.pollFrameComplete).not.toHaveBeenCalled();
+  expect(fake.draw).toHaveBeenCalledTimes(1);
+});
+it("uses the initial anchor fallback before any measurable character exists", async () => {
+  await render({ effects: "lite" });
+  expect(fake.setAnchor).toHaveBeenLastCalledWith([.62, -.66]);
+  const anchor = document.createElement("div"); anchor.dataset.worldAnchor = "";
+  anchor.getBoundingClientRect = () => new DOMRect(300, 100, 0, 0);
+  document.body.append(anchor);
+  try {
+    await act(async () => window.dispatchEvent(new Event("vx:world-anchor")));
+    expect(fake.setAnchor).toHaveBeenLastCalledWith([.62, -.66]);
+  } finally { anchor.remove(); }
+});
 it("a paused scene requests no frames and resumes the same renderer", async () => {
   await render({ paused: true }); expect(frames.size).toBe(0); expect(fake.draw).not.toHaveBeenCalled();
   await render({ paused: false }); expect(frames.size).toBeGreaterThan(0);

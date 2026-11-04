@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 export type MotionTier = "full" | "fade" | "none";
-const testing = typeof process !== "undefined" && process.env.VITEST === "true";
 export const MOTION = {
   duration: { exit: .08, enter: .18, content: .14, slow: .24, menuEnter: .15, menuExit: .10 },
   delay: { characterMs: 280, loadingMs: 150, cancelGuardMs: 250, characterIdleMs: 1500 },
   overture: { flashStrength: 1.1, decayMs: 450, maxMs: 1400 },
   world: { frontStart: 30 },
-  cursor: { stiffness: 320, damping: 34, staggerSeconds: .04, lensFadeMs: 120, maxElapsedSeconds: .25, settleHeat: .01 },
+  cursor: { radiusPx: 18, stiffness: 320, damping: 34, staggerSeconds: .04, lensFadeMs: 120, maxElapsedSeconds: .25, settleHeat: .01 },
   ease: [.23, 1, .32, 1] as const,
   easeExit: [.4, 0, 1, 1] as const,
   page: { enterOffset: 10, exitOffset: 6 },
   menu: { offset: 4, scale: .97 },
-  toast: { offset: 8 },
+  toast: { offset: 8, dwellMs: 5000, errorDwellMs: 11000 },
   lens: {
     x: { stiffness: 340, damping: 30, pressedDamping: 34 },
     y: { stiffness: 340, damping: 30 },
@@ -35,20 +34,18 @@ export function resolveMotionTier(input: {
   };
 }
 
-// jsdom has no presentation clock. Tests still exercise presence/focus with an
-// immediate exit; browser acceptance exercises the actual durations and geometry.
 export function motionDuration(tier: MotionTier, word: keyof typeof MOTION.duration): number {
-  return tier === "none" || testing ? 0 : MOTION.duration[word];
+  return tier === "none" ? 0 : MOTION.duration[word];
 }
 
 export function identityTransition(tier: MotionTier) {
-  return tier === "full" && !testing
+  return tier === "full"
     ? { type: "spring" as const, ...MOTION.identity }
     : { duration: motionDuration(tier, "content"), ease: MOTION.ease };
 }
 
 export function sectionTransition(tier: MotionTier) {
-  return tier === "full" && !testing
+  return tier === "full"
     ? { type: "spring" as const, ...MOTION.section }
     : { duration: 0 };
 }
