@@ -352,7 +352,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
     </PageShell>
   );
   return <LayoutGroup id={groupId}>
-    <InstanceIdentityProvider tier={tier}>
+    <InstanceIdentityProvider tier={tier} returningIdentity={!actualDetailKey ? previousDetail.current?.key : undefined}>
       <div className="vx-library-drill" ref={rootRef} data-content-motion={contentDuration > 0 ? "" : undefined}
         style={{ "--vx-drill-content-duration": `${contentDuration}s` } as CSSProperties}>
         {content}

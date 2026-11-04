@@ -114,6 +114,15 @@ async function render() {
     createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(ToastProvider, null, createElement(DiscoverPage))))));
 }
 
+async function submitSearch(query: string) {
+  const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, query);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => container.querySelector<HTMLFormElement>('form[role="search"]')!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+}
+
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
@@ -146,6 +155,41 @@ afterEach(() => {
 });
 
 describe("DiscoverPage", () => {
+  it("clears cards after a new search fails and lets the same query retry restore usable results", async () => {
+    await render();
+    await submitSearch("sodium");
+    expect(searchMock).toHaveBeenLastCalledWith("sodium", "mod", "1.21.1");
+    expect(container.querySelector('[data-project-id="sodium"]')).not.toBeNull();
+
+    let rejectSearch!: (cause: Error) => void;
+    searchMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSearch = reject; }));
+    await submitSearch("iris");
+    expect(searchMock).toHaveBeenLastCalledWith("iris", "mod", "1.21.1");
+    expect(container.querySelector('.vx-project-grid')?.hasAttribute("inert")).toBe(true);
+    await act(async () => rejectSearch(new Error("offline")));
+    expect(container.querySelectorAll('.vx-project-grid [data-project-id]')).toHaveLength(0);
+    expect(container.querySelector('.vx-project-grid')?.getAttribute("aria-busy")).toBe("false");
+    expect(container.querySelector('.vx-project-grid')?.hasAttribute("inert")).toBe(false);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+
+    let resolveRetry!: (items: ResourceProject[]) => void;
+    searchMock.mockImplementationOnce(() => new Promise((resolve) => { resolveRetry = resolve; }));
+    await submitSearch("iris");
+    expect(searchMock).toHaveBeenCalledTimes(4);
+    expect(searchMock).toHaveBeenNthCalledWith(4, "iris", "mod", "1.21.1");
+    expect(container.querySelector('.vx-project-grid')?.getAttribute("aria-busy")).toBe("true");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => resolveRetry([{ ...project, project_id: "iris", title: "Iris" }]));
+    const freshCard = container.querySelector('[data-project-id="iris"]')!;
+    expect(freshCard).not.toBeNull();
+    expect(container.querySelector('.vx-project-grid')?.hasAttribute("inert")).toBe(false);
+    expect(container.querySelector('.vx-project-grid')?.getAttribute("aria-busy")).toBe("false");
+    const install = freshCard.querySelector<HTMLButtonElement>('button[aria-label*="安装"]')!;
+    expect(install.disabled).toBe(false);
+    await act(async () => install.click());
+    expect(commandMock).toHaveBeenCalledWith("install_resource", { projectId: "iris", versionId: "1.21.1", instanceId: "fixture-world", resourceType: "mod" });
+  });
+
   it("keeps same-source results visible but inert until the new type finishes loading", async () => {
     await render();
     let resolveSearch!: (items: ResourceProject[]) => void;

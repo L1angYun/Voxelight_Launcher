@@ -25,7 +25,7 @@
 .vx-selection > button[data-selected] { color: var(--text-primary); font-weight: 600; }
 .vx-selection > button:disabled { opacity: .45; }
 .vx-selection__label { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: inherit; gap: 9px; }
-.vx-selection__mark { position: absolute; inset: 0; z-index: 0; border-radius: inherit; background: var(--surface-solid); box-shadow: inset 0 0 0 1px var(--hairline, var(--border-subtle)); pointer-events: none; }
+.vx-selection__mark { position: absolute; inset: 0; z-index: 0; border-radius: inherit; background: var(--selection-fill); box-shadow: inset 0 0 0 1px var(--hairline, var(--border-subtle)); pointer-events: none; }
 .vx-rail-nav { display: flex; flex-direction: column; align-items: stretch; padding: 8px; }
 .vx-rail-nav > button { min-height: 42px; padding: 10px 12px; }
 .vx-section-panel { min-width: 0; opacity: 1; transition: opacity var(--section-duration, 0s) var(--ease-out); }

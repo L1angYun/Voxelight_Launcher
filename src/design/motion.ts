@@ -6,7 +6,7 @@ export const MOTION = {
   delay: { characterMs: 280, loadingMs: 150, cancelGuardMs: 250, characterIdleMs: 1500 },
   overture: { flashStrength: 1.1, decayMs: 450, maxMs: 1400 },
   world: { frontStart: 30 },
-  cursor: { stiffness: 140, damping: 12, staggerSeconds: .14, maxElapsedSeconds: .25, settleHeat: .01 },
+  cursor: { stiffness: 320, damping: 34, staggerSeconds: .04, lensFadeMs: 120, maxElapsedSeconds: .25, settleHeat: .01 },
   ease: [.23, 1, .32, 1] as const,
   page: { enterOffset: 10, exitOffset: 6 },
   menu: { offset: 4, scale: .97 },

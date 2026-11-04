@@ -202,11 +202,38 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   let pointerElement: Element | null = null;
   let keyboardElement: HTMLElement | null = null;
   let keyboardNavigation = false;
+  let opacity = 1;
+  let opacityFrom = 1;
+  let opacityGoal = 1;
+  let fadeStartedAt = 0;
   let ownedCard: HTMLElement | null = null;
   let savedFrame: SavedStyle | null = null;
   let savedOutline: SavedStyle | null = null;
   let savedOwnership: string | null = null;
   const targetResize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => schedule());
+
+  const pointerOverLens = () => Boolean(pointerElement?.closest("[data-visual-owner='lens']"));
+
+  function updateOpacity(now: number) {
+    const progress = Math.max(0, Math.min(1, (now - fadeStartedAt) / MOTION.cursor.lensFadeMs));
+    opacity = opacityFrom + (opacityGoal - opacityFrom) * progress;
+  }
+
+  function syncOpacity() {
+    const now = performance.now();
+    updateOpacity(now);
+    // Keyboard contours and their native fallback are independent of the
+    // pointer's Lens suppression, including when the pointer has stopped.
+    if (keyboardElement) {
+      opacity = opacityFrom = opacityGoal = 1;
+      return;
+    }
+    const next = pointerOverLens() ? 0 : 1;
+    if (opacityGoal === next) return;
+    opacityFrom = opacity;
+    opacityGoal = next;
+    fadeStartedAt = now;
+  }
 
   const allowed = () => {
     const root = document.documentElement;
@@ -279,6 +306,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     initialized = false;
     pointerElement = null;
     keyboardElement = null;
+    opacity = opacityFrom = opacityGoal = 1;
     setTarget(null);
     releaseOwnership();
     g.clearRect(0, 0, window.innerWidth, window.innerHeight);
@@ -301,7 +329,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   }
 
   function schedule(resetClock = true) {
-    if (frame === null && allowed() && (inside || target)) {
+    if (frame === null && allowed() && (inside || target) && (opacity > 0 || opacityGoal > 0)) {
       if (resetClock) previousTime = performance.now();
       frame = requestAnimationFrame(tick);
     }
@@ -320,6 +348,12 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     if (target && (!target.isConnected || !usable(target))) setTarget(null);
     if (!inside && !target) {
       clear();
+      return;
+    }
+    updateOpacity(now);
+    if (opacity === 0 && opacityGoal === 0) {
+      g.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      canvas.dataset.haloState = "lens";
       return;
     }
     const elapsed =
@@ -372,7 +406,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     g.clearRect(0, 0, window.innerWidth, window.innerHeight);
     g.fillStyle = target ? ink : accent;
     for (let index = 0; index < dots.count; index += 1) {
-      g.globalAlpha = dots.alpha[index];
+      g.globalAlpha = dots.alpha[index] * opacity;
       g.beginPath();
       g.arc(
         dots.x[index],
@@ -384,7 +418,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       g.fill();
     }
     if (inside && !target) {
-      g.globalAlpha = 0.9;
+      g.globalAlpha = 0.9 * opacity;
       g.beginPath();
       g.arc(px, py, 2.2, 0, TWO_PI);
       g.fill();
@@ -408,7 +442,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
         ? "focus"
         : "target"
       : "pointer";
-    if (dots.moving() || dots.heat.some(value => value > MOTION.cursor.settleHeat)) schedule(false);
+    if (opacity !== opacityGoal || dots.moving() || dots.heat.some(value => value > MOTION.cursor.settleHeat)) schedule(false);
   }
 
   function move(event: PointerEvent) {
@@ -429,7 +463,8 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     restoreStyle(savedOutline);
     savedOutline = null;
     initialize(px, py);
-    setTarget(resolveTarget(pointerElement));
+    syncOpacity();
+    setTarget(pointerOverLens() ? null : resolveTarget(pointerElement));
     schedule();
   }
 
@@ -438,7 +473,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       clear();
       return;
     }
-    if (event.pointerType === "touch" || !allowed() || (!inside && !target))
+    if (event.pointerType === "touch" || !allowed() || (!inside && !target) || (!keyboardElement && pointerOverLens()))
       return;
     const bounds = target?.getBoundingClientRect();
     dots.burst(
@@ -462,6 +497,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     restoreStyle(savedOutline);
     savedOutline = null;
     keyboardElement = element;
+    syncOpacity();
     const bounds = next.getBoundingClientRect();
     initialize(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
     setTarget(next);
@@ -481,12 +517,14 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
         (keyboardNavigation || next.matches(":focus-visible"))
       ) {
         keyboardElement = next;
+        syncOpacity();
         setTarget(nextTarget);
         schedule();
         return;
       }
     }
-    setTarget(inside ? resolveTarget(pointerElement) : null);
+    syncOpacity();
+    setTarget(inside && !pointerOverLens() ? resolveTarget(pointerElement) : null);
     if (inside) schedule();
     else clear();
   }
