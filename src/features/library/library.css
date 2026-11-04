@@ -573,6 +573,16 @@
   min-width: 0;
 }
 
+.vx-detail-header .vx-instance-identity {
+  background: var(--surface-card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+}
+
+.vx-detail-header .vx-instance-identity__plane {
+  opacity: .7;
+}
+
 .vx-detail-header__identity h1 {
   max-width: 34ch;
   font-size: calc(var(--text-2xl) - 2px);
@@ -1616,6 +1626,33 @@
   min-height: 36px;
   padding: 7px 13px;
   border-radius: 6px;
+}
+
+/* Keep the commandbar's real controls aligned despite shared surface rules. */
+.vx-library-page .vx-library-commandbar :is(.vx-search, .vx-field, .vx-select__surface, .vx-select__button, .vx-button) {
+  block-size: 38px;
+  min-block-size: 38px;
+  border-radius: var(--radius-md);
+}
+
+.vx-library-page .vx-library-commandbar .vx-select__surface {
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+.vx-library-page .vx-library-commandbar .vx-library-view {
+  block-size: 38px;
+  min-block-size: 38px;
+  padding: 2px;
+  flex-wrap: nowrap;
+  border-radius: var(--radius-md);
+}
+
+.vx-library-page .vx-library-commandbar .vx-library-view > button {
+  block-size: 32px;
+  min-block-size: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
 }
 
 .vx-instance-sheet {

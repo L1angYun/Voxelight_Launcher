@@ -23,6 +23,13 @@ describe("frontend motion policy", () => {
     expect(pageVariants("full", true).enter(1)).toMatchObject({ opacity: 1, transform: "none" });
     expect(pageVariants("full", false).exit(-1)).toMatchObject({ opacity: 0, transform: "translateX(6px)" });
   });
+  it("accelerates content out while keeping its arrival ease-out", () => {
+    for (const tier of ["full", "fade"] as const) {
+      const variants = pageVariants(tier, false);
+      expect(variants.exit(1).transition.ease).toEqual([.4, 0, 1, 1]);
+      expect(variants.ready.transition.ease).toEqual([.23, 1, .32, 1]);
+    }
+  });
   it.each(["full", "fade", "none"] as const)("keeps home glass opaque throughout every %s page transition", (tier) => {
     const variants = pageVariants(tier, true);
     expect(variants.ready).toMatchObject({ opacity: 1, transform: "none", transition: { duration: 0 } });

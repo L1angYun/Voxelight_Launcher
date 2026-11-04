@@ -178,7 +178,7 @@ test("completion: shared selection slides within its own group", async ({ page }
 });
 
 for (const width of [1280, 1050]) {
-test(`completion: create tabs preserve native focus order, stable height and overlay intermediates at ${width}px`, async ({ page }, info) => {
+test(`completion: create tabs preserve native focus order, compact height and overlay intermediates at ${width}px`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 720 });
   await prepare(page);
   await navigate(page, "library");
@@ -201,11 +201,15 @@ test(`completion: create tabs preserve native focus order, stable height and ove
   await expect(tabs.nth(1)).toBeFocused();
   await expect(tabs.nth(1)).toHaveAttribute("aria-selected", "true");
   const imported = await dialog.boundingBox();
-  expect(Math.abs(imported!.height - before!.height)).toBeLessThanOrEqual(1);
+  expect(imported!.height).toBeLessThan(before!.height - 80);
+  expect(imported!.y).toBeGreaterThan(before!.y);
   await page.keyboard.press("Home");
   await dialog.getByRole("button", { name: "Fabric", exact: true }).click();
   await expect(dialog.getByRole("combobox", { name: "加载器版本", exact: true })).toBeEnabled();
-  expect(Math.abs((await dialog.boundingBox())!.height - before!.height)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => (await dialog.boundingBox())!.height - before!.height).toBeGreaterThan(60);
+  const expanded = await dialog.boundingBox();
+  expect(expanded!.y).toBeGreaterThanOrEqual(24);
+  expect(expanded!.y + expanded!.height).toBeLessThanOrEqual(696);
 });
 }
 

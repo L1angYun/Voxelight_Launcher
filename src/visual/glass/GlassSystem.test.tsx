@@ -207,6 +207,107 @@ describe("glass provider surfaces", () => {
     expect(surface.querySelectorAll("feDisplacementMap")).toHaveLength(3);
   });
 
+  it("keeps the current live contour and map through resize while an older size is still encoding", async () => {
+    vi.mocked(createGlassRenderer).mockReturnValue({ ...renderer, mode: "full" });
+    let width = 137;
+    const reports: { target?: Element; callback: () => void }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      report: { target?: Element; callback: () => void };
+      constructor(callback: () => void) { this.report = { callback }; reports.push(this.report); }
+      observe(target: Element) { this.report.target = target; }
+      disconnect() {}
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({
+      x: 0, y: 0, top: 0, left: 0, right: width, bottom: 44, width, height: 44, toJSON() {},
+    }));
+    const context = {
+      createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+      putImageData() {},
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as never);
+    let syncSerial = 0;
+    const syncEncode = vi.spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockImplementation(function (this: HTMLCanvasElement) { return `data:image/png;base64,${this.width}-${++syncSerial}`; });
+    const pending: { width: number; complete: (blob: Blob) => void }[] = [];
+    vi.stubGlobal("OffscreenCanvas", class {
+      constructor(readonly width: number) {}
+      getContext() { return context; }
+      convertToBlob() {
+        return new Promise<Blob>(complete => pending.push({ width: this.width, complete }));
+      }
+    });
+    let blobSerial = 0;
+    const owned = new Set<string>();
+    vi.stubGlobal("URL", {
+      createObjectURL: () => { const source = `blob:resize-${++blobSerial}`; owned.add(source); return source; },
+      revokeObjectURL: (source: string) => owned.delete(source),
+    });
+    await act(async () => root.render(createElement(GlassProvider, null,
+      createElement("div", { className: "live-pose", style: { "--jelly-press": ".3", "--jelly-bend-x": "2" } },
+        createElement(GlassSurface, { variant: "nav", id: "resizing-live" }, "Navigation")))));
+    const surface = container.querySelector<HTMLElement>(".vx-glass-surface")!;
+    const publisher = container.querySelector<HTMLElement>(".live-pose")!;
+    const opticalFrame = vi.mocked(createGlassRenderer).mock.calls[0][1]!.beforeFrame!;
+    const finish = async (index: number) => act(async () => {
+      pending[index].complete(new Blob(["png"]));
+      await Promise.resolve();
+    });
+    await finish(0);
+    await act(async () => {
+      publisher.style.setProperty("--jelly-press", ".45");
+      publisher.style.setProperty("--jelly-bend-x", "4");
+      opticalFrame();
+    });
+    await finish(1);
+    expect(surface.querySelector("feImage")!.getAttribute("href")).toBe("blob:resize-2");
+    const previousClip = surface.style.clipPath;
+    await act(async () => {
+      publisher.style.setProperty("--jelly-press", ".6");
+      publisher.style.setProperty("--jelly-bend-x", "6");
+      opticalFrame();
+    });
+    expect(pending).toHaveLength(3);
+    expect(pending[2].width).toBe(137);
+    width = 203;
+    await act(async () => reports.filter(report => report.target === surface).forEach(report => report.callback()));
+    const resizedClip = surface.style.clipPath;
+    const resizedImage = surface.querySelector("feImage")!.getAttribute("href");
+    expect(resizedClip).not.toBe("");
+    expect(resizedClip).not.toBe(previousClip);
+    expect(resizedImage).toMatch(/^data:image\/png;base64,203-/);
+    expect(surface.querySelector("filter")!.getAttribute("width")).toBe("203");
+    expect(surface.style.getPropertyValue("--vx-lens-pressure")).toBe("0.600");
+    expect(surface.querySelector("[data-vx-reflection]")!.getAttribute("x1")).toBe("24%");
+    expect(owned.has("blob:resize-2")).toBe(true);
+    expect(pending).toHaveLength(3);
+
+    // Pose-only frames continue to coalesce asynchronously after the resize.
+    const syncEncodesAfterResize = syncEncode.mock.calls.length;
+    await act(async () => {
+      publisher.style.setProperty("--jelly-press", ".75");
+      opticalFrame(); opticalFrame();
+    });
+    expect(syncEncode).toHaveBeenCalledTimes(syncEncodesAfterResize);
+    await finish(2);
+    expect(surface.style.clipPath).toBe(resizedClip);
+    expect(surface.querySelector("feImage")!.getAttribute("href")).toBe(resizedImage);
+    expect(pending).toHaveLength(4);
+    expect(pending[3].width).toBe(203);
+    await finish(3);
+    expect(surface.querySelector("feImage")!.getAttribute("href")).toBe("blob:resize-4");
+    expect(surface.style.getPropertyValue("--vx-lens-pressure")).toBe("0.750");
+
+    await act(async () => { publisher.style.setProperty("--jelly-press", ".9"); opticalFrame(); });
+    await act(async () => root.unmount());
+    expect(owned.size).toBe(0);
+    expect(surface.style.clipPath).toBe("");
+    const releasedImage = surface.querySelector("feImage")!.getAttribute("href");
+    await finish(4);
+    expect(owned.size).toBe(0);
+    expect(surface.querySelector("feImage")!.getAttribute("href")).toBe(releasedImage);
+    root = createRoot(container);
+  });
+
   it.each([
     { effects: "lite" as const },
     { reducedTransparency: true },

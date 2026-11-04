@@ -127,6 +127,31 @@ it("detects an unthrottled RAF bottleneck when GPU timing is unavailable", async
   await render(); await advance(2200, 10);
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
 });
+it("downgrades from completed submission gaps when fences skip fast callbacks without GPU timings", async () => {
+  let attempts = 0;
+  fake.draw.mockImplementation(() => ({ cpuMs: 0, gpuMs: null, submitted: attempts++ % 6 === 0, pointsSubmitted: false }));
+  await render({ page: "content" });
+  await advance(1980, 100);
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
+  await advance(120, 100);
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
+  expect(scene().dataset.worldBudgetSource).toBe("submission");
+});
+it("prefers actual GPU timings and does not treat sleep as a blocked submission", async () => {
+  let attempts = 0;
+  fake.draw.mockImplementation(() => {
+    const submitted = attempts++ % 6 === 0;
+    return { cpuMs: 0, gpuMs: submitted ? 2 : null, submitted, pointsSubmitted: submitted };
+  });
+  await render({ page: "content" }); await advance(4200, 100);
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
+  fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: true, pointsSubmitted: true });
+  await act(async () => { hidden = true; document.dispatchEvent(new Event("visibilitychange")); });
+  now += 30000;
+  await act(async () => { hidden = false; document.dispatchEvent(new Event("visibilitychange")); });
+  await advance(500, 100);
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
+});
 it("renders every available full-policy RAF callback without an idle frame cap", async () => {
   await render();
   const count = fake.draw.mock.calls.length;

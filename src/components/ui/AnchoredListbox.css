@@ -19,7 +19,7 @@
 .vx-listbox-surface.vx-glass-surface { padding: 6px; border-radius: var(--vx-lens-radius-menu,20px); opacity: 1; transition: none; }
 /* Fade the filter owner itself; its positioning ancestor stays opaque. */
 .vx-listbox-popover[data-animate="true"] > .vx-listbox-surface { transition: opacity var(--duration-menu-enter) var(--ease-out); }
-.vx-listbox-popover[data-present="false"] > .vx-listbox-surface { opacity: 0; transition-duration: var(--duration-menu-exit); }
+.vx-listbox-popover[data-present="false"] > .vx-listbox-surface { opacity: 0; transition-duration: var(--duration-menu-exit); transition-timing-function: var(--ease-exit); }
 @starting-style { .vx-listbox-popover[data-animate="true"] > .vx-listbox-surface { opacity: 0; } }
 .vx-select__listbox { position: relative; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; list-style: none; }
 .vx-select__option { display: grid; grid-template-columns: minmax(0,1fr) 16px; align-items: center; gap: 12px; min-width: 0; min-height: 44px; padding: 10px 12px; border-radius: var(--vx-lens-radius-control,14px); color: var(--text-primary); cursor: pointer; }
