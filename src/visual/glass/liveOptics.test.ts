@@ -49,6 +49,7 @@ describe("live shared lens field", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData() {},
     } as never);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,initial");
     const callbacks: BlobCallback[] = [];
     vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(callback => { callbacks.push(callback); });
     const createObjectURL = vi.fn(() => "blob:late");
@@ -57,11 +58,12 @@ describe("live shared lens field", () => {
     surface.innerHTML = '<svg><feImage data-vx-curvature href="static"/></svg>';
     live.syncSurfaceOptics(surface, { width: 48, height: 44, radius: 20 },
       { bendX: 4, bendY: 1, pressure: .4, energy: .1 });
+    const initialImage = surface.querySelector("feImage")!.getAttribute("href");
     expect(callbacks).toHaveLength(1);
     live.resetSurfaceOptics(surface);
     callbacks[0](new Blob(["png"]));
     expect(surface.style.clipPath).toBe("");
-    expect(surface.querySelector("feImage")!.getAttribute("href")).toBe("static");
+    expect(surface.querySelector("feImage")!.getAttribute("href")).toBe(initialImage);
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
@@ -77,8 +79,10 @@ describe("live shared lens field", () => {
     const surface = document.createElement("div");
     surface.innerHTML = '<svg><feImage data-vx-curvature href="static"/></svg>';
     const shape = { width: 46, height: 44, radius: 20 };
-    live.syncSurfaceOptics(surface, shape, { bendX: 0, bendY: 0, pressure: 0, energy: 0 });
+    live.syncSurfaceOptics(surface, shape, { bendX: 4, bendY: 1, pressure: .4, energy: .1 });
     callbacks[0](new Blob(["png"]));
+    live.syncSurfaceOptics(surface, shape, { bendX: 0, bendY: 0, pressure: 0, energy: 0 });
+    callbacks[1](new Blob(["png"]));
     expect(surface.querySelector("feImage")!.getAttribute("href")).toBe("blob:resting");
     live.syncSurfaceOptics(surface, shape);
     expect(surface.querySelector("feImage")!.getAttribute("href")).toBe("data:image/png;base64,rest");

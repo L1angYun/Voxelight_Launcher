@@ -203,6 +203,52 @@ afterEach(() => {
 });
 
 describe("Lattice cursor halo", () => {
+  it("ignores unrelated and animated ancestor style/class writes without forcing target layout", async () => {
+    const { element, button } = card();
+    const wrapper = document.createElement("section");
+    element.before(wrapper); wrapper.append(element);
+    const unrelated = document.createElement("div"); document.body.append(unrelated);
+    halo = mountCursorHalo(document.body); pointer(button, 530, 300); settle();
+    await Promise.resolve(); settle(2000);
+    const read = vi.mocked(element.getBoundingClientRect); read.mockClear();
+    for (let index = 0; index < 6; index++) {
+      unrelated.style.transform = `translateX(${index}px)`;
+      wrapper.style.transform = `translateY(${index}px)`;
+      wrapper.className = `presentation-${index}`;
+      await Promise.resolve();
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(callbacks.size).toBe(0);
+  });
+  it("still observes ancestor accessibility state and root palette without pointer input", async () => {
+    const { element, button, outline } = card();
+    const wrapper = document.createElement("section"); element.before(wrapper); wrapper.append(element);
+    halo = mountCursorHalo(document.body); pointer(button, 530, 300); settle();
+    document.documentElement.style.setProperty("--text-primary", "#112233");
+    await Promise.resolve(); frame(2000);
+    expect(context.fillStyle).toBe("#112233");
+    wrapper.setAttribute("inert", ""); await Promise.resolve();
+    expect(element.hasAttribute("data-halo-owned")).toBe(false);
+    expect(outline.style.visibility).toBe("visible");
+    document.documentElement.style.removeProperty("--text-primary");
+  });
+  it("suspends for the owning overture attribute without observing presentation styles", async () => {
+    const overture = document.createElement("div"); overture.className = "vx-overture-root";
+    overture.dataset.overturePlaying = "false"; document.body.append(overture);
+    halo = mountCursorHalo(overture); pointer(document.body, 400, 300); settle();
+    overture.dataset.overturePlaying = "true"; await Promise.resolve();
+    expect(circles).toHaveLength(0); expect(callbacks.size).toBe(0);
+  });
+  it("clears a settled keyboard contour when its ancestor becomes inert", async () => {
+    const { element, button, outline } = card();
+    const wrapper = document.createElement("section"); element.before(wrapper); wrapper.append(element);
+    halo = mountCursorHalo(document.body);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    button.focus(); settle(); expect(circles).toHaveLength(30);
+    wrapper.setAttribute("inert", ""); await Promise.resolve();
+    expect(circles).toHaveLength(0); expect(callbacks.size).toBe(0);
+    expect(outline.style.visibility).toBe("visible");
+  });
   it("stops drawing a settled pointer and restarts for movement and a press", () => {
     halo = mountCursorHalo(document.body);
     pointer(document.body, 400, 300); settle();

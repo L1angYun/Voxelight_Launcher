@@ -48,8 +48,8 @@ export function WorldScene(props: WorldSceneProps) {
     let disposed = false, lost = false, visible = true, animation: number | null = null;
     let drawn = 0, lastDraw: number | null = null, downgrades = 0, lastKey = "", lastPalette = "";
     let needsSubmission = false, gpuComplete = false;
-    let previousTick: number | null = null, lastGpuAt: number | null = null, lastCpuMs = 0;
-    let budgetSource: "gpu" | "raf" | null = null;
+    let lastGpuAt: number | null = null, lastSubmissionAt: number | null = null, skippedSubmissions = 0;
+    let budgetSource: "gpu" | "submission" | null = null;
     let width = 1, height = 1, tier: Tier;
     let lastLayoutKey = "", trackedAnchor: Element | null = null;
     let lastAnchorNdc: [number, number] = [.62, -.66];
@@ -91,7 +91,7 @@ export function WorldScene(props: WorldSceneProps) {
     }
     function stop() {
       if (animation !== null) cancelAnimationFrame(animation);
-      animation = null; lastDraw = null; previousTick = null; lastGpuAt = null; budgetSource = null;
+      animation = null; lastDraw = null; lastGpuAt = null; lastSubmissionAt = null; skippedSubmissions = 0; budgetSource = null;
       finishPress();
     }
     function publish(frame: WorldFrame) {
@@ -113,7 +113,7 @@ export function WorldScene(props: WorldSceneProps) {
       syncPointerBindings();
     }
     function fallback() { lost = true; gpuComplete = false; introConsumed = true; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.worldSettled = "false"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
-    function sample(source: "gpu" | "raf", costMs: number, elapsedMs: number) {
+    function sample(source: "gpu" | "submission", costMs: number, elapsedMs: number) {
       if (tier.kind !== "animated" || elapsedMs <= 0) return;
       if (source !== budgetSource) { budget = createFrameBudget(16.7); budgetSource = source; }
       host!.dataset.worldBudgetSource = source;
@@ -147,7 +147,13 @@ export function WorldScene(props: WorldSceneProps) {
         if (lost) return;
         needsSubmission = !result.submitted;
         gpuComplete = false;
-        if (result.submitted) drawn++;
+        const submissionGap = result.submitted && lastSubmissionAt !== null ? Math.max(0, drawAt - lastSubmissionAt) : 0;
+        if (result.submitted) {
+          drawn++; lastSubmissionAt = drawAt;
+          host!.dataset.worldSubmissionGapMs = submissionGap.toFixed(3);
+          host!.dataset.worldSkippedFrames = String(skippedSubmissions);
+          skippedSubmissions = 0;
+        } else { skippedSubmissions++; host!.dataset.worldSkippedFrames = String(skippedSubmissions); }
         if (floatSupport !== renderer.capabilities.floatTargets) { update(true); return; }
         if (drawFrame.introActive && drawFrame.morph.toWord && drawFrame.introTime >= .8 && drawFrame.introTime < 1.4 && result?.pointsSubmitted) {
           if (supplement && !introWordSubmitted && introDeadline !== null)
@@ -155,14 +161,17 @@ export function WorldScene(props: WorldSceneProps) {
           introWordSubmitted = true;
         }
         if (result) {
-          lastCpuMs = result.cpuMs;
           host!.dataset.worldCpuMs = result.cpuMs.toFixed(3);
           host!.dataset.worldGpuMs = result.gpuMs === null ? "unavailable" : result.gpuMs.toFixed(3);
           if (result.gpuMs !== null && Number.isFinite(result.gpuMs)) {
-            if (lastGpuAt !== null) sample("gpu", Math.max(result.cpuMs, result.gpuMs), now - lastGpuAt);
-            lastGpuAt = now;
+            if (lastGpuAt !== null) sample("gpu", Math.max(result.cpuMs, result.gpuMs), drawAt - lastGpuAt);
+            lastGpuAt = drawAt;
           }
         }
+        // A fast callback can merely poll a busy fence. Without fresh GPU
+        // timing, measure actual accepted frames rather than those empty polls.
+        if (scheduled && result.submitted && (lastGpuAt === null || drawAt - lastGpuAt > 500))
+          sample("submission", Math.max(result.cpuMs, submissionGap), submissionGap);
         // Static policy may observe completion once, but never schedules a
         // completion loop. Animated final frames are checked on later ticks.
         if (tier.kind === "static" && frame.settled && result.submitted) gpuComplete = renderer.pollFrameComplete();
@@ -177,13 +186,7 @@ export function WorldScene(props: WorldSceneProps) {
         if (lost) return;
         publish(lastFrame); start(); return;
       }
-      const callbackGap = previousTick === null ? 0 : Math.max(0, now - previousTick);
-      previousTick = now;
       paint(now, lastDraw === null ? 0 : Math.max(0, Math.min(.05, (now - lastDraw) / 1000)), true);
-      // GPU timing and callback cadence stay separate; animated frames are uncapped.
-      if (lastGpuAt === null || now - lastGpuAt > 500) {
-        try { sample("raf", Math.max(lastCpuMs, callbackGap), callbackGap); } catch { fallback(); }
-      }
       start();
     }
     function start() {

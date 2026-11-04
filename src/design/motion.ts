@@ -8,6 +8,7 @@ export const MOTION = {
   world: { frontStart: 30 },
   cursor: { stiffness: 320, damping: 34, staggerSeconds: .04, lensFadeMs: 120, maxElapsedSeconds: .25, settleHeat: .01 },
   ease: [.23, 1, .32, 1] as const,
+  easeExit: [.4, 0, 1, 1] as const,
   page: { enterOffset: 10, exitOffset: 6 },
   menu: { offset: 4, scale: .97 },
   toast: { offset: 8 },
@@ -59,6 +60,6 @@ export function pageVariants(tier: MotionTier, home: boolean) {
     enter: (direction: number) => ({ opacity: animated ? 0 : 1, transform: shift(direction * MOTION.page.enterOffset) }),
     ready: { opacity: 1, transform: "none", transition: { duration: animated ? motionDuration(tier, "enter") : 0, ease: MOTION.ease } },
     exit: (direction: number) => ({ opacity: animated ? 0 : 1, transform: shift(-direction * MOTION.page.exitOffset),
-      transition: { duration: animated ? motionDuration(tier, "exit") : 0, ease: MOTION.ease } }),
+      transition: { duration: animated ? motionDuration(tier, "exit") : 0, ease: MOTION.easeExit } }),
   };
 }

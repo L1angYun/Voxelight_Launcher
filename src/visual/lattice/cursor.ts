@@ -210,6 +210,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   let savedFrame: SavedStyle | null = null;
   let savedOutline: SavedStyle | null = null;
   let savedOwnership: string | null = null;
+  let targetObserver: MutationObserver | null = null;
   const targetResize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => schedule());
 
   const pointerOverLens = () => Boolean(pointerElement?.closest("[data-visual-owner='lens']"));
@@ -283,6 +284,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     if (target) targetResize?.unobserve(target);
     releaseOwnership();
     target = next;
+    observeTargetAncestry();
     if (!next) return;
     targetResize?.observe(next);
     const outline = frameOf(next);
@@ -546,7 +548,22 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   function policyChanged() {
     if (!allowed() || target && nativeLayer(target)) { clear(); return; }
     if (target && (!target.isConnected || !usable(target))) {
-      setTarget(null); schedule();
+      if (!inside) { clear(); return; }
+      keyboardElement = null;
+      if (pointerElement && !pointerElement.isConnected) pointerElement = null;
+      syncOpacity(); setTarget(null); schedule();
+    }
+  }
+  function observeTargetAncestry() {
+    targetObserver?.disconnect();
+    if (!target) return;
+    for (let element: Element | null = target; element; element = element.parentElement) {
+      targetObserver?.observe(element, {
+        // Child-list observation detects removal/reparenting without scanning
+        // descendant style/class writes from every animation in the app.
+        childList: true, attributes: true,
+        attributeFilter: ["hidden", "disabled", "inert", "aria-hidden", "aria-disabled", "open"],
+      });
     }
   }
   function fit() {
@@ -576,23 +593,20 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   document.addEventListener("scroll", scrolled, true);
   const queries = [fine, reduced, contrast, forced];
   queries.forEach((query) => query.addEventListener?.("change", policyChanged));
-  const observer = new MutationObserver(records => {
-    policyChanged();
-    if (records.some(record => record.target === document.documentElement ||
-      target && record.target instanceof Element && record.target.contains(target))) schedule();
-  });
+  const observer = new MutationObserver(() => { policyChanged(); schedule(); });
   observer.observe(document.documentElement, {
-    subtree: true,
-    childList: true,
     attributes: true,
     attributeFilter: [
       "data-effects",
       "data-reduced-motion",
       "data-high-contrast",
-      "data-overture-playing",
-      "data-theme", "style", "class", "hidden", "disabled", "inert", "aria-hidden", "aria-disabled", "open",
+      "data-theme", "style",
     ],
   });
+  targetObserver = new MutationObserver(() => { policyChanged(); observeTargetAncestry(); schedule(); });
+  const overture = document.querySelector(".vx-overture-root");
+  const overtureObserver = new MutationObserver(policyChanged);
+  if (overture) overtureObserver.observe(overture, { attributes: true, attributeFilter: ["data-overture-playing"] });
   fit();
 
   return {
@@ -605,6 +619,8 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       disposed = true;
       clear();
       observer.disconnect();
+      targetObserver?.disconnect();
+      overtureObserver.disconnect();
       targetResize?.disconnect();
       for (const [event, callback] of listeners)
         document.removeEventListener(event, callback);

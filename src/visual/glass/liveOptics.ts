@@ -3,6 +3,7 @@ import { createLiveCurvatureMaps, curvatureMapImage } from "./refractionImage";
 import type { GlassOptics } from "./types";
 
 const previousPose = new WeakMap<HTMLElement, string>();
+const previousShape = new WeakMap<HTMLElement, CurvatureGeometry>();
 const encoders = new WeakMap<HTMLElement, ReturnType<typeof createLiveCurvatureMaps>>();
 const rounded = (value: number, step: number) => Math.round(value / step) * step;
 
@@ -10,6 +11,7 @@ export function resetSurfaceOptics(element: HTMLElement): void {
   encoders.get(element)?.dispose();
   encoders.delete(element);
   previousPose.delete(element);
+  previousShape.delete(element);
   element.style.removeProperty("clip-path");
   element.style.removeProperty("--vx-lens-pressure");
 }
@@ -24,6 +26,13 @@ export function syncSurfaceOptics(element: HTMLElement, shape: CurvatureGeometry
   };
   const liveShape = { ...shape, optics };
   if (input) {
+    const previous = previousShape.get(element);
+    if (!previous || previous.width !== shape.width || previous.height !== shape.height) {
+      // A layout resize needs a complete field before paint. Pose-only frames
+      // keep the existing field until the asynchronous encoder catches up.
+      const source = curvatureMapImage(liveShape);
+      if (source) applySurfaceOptics(element, liveShape, source);
+    }
     let encoder = encoders.get(element);
     if (!encoder) {
       const current = createLiveCurvatureMaps((source, readyShape) => {
@@ -69,4 +78,5 @@ function applySurfaceOptics(element: HTMLElement, liveShape: CurvatureGeometry, 
   element.style.setProperty("--vx-lens-pressure", optics.pressure.toFixed(3));
   element.dataset.lensOpticsEpoch = String(Number(element.dataset.lensOpticsEpoch ?? 0) + 1);
   previousPose.set(element, key);
+  previousShape.set(element, liveShape);
 }

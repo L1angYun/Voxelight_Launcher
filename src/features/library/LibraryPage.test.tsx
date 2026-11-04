@@ -286,6 +286,50 @@ describe("library and instance details", () => {
     expect(commandMock).toHaveBeenCalledWith("create_instance", { name: "Fabric 世界", versionId: "fabric-loader-0.16.9-1.21.1" });
   });
 
+  it("retains the loader choice while collapsed and removes it from interaction", async () => {
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }));
+    const slot = container.querySelector<HTMLElement>(".vx-create-loader-slot")!;
+    const choice = () => slot.querySelector<HTMLButtonElement>('[role="combobox"]');
+    expect(choice()).not.toBeNull();
+    expect(choice()!.disabled).toBe(true);
+    expect(slot.hasAttribute("inert")).toBe(true);
+    expect(slot.getAttribute("aria-hidden")).toBe("true");
+    const loader = (name: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === name)!;
+    await act(async () => loader("Fabric").click());
+    const selected = choice()!;
+    expect(selected.disabled).toBe(false);
+    expect(selected.textContent).toContain("0.16.9");
+    expect(slot.hasAttribute("inert")).toBe(false);
+    vi.spyOn(selected, "getBoundingClientRect").mockReturnValue({ x: 50, y: 50, width: 300, height: 38, top: 50, right: 350, bottom: 88, left: 50, toJSON: () => ({}) });
+    await act(async () => selected.click());
+    expect(selected.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => loader("原版").click());
+    expect(choice()).toBe(selected);
+    expect(selected.textContent).toContain("0.16.9");
+    expect(selected.disabled).toBe(true);
+    expect(slot.hasAttribute("inert")).toBe(true);
+    expect(selected.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => selected.click());
+    expect(selected.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("preserves the loader display while closing and closes its portalled choices", async () => {
+    const props = { onOpenChange: vi.fn(), onInstalled: vi.fn() };
+    await render(createElement(CreateInstanceDialog, { ...props, open: true }));
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Fabric")!.click());
+    const selected = container.querySelector<HTMLButtonElement>('[id$="-create-loader-version"]')!;
+    vi.spyOn(selected, "getBoundingClientRect").mockReturnValue({ x: 50, y: 50, width: 300, height: 38, top: 50, right: 350, bottom: 88, left: 50, toJSON: () => ({}) });
+    await act(async () => selected.click());
+    expect(selected.getAttribute("aria-expanded")).toBe("true");
+    const displayed = selected.textContent;
+    await render(createElement(CreateInstanceDialog, { ...props, open: false }));
+    expect(container.querySelector('[id$="-create-loader-version"]')).toBe(selected);
+    expect(selected.textContent).toBe(displayed);
+    expect(selected.disabled).toBe(true);
+    expect(selected.closest("[inert]")).not.toBeNull();
+    expect(selected.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("keeps fields and submit forms scoped to each mounted creation dialog", async () => {
     await render(createElement("div", null,
       createElement(CreateInstanceDialog, { open: false, onOpenChange: vi.fn(), onInstalled: vi.fn() }),

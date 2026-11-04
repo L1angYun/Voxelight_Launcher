@@ -177,12 +177,15 @@ export function CreateInstanceDialog({
             <Segmented semantic="toggle" label={t("library:loader")} value={loader} onChange={setLoader}
               options={(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => ({ value, label: value === "vanilla" ? t("library:vanilla") : value === "neoforge" ? "NeoForge" : value[0].toUpperCase() + value.slice(1) }))} />
           </Field>
-          <div className="vx-create-loader-slot">
-          {loader !== "vanilla" ? <SectionPanel selectionKey={loader}><Field label={t("library:loaderVersion")} htmlFor={`${modeId}-create-loader-version`}><Select id={`${modeId}-create-loader-version`} aria-label={t("library:loaderVersion")} value={loaderVersion} onChange={setLoaderVersion} disabled={loaderLoading || !loaderVersions.length} required options={[
+          <div className="vx-create-loader-slot" data-expanded={loader !== "vanilla"}
+            inert={loader === "vanilla" || !isOpen || undefined} aria-hidden={loader === "vanilla" || !isOpen || undefined}>
+          <div className="vx-create-loader-slot__content">
+          <Field label={t("library:loaderVersion")} htmlFor={`${modeId}-create-loader-version`}><Select id={`${modeId}-create-loader-version`} aria-label={t("library:loaderVersion")} value={loaderVersion} onChange={setLoaderVersion} disabled={!isOpen || loader === "vanilla" || loaderLoading || !loaderVersions.length} required options={[
             { value: "", label: loaderLoading ? "\u00a0" : t("library:noLoaderVersions") },
             ...loaderVersions.map((version) => ({ value: version.id, label: `${version.id}${version.recommended ? ` / ${t("library:recommended")}` : ""}` })),
-          ]} /></Field></SectionPanel> : null}
+          ]} /></Field>
           <LoadingStatus active={loader !== "vanilla" && loaderLoading} className="vx-create-loader-status">{t("common:status.loading")}</LoadingStatus>
+          </div>
           </div>
           <Field label={t("library:instanceNameOptional")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
         </form>

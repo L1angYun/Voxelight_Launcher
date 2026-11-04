@@ -39,7 +39,7 @@ function Popup({ popupRef, placement, animate, className, children }: {
     data-placement={placement?.side} data-present={present} data-animate={present ? animate : animateExit}
     inert={!present || undefined} aria-hidden={!present || undefined}
     initial={animate ? { transform: tucked } : false} animate={{ transform: "translateY(0px) scale(1)" }}
-    exit="closed" variants={{ closed: (enabled: boolean) => ({ transform: tucked, transition: { duration: enabled ? MOTION.duration.menuExit : 0 } }) }}
+    exit="closed" variants={{ closed: (enabled: boolean) => ({ transform: tucked, transition: { duration: enabled ? MOTION.duration.menuExit : 0, ease: MOTION.easeExit } }) }}
     transition={{ duration: animate ? MOTION.duration.menuEnter : 0, ease: MOTION.ease }}
     style={{ position: "fixed", left: placement?.left ?? 16, top: placement?.top ?? 16, width: placement?.width ?? 280,
       maxHeight: placement?.maxHeight ?? 360, visibility: placement ? "visible" : "hidden", pointerEvents: present ? "auto" : "none",
