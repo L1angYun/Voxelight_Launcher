@@ -172,9 +172,8 @@ export function WorldScene(props: WorldSceneProps) {
         // timing, measure actual accepted frames rather than those empty polls.
         if (scheduled && result.submitted && (lastGpuAt === null || drawAt - lastGpuAt > 500))
           sample("submission", Math.max(result.cpuMs, submissionGap), submissionGap);
-        // Static policy may observe completion once, but never schedules a
-        // completion loop. Animated final frames are checked on later ticks.
-        if (tier.kind === "static" && frame.settled && result.submitted) gpuComplete = renderer.pollFrameComplete();
+        // Static policy submits once with no observation loop, so its GPU
+        // settled state is unobservable. Animated completion is checked later.
         publish(frame);
       } catch { fallback(); }
     }

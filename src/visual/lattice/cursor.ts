@@ -4,7 +4,7 @@ import { DOT_SUBSTEP_SECONDS, DotField, seededRandom } from "./dots";
 import { MOTION } from "../../design/motion";
 
 export const CURSOR_HALO_POINT_COUNT = 30;
-export const CURSOR_HALO_RADIUS_PX = 18;
+export const CURSOR_HALO_RADIUS_PX = MOTION.cursor.radiusPx;
 export const CURSOR_HALO_OUTSET_PX = 6;
 const TWO_PI = Math.PI * 2;
 const CONTROLS = [

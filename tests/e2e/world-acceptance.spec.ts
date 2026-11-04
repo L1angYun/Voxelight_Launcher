@@ -58,12 +58,13 @@ appearanceTest.describe("review A appearance budgets", () => {
 const targets: ContrastTarget[] = [
   { name: "title", selector: ".vx-home__console-name", minimum: 3, nominalDuringIntro: true },
   { name: "metadata", selector: ".vx-home__meta li", minimum: 4.5, nominalDuringIntro: true },
-  { name: "preview source", selector: ".vx-home__preview-source", minimum: 4.5, optional: true },
   { name: "operation", selector: ".vx-launch-console__actions .vx-button__label, .vx-launch-console__running .vx-button__label", minimum: 4.5 },
   { name: "preparation", selector: ".vx-launch-console__progress-heading > span, .vx-launch-console__file-count", minimum: 4.5, optional: true },
   { name: "progress value", selector: ".vx-launch-console__progress-text", minimum: 4.5, optional: true },
   { name: "running", selector: ".vx-launch-console__running > span", minimum: 4.5, optional: true },
 ];
+
+const previewSourceTarget: ContrastTarget = { name: "preview source", selector: ".vx-home__preview-source", minimum: 4.5 };
 
 interface FixtureControl { progress(fraction: number): void; completeLaunch(): void }
 type ControlledWindow = Window & { __worldAcceptanceFixture?: FixtureControl };
@@ -111,7 +112,8 @@ async function installControlledLaunch(page: Page) {
   });
 }
 
-async function captureState(page: Page, directory: string, state: string, recorded?: WorldContrastReport): Promise<WorldContrastReport> {
+async function captureState(page: Page, directory: string, state: string, recorded?: WorldContrastReport,
+  contrastTargets: ContrastTarget[] = targets): Promise<WorldContrastReport> {
   const scene = page.locator(".vx-global-scene");
   // The entrance lasts only 2.5 real seconds. Capture its current compositor
   // first and validate the batched before/after metadata, without serial IPC
@@ -126,7 +128,7 @@ async function captureState(page: Page, directory: string, state: string, record
     await expect(page.locator(".vx-overture-root")).toHaveAttribute("data-overture-playing", "false");
     await expect(scene).toHaveAttribute("data-paused", "false");
   }
-  const report = recorded ?? await captureTextContrast(page, targets, resolve(directory, `${state}-under-text.png`));
+  const report = recorded ?? await captureTextContrast(page, contrastTargets, resolve(directory, `${state}-under-text.png`));
   await writeFile(resolve(directory, `${state}-contrast.json`), JSON.stringify(report, null, 2));
   for (const frame of [report.before, report.after]) {
     expect(frame.tier).toBe("animated"); expect(frame.material).toBe("lattice");
@@ -144,6 +146,68 @@ async function captureState(page: Page, directory: string, state: string, record
   }
   return report;
 }
+
+appearanceTest.describe("review E1 mandatory preview source", () => {
+  appearanceTest.afterEach(async ({ page }, info) => {
+    const runtime = await page.evaluate(() => {
+      const gl = document.querySelector<HTMLCanvasElement>(".world-scene__canvas")?.getContext("webgl2");
+      const extension = gl?.getExtension("WEBGL_debug_renderer_info");
+      return { renderer: extension ? String(gl!.getParameter(extension.UNMASKED_RENDERER_WEBGL)) : null,
+        dpr: devicePixelRatio, viewport: { width: innerWidth, height: innerHeight },
+        world: { ...(document.querySelector<HTMLElement>(".world-scene")?.dataset ?? {}) } };
+    });
+    await writeFile(info.outputPath("browser-runtime.json"), JSON.stringify(runtime, null, 2));
+    expect(runtime.renderer).toBeTruthy();
+    expect(runtime.renderer).not.toMatch(/swiftshader|llvmpipe|softpipe|software|basic render/i);
+    expect(runtime.dpr).toBe(1);
+  });
+
+  for (const theme of ["dark", "light"] as const) for (const width of [1280, 1050]) {
+    appearanceTest(`${theme} ${width}x720: no-account preview contrast holds through intro and idle`, async ({ page }) => {
+      const directory = resolve(evidence, `no-account-${theme}-${width}x720`);
+      await mkdir(directory, { recursive: true });
+      const errors: string[] = [];
+      page.on("pageerror", error => errors.push(error.message));
+      page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+      await page.setViewportSize({ width, height: 720 });
+      await page.emulateMedia({ reducedMotion: "no-preference", contrast: "no-preference" });
+      await installLauncherFixture(page, { noAccount: true, theme, effects: "full", worldScene: "horizon", worldMaterial: "lattice" });
+      const noAccountTargets = [...targets, previewSourceTarget];
+      const recorder = await prepareIntroContrast(page, noAccountTargets);
+      let intro: WorldContrastReport;
+      try {
+        await page.goto("/", { waitUntil: "commit" });
+        intro = await captureState(page, directory, "intro", await recorder.capture(resolve(directory, "intro-under-text.png")), noAccountTargets);
+      } finally { await recorder.dispose(); }
+      expect(intro.before).toMatchObject({ intro: "on", theme });
+      const frame = intro.frameEvidence!;
+      expect(frame.source).toBe("CDP Page.screencastFrame");
+      expect(frame.domBefore).toMatchObject({ intro: "on", theme });
+      expect(frame.domAfter).toMatchObject({ intro: "on", theme });
+      expect(Number(frame.timestampEpochMs)).toBeGreaterThanOrEqual(Number(frame.beforeEpochMs));
+      expect(Number(frame.timestampEpochMs)).toBeLessThanOrEqual(Number(frame.afterEpochMs));
+      expect(Number(frame.candidateFrames)).toBeGreaterThan(0);
+      await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
+      await expect(page.locator(".vx-home__identity")).toHaveCSS("opacity", "1");
+      await expect(page.locator(previewSourceTarget.selector)).toHaveCount(1);
+      await expect(page.locator(previewSourceTarget.selector)).toBeVisible();
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      // Without an account the real controller rejects launch before preparing;
+      // these cases cover the preview's reachable intro and idle states only.
+      const idle = await captureState(page, directory, "idle", undefined, noAccountTargets);
+      for (const report of [intro, idle]) {
+        const previews = report.regions.filter(region => region.name === previewSourceTarget.name);
+        expect(previews).toHaveLength(1);
+        expect(previews[0].nominalOnly).toBe(false);
+        expect(report.before.theme).toBe(theme);
+        expect(report.after.theme).toBe(theme);
+      }
+      await page.screenshot({ path: resolve(directory, "idle-visible.png"), scale: "css" });
+      await writeFile(resolve(directory, "states.json"), JSON.stringify({ intro, idle }, null, 2));
+      expect(errors).toEqual([]);
+    });
+  }
+});
 
 for (const theme of ["dark", "light"] as const) for (const [width, height] of [[1050, 720], [1440, 1000]]) {
   test(`${theme} ${width}x${height}: composited home text contrast holds through intro, idle, front and running`, async ({ page }) => {
@@ -177,9 +241,10 @@ for (const theme of ["dark", "light"] as const) for (const [width, height] of [[
     expect(intro.after.theme).toBe(theme);
     // The title and metadata are intentionally hidden during the wordmark. Their
     // nominal colors are a conservative check of the later text over that frame;
-    // preview source and the actual launch label remain visible and are also tested.
+    // the actual launch label remains visible and is also tested.
     await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off", { timeout: 3500 });
     await expect(page.locator(".vx-home__identity")).toHaveCSS("opacity", "1");
+    await expect(page.locator(previewSourceTarget.selector)).toHaveCount(0);
     await page.evaluate(() => document.fonts.ready.then(() => undefined));
     const reports: Record<string, WorldContrastReport> = { intro };
     reports.idle = await captureState(page, directory, "idle");
@@ -212,6 +277,7 @@ for (const theme of ["dark", "light"] as const) for (const [width, height] of [[
       return { delta: Number(await scene.getAttribute("data-world-frames")) - before, settled: await scene.getAttribute("data-world-settled") };
     }, { timeout: 15_000 }).toEqual({ delta: 0, settled: "true" });
     reports["running-settled"] = await captureState(page, directory, "running-settled");
+    await expect(page.locator(previewSourceTarget.selector)).toHaveCount(0);
     for (const report of Object.values(reports)) {
       expect(report.before.theme).toBe(theme); expect(report.after.theme).toBe(theme);
     }

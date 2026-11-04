@@ -56,7 +56,7 @@ export function ToastProvider({ children }: { children?: ReactNode }) {
   }, []);
   useEffect(() => {
     if (!toast) return;
-    const timer = setTimeout(() => dismiss(toast.id, toast.revision), toast.kind === "error" ? 11000 : 5000);
+    const timer = setTimeout(() => dismiss(toast.id, toast.revision), toast.kind === "error" ? MOTION.toast.errorDwellMs : MOTION.toast.dwellMs);
     return () => clearTimeout(timer);
   }, [dismiss, toast]);
   useLayoutEffect(() => {

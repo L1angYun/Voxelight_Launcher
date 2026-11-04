@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { describe, expect, it } from "vitest";
-import { MOTION, resolveMotionTier, pageVariants, motionDuration } from "./motion";
+import { MOTION, resolveMotionTier, pageVariants, motionDuration, identityTransition, sectionTransition } from "./motion";
 
 describe("frontend motion policy", () => {
   const full = { effects: "full" as const, reducedMotion: false, reducedTransparency: false, highContrast: false };
@@ -16,6 +16,24 @@ describe("frontend motion policy", () => {
     expect(MOTION.lens.x).toMatchObject({ stiffness: 340, damping: 30, pressedDamping: 34 });
     expect(MOTION.identity).toEqual({ stiffness: 380, damping: 36 });
     expect(MOTION.camera).toEqual({ stiffness: 36, damping: 12 });
+  });
+  it("centralizes notification dwell times and the free cursor radius", () => {
+    expect(MOTION.toast).toMatchObject({ dwellMs: 5000, errorDwellMs: 11000 });
+    expect(MOTION.cursor).toMatchObject({ radiusPx: 18 });
+  });
+  it("returns production durations and springs independently of the test runner", () => {
+    for (const tier of ["full", "fade"] as const) {
+      expect(motionDuration(tier, "enter")).toBe(.18);
+      expect(motionDuration(tier, "exit")).toBe(.08);
+      expect(pageVariants(tier, false).ready.transition.duration).toBe(.18);
+      expect(pageVariants(tier, false).exit(1).transition.duration).toBe(.08);
+    }
+    expect(identityTransition("full")).toEqual({ type: "spring", stiffness: 380, damping: 36 });
+    expect(sectionTransition("full")).toEqual({ type: "spring", stiffness: 420, damping: 38 });
+    expect(identityTransition("fade")).toEqual({ duration: .14, ease: [.23, 1, .32, 1] });
+    expect(identityTransition("none")).toEqual({ duration: 0, ease: [.23, 1, .32, 1] });
+    expect(sectionTransition("fade")).toEqual({ duration: 0 });
+    expect(sectionTransition("none")).toEqual({ duration: 0 });
   });
   it("starts content from the selected navigation side and keeps home still", () => {
     expect(pageVariants("full", false).enter(1)).toMatchObject({ opacity: 0, transform: "translateX(10px)" });

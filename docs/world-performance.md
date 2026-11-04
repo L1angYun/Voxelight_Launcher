@@ -92,7 +92,7 @@ node E:/CodeX/VoxelightLauncher-worklogs/crystal-world/measure-native-final.mjs
 
 ## 0.6.0 下载切页与 GPU 提交调度（2026-11-03）
 
-本轮前端源码 `402354a`，生产入口 `index-DCbvhwtL.js`。实际 Chromium / ANGLE NVIDIA RTX 5080 Laptop D3D11，CPU profiler 关闭；并非原生 WebView2 重测。完整方案和全部验证见 [0.6.0 复核报告](reports/frontend-completion-0.6.0.md)。
+本轮前端源码 `6396b53`（历史改写后的当前引用），生产入口 `index-DCbvhwtL.js`。实际 Chromium / ANGLE NVIDIA RTX 5080 Laptop D3D11，CPU profiler 关闭；并非原生 WebView2 重测。完整方案和全部验证见 [0.6.0 复核报告](reports/frontend-completion-0.6.0.md)。
 
 每次输入后观察完整约 1.5 秒，30 条下载任务，固定一次采集三个全新上下文的首次切入和五次复访，没有为改善结果重复挑选样本：
 
