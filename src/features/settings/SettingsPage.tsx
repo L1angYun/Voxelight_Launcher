@@ -114,7 +114,7 @@ export function SettingsPage() {
 
   return (
     <PageShell className="vx-settings-page">
-      <PageHeader className="vx-page-heading vx-settings-heading" title={t("settings:title")} description={t("settings:subtitle")} actions={
+      <PageHeader title={t("settings:title")} description={t("settings:subtitle")} actions={
         <div className="vx-action-row vx-settings-save">
           {dirty ? <span className="vx-settings-dirty" role="status">{t("settings:unsaved")}</span> : null}
           <Button variant="ghost" icon={<RotateCcw size={15} />} disabled={!dirty} onClick={reset}>{t("settings:reset")}</Button>

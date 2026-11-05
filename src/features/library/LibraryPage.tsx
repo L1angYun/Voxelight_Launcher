@@ -210,7 +210,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
   ) : (
     <PageShell className="vx-library-page" data-drill-return={revealListing && contentDuration > 0 ? "" : undefined}
       onAnimationEnd={(event) => { if (event.animationName === "vx-library-content-reveal") setRevealListing(false); }}>
-      <PageHeader className="vx-page-heading" title={t("library:title")}
+      <PageHeader title={t("library:title")}
         description={scope === "versions" ? t("library:subtitleVersions", { count: scopeCount }) : t("library:subtitle", { count: scopeCount })}
         actions={<Segmented semantic="toggle" className="vx-library-scope" label={t("library:scopeLabel")} value={scope}
           onChange={setScope} options={[{value:"instances",label:t("library:scope.instances")},{value:"versions",label:t("library:scope.versions")}]} />} />
@@ -253,6 +253,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
         <div className="vx-library-commandbar__actions">
           <Button
             variant="secondary"
+            size="md"
             icon={<Upload size={15} />}
             onClick={() => setImportOpen(true)}
           >
@@ -260,6 +261,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
           </Button>
           <Button
             variant="primary"
+            size="md"
             icon={<Plus size={16} />}
             onClick={() => setCreateOpen(true)}
           >
@@ -448,7 +450,6 @@ function VersionDirectoryCard({
       {...(layoutOrder ? { layout: "position" as const, layoutDependency: layoutOrder, transition: { layout: { duration: motionDuration("full", "enter"), ease: MOTION.ease } } } : {})}
       data-visual-owner="lattice"
       data-version-directory={version.id}
-      aria-current={selected ? "true" : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
@@ -466,6 +467,7 @@ function VersionDirectoryCard({
       <button
         type="button"
         className="vx-instance-card__select"
+        aria-current={selected ? "true" : undefined}
         data-version-id={version.id}
         onClick={onOpen}
         aria-label={t("library:openVersionDirectory", { name: version.id })}
@@ -499,6 +501,7 @@ function VersionDirectoryCard({
       <div className="vx-instance-card__footer">
         <Button
           className="vx-instance-card__launch"
+          size="sm"
           variant="secondary"
           data-launch
           icon={<Play size={14} />}

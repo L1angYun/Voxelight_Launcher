@@ -1,3 +1,4 @@
+@layer primitives {
 :root {
   --vx-lens-refraction: 0.90;
   --vx-lens-frost: 0.24;
@@ -51,6 +52,17 @@
   border-radius: var(--radius-lg);
 }
 .vx-glass-surface--toast { border-radius: var(--radius-md); }
+.vx-glass-provider[data-glass-mode="lite"] .vx-glass-surface {
+  border-color: color-mix(in srgb, var(--text-primary) 15%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+[data-glass-mode="full"] .vx-glass-surface[data-glass-refraction="curvature"] {
+  -webkit-backdrop-filter: blur(var(--vx-lens-blur)) var(--vx-glass-refraction);
+  backdrop-filter: blur(var(--vx-lens-blur)) var(--vx-glass-refraction);
+}
+}
+@layer overrides {
 .vx-glass-provider[data-glass-mode="fallback"] .vx-glass-surface {
   border-color: var(--border-subtle);
   background: var(--surface-solid);
@@ -61,15 +73,6 @@
 [data-glass-mode="fallback"] .vx-glass-canvas { visibility: hidden; }
 [data-glass-mode="fallback"] .vx-glass-surface::before,
 [data-glass-mode="fallback"] .vx-glass-surface::after { display: none; }
-.vx-glass-provider[data-glass-mode="lite"] .vx-glass-surface {
-  border-color: color-mix(in srgb, var(--text-primary) 15%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-}
-[data-glass-mode="full"] .vx-glass-surface[data-glass-refraction="curvature"] {
-  -webkit-backdrop-filter: blur(var(--vx-lens-blur)) var(--vx-glass-refraction);
-  backdrop-filter: blur(var(--vx-lens-blur)) var(--vx-glass-refraction);
-}
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
   .vx-glass-provider .vx-glass-surface.vx-glass-surface {
     background: var(--surface-solid);
@@ -87,4 +90,5 @@
     color: CanvasText;
     box-shadow: none;
   }
+}
 }

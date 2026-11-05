@@ -104,7 +104,7 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
       <div className="vx-managed-layout">
         <aside className="vx-managed-list" aria-label={t("multiplayer:managedList")}>
           {managedServers.length ? managedServers.map((server) => (
-            <button type="button" key={server.id} aria-pressed={selectedManagedId === server.id} onClick={() => setSelectedManagedId(server.id)}>
+            <button type="button" key={server.id} aria-current={selectedManagedId === server.id || undefined} onClick={() => setSelectedManagedId(server.id)}>
               <strong>{server.name}</strong>
               <span>{server.versionId} · :{server.settings.port}</span>
               <small>{t(`multiplayer:managedStatus.${server.status}`, { defaultValue: t("multiplayer:managedStatus.unknown") })}</small>

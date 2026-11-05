@@ -1,5 +1,5 @@
+@layer features {
 .vx-downloads-page {
-  --download-quiet: color-mix(in srgb, var(--bg-raised) 64%, transparent);
   --download-raised: var(--surface-card);
   --download-rule: color-mix(in srgb, var(--text-primary) 9%, transparent);
 }
@@ -76,7 +76,7 @@
   margin: 0;
   padding: 14px 18px;
   border-radius: var(--radius-sm);
-  background: var(--download-quiet);
+  background: var(--surface-panel);
   color: var(--text-secondary);
 }
 
@@ -158,7 +158,8 @@
   overflow: hidden;
   padding: 40px 42px;
   border-radius: var(--radius-md);
-  background: var(--download-quiet);
+  background: var(--surface-panel);
+  border: 1px solid var(--hairline);
 }
 
 .vx-downloads-empty::after {
@@ -416,26 +417,8 @@
   gap: 3px;
 }
 
-.vx-task-row__actions .vx-button {
-  font-size: 11.5px;
-}
-
 [data-effects="full"] .vx-task-row__stage {
   transition: color var(--duration-fast) ease;
-}
-
-[data-effects="lite"] .vx-task-row__stage,
-[data-reduced-motion="true"] .vx-task-row__stage {
-  transition: none;
-}
-
-[data-reduced-transparency="true"] .vx-task-row,
-[data-reduced-transparency="true"] .vx-task-section__empty,
-[data-reduced-transparency="true"] .vx-downloads-page > .vx-downloads-empty,
-[data-high-contrast="true"] .vx-task-row,
-[data-high-contrast="true"] .vx-task-section__empty,
-[data-high-contrast="true"] .vx-downloads-page > .vx-downloads-empty {
-  background: var(--surface-solid);
 }
 
 @media (max-width: 1050px) {
@@ -483,6 +466,8 @@
     row-gap: 9px;
     min-height: 240px;
     padding: 28px 22px;
+    border: 1px solid var(--hairline);
+    background: var(--surface-panel);
   }
 
   .vx-downloads-empty h2,
@@ -490,6 +475,22 @@
   .vx-downloads-empty .vx-empty__action {
     grid-column: 1;
   }
+}
+}
+@layer overrides {
+
+[data-effects="lite"] .vx-task-row__stage,
+[data-reduced-motion="true"] .vx-task-row__stage {
+  transition: none;
+}
+
+[data-reduced-transparency="true"] .vx-task-row,
+[data-reduced-transparency="true"] .vx-task-section__empty,
+[data-reduced-transparency="true"] .vx-downloads-page > .vx-downloads-empty,
+[data-high-contrast="true"] .vx-task-row,
+[data-high-contrast="true"] .vx-task-section__empty,
+[data-high-contrast="true"] .vx-downloads-page > .vx-downloads-empty {
+  background: var(--surface-solid);
 }
 
 @media (prefers-contrast: more), (forced-colors: active) {
@@ -499,4 +500,5 @@
     border: 1px solid CanvasText;
     background: Canvas;
   }
+}
 }

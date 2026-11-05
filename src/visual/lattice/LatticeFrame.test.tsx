@@ -10,6 +10,7 @@ import { ProjectCard } from "../../features/discover/ProjectCard";
 import { RecentInstances } from "../../features/home/RecentInstances";
 import { LatticeFrame } from "./LatticeFrame";
 import { readFileSync } from "node:fs";
+import { isolatedStylesheetCss } from "../../test/isolatedStylesheetCss";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -40,7 +41,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  style = document.createElement("style"); style.textContent = readFileSync("src/visual/lattice/lattice.css", "utf8"); document.head.append(style);
+  style = document.createElement("style"); style.textContent = isolatedStylesheetCss(readFileSync("src/visual/lattice/lattice.css", "utf8"), ["primitives", "overrides"]); document.head.append(style);
 });
 
 afterEach(() => {

@@ -1,3 +1,4 @@
+@layer features {
 .vx-create-dialog .vx-dialog__body { display: grid; gap: 18px; padding: 0 6px 6px; margin-inline: -6px; margin-bottom: -6px; }
 .vx-create-dialog .vx-dialog__body > .vx-selection { justify-self: start; }
 .vx-create-panel { min-block-size: 197px; }
@@ -8,4 +9,9 @@
 .vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 6px 6px; margin: 0 -6px -6px; }
 .vx-create-loader-status { position: absolute; inset-inline-start: 12px; inset-block-end: 12px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); pointer-events: none; }
 .vx-create-panel:not([data-section-motion="full"]) .vx-create-loader-slot { transition: none; }
-@media (prefers-reduced-motion: reduce) { .vx-create-loader-slot { transition: none; } }
+}
+@layer overrides {
+@media (prefers-reduced-motion: reduce) {
+.vx-create-loader-slot { transition: none; }
+}
+}

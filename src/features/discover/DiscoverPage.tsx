@@ -54,7 +54,7 @@ export function DiscoverPage() {
 
   return (
     <PageShell className="vx-discover-page">
-      <PageHeader className="vx-discover-heading" title={t("discover:title")} />
+      <PageHeader title={t("discover:title")} />
       <div className="vx-discover-workspace vx-workspace">
         <aside className="vx-discover-catalog" aria-label={t("discover:typeLabel")}>
           <div className="vx-discover-destination vx-panel">
@@ -94,7 +94,7 @@ export function DiscoverPage() {
             })} />
         </aside>
         <section className="vx-discover-results vx-panel" id="discover-results" role="tabpanel" aria-labelledby={"discover-type-" + resourceType}>
-          <div className="vx-discover-search-lens vx-panel">
+          <div className="vx-discover-search-lens">
             <form className="vx-discover-search" onSubmit={(event) => { event.preventDefault(); setSearch(query.trim()); }} role="search">
               <Search size={20} aria-hidden="true" />
               <input type="search" aria-label={t("discover:search")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("discover:searchPlaceholder")} />

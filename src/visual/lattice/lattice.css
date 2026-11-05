@@ -1,3 +1,4 @@
+@layer primitives {
 .vx-lattice-frame {
   position: absolute;
   inset: -3px;
@@ -41,6 +42,8 @@ canvas.vx-lattice-progress {
   height: var(--lattice-progress-height, 32px);
   min-width: 0;
 }
+}
+@layer overrides {
 
 @media (prefers-contrast: more), (forced-colors: active) {
   .vx-lattice-frame,
@@ -48,4 +51,5 @@ canvas.vx-lattice-progress {
   .vx-lattice-selection {
     color: Highlight;
   }
+}
 }

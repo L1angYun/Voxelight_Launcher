@@ -1,3 +1,4 @@
+@layer features {
 .vx-home-animation-selector {
   position: relative;
   z-index: 3;
@@ -16,5 +17,12 @@
   pointer-events: auto;
 }
 .vx-home-animation-selector[data-motion="reduced"] { transition: none; }
-@media (hover: none) { .vx-home-animation-selector { opacity: 1; pointer-events: auto; } }
-@media (prefers-reduced-motion: reduce) { .vx-home-animation-selector { transition: none; } }
+@media (hover: none) {
+.vx-home-animation-selector { opacity: 1; pointer-events: auto; }
+}
+}
+@layer overrides {
+@media (prefers-reduced-motion: reduce) {
+.vx-home-animation-selector { transition: none; }
+}
+}

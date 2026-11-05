@@ -36,7 +36,7 @@ export function RecentInstances({
               className={cn("vx-recent-card", selected && "is-selected")}
               data-instance-id={instance.id}
               data-visual-owner="lattice"
-              aria-pressed={selected}
+              aria-current={selected || undefined}
               onClick={() => onSelect(instance.id)}
               onMouseEnter={() => setHovered(instance.id)}
               onMouseLeave={() => setHovered(undefined)}

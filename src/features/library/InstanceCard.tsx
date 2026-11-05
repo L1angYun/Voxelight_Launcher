@@ -60,7 +60,6 @@ export function InstanceCard({
       data-instance-id={instance.id}
       data-visual-owner="lattice"
       data-running={running}
-      aria-current={selected ? "true" : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
@@ -70,6 +69,7 @@ export function InstanceCard({
       <button
         type="button"
         className="vx-instance-card__select"
+        aria-current={selected ? "true" : undefined}
         onClick={onOpen}
         aria-label={t("library:openInstance", { name: instance.name })}
       >
@@ -116,7 +116,7 @@ export function InstanceCard({
             {t("library:running")}
           </span>
         ) : null}
-        <Button className="vx-instance-card__launch" variant="secondary" data-launch icon={<Play size={14} />} onClick={onLaunch}>{t("common:actions.launch")}</Button>
+        <Button className="vx-instance-card__launch" variant="secondary" size="sm" data-launch icon={<Play size={14} />} onClick={onLaunch}>{t("common:actions.launch")}</Button>
       </div>
     </motion.article>
   );

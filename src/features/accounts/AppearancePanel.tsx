@@ -216,7 +216,7 @@ export function AppearancePanel({
       </header>
       <SectionPanel selectionKey={previewMode} className="vx-appearance-workspace" id={`${sourceId}-workspace`} role="tabpanel" aria-labelledby={`${sourceId}-source-tab-${previewMode}`} data-preview-mode={previewMode}>
       <div className="vx-appearance-stage">
-      <div className="vx-appearance-preview" role="region" aria-label={t(previewMode === "local" ? "accounts:preview.localNotice" : "accounts:preview.accountNotice")}>
+      <div className="vx-appearance-preview vx-card" role="region" aria-label={t(previewMode === "local" ? "accounts:preview.localNotice" : "accounts:preview.accountNotice")}>
         {currentSkin ? (
           <CharacterCanvas
             deferMs={tier === "none" ? 0 : MOTION.delay.characterMs}

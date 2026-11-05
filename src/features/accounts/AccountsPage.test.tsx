@@ -224,6 +224,17 @@ afterEach(async () => {
 });
 
 describe("accounts and appearance", () => {
+  it("keeps the current account focusable and named while activating it is a no-op", async () => {
+    await render();
+    const current = container.querySelector<HTMLButtonElement>('.vx-account-choice[aria-current="true"]')!;
+    expect(current.disabled).toBe(false);
+    expect(current.getAttribute("aria-label")).toContain("Current");
+    current.focus(); expect(document.activeElement).toBe(current);
+    commandMock.mockClear();
+    await act(async () => current.click());
+    expect(commandMock).not.toHaveBeenCalled();
+    expect(current.querySelector(".lucide-check")).toBeNull();
+  });
   it.each([
     { mode: "full", effects: "full" as const, reduce: false, contrast: false, transparency: false, delay: 280 },
     { mode: "lite", effects: "lite" as const, reduce: false, contrast: false, transparency: false, delay: 280 },

@@ -26,7 +26,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
 
   return (
     <PageShell className="vx-downloads-page">
-      <PageHeader className="vx-page-heading" title={t("downloads:title")} />
+      <PageHeader title={t("downloads:title")} />
 
       {errorText ? (
         <p className="vx-downloads-error" role="alert">
@@ -36,7 +36,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
       <LoadingStatus active={loading && tasks.length === 0}>{t("common:status.loading")}</LoadingStatus>
       {!loading && tasks.length === 0 && !errorText ? (
         <EmptyState
-          className="vx-downloads-empty"
+          className="vx-downloads-empty vx-panel"
           icon={<Download size={24} />}
           title={t("downloads:empty.title")}
           description={t("downloads:empty.description")}
