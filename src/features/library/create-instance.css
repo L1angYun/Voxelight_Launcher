@@ -7,7 +7,7 @@
 .vx-create-loader-slot { display: grid; grid-template-rows: 0fr; margin-block-start: 0; transition: grid-template-rows var(--duration-normal) var(--ease-out), margin-block-start var(--duration-normal) var(--ease-out); }
 .vx-create-loader-slot[data-expanded="true"] { grid-template-rows: 1fr; margin-block-start: 20px; }
 .vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 6px 6px; margin: 0 -6px -6px; }
-.vx-create-loader-status { position: absolute; inset-inline-start: 12px; inset-block-end: 12px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); pointer-events: none; }
+.vx-create-loader-status { position: absolute; inset-inline-start: 18px; inset-block-end: 18px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); pointer-events: none; }
 .vx-create-panel:not([data-section-motion="full"]) .vx-create-loader-slot { transition: none; }
 .vx-check-row {
     display: flex;

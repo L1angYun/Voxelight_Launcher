@@ -18,7 +18,7 @@ export function ProjectCard({ project, targetName, selected = false, onOpen, onI
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   return (
-    <article className={cn("vx-project-card", selected && "is-selected")} aria-current={selected || undefined} data-project-id={project.project_id} data-visual-owner="lattice" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
+    <article className={cn("vx-project-card", selected && "is-selected")} data-project-id={project.project_id} data-visual-owner="lattice" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
       <LatticeFrame hovered={hovered} focused={focused} selected={selected} signature={project.project_id} />
       <div className="vx-project-card__art" aria-hidden="true">{project.icon_url ? <img src={project.icon_url} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} /> : <Package size={27} strokeWidth={1.3} />}</div>
       <div className="vx-project-card__body">
@@ -28,7 +28,7 @@ export function ProjectCard({ project, targetName, selected = false, onOpen, onI
       </div>
       <div className="vx-project-card__actions">
         <Button variant="secondary" size="sm" icon={<Download size={14} />} aria-label={t("discover:install") + " · " + targetName} onClick={onInstall}>{t("discover:install")}</Button>
-        <Button variant="ghost" size="sm" icon={<ArrowUpRight size={14} />} onClick={onOpen}>{t("discover:details")}</Button>
+        <Button variant="ghost" size="sm" icon={<ArrowUpRight size={14} />} aria-current={selected || undefined} onClick={onOpen}>{t("discover:details")}</Button>
       </div>
     </article>
   );

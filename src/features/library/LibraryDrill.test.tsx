@@ -8,6 +8,7 @@ import { createLauncherI18n } from "../../i18n";
 import { command, defaults, type Instance } from "../../lib/launcher";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { LibraryPage } from "./LibraryPage";
+import { isolatedStylesheetCss } from "../../test/isolatedStylesheetCss";
 
 vi.mock("../../lib/launcher", async (original) => ({ ...await original<typeof import("../../lib/launcher")>(), command: vi.fn(), desktop: true }));
 vi.mock("@tauri-apps/api/core", async (original) => ({ ...await original<typeof import("@tauri-apps/api/core")>(), convertFileSrc: (path: string) => `asset://fixture/${path}` }));
@@ -17,7 +18,7 @@ vi.mock("../../visual/glass/GlassSystem", () => ({ GlassSurface: ({ children, cl
 vi.mock("../../visual/overture/OvertureProvider", () => ({ useOverture: () => ({ play: vi.fn() }) }));
 
 const css = ["src/features/library/library-grid.css", "src/features/library/instance-detail.css"]
-  .map(path => readFileSync(path, "utf8")).join("\n");
+  .map(path => isolatedStylesheetCss(readFileSync(path, "utf8"), ["features", "overrides"])).join("\n");
 const commandMock = vi.mocked(command);
 let launcher: LauncherContextValue;
 let root: Root;
@@ -198,8 +199,10 @@ describe("library drill identity continuity", () => {
   it("keeps the same computed identity color on both ends of the drill", async () => {
     await render();
     const color = getComputedStyle(card().querySelector(".vx-instance-identity")!).getPropertyValue("--identity-color").trim();
+    expect(color).not.toBe("");
     await openCard();
     const headerColor = getComputedStyle(container.querySelector(".vx-detail-header .vx-instance-identity")!).getPropertyValue("--identity-color").trim();
+    expect(headerColor).not.toBe("");
     expect(headerColor).toBe(color);
   });
 

@@ -61,11 +61,14 @@
 .vx-account-device a { max-width: 100%; overflow-wrap: anywhere; color: var(--text-secondary); font-size: var(--text-xs); }
 .vx-account-device p { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); }
 .vx-account-profiles { display: grid; gap: 8px; }
-.vx-account-profiles .vx-button { justify-content: flex-start; }
+.vx-account-profile-choice { display: block; width: 100%; min-width: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text-primary); text-align: start; font-size: var(--text-sm); line-height: 1.5; }
+.vx-account-profile-choice > span { display: grid; min-width: 0; gap: var(--space-1); overflow-wrap: anywhere; }
+.vx-account-profile-choice:hover:not(:disabled) { background: var(--surface-hover); }
 .vx-account-profiles strong, .vx-account-profiles small { display: block; }
-.vx-account-profiles small { margin-top: 4px; color: var(--text-tertiary); }
+.vx-account-profiles strong { font-weight: var(--weight-strong); }
+.vx-account-profiles small { color: var(--text-tertiary); font-size: var(--text-xs); }
 @media (hover: hover) and (pointer: fine) {
-  .vx-account-row:hover { background: var(--surface-hover); }
+  .vx-account-row:not([data-selected="true"]):hover { background: var(--surface-hover); }
 }
 @media (max-width: 1179px) {
   .vx-appearance-workspace { gap: 16px; grid-template-columns: minmax(200px, 1fr) minmax(230px, 1fr); }

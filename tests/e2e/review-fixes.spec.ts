@@ -117,7 +117,7 @@ test("S2 picker keeps the title covered until pointer exit ends and restores it 
   await prepareHome(page);
   const picker = page.locator("#home-instance"), identity = page.locator(".vx-home__identity");
   const results = [];
-  for (const mode of ["pointer", "keyboard"] as const) {
+  for (const mode of ["pointer", "Escape", "Tab", "Enter"] as const) {
     await picker.click();
     await expect(identity).toHaveCSS("opacity", "0");
     await expect(page.locator(".vx-instance-picker__popover .vx-listbox-surface")).toHaveCSS("opacity", "1");
@@ -139,15 +139,18 @@ test("S2 picker keeps the title covered until pointer exit ends and restores it 
       });
     }, mode);
     if (mode === "pointer") await page.mouse.click(1100, 180);
-    else await picker.press("Escape");
+    else await page.keyboard.press(mode);
     const rows = await page.evaluate(() => (window as unknown as { __pickerCloseFrames: Promise<{ at: number; menuOpacity: number; identityOpacity: number; menuPresent: boolean }[]> }).__pickerCloseFrames);
     results.push({ mode, rows });
+    expect(rows.length).toBeGreaterThan(1);
     await page.screenshot({ path: info.outputPath(`picker-closed-${mode}.png`), scale: "css" });
     if (mode === "pointer") {
       expect.soft(rows.some(row => row.menuOpacity > .05 && row.menuOpacity < .95)).toBe(true);
       expect.soft(rows.filter(row => row.menuOpacity > .05).every(row => row.identityOpacity < .05)).toBe(true);
     } else expect.soft(rows.filter(row => row.menuOpacity <= .05).every(row => row.identityOpacity > .05), "keyboard close must not leave a blank presentation frame").toBe(true);
     await expect(identity).toHaveCSS("opacity", "1");
+    if (mode === "Escape" || mode === "Enter") await expect(picker).toBeFocused();
+    if (mode === "Tab") await expect(picker).not.toBeFocused();
   }
   await writeFile(info.outputPath("picker-exit-frames.json"), JSON.stringify(results, null, 2));
 });

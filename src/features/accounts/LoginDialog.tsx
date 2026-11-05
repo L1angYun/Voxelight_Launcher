@@ -377,9 +377,9 @@ export function LoginDialog({
               <p>{t("accounts:authlib.chooseProfile")}</p>
               <div className="vx-account-profiles">
                 {profiles.map((profile) => (
-                  <Button key={profile.id} variant="secondary" disabled={busy} onClick={() => void chooseProfile(profile.id)}>
+                  <button key={profile.id} className="vx-account-profile-choice" type="button" disabled={busy} onClick={() => void chooseProfile(profile.id)}>
                     <span><strong>{profile.name}</strong><small>{profile.id}</small></span>
-                  </Button>
+                  </button>
                 ))}
               </div>
               <Button variant="ghost" onClick={resetAttempt}>{t("accounts:authlib.cancelProfile")}</Button>

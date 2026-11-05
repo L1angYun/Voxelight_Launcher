@@ -6,7 +6,8 @@ describe("accent color roles", () => {
     const scale = buildAccentScale(color, "light");
     expect(scale.base).toBe(color);
     expect(scale.indicator).toMatch(/^#[0-9a-f]{6}$/);
-    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0"])
+    // The fourth surface is the measured composite minimum minus four per channel.
+    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0", "#91918c"])
       expect(contrast(scale.indicator, surface)).toBeGreaterThanOrEqual(3);
   });
 
