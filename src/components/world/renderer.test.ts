@@ -6,6 +6,7 @@ import { createWorldDirector } from "./worldDirector";
 import type { Tier } from "./qualityTier";
 
 type Handle = { kind: string; id: number };
+type VoxelDraw = { vertex: string; fragment: string; uniforms: Map<string, number> };
 function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?: boolean; shaderFailureAt?: number } = {}) {
   let sequence = 0, enumSequence = 1;
   const constants = new Map<string, number>();
@@ -14,6 +15,11 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
   const floatSizes: number[][] = [], pointCounts: number[] = [], blends: number[][] = [];
   const passes: { mrt: boolean; width: number; uniforms: Map<string, number>; field: Handle | undefined }[] = [];
   const uniforms = new Map<string, number>();
+  const programUniforms = new Map<Handle, Map<string, number>>();
+  const shaderTypes = new Map<Handle, number>(), shaderSources = new Map<Handle, string>();
+  const linkedSources = new Map<Handle, { vertex: string; fragment: string }>();
+  const voxelDraws: VoxelDraw[] = [];
+  let currentProgram: Handle | null = null;
   const vectors = new Map<string, [number, number]>();
   const textureSizes = new Map<Handle, number[]>(), framebufferTextures = new Map<Handle, Map<number, Handle>>();
   const boundTextures = new Map<number, Handle>();
@@ -29,7 +35,7 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
   const remove = (handle: Handle | null) => { if (handle) { expect(live.has(handle)).toBe(true); live.delete(handle); } };
   const noOp = () => {};
   const methods: Record<string, unknown> = {
-    createShader: () => create("shader"), deleteShader: remove,
+    createShader: (type: number) => { const shader = create("shader"); shaderTypes.set(shader, type); return shader; }, deleteShader: remove,
     createProgram: () => create("program"), deleteProgram: remove,
     createTexture: () => create("texture"), deleteTexture: remove,
     createFramebuffer: () => { floatAttachment = false; return create("framebuffer"); }, deleteFramebuffer: remove,
@@ -50,7 +56,17 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
     getProgramParameter: () => true,
     getShaderInfoLog: () => "injected shader compilation failure",
     getProgramInfoLog: () => "injected program link failure",
-    getUniformLocation: (_program: Handle, name: string) => ({ name }),
+    getUniformLocation: (program: Handle, name: string) => ({ program, name }),
+    shaderSource: (shader: Handle, source: string) => shaderSources.set(shader, source),
+    linkProgram: (program: Handle) => {
+      const sources = { vertex: "", fragment: "" };
+      for (const shader of attached.get(program) ?? []) {
+        if (shaderTypes.get(shader) === constant("VERTEX_SHADER")) sources.vertex = shaderSources.get(shader) ?? "";
+        if (shaderTypes.get(shader) === constant("FRAGMENT_SHADER")) sources.fragment = shaderSources.get(shader) ?? "";
+      }
+      linkedSources.set(program, sources);
+    },
+    useProgram: (program: Handle | null) => { currentProgram = program; },
     attachShader: (program: Handle, shader: Handle) => {
       if (!attached.has(program)) attached.set(program, new Set());
       attached.get(program)!.add(shader);
@@ -58,7 +74,12 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
     detachShader: (program: Handle, shader: Handle) => {
       if (!attached.get(program)?.delete(shader)) errors.push("INVALID_OPERATION: shader was not attached");
     },
-    uniform1f: (location: { name: string }, value: number) => uniforms.set(location.name, value),
+    uniform1f: (location: { program: Handle; name: string }, value: number) => {
+      expect(currentProgram).toBe(location.program);
+      uniforms.set(location.name, value);
+      if (!programUniforms.has(location.program)) programUniforms.set(location.program, new Map());
+      programUniforms.get(location.program)!.set(location.name, value);
+    },
     uniform2f: (location: { name: string }, x: number, y: number) => vectors.set(location.name, [x, y]),
     activeTexture: (unit: number) => { textureUnit = unit - constant("TEXTURE0"); },
     bindTexture: (_target: number, texture: Handle) => { boundTexture = texture; boundTextures.set(textureUnit, texture); },
@@ -82,18 +103,23 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
       passes.push({ mrt: (attachments?.size ?? 0) === 2, width, uniforms: new Map(uniforms), field: boundTextures.get(2) });
     },
     blendFunc: (source: number, destination: number) => blends.push([source, destination]),
-    drawArraysInstanced: (_mode: number, _first: number, _count: number, count: number) => instances.push(count),
+    drawArraysInstanced: (_mode: number, _first: number, _count: number, count: number) => {
+      instances.push(count);
+      const sources = linkedSources.get(currentProgram!);
+      if (!sources) throw new Error("Instanced draw has no linked shader program");
+      voxelDraws.push({ ...sources, uniforms: new Map(programUniforms.get(currentProgram!)) });
+    },
     getQueryParameter: (_query: Handle, name: number) => name === constant("QUERY_RESULT_AVAILABLE") ? true : 2_500_000,
     getError: () => constant("NO_ERROR"), isContextLost: () => false,
   };
-  for (const name of ["shaderSource", "compileShader", "linkProgram", "texParameteri", "texSubImage2D",
+  for (const name of ["compileShader", "texParameteri", "texSubImage2D",
     "drawBuffers", "bindRenderbuffer", "renderbufferStorageMultisample", "renderbufferStorage", "framebufferRenderbuffer",
-    "bindBuffer", "bufferData", "bindVertexArray", "enableVertexAttribArray", "vertexAttribPointer", "useProgram", "uniform1i",
+    "bindBuffer", "bufferData", "bindVertexArray", "enableVertexAttribArray", "vertexAttribPointer", "uniform1i",
     "uniform3fv", "uniformMatrix4fv", "viewport", "clearColor", "clear", "enable", "disable",
     "depthMask", "cullFace", "frontFace", "blitFramebuffer", "beginQuery", "endQuery"]) methods[name] = noOp;
   function constant(name: string) { if (!constants.has(name)) constants.set(name, enumSequence++); return constants.get(name)!; }
   const gl = new Proxy(methods, { get: (target, name: string) => /^[A-Z][A-Z_0-9]+$/.test(name) ? constant(name) : target[name] }) as unknown as WebGL2RenderingContext;
-  return { gl, live, textures, instances, floatSizes, pointCounts, blends, passes, uniforms, vectors, errors, waits, fences,
+  return { gl, live, textures, instances, floatSizes, pointCounts, blends, passes, uniforms, voxelDraws, vectors, errors, waits, fences,
     wait: (status: string) => { waitStatus = status; }, flushCount: () => flushes,
     failShader: () => { failShader = true; }, failFramebuffer: () => { failFramebuffer = true; },
     failLargeFloat: () => { failLargeFloat = true; } };
@@ -110,7 +136,57 @@ function mount(options: Parameters<typeof glBoundary>[0] = {}) {
 }
 afterEach(() => vi.restoreAllMocks());
 
+// Exercise the scalar expression actually submitted to GL, rather than a copy
+// of the production lighting formula. Full GLSL compilation/rendering remains
+// covered by the native browser gate; this probe supplies GLSL scalar builtins.
+function voxelLighting(draw: VoxelDraw, incoming: number, island: number, theme = draw.uniforms.get("uLight")): number {
+  const expression = /\bvLit\s*=\s*(max\([^;]+\))\s*;/.exec(draw.vertex)?.[1];
+  if (!expression) throw new Error("Submitted voxel shader has no island-lighting expression");
+  const evaluate = new Function("vLit", "uLight", "uLat", "isl", "max", "mix", `return (${expression});`) as
+    (incoming: number, theme: number | undefined, lattice: number | undefined, island: number,
+      max: typeof Math.max, mix: (left: number, right: number, amount: number) => number) => number;
+  return evaluate(incoming, theme, draw.uniforms.get("uLat"), island, Math.max,
+    (left, right, amount) => left * (1 - amount) + right * amount);
+}
+
+function floatUniformPrecision(source: string, name: string, stageDefault: string): string | undefined {
+  const defaultPrecision = /\bprecision\s+(lowp|mediump|highp)\s+float\s*;/.exec(source)?.[1] ?? stageDefault;
+  for (const declaration of source.matchAll(/\buniform\s+(?:(lowp|mediump|highp)\s+)?float\s+([^;]+);/g)) {
+    if (declaration[2].split(",").some(variable => variable.trim() === name)) return declaration[1] ?? defaultPrecision;
+  }
+  return undefined;
+}
+
 describe("WebGL renderer boundary", () => {
+  it("limits island lighting compensation to the dark voxel theme without changing the existing field", () => {
+    const t = mount({ float: true }); const renderer = t.renderer!;
+    try {
+      expect(renderer.draw(frame(), .016).submitted).toBe(true);
+      const dark = t.voxelDraws.at(-1)!;
+      expect(dark.uniforms.get("uLight")).toBe(0);
+      renderer.setPalette({ light: true, ink: [1, 1, 1], point: [.2, .2, .2], accent: [.5, .6, .7], haze: [1, 1, 1] });
+      expect(renderer.draw(frame(), .016).submitted).toBe(true);
+      const light = t.voxelDraws.at(-1)!;
+      expect(light.uniforms.get("uLight")).toBe(1);
+      expect(voxelLighting(dark, .2, 1)).toBeCloseTo(1.25, 8);
+      expect(voxelLighting(light, .2, 1)).toBeCloseTo(1.1, 8);
+      // Direct shader probes cover the interpolation and island-weight edges.
+      expect(voxelLighting(dark, .2, 1, .5)).toBeCloseTo(1.175, 8);
+      expect(voxelLighting(dark, .2, .4)).toBeCloseTo(.5, 8);
+      expect(voxelLighting(light, .2, .4)).toBeCloseTo(.44, 8);
+      for (const draw of [dark, light]) {
+        expect(voxelLighting(draw, 2, 1)).toBe(2);
+        expect(voxelLighting(draw, .2, 0)).toBe(.2);
+        expect(floatUniformPrecision(draw.vertex, "uLight", "highp")).toBe("highp");
+        expect(floatUniformPrecision(draw.fragment, "uLight", "unspecified")).toBe("highp");
+      }
+      expect(renderer.draw({ ...frame(), lat: 0 }, .016).submitted).toBe(true);
+      const solid = t.voxelDraws.at(-1)!;
+      expect(solid.uniforms.get("uLat")).toBe(0);
+      expect(voxelLighting(solid, .2, 1)).toBe(.2);
+    } finally { renderer.dispose(); }
+    expect(t.live.size).toBe(0);
+  });
   it("passes interpolated page appearance through to points instead of switching from the page name", () => {
     const t = mount({ float: true });
     expect(t.renderer!.draw({ ...frame(), page: "content", home: .37, pointGain: .559 }, .016).submitted).toBe(true);

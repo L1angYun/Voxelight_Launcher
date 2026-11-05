@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { chromium, expect, test, type Page } from "@playwright/test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { selectValue } from "./select-helpers";
@@ -9,7 +9,19 @@ import { prepareIntroContrast } from "./helpers/world-intro-compositor";
 import { installWorldResourceProbe, snapshotWorldResources, type WorldResourceSnapshot } from "./helpers/world-resource-probe";
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 import { worldAppearanceMetrics } from "./helpers/world-appearance";
-import appearanceBaseline from "./data/world-appearance-baseline.json" with { type: "json" };
+import { captureAppearanceSeries } from "./helpers/world-appearance-capture";
+
+type AppearanceBudget = {
+  outsideApplies: boolean; outsideLimit: number | null; coverageLimit: number | null;
+  sources: Record<string, { complete: boolean; metrics: Record<string, { mean: number }> }>;
+};
+async function appearanceBudget(theme: string, width: number): Promise<AppearanceBudget> {
+  const data = JSON.parse(await readFile(new URL("./data/world-island-baseline.json", import.meta.url), "utf8"));
+  const entry = data.cases[`${theme}-${width}`] as AppearanceBudget | undefined;
+  if (!entry || !entry.sources.d5e31ad?.complete || !entry.sources.a4f756e?.complete)
+    throw new Error(`Missing ten-run appearance reference for ${theme}-${width}`);
+  return entry;
+}
 
 const evidence = resolve(process.env.VOXELIGHT_TASK8_EVIDENCE ?? "test-results/world-acceptance");
 
@@ -26,16 +38,15 @@ appearanceTest.describe("review A appearance budgets", () => {
     appearanceTest(`${theme} ${width}: home lower-world coverage stays within its visual budget`, async ({ page }, info) => {
       await page.setViewportSize({ width, height: 720 });
       await installLauncherFixture(page, { theme });
-      await page.goto("/"); await page.waitForTimeout(3500);
-      await page.locator('.vx-floating-nav [data-page="home"]').click(); await page.waitForTimeout(700);
-      await expect(page.locator(".world-scene")).toHaveAttribute("data-world-grid", "160");
-      await expect(page.locator(".world-scene")).toHaveAttribute("data-world-particles", "65536");
-      const metrics = worldAppearanceMetrics(decodePng(await page.screenshot({ path: info.outputPath("home-appearance.png"), scale: "css" })), theme === "dark" ? [7, 8, 11] : [243, 241, 235]);
-      await writeFile(info.outputPath("appearance.json"), JSON.stringify(metrics, null, 2));
-      const baseline = appearanceBaseline.cases.find(entry => entry.theme === theme && entry.width === width)!;
-      // The revised review explicitly permits five percentage points above
-      // the approved pre-0.6.0 image, using this same full-compositor metric.
-      expect(metrics.home.fraction).toBeLessThanOrEqual(baseline.covered / baseline.samples + appearanceBaseline.marginPercentagePoints / 100);
+      await page.goto("/");
+      const sample = await captureAppearanceSeries(page, info.outputPath("appearance"), {
+        background: theme === "dark" ? [7, 8, 11] : [243, 241, 235],
+      });
+      const baseline = await appearanceBudget(theme, width);
+      // Preserve the approved five-point design increment. S1 adds three
+      // standard deviations measured from the independent d5e31ad reference.
+      expect(baseline.coverageLimit).not.toBeNull();
+      expect(sample.medians.coveragePercent).toBeLessThanOrEqual(baseline.coverageLimit!);
     });
   }
   appearanceTest("dark 1280: content title bands stay quiet across all content pages", async ({ page }, info) => {
@@ -53,6 +64,76 @@ appearanceTest.describe("review A appearance budgets", () => {
     }
     await writeFile(info.outputPath("content-appearance.json"), JSON.stringify(results, null, 2));
   });
+});
+
+appearanceTest.describe("round 2 anchored island acceptance", () => {
+  const cases = [
+    { theme: "dark", width: 1280, height: 720, scene: "horizon" },
+    { theme: "dark", width: 1050, height: 720, scene: "horizon" },
+    { theme: "dark", width: 1920, height: 1080, scene: "horizon" },
+    { theme: "light", width: 1280, height: 720, scene: "horizon" },
+    { theme: "dark", width: 1280, height: 720, scene: "massif" },
+  ] as const;
+  for (const { theme, width, height, scene } of cases) {
+    appearanceTest(`M1/M2 ${theme} ${scene} ${width}: anchored island and its surroundings meet their budgets`, async ({ page }, info) => {
+      appearanceTest.setTimeout(90000);
+      await page.setViewportSize({ width, height });
+      await installLauncherFixture(page, { theme, effects: "full", worldScene: scene, worldMaterial: "lattice" });
+      await page.goto("/");
+      const sampled = await captureAppearanceSeries(page, info.outputPath("anchored-island"), {
+        background: theme === "dark" ? [7, 8, 11] : [243, 241, 235],
+      });
+      const measured = sampled.medians;
+      const checks: { id: string; value: number; rule: string; pass: boolean }[] = [];
+      if (scene === "horizon") checks.push(
+        { id: "valid-roi", value: Math.min(...sampled.samples.map(sample => sample.island.coverage)),
+          rule: "Every sampled ROI covers >=85% non-background pixels before the neutral filter",
+          pass: sampled.samples.every(sample => sample.island.valid) },
+      );
+      if (theme === "dark" && scene === "horizon") {
+        checks.push(
+          { id: "island-mean", value: measured.islandMean, rule: "90 <= mean <= 150", pass: measured.islandMean >= 90 && measured.islandMean <= 150 },
+          { id: "island-p95", value: measured.islandP95, rule: "p95 <= 200", pass: measured.islandP95 <= 200 },
+          { id: "island-white", value: measured.islandWhiteFraction, rule: "pure white <0.005", pass: measured.islandWhiteFraction < .005 },
+        );
+      }
+      if (theme === "dark") checks.push(
+        { id: "lower-white", value: measured.lowerWhiteFraction, rule: "normal lower-world white <0.001", pass: measured.lowerWhiteFraction < .001 },
+      );
+      if (scene === "horizon") {
+        const baseline = await appearanceBudget(theme, width);
+        if (!baseline.outsideApplies || !baseline.sources["287a3af"]?.complete || baseline.outsideLimit === null)
+          throw new Error(`Missing matched historical outside-island references for ${theme}-${width}`);
+        checks.push({ id: "outside-island", value: measured.outsideMeanAbsDelta,
+          rule: `<= d5e31ad + 0.35*(287a3af-d5e31ad) = ${baseline.outsideLimit}`,
+          pass: measured.outsideMeanAbsDelta <= baseline.outsideLimit });
+        if (theme === "light") {
+          const delta = Math.abs(measured.islandMean - baseline.sources.a4f756e.metrics.islandMean.mean);
+          checks.push({ id: "light-island-change", value: delta, rule: "absolute mean change from a4f756e <=3", pass: delta <= 3 });
+        }
+      }
+      // The user explicitly restricted this gate after inspecting the actual
+      // content of the proportional ROI in the other scenes and themes.
+      if (theme === "dark" && scene === "horizon" && width === 1280)
+        checks.push({ id: "far-p95", value: measured.farP95, rule: "60 <= p95 <= 90", pass: measured.farP95 >= 60 && measured.farP95 <= 90 });
+      const manualScreenshot = scene === "massif" ? info.outputPath("massif-manual.png") : null;
+      if (manualScreenshot) await page.screenshot({ path: manualScreenshot, scale: "css" });
+      await writeFile(info.outputPath("numeric-acceptance.json"), JSON.stringify({
+        scenario: { theme, width, height, scene }, numeric: checks,
+        allAGatesPass: checks.every(check => check.pass),
+        waiting: sampled.settlingWait, medians: measured,
+        frames: sampled.samples.map(sample => ({ index: sample.index, at: sample.hiddenGeometry.at,
+          island: sample.island, outside: sample.outside, far: sample.far, lower: sample.lower })),
+        diagnostics: { farP95: measured.farP95, outsideMeanAbsDelta: measured.outsideMeanAbsDelta,
+          island: { scope: scene === "massif" ? "record-only" : "see-numeric-checks", coverage: measured.islandCoverage,
+            mean: measured.islandMean, p95: measured.islandP95, whiteFraction: measured.islandWhiteFraction } },
+        manual: { status: "not-assessed-by-automated-test", checks: manualScreenshot
+          ? [{ id: "massif-island-surface", criterion: "Inspect mountain surface for an overall gray or dark cast", screenshot: manualScreenshot }] : [] },
+      }, null, 2));
+      for (const check of checks)
+        expect.soft(check.pass, `${check.id}: ${check.value}; ${check.rule}${check.id === "valid-roi" ? "; ROI 未覆盖岛面" : ""}`).toBe(true);
+    });
+  }
 });
 
 const targets: ContrastTarget[] = [

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { describe, expect, it } from "vitest";
 import { groundHit, makeCamera, type Camera, type Vec3 } from "./camera";
+import { WORLD_PRESETS } from "./presets";
 
 function project(camera: Camera, point: Vec3): Vec3 {
   const m = camera.viewProj;
@@ -11,15 +12,52 @@ const dot = (left: Vec3, right: Vec3) => left[0] * right[0] + left[1] * right[1]
 
 describe("world camera geometry", () => {
   it("projects the look-at point to the center for both scene cameras", () => {
-    const cameras: Array<[Vec3, Vec3, number]> = [
-      [[-6, 14, 37], [2, 18.5, -40], 36],
-      [[-22, 33, 62], [-3, 8, -12], 34],
-    ];
-    for (const [eye, at, fov] of cameras) {
+    for (const { eye, at, fov } of Object.values(WORLD_PRESETS)) {
       const ndc = project(makeCamera(eye, at, fov, 16 / 9), at);
       expect(ndc[0]).toBeCloseTo(0, 5);
       expect(ndc[1]).toBeCloseTo(0, 5);
     }
+  });
+
+  // Feet coordinates recorded from the real a4f756e home layout, not derived
+  // from camera math. The renderer anchors its island on the y=3 interaction
+  // plane; this checks that footprint, not the varying rendered terrain tops.
+  it.each([
+    { width: 1280, height: 720, feetX: 808.5, feetY: 518.40625 },
+    { width: 1050, height: 720, feetX: 677.5, feetY: 522.40625 },
+    { width: 1920, height: 1080, feetX: 1128.5, feetY: 749.40625 },
+  ])("keeps the $width×$height home feet inside the horizon island footprint with bottom clearance", ({ width, height, feetX, feetY }) => {
+    const preset = WORLD_PRESETS.horizon;
+    const camera = makeCamera(preset.eye, preset.at, preset.fov, width / height);
+    const origin = groundHit(camera, width / height, feetX / width * 2 - 1, 1 - feetY / height * 2);
+    expect(origin).not.toBeNull();
+    const screen = (point: Vec3): [number, number] => {
+      const ndc = project(camera, point);
+      expect(ndc.every(Number.isFinite)).toBe(true);
+      expect(ndc[2]).toBeGreaterThan(-1);
+      expect(ndc[2]).toBeLessThan(1);
+      return [(ndc[0] + 1) * width / 2, (1 - ndc[1]) * height / 2];
+    };
+    const center = screen([origin![0], 3, origin![1]]);
+    expect(center[0]).toBeCloseTo(feetX, 3);
+    expect(center[1]).toBeCloseTo(feetY, 3);
+
+    const outline = Array.from({ length: 720 }, (_, index) => {
+      const angle = index / 720 * Math.PI * 2;
+      return screen([origin![0] + Math.cos(angle) * preset.island, 3, origin![1] + Math.sin(angle) * preset.island]);
+    });
+    // A point is inside this convex projected circle when it remains on the
+    // same side of every edge. A bounding-box check alone would be weaker.
+    const sides = outline.map((start, index) => {
+      const end = outline[(index + 1) % outline.length];
+      return (end[0] - start[0]) * (feetY - start[1]) - (end[1] - start[1]) * (feetX - start[0]);
+    });
+    expect(sides.every(side => side > 0) || sides.every(side => side < 0)).toBe(true);
+    const left = Math.min(...outline.map(point => point[0]));
+    const right = Math.max(...outline.map(point => point[0]));
+    const bottom = Math.max(...outline.map(point => point[1]));
+    expect(bottom).toBeLessThanOrEqual(height * .9);
+    expect(Math.abs((left + right) / 2 - feetX)).toBeLessThan(40);
   });
 
   it("builds an orthonormal camera basis including vertical views", () => {
