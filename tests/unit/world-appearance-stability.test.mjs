@@ -118,3 +118,73 @@ test('appearance wait records sampling errors and elapsed time for the failure a
   assert.match(result.error, /Screenshot failed/);
   assert.equal(result.samples.length, 0);
 });
+
+function uniformReading(atMs, changes = {}) {
+  return { atMs, worldFrames: 10 + atMs, contextId: 1, voxelProgramId: 2, terrainProgramId: 3,
+    uLat: 1, uCry: 0, uIsland: 9, uT: atMs / 1000,
+    writes: { uLat: atMs + 1, uCry: atMs + 2, uIsland: atMs + 3, uT: atMs + 4 }, ...changes };
+}
+function observation(atMs, islandMean, uniforms = uniformReading(atMs)) {
+  return { at: atMs, islandBeforeMs: atMs, islandAfterMs: atMs,
+    coveragePercent: 20, islandMean, uniforms };
+}
+
+test('dynamic stability accepts breathing only after all crystallization controls converge', () => {
+  const before = observation(0, 93);
+  const after = observation(400, 72, uniformReading(400, { uT: 32 }));
+  assert.equal(capture.appearanceSamplesStable(before, after, 'dynamic'), true);
+  assert.equal(capture.appearanceSamplesStable(before, after, 'fixed'), false);
+  for (const name of ['uLat', 'uCry', 'uIsland']) {
+    const moving = { ...after, islandMean: 93,
+      uniforms: uniformReading(400, { [name]: before.uniforms[name] + .002 }) };
+    assert.equal(capture.appearanceSamplesStable(before, moving, 'dynamic'), false, `${name} is still changing`);
+  }
+});
+
+test('dynamic convergence uses strict GPU-value deltas and actual uniform-reading timestamps', () => {
+  const before = observation(0, 93);
+  const after = observation(500, 93);
+  assert.equal(capture.appearanceSamplesStable(before, { ...after, uniforms: uniformReading(500, { uCry: .001 }) }, 'dynamic'), false);
+  assert.equal(capture.appearanceSamplesStable(before, { ...after, uniforms: uniformReading(500, { uCry: .0009 }) }, 'dynamic'), true);
+  assert.equal(capture.appearanceSamplesStable(before, { ...after, uniforms: uniformReading(399) }, 'dynamic'), false);
+  assert.equal(capture.appearanceSamplesStable(before, { ...after, coveragePercent: 20.4 }, 'dynamic'), false);
+  assert.equal(capture.appearanceSamplesStable(before, { ...after, islandBeforeMs: 399 }, 'dynamic'), false);
+});
+
+test('dynamic stability rejects missing, stale and mixed-generation uniform evidence', () => {
+  const before = observation(0, 93), after = observation(500, 93);
+  assert.equal(capture.appearanceSamplesStable(before, { ...after, uniforms: undefined }, 'dynamic'), false);
+  for (const name of ['uLat', 'uCry', 'uIsland', 'uT'])
+    assert.equal(capture.appearanceSamplesStable(before, { ...after, uniforms: uniformReading(500, { [name]: NaN }) }, 'dynamic'), false);
+  for (const name of ['contextId', 'voxelProgramId', 'terrainProgramId'])
+    assert.equal(capture.appearanceSamplesStable(before, { ...after, uniforms: uniformReading(500, { [name]: 4 }) }, 'dynamic'), false);
+  for (const name of ['uLat', 'uCry', 'uIsland', 'uT'])
+    assert.equal(capture.appearanceSamplesStable(before, { ...after, uniforms: uniformReading(500, {
+      writes: { ...after.uniforms.writes, [name]: before.uniforms.writes[name] },
+    }) }, 'dynamic'), false);
+  assert.equal(capture.appearanceSamplesStable(before, { ...after,
+    uniforms: uniformReading(500, { worldFrames: before.uniforms.worldFrames }) }, 'dynamic'), false);
+});
+
+test('dynamic wait does not accept stable coverage while crystallization is still approaching its target', async () => {
+  let clock = 0, index = 0;
+  const islands = [6, 8, 8.99, 8.995, 8.9955];
+  const result = await capture.waitForAppearanceStability({
+    stability: 'dynamic', now: () => clock, delay: async ms => { clock += ms; },
+    capture: async () => observation(clock, 93 - index * 2, uniformReading(clock, { uIsland: islands[index++] })),
+  });
+  assert.equal(result.status, 'stable');
+  assert.equal(result.elapsedMs, 1600);
+  assert.equal(result.samples.length, 5);
+});
+
+test('dynamic wait retains the 20s failure when a crystallization control never converges', async () => {
+  let clock = 0;
+  const result = await capture.waitForAppearanceStability({
+    stability: 'dynamic', now: () => clock, delay: async ms => { clock += ms; },
+    capture: async () => observation(clock, 93, uniformReading(clock, { uIsland: clock / 1000 })),
+  });
+  assert.equal(result.status, 'timeout');
+  assert.equal(result.elapsedMs, 20000);
+  assert.equal(result.samples.length, 50);
+});

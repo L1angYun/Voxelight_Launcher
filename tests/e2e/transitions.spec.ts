@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { MOTION } from "../../src/design/motion";
+import { stopScreencast } from "./helpers/stop-screencast";
 
 const EVIDENCE = resolve(process.env.VOXELIGHT_TRANSITION_EVIDENCE ?? "test-results/transitions");
 const HARDWARE = process.env.VOXELIGHT_TRANSITION_HARDWARE === "1";
@@ -363,14 +364,14 @@ async function capture(page: Page, info: TestInfo, label: string, params: TraceP
   finally {
     collectionWaitNodeFinishedAt = performance.now();
     if (cdp) {
-      if (screencastStarted) {
-        try { await cdp.send("Page.stopScreencast"); }
-        catch (error) { captureErrors.push("CDP screencast stop failed: " + String(error)); }
-      }
-      await Promise.all(acknowledgements);
-      cdp.off("Page.screencastFrame", onFrame);
-      try { await cdp.detach(); }
-      catch (error) { captureErrors.push("CDP session detach failed: " + String(error)); }
+      const session = cdp;
+      await stopScreencast({
+        stop: screencastStarted ? () => session.send("Page.stopScreencast") : undefined,
+        removeFrameListener: () => { session.off("Page.screencastFrame", onFrame); },
+        acknowledgements,
+        detach: () => session.detach(),
+        recordError: (stage, error) => captureErrors.push(`CDP ${stage} failed: ${String(error)}`),
+      });
     }
   }
   if (!recorderStarted) {

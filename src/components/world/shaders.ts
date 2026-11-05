@@ -232,7 +232,7 @@ void main() {
   float crE = cr * cr * (3. - 2. * cr);
   float pitch = uSpan / uN;
   float s = mix(.13, .97, m * m) * pitch * mix(1., step(.03, cr) * mix(.16, 1., crE), uLat);
-  float depth = mix(s, 3., m * mix(1., crE * crE * crE, uLat));
+  float depth = mix(s, mix(9., 3., uLat), m * mix(1., crE * crE * crE, uLat));
   vec3 p = vec3(c.x + aPos.x * s, aPos.y > 0. ? h : h - depth, c.y + aPos.z * s);
   vN = aNor; vW = p; vL = aPos; vH = h; vM = m; vHeat = f.a; vLit = f.b;
   float d = length(c - uOrigin);

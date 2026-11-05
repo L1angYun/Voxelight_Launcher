@@ -2,13 +2,20 @@
 .vx-create-dialog .vx-dialog__body { display: grid; gap: 18px; padding: 0 6px 6px; margin-inline: -6px; margin-bottom: -6px; }
 .vx-create-dialog .vx-dialog__body > .vx-selection { justify-self: start; }
 .vx-create-panel { min-block-size: 197px; }
-.vx-create-project { margin: 0; color: var(--text-primary); font-weight: 600; }
+.vx-create-project { margin: 0; color: var(--text-primary); font-weight: var(--weight-strong); }
 .vx-create-loader-group { min-width: 0; }
 .vx-create-loader-slot { display: grid; grid-template-rows: 0fr; margin-block-start: 0; transition: grid-template-rows var(--duration-normal) var(--ease-out), margin-block-start var(--duration-normal) var(--ease-out); }
 .vx-create-loader-slot[data-expanded="true"] { grid-template-rows: 1fr; margin-block-start: 20px; }
 .vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 6px 6px; margin: 0 -6px -6px; }
 .vx-create-loader-status { position: absolute; inset-inline-start: 12px; inset-block-end: 12px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); pointer-events: none; }
 .vx-create-panel:not([data-section-motion="full"]) .vx-create-loader-slot { transition: none; }
+.vx-check-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+.vx-check-row input { margin-top: var(--space-2px); }
+.vx-muted { color: var(--text-secondary); }
 }
 @layer overrides {
 @media (prefers-reduced-motion: reduce) {

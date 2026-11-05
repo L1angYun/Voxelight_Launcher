@@ -69,12 +69,17 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
   const search = useRef({ value: "", time: -Infinity });
   const [open, setOpen] = useState(false);
   const openChangeRef = useRef(onOpenChange);
+  const announcedOpen = useRef(false);
+  const notifyOpen = useCallback((next: boolean) => {
+    if (announcedOpen.current === next) return;
+    announcedOpen.current = next;
+    openChangeRef.current?.(next);
+  }, []);
   useLayoutEffect(() => { openChangeRef.current = onOpenChange; }, [onOpenChange]);
   useLayoutEffect(() => {
-    if (!open) return;
-    openChangeRef.current?.(true);
-    return () => openChangeRef.current?.(false);
-  }, [open]);
+    if (open) notifyOpen(true);
+  }, [notifyOpen, open]);
+  useLayoutEffect(() => () => notifyOpen(false), [notifyOpen]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null);
   const [placement, setPlacement] = useState<Placement | null>(null);
@@ -88,7 +93,10 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
   const rowHeight = options.some((option) => option.metadata) ? 60 : 44;
   const close = useCallback((pointer = false) => {
     setPointerInput(pointer); openRef.current = false; setOpen(false); search.current = { value: "", time: -Infinity };
-  }, []);
+    // Keyboard and accessibility modes have no popup exit animation. Pointer
+    // exits keep covered content hidden until AnimatePresence removes the menu.
+    if (!pointer || staticMotion) notifyOpen(false);
+  }, [notifyOpen, staticMotion]);
   function openAt(index: number, pointer = false) {
     if (unavailable) return;
     const trigger = triggerRef.current;
@@ -187,7 +195,7 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
   </button>;
   return <div className={cn("vx-select", `vx-select--${material}`, embedded && "vx-select--embedded", className)} ref={embedded ? undefined : jelly.ref} {...(embedded ? {} : jelly.handlers)}>
     {embedded ? button : <SelectSurface glass={material === "glass"} variant="control" className="vx-select__surface">{button}</SelectSurface>}
-    {portalRoot ? createPortal(<AnimatePresence custom={animatePopup}>
+    {portalRoot ? createPortal(<AnimatePresence custom={animatePopup} onExitComplete={() => { if (!openRef.current) notifyOpen(false); }}>
       {open ? <Popup key={listId} popupRef={popupRef} placement={placement} animate={animatePopup} className={popupClassName}>
         <SelectSurface glass={material === "glass"} variant="dialog" className="vx-listbox-surface">
           <ul ref={listRef} id={listId} role="listbox" aria-label={label} className="vx-select__listbox" style={{ maxHeight: Math.max(0, (placement?.maxHeight ?? 360) - 14) }}>

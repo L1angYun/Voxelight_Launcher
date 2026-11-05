@@ -32,7 +32,7 @@ async function assertOperableBounds(page: Page, control: Locator, parts: string[
 }
 
 async function assertControlsAboveCanvas(page: Page) {
-  const controls = page.getByRole("group", { name: /动画模式|Animation mode/ });
+  const controls = page.locator(".vx-home__animation-controls");
   const canvas = page.locator(".vx-home__character canvas");
   const groupBox = await controls.boundingBox();
   const canvasBox = await canvas.boundingBox();
@@ -79,7 +79,7 @@ for (const theme of ["dark", "light"] as const) {
       const character = (await page.locator(".vx-home__char-col").boundingBox())!;
       expect(dock.x + dock.width).toBeLessThan(character.x);
       await expect(page.locator(".vx-recent-card")).toHaveCount(2);
-      await expect(page.locator('.vx-recent-card[aria-pressed="true"]')).toHaveCount(1);
+      await expect(page.locator('.vx-recent-card[aria-current="true"]')).toHaveCount(1);
       expect(await page.locator(".vx-home").evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
       await capture(page, `after-home-${theme}-${width}`);
       await page.locator(".vx-home__char-col").hover();

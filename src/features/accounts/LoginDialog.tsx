@@ -13,6 +13,7 @@ import {
 } from "../../components/accountLogin";
 import { Dialog } from "../../components/ui/Dialog";
 import { Button } from "../../components/ui/Button";
+import { Segmented } from "../../components/ui/Segmented";
 import { accountErrorText } from "./utils";
 
 type LoginTab = "microsoft" | "offline" | "authlib";
@@ -137,6 +138,7 @@ export function LoginDialog({
   }
 
   function changeTab(next: LoginTab) {
+    if (next === tab) return;
     resetAttempt();
     setTab(next);
   }
@@ -271,25 +273,14 @@ export function LoginDialog({
       closeLabel={t("common:actions.close")}
       className="vx-login-dialog"
     >
-      <div className="vx-account-login-tabs" role="tablist" aria-label={t("accounts:loginMethods")}>
-        {(["microsoft", "offline", "authlib"] as const).map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            aria-controls={`login-panel-${id}`}
-            onClick={() => changeTab(id)}
-          >
-            {t(`accounts:method.${id}`)}
-          </button>
-        ))}
-      </div>
+      <Segmented semantic="tabs" label={t("accounts:loginMethods")} value={tab} onChange={changeTab}
+        idPrefix="login-method" panelId={id => `login-panel-${id}`} activation={device ? "manual" : "automatic"}
+        options={(["microsoft", "offline", "authlib"] as const).map(value => ({ value, label: t(`accounts:method.${value}`) }))} />
       {error ? <p className="vx-account-login__error" role="alert">{error}</p> : null}
       {notice ? <p className="vx-account-login__notice" role="status">{notice}</p> : null}
 
       {tab === "microsoft" ? (
-        <div id="login-panel-microsoft" role="tabpanel" className="vx-account-login__panel">
+        <div id="login-panel-microsoft" role="tabpanel" aria-labelledby="login-method-microsoft" className="vx-account-login__panel">
           {!device ? (
             <>
               <p>{t("accounts:microsoft.description")}</p>
@@ -350,6 +341,7 @@ export function LoginDialog({
       {tab === "offline" ? (
         <form
           id="login-panel-offline"
+          aria-labelledby="login-method-offline"
           role="tabpanel"
           className="vx-account-login__panel"
           onSubmit={(event) => {
@@ -379,7 +371,7 @@ export function LoginDialog({
       ) : null}
 
       {tab === "authlib" ? (
-        <div id="login-panel-authlib" role="tabpanel" className="vx-account-login__panel">
+        <div id="login-panel-authlib" role="tabpanel" aria-labelledby="login-method-authlib" className="vx-account-login__panel">
           {profiles.length ? (
             <>
               <p>{t("accounts:authlib.chooseProfile")}</p>

@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { decodePng } from "./glass-pixel-probe.mjs";
 import { farMetrics, islandMetrics, lowerWorldWhiteMetrics, outsideIslandMetrics, worldAppearanceMetrics } from "./world-appearance.ts";
+import { readWorldUniformProbe, type WorldUniformSample } from "./world-uniform-probe.ts";
 
 export const median = (values: number[]) => {
   if (!values.length || values.some(value => !Number.isFinite(value))) throw new Error("A median requires finite samples");
@@ -26,30 +27,45 @@ export function worldFrameRate(first: WorldFrameStamp, last: WorldFrameStamp): n
   return frames * 1000 / elapsed;
 }
 
-async function worldFrameStamp(page: Page): Promise<WorldFrameStamp> {
-  return page.evaluate(() => {
-    const worldFrames = Number(document.querySelector<HTMLElement>(".world-scene")?.dataset.worldFrames);
-    if (!Number.isSafeInteger(worldFrames) || worldFrames < 0) throw new Error("World submission counter is unavailable");
-    return { atMs: performance.now(), worldFrames };
-  });
+async function worldFrameStamp(page: Page): Promise<WorldFrameStamp & { uniforms: WorldUniformSample }> {
+  const uniforms = await page.evaluate(readWorldUniformProbe);
+  return { atMs: uniforms.atMs, worldFrames: uniforms.worldFrames, uniforms };
 }
 
 export interface AppearanceObservation {
   at: number; coveragePercent: number; islandMean: number | null;
   islandBeforeMs: number; islandAfterMs: number;
+  uniforms?: WorldUniformSample;
 }
 
-export function appearanceSamplesStable(previous: AppearanceObservation, current: AppearanceObservation): boolean {
-  return current.islandBeforeMs - previous.islandAfterMs >= 400
+export type AppearanceStability = "fixed" | "dynamic";
+
+export function appearanceSamplesStable(previous: AppearanceObservation, current: AppearanceObservation,
+  stability: AppearanceStability = "fixed"): boolean {
+  const coverageStable = current.islandBeforeMs - previous.islandAfterMs >= 400
     && Number.isFinite(previous.coveragePercent) && Number.isFinite(current.coveragePercent)
-    && Math.abs(current.coveragePercent - previous.coveragePercent) < .3
-    && typeof previous.islandMean === "number" && typeof current.islandMean === "number"
+    && Math.abs(current.coveragePercent - previous.coveragePercent) < .3;
+  if (!coverageStable) return false;
+  if (stability === "fixed") return typeof previous.islandMean === "number" && typeof current.islandMean === "number"
     && Number.isFinite(previous.islandMean) && Number.isFinite(current.islandMean)
     && Math.abs(current.islandMean - previous.islandMean) < 1;
+  const a = previous.uniforms, b = current.uniforms;
+  if (!a || !b || !Number.isFinite(a.atMs) || !Number.isFinite(b.atMs) || b.atMs - a.atMs < 400) return false;
+  for (const key of ["contextId", "voxelProgramId", "terrainProgramId"] as const)
+    if (!Number.isSafeInteger(a[key]) || a[key] <= 0 || a[key] !== b[key]) return false;
+  if (!Number.isSafeInteger(a.worldFrames) || !Number.isSafeInteger(b.worldFrames)
+    || a.worldFrames < 0 || b.worldFrames <= a.worldFrames) return false;
+  for (const key of ["uLat", "uCry", "uIsland", "uT"] as const) {
+    if (!Number.isFinite(a[key]) || !Number.isFinite(b[key])
+      || !Number.isSafeInteger(a.writes?.[key]) || !Number.isSafeInteger(b.writes?.[key])
+      || a.writes[key] <= 0 || b.writes[key] <= a.writes[key]) return false;
+  }
+  return (["uLat", "uCry", "uIsland"] as const).every(key => Math.abs(b[key] - a[key]) < 1e-3);
 }
 
 /** One deadline covers both conditions. A late stable sample is still a timeout. */
 export async function waitForAppearanceStability<T extends AppearanceObservation>(options: {
+  stability?: AppearanceStability;
   now(): number | Promise<number>;
   delay(milliseconds: number): void | Promise<unknown>;
   capture(deadlineMs: number): Promise<T>;
@@ -58,6 +74,7 @@ export async function waitForAppearanceStability<T extends AppearanceObservation
   const finish = async (status: "stable" | "timeout" | "error", error?: string) => {
     const finishedAtMs = await options.now();
     return { status: status === "stable" && finishedAtMs > deadlineMs ? "timeout" as const : status,
+      stability: options.stability ?? "fixed",
       startedAtMs, deadlineMs, finishedAtMs, elapsedMs: finishedAtMs - startedAtMs, samples, error };
   };
   while (await options.now() < deadlineMs) {
@@ -78,7 +95,7 @@ export async function waitForAppearanceStability<T extends AppearanceObservation
     if (endedAtMs > deadlineMs) return finish("timeout");
     if (current.islandBeforeMs > current.islandAfterMs || current.islandAfterMs > endedAtMs)
       return finish("error", "Appearance capture timestamps are inconsistent");
-    if (previous && appearanceSamplesStable(previous, current)) return finish("stable");
+    if (previous && appearanceSamplesStable(previous, current, options.stability)) return finish("stable");
   }
   return finish("timeout");
 }
@@ -112,7 +129,7 @@ async function twoFrames(page: Page, timeoutMs?: number) {
 
 /** M2/S1: normal compositor image plus a canvas-only hidden image, with unchanged layout. */
 export async function captureAppearanceSeries(page: Page, directory: string, options: {
-  background: readonly [number, number, number]; anchorSelector?: string;
+  background: readonly [number, number, number]; anchorSelector?: string; stability?: AppearanceStability;
 }) {
   const anchorSelector = options.anchorSelector ?? ".vx-home__feet[data-world-anchor]";
   await mkdir(directory, { recursive: true });
@@ -129,6 +146,7 @@ export async function captureAppearanceSeries(page: Page, directory: string, opt
   const now = () => page.evaluate(() => performance.now());
   let settlingIndex = 0;
   const waiting = await waitForAppearanceStability({
+    stability: options.stability ?? "dynamic",
     now, delay: milliseconds => page.waitForTimeout(milliseconds),
     capture: async deadlineMs => {
       const remaining = async () => {
@@ -162,7 +180,8 @@ export async function captureAppearanceSeries(page: Page, directory: string, opt
         const hidden = decodePng(hiddenBytes);
         const islandBeforeMs = hiddenBefore.atMs, islandAfterMs = hiddenAfter.atMs;
         const island = islandMetrics(hidden, before.feet, options.background);
-        return { at: islandBeforeMs, worldFrames: hiddenBefore.worldFrames, islandBeforeMs, islandAfterMs, normalPath, hiddenPath,
+        return { at: islandBeforeMs, worldFrames: hiddenBefore.worldFrames, uniforms: hiddenBefore.uniforms,
+          islandBeforeMs, islandAfterMs, normalPath, hiddenPath,
           frameCheckpoints: { normalBefore, normalAfter, hiddenBefore, hiddenAfter },
           coveragePercent: worldAppearanceMetrics(normal, options.background).home.fraction * 100,
           islandMean: island.mean, islandCoverage: island.coverage, before, hiddenGeometry };
@@ -184,6 +203,7 @@ export async function captureAppearanceSeries(page: Page, directory: string, opt
   for (let index = 0; index < 5; index++) {
     const before = await geometry(page, anchorSelector);
     assert.equal(before.characterVisibility, "visible");
+    const normalUniforms = await page.evaluate(readWorldUniformProbe);
     const normal = decodePng(await page.screenshot({ path: join(directory, `normal-${index}.png`), scale: "css" }));
     const previous = await page.locator(characterSelector).evaluate(canvas => {
       const element = canvas as HTMLElement;
@@ -197,8 +217,9 @@ export async function captureAppearanceSeries(page: Page, directory: string, opt
       assert.deepEqual(hiddenGeometry.feet, before.feet, "Hiding the canvas must preserve the actual anchor");
       assert.deepEqual(hiddenGeometry.characterCanvas, before.characterCanvas, "Hiding the canvas must preserve layout");
       assert.equal(hiddenGeometry.characterVisibility, "hidden");
+      const uniforms = await page.evaluate(readWorldUniformProbe);
       const hidden = decodePng(await page.screenshot({ path: join(directory, `island-${index}.png`), scale: "css" }));
-      samples.push({ index, before, hiddenGeometry,
+      samples.push({ index, before, hiddenGeometry, uniforms, normalUniforms,
         island: islandMetrics(hidden, before.feet, options.background),
         outside: outsideIslandMetrics(hidden, before.feet, options.background),
         far: farMetrics(normal), lower: lowerWorldWhiteMetrics(normal),

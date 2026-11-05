@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
+import { stopScreencast } from "./helpers/stop-screencast";
 
 test.use({ viewport: { width: 1280, height: 720 }, channel: "chromium", launchOptions: {
   args: ["--enable-automation", "--use-angle=d3d11"], ignoreDefaultArgs: ["--enable-unsafe-swiftshader"],
@@ -60,11 +61,12 @@ async function capture(page: Page, info: TestInfo, label: string, target: string
   await page.screenshot({ path: join(directory, "before.png") });
   const cdp = await page.context().newCDPSession(page);
   const shots: { epochMs: number; data: string }[] = [], acknowledgements: Promise<unknown>[] = [], errors: string[] = [];
-  cdp.on("Page.screencastFrame", frame => {
+  const onFrame = (frame: { metadata: { timestamp?: number }; data: string; sessionId: number }) => {
     if (typeof frame.metadata.timestamp === "number") shots.push({ epochMs: frame.metadata.timestamp * 1000, data: frame.data });
     else errors.push("Screencast frame has no native timestamp");
     acknowledgements.push(cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId }).catch(error => errors.push(String(error))));
-  });
+  };
+  cdp.on("Page.screencastFrame", onFrame);
   let trace: Trace;
   try {
     await cdp.send("Page.startScreencast", { format: "png", everyNthFrame: 1 });
@@ -97,9 +99,13 @@ async function capture(page: Page, info: TestInfo, label: string, target: string
     await action();
     trace = await page.evaluate(() => (window as unknown as { supplementTrace: Promise<Trace> }).supplementTrace);
   } finally {
-    await cdp.send("Page.stopScreencast");
-    await Promise.all(acknowledgements);
-    await cdp.detach();
+    await stopScreencast({
+      stop: () => cdp.send("Page.stopScreencast"),
+      removeFrameListener: () => { cdp.off("Page.screencastFrame", onFrame); },
+      acknowledgements,
+      detach: () => cdp.detach(),
+      recordError: (stage, error) => errors.push(`CDP ${stage} failed: ${String(error)}`),
+    });
   }
   const index = [];
   for (const [number, shot] of shots.entries()) {

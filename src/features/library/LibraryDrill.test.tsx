@@ -16,7 +16,8 @@ vi.mock("../../app/AppearanceProvider", () => ({ useAppearance: () => ({ effects
 vi.mock("../../visual/glass/GlassSystem", () => ({ GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => <div className={className}>{children}</div> }));
 vi.mock("../../visual/overture/OvertureProvider", () => ({ useOverture: () => ({ play: vi.fn() }) }));
 
-const css = readFileSync("src/features/library/library.css", "utf8");
+const css = ["src/features/library/library-grid.css", "src/features/library/instance-detail.css"]
+  .map(path => readFileSync(path, "utf8")).join("\n");
 const commandMock = vi.mocked(command);
 let launcher: LauncherContextValue;
 let root: Root;

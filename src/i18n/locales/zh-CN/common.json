@@ -6,21 +6,12 @@
     "close": "关闭",
     "retry": "重试",
     "back": "返回",
-    "create": "创建",
-    "import": "导入",
-    "delete": "删除",
-    "remove": "移除",
-    "openFolder": "打开目录",
-    "settings": "设置",
-    "download": "下载",
     "pause": "暂停",
     "resume": "继续",
-    "stop": "停止",
     "minimize": "最小化",
     "maximize": "最大化",
     "restore": "还原",
     "search": "搜索",
-    "add": "添加",
     "manage": "管理"
   },
   "navigation": {
@@ -33,12 +24,7 @@
     "settings": "设置"
   },
   "status": {
-    "loading": "加载中…",
-    "ready": "准备就绪",
-    "running": "正在运行",
-    "offline": "离线",
-    "unknown": "未知",
-    "empty": "暂无内容"
+    "loading": "加载中…"
   },
   "errors": {
     "bootstrapFailed": "启动器数据加载失败，可以重试。",
@@ -46,9 +32,7 @@
     "missing": "无法显示此内容。",
     "desktopRequired": "请使用桌面版执行此操作。"
   },
-  "units": {
-    "files": "个文件"
-  },
+  "units": {},
   "a11y": {
     "dismissNotification": "关闭通知",
     "mainNavigation": "主导航",

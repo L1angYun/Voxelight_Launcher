@@ -22,16 +22,20 @@ export function nextTier(tier: Tier): Tier | null {
 }
 
 /** Workload cost and wall-clock sampling window are deliberately separate. */
-export function createFrameBudget(budgetMs: number, windowMs = 2000) {
-  let elapsed = 0, cost = 0, count = 0;
+export function createFrameBudget(budgetMs: number | (() => number), windowMs = 2000, requiredWindows = 1) {
+  let elapsed = 0, cost = 0, count = 0, consecutiveOverruns = 0;
   return {
     sample(costMs: number, elapsedMs = costMs): "hold" | "downgrade" {
       if (!Number.isFinite(costMs) || costMs < 0 || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return "hold";
       elapsed += elapsedMs; cost += costMs; count++;
       if (elapsed + 1e-6 < windowMs) return "hold";
-      const overrun = cost / count > budgetMs;
+      const limit = typeof budgetMs === "function" ? budgetMs() : budgetMs;
+      const overrun = Number.isFinite(limit) && limit > 0 && cost / count > limit;
       elapsed = 0; cost = 0; count = 0;
-      return overrun ? "downgrade" : "hold";
+      consecutiveOverruns = overrun ? consecutiveOverruns + 1 : 0;
+      if (consecutiveOverruns < requiredWindows) return "hold";
+      consecutiveOverruns = 0;
+      return "downgrade";
     },
   };
 }

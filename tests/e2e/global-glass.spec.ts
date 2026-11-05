@@ -196,7 +196,7 @@ test("one world canvas serves full and lite modes while real data points remain 
     await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", effects === "full" ? "animated" : "static");
     await expect(current.locator(".vx-recent-card .vx-lattice-frame")).toHaveCount(2);
     await expect(current.locator(".vx-lattice-frame__dot")).toHaveCount(0);
-    await expect(current.locator('.vx-recent-card[aria-pressed="true"] .vx-lattice-frame[data-selected="true"]')).toBeVisible();
+    await expect(current.locator('.vx-recent-card[aria-current="true"] .vx-lattice-frame[data-selected="true"]')).toBeVisible();
     await current.locator('button[data-page="downloads"]').click();
     const progress = current.locator('[data-task-id="point-regression"] canvas.vx-lattice-progress');
     await expect(progress).toBeVisible();

@@ -129,6 +129,18 @@ afterEach(() => {
 });
 
 describe("library and instance details", () => {
+  it("keeps the final directory segment separately visible with an accessible directory prefix", async () => {
+    const directoryInstance = { ...mockLauncher.data.instances[0],
+      gameDirectory: "C:\\Long parent directory\\Another long component\\Final-world", lastPlayed: undefined };
+    mockLauncher.data.instances = [directoryInstance]; mockLauncher.selectedInstance = directoryInstance;
+    await render(createElement(LibraryPage));
+    const path = container.querySelector<HTMLElement>(".vx-instance-card__path")!;
+    expect(path.querySelector(".vx-instance-card__path-tail")?.textContent).toBe("Final-world");
+    expect(path.querySelector(".vx-instance-card__path-head")?.textContent).toBe("C:\\Long parent directory\\Another long component\\");
+    expect(path.hasAttribute("aria-label")).toBe(false);
+    expect(path.querySelector(".sr-only")?.textContent).toContain("目录");
+    expect(path.title).toBe(mockLauncher.data.instances[0].gameDirectory);
+  });
   it("announces current instance on its focusable select button", async () => {
     await render(createElement(LibraryPage));
     const card = container.querySelector<HTMLElement>(".vx-instance-card.is-selected")!;

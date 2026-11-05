@@ -301,7 +301,7 @@ describe("HomePage", () => {
     const character = container.querySelector(".vx-home__char-col")!;
     expect(heading?.textContent).toBe("合成测试世界");
     expect(Boolean(heading!.compareDocumentPosition(character) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
-    expect(container.querySelector('.vx-home__animation-controls[role="group"]')).not.toBeNull();
+    expect(container.querySelector('.vx-home__animation-controls:not([role])')).not.toBeNull();
     expect(container.querySelector('[role="combobox"][aria-label="动画模式"]')).not.toBeNull();
     expect(container.querySelector(".vx-home__greeting-line")).toBeNull();
   });
@@ -399,6 +399,27 @@ describe("HomePage", () => {
     expect(Number(getComputedStyle(container.querySelector(".vx-home__identity")!).opacity || 1)).toBe(1);
     expect(container.querySelector("h1")?.textContent).toBe("暂无实例");
   });
+
+  it("keeps one progress live region and announces no more than five times for 100 updates in a stage", async () => {
+    vi.useFakeTimers();
+    await render();
+    const region = container.querySelector<HTMLElement>("[data-launch-announcement]");
+    expect(region).not.toBeNull(); expect(region?.getAttribute("role")).toBe("status");
+    expect(region?.textContent).toBe("");
+    mockLauncher.busy = "game.prepare";
+    let previous = "", changes = 0;
+    for (let completed = 1; completed <= 100; completed++) {
+      mockLauncher.progress = { operation: "install", stage: "assets", completed, total: 100,
+        bytesCompleted: completed, bytesTotal: 100, message: "fixture", versionId: "1.21.1" };
+      await render();
+      expect(container.querySelector("[data-launch-announcement]")).toBe(region);
+      if (region!.textContent !== previous) { changes++; previous = region!.textContent!; }
+    }
+    expect(changes).toBeGreaterThan(0); expect(changes).toBeLessThanOrEqual(5);
+    expect(previous).toContain("100%");
+    expect(container.querySelector('.vx-launch-console__status[aria-live]')).toBeNull();
+    expect(region!.querySelector("button,[role='progressbar']")).toBeNull();
+  }, 15000);
 
   it("shows a real preparation state and cancels it", async () => {
     vi.useFakeTimers();
@@ -615,6 +636,10 @@ describe("HomePage", () => {
     await render();
     expect(container.querySelector(".vx-recent")).not.toBeNull();
     expect(container.querySelectorAll(".vx-recent-card")).toHaveLength(2);
+    const recent = container.querySelector(".vx-home__recent")!, controls = container.querySelector(".vx-home__animation-controls")!;
+    expect(recent.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(controls.hasAttribute("role")).toBe(false);
+    expect(controls.hasAttribute("aria-label")).toBe(false);
     const current = container.querySelector('.vx-recent-card[data-instance-id="fixture-world"]')!;
     expect(current.getAttribute("aria-current")).toBe("true");
     expect(current.hasAttribute("aria-pressed")).toBe(false);
@@ -686,6 +711,10 @@ describe("HomePage", () => {
     await render();
     expect(container.querySelector('[data-testid="character-canvas"]')).toBeNull();
     expect(container.textContent).toContain("默认预览暂不可用");
+    const live = container.querySelector('.vx-character-placeholder [role="status"]');
+    expect(live).not.toBeNull();
+    expect(live!.textContent).not.toContain("重试默认预览");
+    expect(live!.querySelector("button")).toBeNull();
     const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("重试默认预览"))!;
     await act(async () => retry.click());
     expect(refresh).toHaveBeenCalledTimes(1);

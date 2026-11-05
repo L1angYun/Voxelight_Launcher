@@ -2,9 +2,9 @@
   "title": "角色",
   "subtitle": "管理账号、线上外观与本地预览。",
   "listTitle": "账号",
-  "addAccount": "添加角色",
-  "loginTitle": "添加角色",
-  "loginDescription": "选择登录方式，或创建离线角色。",
+  "addAccount": "添加账号",
+  "loginTitle": "添加账号",
+  "loginDescription": "选择登录方式，或创建离线账号。",
   "loginMethods": "登录方式",
   "avatar": "{{name}} 的角色头像",
   "fields": {
@@ -18,13 +18,13 @@
   "credentialNotice": "登录令牌仅保存在系统加密凭据中，本地预览文件不会因此页操作而上传。",
   "method": {
     "microsoft": "Microsoft",
-    "offline": "离线角色",
+    "offline": "离线账号",
     "authlib": "第三方认证"
   },
   "type": {
     "microsoft": "Microsoft 正版",
     "authlib": "第三方认证",
-    "offline": "离线角色",
+    "offline": "离线账号",
     "unknown": "账号"
   },
   "actions": {
@@ -37,7 +37,7 @@
   },
   "empty": {
     "title": "还没有角色",
-    "description": "添加离线角色，或登录账号以管理线上外观。"
+    "description": "添加离线账号，或登录账号以管理线上外观。"
   },
   "microsoft": {
     "description": "在 Microsoft 官方页面完成授权，启动器不会收集你的 Microsoft 密码。",
@@ -54,7 +54,7 @@
     "description": "用于本地游戏和允许离线身份的服务器；正版验证服务器仍需要拥有游戏的账号。",
     "name": "角色名称",
     "namePlaceholder": "3–16 位英文字母、数字或下划线",
-    "submit": "添加离线角色"
+    "submit": "添加离线账号"
   },
   "authlib": {
     "description": "填写你信任的 Authlib / Yggdrasil API 根地址。密码只发送到此 HTTPS 服务，不保存到启动器配置中。",
@@ -102,8 +102,8 @@
   },
   "model": {
     "auto": "自动识别",
-    "classic": "Classic · 宽臂",
-    "slim": "Slim · 细臂"
+    "classic": "经典（宽臂）",
+    "slim": "纤细（细臂）"
   },
   "animation": {
     "idle": "待机",
@@ -154,7 +154,7 @@
     },
     "skin": {
       "fileInvalid": "请选择有效且不超过 1 MB 的 64×64 或 64×32 PNG 皮肤，高清贴图仅供本地预览。",
-      "modelInvalid": "上传皮肤时请选择 Classic 或 Slim 模型。"
+      "modelInvalid": "上传皮肤时请选择经典或纤细模型。"
     }
   }
 }

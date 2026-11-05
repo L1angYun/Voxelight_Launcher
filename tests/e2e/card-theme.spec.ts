@@ -21,7 +21,7 @@ test("shared points own the hovered edge and the selected static frame returns a
   await selected.hover();
   await expect(selected).toHaveAttribute("data-halo-owned", "true");
   await expect(selected.locator(":scope > .vx-lattice-frame")).toHaveCSS("visibility", "hidden");
-  await expect(selected).toHaveAttribute("aria-current", "true");
+  await expect(selected.locator(".vx-instance-card__select")).toHaveAttribute("aria-current", "true");
   await expect(selected.locator("svg[data-selected-mark]")).toHaveCount(0);
   await expect(page.locator(".vx-lattice-frame__dot")).toHaveCount(0);
   await create.hover();

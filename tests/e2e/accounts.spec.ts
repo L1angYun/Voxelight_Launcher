@@ -62,10 +62,10 @@ test("offline creation and account selection keep the existing IPC flow", async 
   await mockAccountCommands(page);
   await openAccounts(page);
   await page.getByRole("button", { name: "选择 AmberFixture", exact: true }).click();
-  await page.getByRole("button", { name: "添加角色", exact: true }).click();
-  await page.getByRole("tab", { name: "离线角色", exact: true }).click();
+  await page.getByRole("button", { name: "添加账号", exact: true }).click();
+  await page.getByRole("tab", { name: "离线账号", exact: true }).click();
   await page.getByRole("textbox", { name: "角色名称", exact: true }).fill("Fixture_Player");
-  await page.getByRole("button", { name: "添加离线角色", exact: true }).click();
+  await page.getByRole("button", { name: "添加离线账号", exact: true }).click();
   const calls = await internals(page);
   expect(calls.some((call) => call.name === "select_account" && call.args?.accountId === "fixture-slim")).toBe(true);
   expect(calls.some((call) => call.name === "add_offline_account" && call.args?.username === "Fixture_Player")).toBe(true);
@@ -75,7 +75,7 @@ test("Microsoft device authorization can be cancelled without a successful accou
   await installLauncherFixture(page);
   await mockAccountCommands(page);
   await openAccounts(page);
-  await page.getByRole("button", { name: "添加角色", exact: true }).click();
+  await page.getByRole("button", { name: "添加账号", exact: true }).click();
   await page.getByRole("textbox", { name: "本项目的 Microsoft Client ID" }).fill("fixture-client-id");
   await page.getByRole("button", { name: "开始 Microsoft 登录", exact: true }).click();
   await expect(page.getByText("E2E-CODE", { exact: true })).toBeVisible();
@@ -89,7 +89,7 @@ test("Authlib profile selection uses the returned session and clears the passwor
   await installLauncherFixture(page);
   await mockAccountCommands(page);
   await openAccounts(page);
-  await page.getByRole("button", { name: "添加角色", exact: true }).click();
+  await page.getByRole("button", { name: "添加账号", exact: true }).click();
   await page.getByRole("tab", { name: "第三方认证", exact: true }).click();
   await page.getByRole("textbox", { name: "认证服务 API 地址" }).fill("https://auth.example.invalid/api/");
   await page.getByRole("textbox", { name: "用户名或邮箱" }).fill("fixture-user");

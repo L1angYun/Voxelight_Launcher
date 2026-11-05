@@ -185,9 +185,9 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   }
 
   const characterFallback = previewUnavailable ? (
-    <div className="vx-character-placeholder" role="status">
+    <div className="vx-character-placeholder">
       <UserRound size={40} strokeWidth={1.3} />
-      <strong>
+      <strong role="status">
         {previewLoading
           ? t("home:previewLoading")
           : previewError
@@ -199,7 +199,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
               : t("home:defaultPreviewEmpty")}
       </strong>
       {!previewLoading ? (
-        <Button variant="ghost" onClick={retryPreview}>
+        <Button variant="secondary" size="md" onClick={retryPreview}>
           {onlineAccount
             ? t("home:retryAppearance")
             : t("home:retryDefaultPreview")}
@@ -264,7 +264,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
                   <Button variant="primary" icon={<Plus size={16} />} onClick={() => setCreateOpen(true)}>
                     {t("home:createInstance")}
                   </Button>
-                  <Button variant="ghost" icon={<Upload size={16} />} onClick={() => setImportOpen(true)}>
+                  <Button variant="secondary" icon={<Upload size={16} />} onClick={() => setImportOpen(true)}>
                     {t("home:importPack")}
                   </Button>
                 </div>
@@ -280,14 +280,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
           onPointerLeave={() => { setCharAreaHovered(false); setHeadPointer(null); }}
           onPointerMove={onCharPointerMove}
         >
-          <div
-            className="vx-home__animation-controls"
-            role="group"
-            aria-label={t("home:animationMode")}
-          >
-            <HomeAnimationSelector value={currentAnimation === "none" ? "idle" : currentAnimation}
-              onChange={setManualAnimation} visible={charAreaHovered} disabled={anyRunning || preparing || staticScene} />
-          </div>
           <section className="vx-home__character-panel" aria-label={previewLabel}
             data-character-reveal={returning && tier !== "none" && !previewUnavailable ? "on" : "off"}>
             <div className="vx-home__character-orbit" aria-hidden="true">
@@ -321,6 +313,11 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
             onSelect={chooseInstance}
           />
         </div> : null}
+        <div className="vx-home__animation-controls"
+          onPointerEnter={() => setCharAreaHovered(true)} onPointerLeave={() => setCharAreaHovered(false)}>
+          <HomeAnimationSelector value={currentAnimation === "none" ? "idle" : currentAnimation}
+            onChange={setManualAnimation} visible={charAreaHovered} disabled={anyRunning || preparing || staticScene} />
+        </div>
       </div>
 
       <CreateInstanceDialog

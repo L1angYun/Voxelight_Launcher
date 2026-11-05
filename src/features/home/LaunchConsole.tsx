@@ -1,5 +1,5 @@
 import { FolderOpen, LoaderCircle, Play, Square, X } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useTranslation } from "react-i18next";
 import type { Instance, InstalledVersion, Progress } from "../../lib/launcher";
@@ -86,8 +86,20 @@ export function LaunchConsole({
   const number = new Intl.NumberFormat(i18n.resolvedLanguage);
   const stageKey = progress?.stage ?? "queued";
   const stage = i18n.exists(`home:stages.${stageKey}`) ? t(`home:stages.${stageKey}`) : t("home:preparing");
+  const [announcement, setAnnouncement] = useState("");
+  const lastAnnouncement = useRef<{ stage: string; bucket: number; language?: string } | null>(null);
+  const bucket = percent === null ? -1 : Math.floor(percent * 4) * 25;
+  useEffect(() => {
+    if (!preparing) { lastAnnouncement.current = null; setAnnouncement(""); return; }
+    const previous = lastAnnouncement.current;
+    if (previous?.stage === stageKey && previous.language === i18n.resolvedLanguage && bucket <= previous.bucket) return;
+    lastAnnouncement.current = { stage: stageKey, bucket, language: i18n.resolvedLanguage };
+    setAnnouncement(bucket > 0 ? t("home:progressMilestone", { stage,
+      percent: new Intl.NumberFormat(i18n.resolvedLanguage, { style: "percent", maximumFractionDigits: 0 }).format(bucket / 100) }) : stage);
+  }, [preparing, stageKey, stage, bucket, t, i18n.resolvedLanguage]);
   return (
     <div className="vx-launch-console" data-state={state} data-picker-open={pickerOpen}>
+      <span className="sr-only" role="status" aria-atomic="true" data-launch-announcement>{announcement}</span>
       <motion.div className="vx-launch-console__context" layout={tier === "full" ? "position" : false}
         layoutDependency={state} transition={{ duration: motionDuration(tier, "content"), ease: MOTION.ease }}>
         <div className="vx-launch-console__instance">
@@ -101,7 +113,7 @@ export function LaunchConsole({
         </div>
       </motion.div>
       {preparing ? (
-        <motion.div className="vx-launch-console__status" aria-live="polite"
+        <motion.div className="vx-launch-console__status"
           initial={{ opacity: 0 }} animate={{ opacity: 1 }}
           transition={{ duration: motionDuration(tier, "content"), ease: MOTION.ease }}>
           <div className="vx-launch-console__progress-heading">

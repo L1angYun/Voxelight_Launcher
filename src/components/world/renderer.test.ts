@@ -171,6 +171,14 @@ function voxelExposedHighlight(draw: VoxelDraw, incoming: number, exposure = dra
     (left: number, right: number, amount: number) => left * (1 - amount) + right * amount) as number;
 }
 
+function voxelDepth(draw: VoxelDraw, size: number, mask: number, crystallized: number): number {
+  const expression = /\bfloat\s+depth\s*=\s*([^;]+);/.exec(draw.vertex)?.[1];
+  if (!expression) throw new Error("Submitted voxel vertex shader has no column depth expression");
+  const evaluate = new Function("s", "m", "crE", "uLat", "mix", `return (${expression});`);
+  return evaluate(size, mask, crystallized, draw.uniforms.get("uLat"),
+    (left: number, right: number, amount: number) => left * (1 - amount) + right * amount) as number;
+}
+
 function floatUniformPrecision(source: string, name: string, stageDefault: string): string | undefined {
   const defaultPrecision = /\bprecision\s+(lowp|mediump|highp)\s+float\s*;/.exec(source)?.[1] ?? stageDefault;
   for (const declaration of source.matchAll(/\buniform\s+(?:(lowp|mediump|highp)\s+)?float\s+([^;]+);/g)) {
@@ -180,6 +188,21 @@ function floatUniformPrecision(source: string, name: string, stageDefault: strin
 }
 
 describe("WebGL renderer boundary", () => {
+  it("closes solid terrain skirts with nine cells while retaining the lattice three-cell depth", () => {
+    const t = mount({ float: true }); const renderer = t.renderer!;
+    try {
+      renderer.draw({ ...frame(), lat: 0 }, .016);
+      const solid = t.voxelDraws.at(-1)!;
+      expect(voxelDepth(solid, 2, 1, 1)).toBe(9);
+      expect(voxelDepth(solid, 2, .5, 1)).toBe(5.5);
+      expect(voxelDepth(solid, 2, 0, 1)).toBe(2);
+      renderer.draw({ ...frame(), lat: 1 }, .016);
+      const lattice = t.voxelDraws.at(-1)!;
+      expect(voxelDepth(lattice, 2, 1, 1)).toBe(3);
+      expect(voxelDepth(lattice, 2, 1, .5)).toBe(2.125);
+    } finally { renderer.dispose(); }
+    expect(t.live.size).toBe(0);
+  });
   it("uses a sub-unit island albedo floor without raising solid or non-island fragments", () => {
     const t = mount({ float: true }); const renderer = t.renderer!;
     try {

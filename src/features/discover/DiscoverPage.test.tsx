@@ -155,6 +155,13 @@ afterEach(() => {
 });
 
 describe("DiscoverPage", () => {
+  it("introduces discovery with its localized page description and matching flat destination/source controls", async () => {
+    await render();
+    expect(container.querySelector(".vx-page-header__text p")?.textContent).toBe("查找与当前实例兼容的内容。");
+    for (const selector of [".vx-discover-target", ".vx-discover-source"]) {
+      expect(container.querySelector(`${selector} .vx-select`)?.classList.contains("vx-select--flat")).toBe(true);
+    }
+  });
   it("clears cards after a new search fails and lets the same query retry restore usable results", async () => {
     await render();
     await submitSearch("sodium");

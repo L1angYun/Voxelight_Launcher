@@ -37,13 +37,10 @@
   "zipResources": "ZIP 资源",
   "selectWorldZip": "选择 Minecraft 世界 ZIP",
   "worldZipFileType": "Minecraft 世界 ZIP",
-  "noInstances": "还没有实例",
-  "noInstancesDescription": "创建或导入一个实例，开始管理你的世界。",
   "noSearchResults": "没有匹配的实例",
   "noSearchDescription": "换一个关键词，或清除搜索条件。",
   "clearSearch": "清除搜索",
   "openInstance": "打开实例 {{name}}",
-  "ready": "可启动",
   "running": "正在运行",
   "detailTabs": "实例详情分类",
   "overview": "总览",
@@ -116,8 +113,6 @@
   "openLogs": "打开日志目录",
   "noDiagnosisYet": "尚未分析启动问题",
   "noDiagnosisDescription": "分析此实例的日志，定位内存、Java、模组依赖或显卡问题。",
-  "noDiagnosis": "没有发现需要处理的启动错误。",
-  "diagnosticsExported": "诊断报告已保存。",
   "logExcerpt": "查看已过滤凭证字段的日志节选",
   "launcherLogs": "启动器运行记录",
   "noLogs": "暂无运行记录。",
@@ -178,5 +173,9 @@
       "logs": "日志",
       "settings": "设置"
     }
-  }
+  },
+  "searchVersions": "搜索版本目录",
+  "searchVersionsPlaceholder": "按名称、游戏版本或加载器搜索",
+  "versionRuntimeSummary": "{{channel}} · {{java}}",
+  "minecraft": "Minecraft"
 }

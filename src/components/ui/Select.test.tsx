@@ -6,13 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { createLauncherI18n } from "../../i18n";
 import { Select, type SelectOption } from "./Select";
 import { Dialog } from "./Dialog";
+import { MotionConfig } from "motion/react";
 
 vi.mock("../../visual/glass/GlassSystem", () => ({
   GlassSurface: ({ children, className, style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) => createElement("div", { className, style, "data-test-glass": true }, children),
 }));
-vi.mock("../../app/AppearanceProvider", () => ({
-  useAppearance: () => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }),
-}));
+const appearance = vi.hoisted(() => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }));
+vi.mock("../../app/AppearanceProvider", () => ({ useAppearance: () => appearance }));
 
 const options: SelectOption[] = [
   { value: "official", label: "Official only" },
@@ -36,7 +36,8 @@ async function key(value: string) {
 async function render({ choices = options, disabled = false, dialog = false, material }: { choices?: SelectOption[]; disabled?: boolean; dialog?: boolean; material?: "flat" | "glass" } = {}) {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
-  const control = createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, onOpenChange: openChanges, disabled, material });
+  const control = createElement(MotionConfig, { skipAnimations: appearance.effects !== "full", reducedMotion: appearance.reducedMotion ? "always" : "never" },
+    createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, onOpenChange: openChanges, disabled, material }));
   await act(async () => root.render(createElement(I18nextProvider, { i18n }, dialog
     ? createElement(Dialog, { open: true, onOpenChange: dialogChanges, title: "Install" }, control)
     : createElement("div", { style: { overflow: "hidden", transform: "translateX(0)" } }, control))));
@@ -45,6 +46,7 @@ async function render({ choices = options, disabled = false, dialog = false, mat
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   anchor.y = 600;
+  appearance.effects = "lite"; appearance.reducedMotion = true;
   onChange = vi.fn<(value: string) => void>();
   dialogChanges = vi.fn<(open: boolean) => void>();
   openChanges = vi.fn<(open: boolean) => void>();
@@ -66,9 +68,45 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("shared Select", () => {
+  it("keeps the open notification until a pointer exit completes", async () => {
+    vi.useFakeTimers(); appearance.effects = "full"; appearance.reducedMotion = false;
+    await render();
+    await act(async () => trigger().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+    await act(async () => vi.advanceTimersByTimeAsync(220));
+    await act(async () => document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    expect(openChanges.mock.calls).toEqual([[true]]);
+    await act(async () => vi.advanceTimersByTimeAsync(220));
+    expect(openChanges.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("does not report a stale pointer exit after reopening and closes immediately for the keyboard", async () => {
+    vi.useFakeTimers(); appearance.effects = "full"; appearance.reducedMotion = false;
+    await render();
+    const pointerToggle = () => act(async () => trigger().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+    await pointerToggle(); await act(async () => vi.advanceTimersByTimeAsync(220));
+    await pointerToggle(); await pointerToggle();
+    await act(async () => vi.advanceTimersByTimeAsync(220));
+    expect(trigger().getAttribute("aria-expanded")).toBe("true");
+    expect(openChanges.mock.calls).toEqual([[true]]);
+    await key("Escape");
+    expect(openChanges.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("reports closure if an animated popup unmounts before its exit completes", async () => {
+    vi.useFakeTimers(); appearance.effects = "full"; appearance.reducedMotion = false;
+    await render();
+    await act(async () => trigger().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+    await act(async () => vi.advanceTimersByTimeAsync(220));
+    await act(async () => trigger().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+    expect(openChanges.mock.calls).toEqual([[true]]);
+    await act(async () => root.render(null));
+    expect(openChanges.mock.calls).toEqual([[true], [false]]);
+  });
+
   it("reports a single open lifecycle while keyboard navigation changes the active option", async () => {
     await render();
     await key("ArrowDown");

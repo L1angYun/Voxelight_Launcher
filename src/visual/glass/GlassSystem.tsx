@@ -95,6 +95,10 @@ function LensReflection({ id, shape }: { id: string; shape: CurvatureGeometry })
     <path data-vx-contour d={path} fill="none" stroke={`url(#${id}-light)`} strokeWidth="10"
       opacity="0.18" filter={`url(#${id}-soft)`} />
     <path data-vx-contour d={path} fill="none" stroke={`url(#${id}-light)`} strokeWidth="0.9" />
+    {/* The surface clips at this contour. A centered 2px stroke leaves the
+        requested 1px boundary inside the real, spring-driven silhouette. */}
+    <path data-vx-contour data-vx-boundary d={path} fill="none"
+      stroke="var(--vx-lens-boundary, transparent)" strokeWidth="2" />
   </svg>;
 }
 

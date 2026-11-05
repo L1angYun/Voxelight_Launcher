@@ -1,0 +1,28 @@
+{
+  "spacingPixels": 428,
+  "files": {
+    "src/app/shell.css": 36,
+    "src/components/PlayerAvatar.css": 0,
+    "src/components/WorldScene.css": 0,
+    "src/components/ui/AnchoredListbox.css": 13,
+    "src/components/ui/selection.css": 8,
+    "src/design/fonts.css": 0,
+    "src/design/global.css": 23,
+    "src/design/surfaces.css": 8,
+    "src/design/tokens.css": 0,
+    "src/features/accounts/accounts.css": 44,
+    "src/features/discover/discover.css": 51,
+    "src/features/downloads/downloads.css": 34,
+    "src/features/home/HomeAnimationSelector.css": 0,
+    "src/features/home/home.css": 40,
+    "src/features/library/create-instance.css": 11,
+    "src/features/library/instance-detail.css": 25,
+    "src/features/library/library-grid.css": 40,
+    "src/features/multiplayer/multiplayer.css": 61,
+    "src/features/settings/settings.css": 31,
+    "src/visual/character/character.css": 3,
+    "src/visual/glass/glass.css": 0,
+    "src/visual/lattice/lattice.css": 0,
+    "src/visual/overture/overture.css": 0
+  }
+}

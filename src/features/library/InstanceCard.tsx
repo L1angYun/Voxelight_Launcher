@@ -49,6 +49,8 @@ export function InstanceCard({
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const runtime = loaderText(instance, t);
+  const directoryParts = /^(.*[\\/])([^\\/]+[\\/]*)$/.exec(instance.gameDirectory);
+  const directoryHead = directoryParts?.[1] ?? "", directoryTail = directoryParts?.[2] ?? instance.gameDirectory;
   const playtime =
     instance.totalPlayTime > 0
       ? playtimeText(instance.totalPlayTime, t)
@@ -94,9 +96,10 @@ export function InstanceCard({
                 <time dateTime={instance.lastPlayed}>{formatDate(instance.lastPlayed, i18n.language)}</time>
               </span>
             ) : (
-              <span className="vx-instance-card__path" title={instance.gameDirectory} aria-label={t("library:directory")}>
+              <span className="vx-instance-card__path" title={instance.gameDirectory}>
                 <Folder size={12} aria-hidden="true" />
-                <span>{instance.gameDirectory}</span>
+                <span className="sr-only">{t("library:directory")}: </span>
+                <span className="vx-instance-card__path-value"><span className="vx-instance-card__path-head">{directoryHead}</span><span className="vx-instance-card__path-tail">{directoryTail}</span></span>
               </span>
             )}
             {playtime ? (

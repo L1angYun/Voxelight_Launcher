@@ -24,7 +24,7 @@ import { InstanceIdentity } from "./InstanceIdentity";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
-import "./detail-sections.css";
+import "./instance-detail.css";
 import { motionDuration } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 import { loaderText } from "./utils";
@@ -106,7 +106,7 @@ export function InstanceDetailPage({
       </PageHeader>
       <div className="vx-detail-layout vx-workspace">
         <aside className="vx-detail-context">
-          <Segmented className="vx-detail-selection" semantic="tabs" orientation="vertical"
+          <Segmented className="vx-detail-selection" semantic="tabs" orientation="vertical" fill
             label={t("library:detailTabs")} value={tab} onChange={setTab}
             idPrefix="instance-tab" panelId="instance-detail-panel"
             options={tabs.map((item) => {

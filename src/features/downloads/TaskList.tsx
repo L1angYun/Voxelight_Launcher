@@ -65,12 +65,14 @@ function TaskRow({
   busyTaskId,
   onAction,
   animated,
+  compact,
 }: {
   task: DownloadTask;
   rate?: number;
   busyTaskId: string | null;
   onAction: (task: DownloadTask, action: DownloadTaskAction) => void;
   animated: boolean;
+  compact: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const titleId = useId();
@@ -148,6 +150,24 @@ function TaskRow({
         })
       : t("downloads:progress.byteLabelUnknown", { completed: bytesCompleted });
   const actions = taskActions(task.status, task.kind);
+  const actionButtons = actions.map(action => {
+    const Icon = actionIcons[action], label = t(`common:actions.${action}`);
+    return <Button key={action} variant="ghost" size="sm" icon={<Icon size={14} />}
+      loading={busyTaskId === task.id} disabled={busyTaskId !== null} aria-label={`${label}: ${title}`}
+      onClick={() => onAction(task, action)}>{label}</Button>;
+  });
+
+  if (compact) return <article className="vx-task-row vx-task-row--history"
+    data-task-id={task.id} data-status={task.status} data-stage={task.stage}
+    data-bytes-completed={task.bytesCompleted} data-bytes-total={task.bytesTotal} data-progress-basis={progressBasis}
+    data-visual-owner="lattice" aria-busy={busyTaskId === task.id || undefined} aria-labelledby={titleId}>
+    <header className="vx-task-row__header"><h3 id={titleId} title={title}>{title}</h3></header>
+    <span className="vx-task-row__status" data-status={task.status}><StatusIcon status={task.status} />{status}</span>
+    <span className="vx-task-row__summary">{bytesTotalKnown ? `${bytesCompleted} / ${bytesTotal}`
+      : safeBytesCompleted > 0 ? bytesCompleted : t("downloads:historyFiles", { count: safeFilesCompleted })}</span>
+    <time dateTime={task.updatedAt}>{formatDate(task.updatedAt, i18n.language)}</time>
+    <div className="vx-task-row__actions">{actionButtons}</div>
+  </article>;
 
   return (
     <article
@@ -251,24 +271,7 @@ function TaskRow({
         </time>
         {actions.length ? (
           <div className="vx-task-row__actions">
-            {actions.map((action) => {
-              const Icon = actionIcons[action];
-              const label = t(`common:actions.${action}`);
-              return (
-                <Button
-                  key={action}
-                  variant="ghost"
-                  size="sm"
-                  icon={<Icon size={15} />}
-                  loading={busyTaskId === task.id}
-                  disabled={busyTaskId !== null}
-                  aria-label={`${label}: ${title}`}
-                  onClick={() => onAction(task, action)}
-                >
-                  {label}
-                </Button>
-              );
-            })}
+            {actionButtons}
           </div>
         ) : (
           <span />
@@ -284,12 +287,14 @@ export function TaskList({
   busyTaskId,
   onAction,
   animateFirst = false,
+  compact = false,
 }: {
   tasks: DownloadTask[];
   rates: Record<string, number>;
   busyTaskId: string | null;
   onAction: (task: DownloadTask, action: DownloadTaskAction) => void;
   animateFirst?: boolean;
+  compact?: boolean;
 }) {
   return (
     <div className="vx-task-list">
@@ -301,6 +306,7 @@ export function TaskList({
           busyTaskId={busyTaskId}
           onAction={onAction}
           animated={animateFirst && index === 0}
+          compact={compact}
         />
       ))}
     </div>

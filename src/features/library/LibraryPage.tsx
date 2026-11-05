@@ -30,7 +30,7 @@ import { InstanceIdentity, InstanceIdentityProvider } from "./InstanceIdentity";
 import { MOTION, motionDuration } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 import type { Instance, InstalledVersion } from "../../lib/launcher";
-import "./library.css";
+import "./library-grid.css";
 
 type DetailKind = "instance" | "version-directory";
 

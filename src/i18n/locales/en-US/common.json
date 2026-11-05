@@ -6,21 +6,12 @@
     "close": "Close",
     "retry": "Retry",
     "back": "Back",
-    "create": "Create",
-    "import": "Import",
-    "delete": "Delete",
-    "remove": "Remove",
-    "openFolder": "Open folder",
-    "settings": "Settings",
-    "download": "Download",
     "pause": "Pause",
     "resume": "Resume",
-    "stop": "Stop",
     "minimize": "Minimize",
     "maximize": "Maximize",
     "restore": "Restore",
     "search": "Search",
-    "add": "Add",
     "manage": "Manage"
   },
   "navigation": {
@@ -33,12 +24,7 @@
     "settings": "Settings"
   },
   "status": {
-    "loading": "Loading…",
-    "ready": "Ready",
-    "running": "Running",
-    "offline": "Offline",
-    "unknown": "Unknown",
-    "empty": "Nothing here yet"
+    "loading": "Loading…"
   },
   "errors": {
     "bootstrapFailed": "Launcher data could not be loaded. You can retry.",
@@ -46,9 +32,7 @@
     "missing": "This content cannot be displayed.",
     "desktopRequired": "Use the desktop app for this action."
   },
-  "units": {
-    "files": "files"
-  },
+  "units": {},
   "a11y": {
     "dismissNotification": "Dismiss notification",
     "mainNavigation": "Main navigation",

@@ -50,6 +50,13 @@ export function WorldScene(props: WorldSceneProps) {
     let needsSubmission = false, gpuComplete = false;
     let lastGpuAt: number | null = null, lastSubmissionAt: number | null = null, skippedSubmissions = 0;
     let budgetSource: "gpu" | "submission" | null = null;
+    let lastRafAt: number | null = null;
+    const rafIntervals: number[] = [];
+    const submissionBudget = () => {
+      const sorted = [...rafIntervals].sort((a, b) => a - b), middle = Math.floor(sorted.length / 2);
+      const cadence = sorted.length ? sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2 : 1000 / 60;
+      return cadence * 1.25;
+    };
     let width = 1, height = 1, tier: Tier;
     let lastLayoutKey = "", trackedAnchor: Element | null = null;
     let lastAnchorNdc: [number, number] = [.62, -.66];
@@ -93,6 +100,7 @@ export function WorldScene(props: WorldSceneProps) {
     function stop() {
       if (animation !== null) cancelAnimationFrame(animation);
       animation = null; lastDraw = null; lastGpuAt = null; lastSubmissionAt = null; skippedSubmissions = 0; budgetSource = null;
+      lastRafAt = null; rafIntervals.length = 0;
       finishPress();
     }
     function publish(frame: WorldFrame) {
@@ -117,7 +125,10 @@ export function WorldScene(props: WorldSceneProps) {
     function fallback() { lost = true; gpuComplete = false; introConsumed = true; submittedScene = "unavailable"; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.worldScene = submittedScene; host!.dataset.worldSettled = "false"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
     function sample(source: "gpu" | "submission", costMs: number, elapsedMs: number) {
       if (tier.kind !== "animated" || elapsedMs <= 0) return;
-      if (source !== budgetSource) { budget = createFrameBudget(16.7); budgetSource = source; }
+      if (source !== budgetSource) {
+        budget = source === "submission" ? createFrameBudget(submissionBudget, 2000, 2) : createFrameBudget(16.7);
+        budgetSource = source;
+      }
       host!.dataset.worldBudgetSource = source;
       if (budget.sample(costMs, elapsedMs) !== "downgrade") return;
       const next = nextTier(tier);
@@ -183,6 +194,13 @@ export function WorldScene(props: WorldSceneProps) {
     function tick(now: number) {
       animation = null;
       if (!permitted() || tier.kind !== "animated") { publish(lastFrame); return; }
+      // Observe every available callback, including busy-fence polls. Measuring
+      // only successful submissions would mistake GPU stalls for display cadence.
+      if (lastRafAt !== null && now > lastRafAt) {
+        rafIntervals.push(now - lastRafAt);
+        if (rafIntervals.length > 30) rafIntervals.shift();
+      }
+      lastRafAt = now;
       if (lastFrame.settled && !needsSubmission) {
         if (!gpuComplete) gpuComplete = renderer!.pollFrameComplete();
         if (lost) return;

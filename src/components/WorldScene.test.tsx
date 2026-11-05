@@ -155,7 +155,7 @@ it("marks an in-flight scene morph separately from either settled terrain", asyn
   expect(scene().dataset.worldScene).toBe("massif");
 });
 it("downgrades after two real seconds even when physical simulation dt is capped", async () => {
-  fake.draw.mockReturnValue({ cpuMs: 20, gpuMs: null, submitted: true, pointsSubmitted: true });
+  fake.draw.mockReturnValue({ cpuMs: 20, gpuMs: 20, submitted: true, pointsSubmitted: true });
   await render(); await advance(2100, 10);
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
 });
@@ -167,10 +167,10 @@ it("snaps static scene, page and running targets without adding animation frames
   expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ front: 165, exposure: .3, runDim: .3, settled: true });
   expect(frames.size).toBe(0);
 });
-it("detects an unthrottled RAF bottleneck when GPU timing is unavailable", async () => {
+it("uses observed RAF cadence for submission fallback when GPU timing is unavailable", async () => {
   fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: true, pointsSubmitted: true });
   await render(); await advance(2200, 10);
-  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
 });
 it("downgrades from completed submission gaps when fences skip fast callbacks without GPU timings", async () => {
   let attempts = 0;
@@ -179,8 +179,26 @@ it("downgrades from completed submission gaps when fences skip fast callbacks wi
   await advance(1980, 100);
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
   await advance(120, 100);
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
+  await advance(2200, 100);
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
   expect(scene().dataset.worldBudgetSource).toBe("submission");
+});
+it("keeps 60Hz submission fallback at full quality through one skipped presentation every 90 frames", async () => {
+  fake.draw.mockReturnValue({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true });
+  await render({ page: "content" });
+  await act(async () => {
+    for (let index = 0; index < 600; index++) {
+      now += 1000 / 60 * (index > 0 && index % 90 === 0 ? 2 : 1);
+      for (const [id, callback] of [...frames]) if (frames.delete(id)) callback(now);
+    }
+  });
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
+});
+it("keeps steady 50Hz submission fallback at full quality for ten seconds", async () => {
+  fake.draw.mockReturnValue({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true });
+  await render({ page: "content" }); await advance(10000, 50);
+  expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1.5);
 });
 it("prefers actual GPU timings and does not treat sleep as a blocked submission", async () => {
   let attempts = 0;

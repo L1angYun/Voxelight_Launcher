@@ -26,15 +26,6 @@
   opacity: 1;
 }
 
-.vx-lattice-selection {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 3;
-  color: var(--accent);
-  pointer-events: none;
-}
-
 /* canvas element base — replaced the old CSS-only cell grid */
 canvas.vx-lattice-progress {
   display: block;
@@ -47,8 +38,7 @@ canvas.vx-lattice-progress {
 
 @media (prefers-contrast: more), (forced-colors: active) {
   .vx-lattice-frame,
-  .vx-lattice-frame[data-selected="true"],
-  .vx-lattice-selection {
+  .vx-lattice-frame[data-selected="true"] {
     color: Highlight;
   }
 }

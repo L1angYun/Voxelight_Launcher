@@ -26,12 +26,26 @@ function key(button: HTMLButtonElement, key: string) {
   act(() => button.dispatchEvent(event));
   return event;
 }
-function Example({ semantic = "tabs", label = "Views" }: { semantic?: "tabs" | "toggle" | "nav"; label?: string }) {
+function Example({ semantic = "tabs", label = "Views", activation = "automatic" }: { semantic?: "tabs" | "toggle" | "nav"; label?: string; activation?: "automatic" | "manual" }) {
   const [value, setValue] = useState<string>("first");
-  return <Segmented semantic={semantic} label={label} options={options} value={value} onChange={setValue} panelId="example-panel" />;
+  return <Segmented semantic={semantic} label={label} options={options} value={value} onChange={setValue} panelId="example-panel" activation={activation} />;
 }
 
 describe("shared selection controls", () => {
+  it("moves manual tab focus without activating until its button is invoked", () => {
+    render(<Example activation="manual" />);
+    const [first, , last] = [...container.querySelectorAll<HTMLButtonElement>("button")];
+    first.focus(); key(first, "ArrowRight");
+    expect(document.activeElement).toBe(last);
+    expect(first.getAttribute("aria-selected")).toBe("true");
+    expect(last.getAttribute("aria-selected")).toBe("false");
+    expect(last.tabIndex).toBe(0); expect(first.tabIndex).toBe(-1);
+    act(() => last.click());
+    expect(last.getAttribute("aria-selected")).toBe("true");
+    key(last, "Home");
+    expect(document.activeElement).toBe(first);
+    expect(last.getAttribute("aria-selected")).toBe("true");
+  });
   it("moves tab focus and selection together, skips disabled tabs, and wraps", () => {
     render(<Example />);
     const [first, disabled, last] = [...container.querySelectorAll<HTMLButtonElement>("button")];
