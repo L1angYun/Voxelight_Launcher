@@ -146,7 +146,7 @@ for (const mode of ["lite", "reduced"] as const) test(`review D3: ${mode} change
   await page.screenshot({ path: info.outputPath(`create-${mode}-collapsed.png`) });
 });
 
-for (const width of [1280, 1050]) test(`review D4: library controls share 38px height and 12px corners at ${width}px`, async ({ page }, info) => {
+for (const width of [1280, 1050]) test(`library commandbar: 38px fields keep 12px corners and actions use pills at ${width}px`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 720 });
   await prepareLibrary(page);
   const measured = await page.locator(".vx-library-commandbar").evaluate(root => {
@@ -160,7 +160,7 @@ for (const width of [1280, 1050]) test(`review D4: library controls share 38px h
   expect(measured.controls).toHaveLength(6);
   for (const control of measured.controls) {
     expect(control.height, control.className).toBe(38);
-    expect(control.radius, control.className).toBe("12px");
+    expect(control.radius, control.className).toBe(control.className.split(" ").includes("vx-button") ? "999px" : "12px");
     expect(control.x).toBeGreaterThanOrEqual(0);
     expect(control.right).toBeLessThanOrEqual(width);
   }

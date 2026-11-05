@@ -1,43 +1,7 @@
+@layer features {
 .vx-library-page,
 .vx-detail-page {
   --library-surface: var(--surface-panel);
-  --library-surface-quiet: color-mix(
-    in srgb,
-    var(--bg-raised) 38%,
-    transparent
-  );
-  --library-rule: color-mix(in srgb, var(--text-primary) 10%, transparent);
-  width: min(100%, var(--content-max));
-  margin: 0 auto;
-  padding: 30px 36px 56px;
-}
-
-.vx-page-heading,
-.vx-detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 28px;
-}
-
-.vx-page-heading h1,
-.vx-detail-header h1 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: var(--text-2xl);
-  font-weight: 650;
-  line-height: 1.16;
-  letter-spacing: 0;
-  overflow-wrap: anywhere;
-}
-
-.vx-page-heading p,
-.vx-detail-header p {
-  margin: 7px 0 0;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  line-height: 1.5;
 }
 
 .vx-action-row {
@@ -72,7 +36,7 @@
   padding: 3px 4px 3px 12px;
   border: 0;
   border-radius: 7px;
-  background: var(--library-surface-quiet);
+  background: var(--surface-panel);
 }
 
 .vx-library-page .vx-search {
@@ -103,16 +67,13 @@
   outline-offset: 2px;
 }
 .vx-library-page .vx-search input:focus-visible { outline: none; }
-@media (forced-colors: active) {
-  .vx-library-page .vx-search:has(input:focus-visible) { outline-color: Highlight; }
-}
 
 .vx-library-commandbar select {
   min-height: 34px;
   margin: 0;
   padding: 5px 30px 5px 12px;
   border: 0;
-  border-left: 1px solid var(--library-rule);
+  border-left: 1px solid var(--hairline);
   border-radius: 0;
   background-color: transparent;
   color: var(--text-secondary);
@@ -125,21 +86,7 @@
   gap: 2px;
   margin-left: 5px;
   padding: 3px;
-  border-left: 1px solid var(--library-rule);
-}
-
-.vx-library-view .vx-button {
-  min-width: 32px;
-  min-height: 32px;
-  padding: 7px;
-  border-radius: 6px;
-  color: var(--text-tertiary);
-}
-
-.vx-library-view .vx-button[aria-pressed="true"] {
-  background: var(--surface-solid);
-  color: var(--text-primary);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--text-primary) 12%, transparent);
+  border-left: 1px solid var(--hairline);
 }
 
 .vx-instance-sheet {
@@ -148,7 +95,6 @@
   gap: 18px;
   align-items: stretch;
 }
-
 .vx-instance-card {
   position: relative;
   display: grid;
@@ -342,15 +288,11 @@
 }
 
 .vx-instance-card__footer .vx-instance-card__launch {
-  min-height: 31px;
   flex: none;
   margin-left: auto;
-  padding: 5px 11px;
   border-color: transparent;
-  border-radius: 6px;
   background: color-mix(in srgb, var(--text-primary) 7%, transparent);
   color: var(--text-primary);
-  font-size: 12px;
 }
 
 .vx-instance-identity {
@@ -378,7 +320,7 @@
   inset: 5px;
   z-index: -1;
   border: 1px solid
-    color-mix(in srgb, var(--identity-color) 26%, var(--library-rule));
+    color-mix(in srgb, var(--identity-color) 26%, var(--hairline));
   border-radius: 7px;
   background:
     linear-gradient(
@@ -492,7 +434,7 @@
 .vx-instance-sheet--list .vx-instance-card__footer {
   min-width: 226px;
   padding: 14px 16px;
-  border-left: 1px solid var(--library-rule);
+  border-left: 1px solid var(--hairline);
 }
 
 .vx-library-page > .vx-library-empty {
@@ -562,10 +504,8 @@
 }
 
 .vx-detail-header {
-  align-items: flex-start;
   position: relative;
   z-index: 2;
-  margin-bottom: 30px;
 }
 
 .vx-detail-header > .vx-button:first-child {
@@ -593,13 +533,6 @@
   font-size: calc(var(--text-2xl) - 2px);
 }
 
-.vx-detail-layout {
-  display: grid;
-  grid-template-columns: 196px minmax(0, 1fr);
-  gap: 34px;
-  align-items: start;
-}
-
 .vx-detail-context {
   display: grid;
   gap: 20px;
@@ -612,7 +545,7 @@
   place-items: center;
   height: 142px;
   overflow: hidden;
-  border: 1px solid var(--library-rule);
+  border: 1px solid var(--hairline);
   border-radius: 8px;
   background:
     linear-gradient(
@@ -620,7 +553,7 @@
       color-mix(in srgb, var(--optical-cold) 9%, transparent),
       transparent 55%
     ),
-    var(--library-surface-quiet);
+    var(--surface-panel);
 }
 
 .vx-detail-context__signature > .vx-lattice-frame {
@@ -660,7 +593,7 @@
   gap: 3px;
   margin: 0;
   padding-top: 4px;
-  border-top: 1px solid var(--library-rule);
+  border-top: 1px solid var(--hairline);
 }
 
 .vx-detail-tabs button {
@@ -678,7 +611,7 @@
 }
 
 .vx-detail-tabs button.is-selected {
-  border-color: var(--library-rule);
+  border-color: var(--hairline);
   background: var(--surface-hover);
   color: var(--text-primary);
   font-weight: 600;
@@ -702,7 +635,7 @@
 .vx-detail-workspace {
   min-width: 0;
   padding: 24px 26px 28px;
-  border: 1px solid var(--library-rule);
+  border: 1px solid var(--hairline);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface-solid) 44%, transparent);
 }
@@ -718,7 +651,7 @@
   gap: 16px;
   min-width: 0;
   padding-top: 22px;
-  border-top: 1px solid var(--library-rule);
+  border-top: 1px solid var(--hairline);
 }
 
 .vx-detail-section:first-child {
@@ -760,15 +693,15 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0;
   margin: 0;
-  border-top: 1px solid var(--library-rule);
-  border-left: 1px solid var(--library-rule);
+  border-top: 1px solid var(--hairline);
+  border-left: 1px solid var(--hairline);
 }
 
 .vx-facts > div {
   min-width: 0;
   padding: 12px 14px;
-  border-right: 1px solid var(--library-rule);
-  border-bottom: 1px solid var(--library-rule);
+  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
 }
 
 .vx-facts > div:has(.vx-path) {
@@ -800,7 +733,7 @@
   display: grid;
   gap: 22px;
   padding-top: 22px;
-  border-top: 1px solid var(--library-rule);
+  border-top: 1px solid var(--hairline);
 }
 
 .vx-overview-operations > .vx-detail-section {
@@ -836,19 +769,15 @@
   justify-content: flex-start;
 }
 
-.vx-detail-workspace .vx-toolbar .vx-button {
-  padding-inline: 10px;
-}
-
 .vx-detail-page .vx-segmented,
 .vx-dialog .vx-segmented {
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
   padding: 3px;
-  border: 1px solid var(--library-rule);
+  border: 1px solid var(--hairline);
   border-radius: 8px;
-  background: var(--library-surface-quiet);
+  background: var(--surface-panel);
 }
 
 .vx-detail-page .vx-segmented button,
@@ -872,7 +801,7 @@
 
 .vx-resource-list {
   display: grid;
-  border-top: 1px solid var(--library-rule);
+  border-top: 1px solid var(--hairline);
 }
 
 .vx-resource-row {
@@ -882,7 +811,7 @@
   gap: 18px;
   min-width: 0;
   padding: 14px 0;
-  border-bottom: 1px solid var(--library-rule);
+  border-bottom: 1px solid var(--hairline);
 }
 
 .vx-resource-row > div {
@@ -915,9 +844,9 @@
   gap: 7px;
   min-width: 0;
   padding: 12px;
-  border: 1px solid var(--library-rule);
+  border: 1px solid var(--hairline);
   border-radius: 7px;
-  background: var(--library-surface-quiet);
+  background: var(--surface-panel);
   color: var(--text-secondary);
   text-align: left;
 }
@@ -958,7 +887,7 @@
   overflow: auto;
   margin: 0;
   padding: 14px;
-  border: 1px solid var(--library-rule);
+  border: 1px solid var(--hairline);
   border-radius: 7px;
   background: var(--bg-base);
   color: var(--text-secondary);
@@ -970,7 +899,7 @@
 }
 
 .vx-detail-page details {
-  border-top: 1px solid var(--library-rule);
+  border-top: 1px solid var(--hairline);
 }
 
 .vx-detail-page summary {
@@ -1081,27 +1010,7 @@
   transition: color var(--duration-fast) ease;
 }
 
-[data-effects="lite"] .vx-instance-card,
-[data-effects="lite"] .vx-instance-card__open,
-[data-reduced-motion="true"] .vx-instance-card,
-[data-reduced-motion="true"] .vx-instance-card__open {
-  transition: none;
-}
-
-[data-reduced-transparency="true"] .vx-instance-card,
-[data-reduced-transparency="true"] .vx-detail-workspace,
-[data-reduced-transparency="true"] .vx-detail-context__signature,
-[data-high-contrast="true"] .vx-instance-card,
-[data-high-contrast="true"] .vx-detail-workspace,
-[data-high-contrast="true"] .vx-detail-context__signature {
-  background: var(--surface-solid);
-}
-
 @media (max-width: 1150px) {
-  .vx-library-page,
-  .vx-detail-page {
-    padding: 24px 28px 44px;
-  }
 
   .vx-instance-card__select {
     grid-template-columns: 68px minmax(0, 1fr) 18px;
@@ -1136,11 +1045,6 @@
     padding: 2px 18px 14px 100px;
   }
 
-  .vx-detail-layout {
-    grid-template-columns: 170px minmax(0, 1fr);
-    gap: 24px;
-  }
-
   .vx-detail-workspace {
     padding: 22px;
   }
@@ -1149,11 +1053,6 @@
 @media (max-width: 880px) {
   .vx-instance-sheet {
     grid-template-columns: 1fr;
-  }
-
-  .vx-detail-layout {
-    grid-template-columns: 150px minmax(0, 1fr);
-    gap: 20px;
   }
 
   .vx-instance-sheet--list .vx-instance-card__footer {
@@ -1166,21 +1065,8 @@
 }
 
 @media (max-width: 680px) {
-  .vx-library-page,
-  .vx-detail-page {
-    padding: 16px 16px 40px;
-  }
-
-  .vx-page-heading,
-  .vx-detail-header {
-    align-items: flex-start;
+.vx-detail-header {
     flex-wrap: wrap;
-    gap: 16px;
-    margin-bottom: 22px;
-  }
-
-  .vx-page-heading > .vx-action-row {
-    justify-content: flex-start;
   }
 
   .vx-library-commandbar > .vx-toolbar {
@@ -1191,7 +1077,7 @@
   .vx-library-page .vx-search {
     grid-column: 1 / -1;
     padding: 0 4px 5px;
-    border-bottom: 1px solid var(--library-rule);
+    border-bottom: 1px solid var(--hairline);
   }
 
   .vx-library-commandbar select {
@@ -1234,10 +1120,6 @@
 
   .vx-detail-header > .vx-button:last-child {
     margin-left: 48px;
-  }
-
-  .vx-detail-layout {
-    grid-template-columns: 1fr;
   }
 
   .vx-detail-context {
@@ -1338,39 +1220,7 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .vx-instance-card,
-  .vx-instance-card__open {
-    transition: none;
-  }
-}
-
-@media (prefers-contrast: more), (forced-colors: active) {
-  .vx-instance-card,
-  .vx-detail-workspace,
-  .vx-detail-context__signature {
-    border-color: var(--text-secondary);
-    background: var(--surface-solid);
-  }
-
-  .vx-instance-identity__letter {
-    text-shadow: none;
-  }
-}
-
 /* Library collection revision */
-.vx-library-page {
-  padding: 28px 36px 56px;
-}
-
-.vx-library-page .vx-page-heading {
-  align-items: flex-end;
-  margin-bottom: 22px;
-}
-
-.vx-library-page .vx-page-heading__copy {
-  min-width: 0;
-}
 
 .vx-detail-manage {
   position: relative;
@@ -1433,10 +1283,10 @@
   min-width: 0;
 }
 
-.vx-detail-context__signature,
 .vx-detail-workspace {
-  border: 0;
-  background: color-mix(in srgb, var(--surface-solid) 30%, transparent);
+  border: 1px solid var(--hairline);
+  background: var(--surface-panel);
+  border-radius: var(--radius-lg);
 }
 
 .vx-detail-context__signature {
@@ -1559,8 +1409,6 @@
   min-width: 0;
   margin: 0 0 18px;
   padding: 6px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-solid) 28%, transparent);
 }
 
 .vx-library-page .vx-search {
@@ -1617,24 +1465,8 @@
   background: color-mix(in srgb, var(--bg-raised) 24%, transparent);
 }
 
-.vx-library-view .vx-button {
-  min-width: 32px;
-  min-height: 32px;
-  padding: 7px;
-}
-
-.vx-library-view .vx-button[aria-pressed="true"] {
-  background: var(--surface-solid);
-}
-
-.vx-library-commandbar__actions .vx-button {
-  min-height: 36px;
-  padding: 7px 13px;
-  border-radius: 6px;
-}
-
 /* Keep the commandbar's real controls aligned despite shared surface rules. */
-.vx-library-page .vx-library-commandbar :is(.vx-search, .vx-field, .vx-select__surface, .vx-select__button, .vx-button) {
+.vx-library-page .vx-library-commandbar :is(.vx-search, .vx-field, .vx-select__surface, .vx-select__button) {
   block-size: 38px;
   min-block-size: 38px;
   border-radius: var(--radius-md);
@@ -1664,7 +1496,6 @@
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 12px;
 }
-
 .vx-instance-card {
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 178px;
@@ -1731,8 +1562,6 @@
 }
 
 .vx-instance-card__footer .vx-instance-card__launch {
-  min-height: 31px;
-  padding: 5px 11px;
   border-color: transparent;
   background: color-mix(in srgb, var(--text-primary) 7%, transparent);
 }
@@ -1875,36 +1704,10 @@
   }
 }
 
-[data-reduced-transparency="true"] .vx-library-scope,
-[data-reduced-transparency="true"] .vx-library-commandbar,
-[data-reduced-transparency="true"] .vx-instance-card,
-[data-reduced-transparency="true"] .vx-library-page > .vx-library-empty,
-[data-reduced-transparency="true"] .vx-detail-context__signature,
-[data-reduced-transparency="true"] .vx-detail-workspace,
-[data-reduced-transparency="true"] .vx-facts > div,
-[data-reduced-transparency="true"] .vx-screenshot,
-[data-high-contrast="true"] .vx-library-scope,
-[data-high-contrast="true"] .vx-library-commandbar,
-[data-high-contrast="true"] .vx-instance-card,
-[data-high-contrast="true"] .vx-library-page > .vx-library-empty,
-[data-high-contrast="true"] .vx-detail-context__signature,
-[data-high-contrast="true"] .vx-detail-workspace,
-[data-high-contrast="true"] .vx-facts > div,
-[data-high-contrast="true"] .vx-screenshot {
-  background: var(--surface-solid);
-}
-
 @media (max-width: 1050px) {
-  .vx-library-page {
-    padding: 24px 28px 44px;
-  }
 
   .vx-library-commandbar {
     grid-template-columns: minmax(170px, 1fr) auto auto;
-  }
-
-  .vx-library-commandbar__actions .vx-button {
-    padding-inline: 11px;
   }
 }
 
@@ -1945,15 +1748,9 @@
 }
 
 @media (max-width: 720px) {
-  .vx-library-page {
-    padding: 16px 16px 40px;
-  }
 
   .vx-detail-header {
-    display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto auto;
-    align-items: start;
-    gap: 10px;
   }
 
   .vx-detail-header__identity {
@@ -1988,23 +1785,6 @@
   .vx-instance-sheet--list .vx-instance-card__footer {
     min-width: 0;
     padding-top: 10px;
-  }
-}
-
-@media (prefers-contrast: more), (forced-colors: active) {
-  .vx-library-commandbar,
-  .vx-instance-card,
-  .vx-library-page > .vx-library-empty {
-    background: Canvas;
-  }
-
-  .vx-instance-card:focus-within {
-    outline: 2px solid Highlight;
-    outline-offset: -2px;
-  }
-
-  .vx-instance-card__select:focus-visible {
-    outline: none;
   }
 }
 
@@ -2121,11 +1901,14 @@
 
 /* Only non-identity layers reveal; the actual badge belongs to shared layout. */
 .vx-library-drill[data-content-motion] :is(.vx-detail-header > :not(.vx-detail-header__identity), .vx-detail-header__identity > div, .vx-detail-layout),
-.vx-library-page[data-drill-return] :is(.vx-page-heading, .vx-library-commandbar > .vx-search, .vx-library-commandbar__actions,
+.vx-library-page[data-drill-return] :is(.vx-page-header, .vx-library-commandbar > .vx-search, .vx-library-commandbar__actions,
   .vx-library-view, .vx-instance-card__information, .vx-instance-card__open, .vx-instance-card__footer, .vx-library-empty) {
   animation: vx-library-content-reveal var(--vx-drill-content-duration) var(--ease-out);
 }
-@keyframes vx-library-content-reveal { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vx-library-content-reveal {
+from { opacity: 0; }
+to { opacity: 1; }
+}
 
 @media (hover: hover) and (pointer: fine) {
   .vx-instance-card:hover,
@@ -2156,4 +1939,86 @@
     flex-direction: column;
     gap: 3px;
   }
+}
+.vx-detail-layout.vx-workspace { grid-template-columns: var(--rail-w) minmax(0,1fr); gap: var(--space-5); }
+
+.vx-detail-header .vx-instance-identity { width: 40px; height: 44px; flex: 0 0 40px; }
+.vx-detail-header .vx-instance-identity img { width: 36px; height: 40px; }
+
+.vx-instance-identity::before { background: radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 38%, transparent) .8px, transparent 1px) 0 0/5px 5px; }
+
+.vx-instance-identity__plane { opacity: .35; }
+
+.vx-instance-identity__letter { color: var(--text-primary); }
+.vx-library-view.vx-selection { gap: 4px; padding: 4px; margin-left: 0; border: 1px solid var(--hairline); }
+.vx-library-view.vx-selection > button { padding: 7px 10px; }
+}
+@layer overrides {
+@media (forced-colors: active) {
+  .vx-library-page .vx-search:has(input:focus-visible) { outline-color: Highlight; }
+}
+
+[data-effects="lite"] .vx-instance-card,
+[data-effects="lite"] .vx-instance-card__open,
+[data-reduced-motion="true"] .vx-instance-card,
+[data-reduced-motion="true"] .vx-instance-card__open {
+  transition: none;
+}
+[data-reduced-transparency="true"] .vx-instance-card,
+[data-reduced-transparency="true"] .vx-detail-workspace,
+[data-high-contrast="true"] .vx-instance-card,
+[data-high-contrast="true"] .vx-detail-workspace {
+  background: var(--surface-solid);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vx-instance-card,
+  .vx-instance-card__open {
+    transition: none;
+  }
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  .vx-instance-card,
+  .vx-detail-workspace,
+  .vx-detail-context__signature {
+    border-color: var(--text-secondary);
+    background: var(--surface-solid);
+  }
+
+  .vx-instance-identity__letter {
+    text-shadow: none;
+  }
+}
+[data-reduced-transparency="true"] .vx-library-scope,
+[data-reduced-transparency="true"] .vx-instance-card,
+[data-reduced-transparency="true"] .vx-library-page > .vx-library-empty,
+[data-reduced-transparency="true"] .vx-detail-workspace,
+[data-reduced-transparency="true"] .vx-facts > div,
+[data-reduced-transparency="true"] .vx-screenshot,
+[data-high-contrast="true"] .vx-library-scope,
+[data-high-contrast="true"] .vx-instance-card,
+[data-high-contrast="true"] .vx-library-page > .vx-library-empty,
+[data-high-contrast="true"] .vx-detail-workspace,
+[data-high-contrast="true"] .vx-facts > div,
+[data-high-contrast="true"] .vx-screenshot {
+  background: var(--surface-solid);
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  .vx-library-commandbar,
+  .vx-instance-card,
+  .vx-library-page > .vx-library-empty {
+    background: Canvas;
+  }
+
+  .vx-instance-card:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .vx-instance-card__select:focus-visible {
+    outline: none;
+  }
+}
 }

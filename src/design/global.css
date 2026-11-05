@@ -1,4 +1,5 @@
-@import "./tokens.css";
+@layer tokens, base, primitives, features, overrides;
+@layer base {
 
 * { box-sizing: border-box; }
 html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
@@ -129,6 +130,9 @@ a { color: var(--accent-ink, var(--accent)); text-underline-offset: 3px; }
   box-shadow: var(--shadow-raised);
 }
 .vx-toast--error { border-color: var(--danger); }
+}
+@layer overrides {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+}
 }

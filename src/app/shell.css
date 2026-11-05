@@ -1,3 +1,4 @@
+@layer features {
 .vx-app {
   --shell-height: 82px;
   position: relative;
@@ -53,10 +54,6 @@ input, textarea, [contenteditable="true"] { user-select: text; }
   border-radius: 24px;
   background: transparent;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 14%);
-}
-.vx-glass-provider[data-glass-mode="fallback"] .vx-window-chrome__bar {
-  background: var(--surface-solid);
-  box-shadow: none;
 }
 .vx-window-chrome__identity { display: flex; align-items: center; align-self: stretch; min-width: 0; }
 .vx-window-chrome__brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text-primary); font-size: 15px; font-weight: 650; letter-spacing: 0; user-select: none; pointer-events: none; }
@@ -199,6 +196,12 @@ input, textarea, [contenteditable="true"] { user-select: text; }
   .vx-floating-nav__group--utility { padding-left: 0; }
   .vx-floating-nav__item { width: 36px; }
 }
+}
+@layer overrides {
+.vx-glass-provider[data-glass-mode="fallback"] .vx-window-chrome__bar {
+  background: var(--surface-solid);
+  box-shadow: none;
+}
 
 [data-reduced-motion="true"] .vx-floating-nav__item,
 [data-effects="lite"] .vx-floating-nav__item { transition-property: color, background-color; }
@@ -213,4 +216,5 @@ input, textarea, [contenteditable="true"] { user-select: text; }
 }
 @media (forced-colors: active) {
   .vx-glass-provider[data-glass-mode] .vx-window-chrome__bar { background: Canvas; border-color: CanvasText; box-shadow: none; }
+}
 }

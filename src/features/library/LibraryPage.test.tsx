@@ -129,6 +129,15 @@ afterEach(() => {
 });
 
 describe("library and instance details", () => {
+  it("announces current instance on its focusable select button", async () => {
+    await render(createElement(LibraryPage));
+    const card = container.querySelector<HTMLElement>(".vx-instance-card.is-selected")!;
+    expect(card).not.toBeNull();
+    expect(card.hasAttribute("aria-current")).toBe(false);
+    const select = card.querySelector<HTMLButtonElement>(".vx-instance-card__select")!;
+    expect(select.getAttribute("aria-current")).toBe("true");
+    select.focus(); expect(document.activeElement).toBe(select);
+  });
   it("does not announce an empty resource folder before its first request starts", async () => {
     commandMock.mockImplementation(() => new Promise(() => {}));
     let emptyOnFirstCommit: boolean | undefined;
@@ -398,7 +407,8 @@ describe("library and instance details", () => {
     await render(createElement(LibraryPage));
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "版本目录")!.click());
     const card = container.querySelector<HTMLElement>('[data-version-directory="1.21.1"]')!;
-    expect(card.getAttribute("aria-current")).toBe("true");
+    expect(card.getAttribute("aria-current")).toBeNull();
+    expect(card.querySelector(".vx-instance-card__select")?.getAttribute("aria-current")).toBe("true");
     const marker = card.querySelector(':scope > .vx-lattice-frame[data-selected="true"]');
     expect(marker).not.toBeNull();
     expect(marker?.getAttribute("aria-hidden")).toBe("true");

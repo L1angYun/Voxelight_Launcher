@@ -8,8 +8,9 @@ import { command, defaults, type Bootstrap, type Config } from "../../lib/launch
 import type { LauncherContextValue } from "../../app/controller/types";
 import { HomePage } from "./HomePage";
 import { readFileSync } from "node:fs";
+import { isolatedStylesheetCss } from "../../test/isolatedStylesheetCss";
 
-const homeStyles = readFileSync("src/features/home/home.css", "utf8");
+const homeStyles = isolatedStylesheetCss(readFileSync("src/features/home/home.css", "utf8"), ["features", "overrides"]);
 
 const commandMock = vi.mocked(command);
 let mockLauncher: LauncherContextValue;
@@ -614,6 +615,9 @@ describe("HomePage", () => {
     await render();
     expect(container.querySelector(".vx-recent")).not.toBeNull();
     expect(container.querySelectorAll(".vx-recent-card")).toHaveLength(2);
+    const current = container.querySelector('.vx-recent-card[data-instance-id="fixture-world"]')!;
+    expect(current.getAttribute("aria-current")).toBe("true");
+    expect(current.hasAttribute("aria-pressed")).toBe(false);
     expect(container.querySelectorAll('[role="combobox"][aria-label="当前实例"]')).toHaveLength(1);
     await chooseHomeInstance("fixture-second");
     expect(mockLauncher.selectInstance).toHaveBeenCalledWith("fixture-second");

@@ -97,7 +97,7 @@ export function LaunchConsole({
                 onSelectInstance={onSelectInstance} onOpenChange={onPickerOpenChange} />
             </GlassSurface>
           </div>
-          <IconButton label={t("home:openFolder")} icon={<FolderOpen size={18} />} onClick={onOpenFolder} />
+          <IconButton size="sm" label={t("home:openFolder")} icon={<FolderOpen size={14} />} onClick={onOpenFolder} />
         </div>
       </motion.div>
       {preparing ? (

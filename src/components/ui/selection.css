@@ -1,3 +1,4 @@
+@layer primitives {
 .vx-selection {
   position: relative;
   isolation: isolate;
@@ -29,13 +30,20 @@
 .vx-rail-nav { display: flex; flex-direction: column; align-items: stretch; padding: 8px; }
 .vx-rail-nav > button { min-height: 42px; padding: 10px 12px; }
 .vx-section-panel { min-width: 0; opacity: 1; transition: opacity var(--section-duration, 0s) var(--ease-out); }
-@starting-style { .vx-section-panel:not([data-section-motion="none"]) { opacity: 0; } }
+@starting-style {
+.vx-section-panel:not([data-section-motion="none"]) { opacity: 0; }
+}
 @media (hover: hover) and (pointer: fine) {
   .vx-selection > button:not(:disabled):hover { color: var(--text-primary); }
   .vx-selection > button:not(:disabled):not([data-selected]):hover { background: var(--surface-hover); }
 }
+}
+@layer overrides {
 [data-high-contrast="true"] .vx-selection__mark { outline: 2px solid var(--text-primary); outline-offset: -2px; }
 @media (forced-colors: active) {
   .vx-selection__mark { background: ButtonFace; outline: 2px solid Highlight; outline-offset: -2px; }
 }
-@media (prefers-reduced-motion: reduce) { .vx-section-panel { transition-duration: 0s; } }
+@media (prefers-reduced-motion: reduce) {
+.vx-section-panel { transition-duration: 0s; }
+}
+}

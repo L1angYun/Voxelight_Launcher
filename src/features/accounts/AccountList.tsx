@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { command, type Account } from "../../lib/launcher";
 import type { useAccountSkin } from "../../lib/accountSkin";
 import { PlayerAvatar } from "../../components/PlayerAvatar";
@@ -52,7 +52,7 @@ export function AccountList({
       <header className="vx-account-section-heading">
         <h2 id="account-list-title">{t("accounts:listTitle")}</h2>
         {accounts.length ? (
-          <Button variant="secondary" icon={<Plus size={15} />} onClick={onAdd}>{t("accounts:addAccount")}</Button>
+          <Button variant="secondary" size="sm" icon={<Plus size={14} />} onClick={onAdd}>{t("accounts:addAccount")}</Button>
         ) : null}
       </header>
       {error ? <p role="alert">{error}</p> : null}
@@ -64,14 +64,14 @@ export function AccountList({
             const online = account.type !== "offline";
             return (
               <li className="vx-account-row" key={account.id} data-selected={selected || undefined}>
-                <button className="vx-account-choice" type="button" aria-current={selected || undefined} aria-label={t(selected ? "accounts:actions.current" : "accounts:actions.select", { name: account.username })} disabled={Boolean(busy) || selected} onClick={() => void perform(account, "select")}>
+                <button className="vx-account-choice" type="button" aria-current={selected || undefined} aria-label={t(selected ? "accounts:actions.current" : "accounts:actions.select", { name: account.username })} disabled={Boolean(busy)} onClick={() => { if (!selected) void perform(account, "select"); }}>
                   <PlayerAvatar skinUrl={selected ? accountAppearance.skinUrl : account.skinUrl} username={account.username} label={t("accounts:avatar", { name: account.username })} size={36} />
                   <span className="vx-account-row__identity"><strong>{account.username}</strong><small>{t(`accounts:type.${account.type}`, { defaultValue: t("accounts:type.unknown") })}</small></span>
-                  {selected ? <Check size={14} aria-hidden="true" /> : null}
                 </button>
                 <div className="vx-account-row__actions">
                   {online ? (
                     <IconButton
+                      size="sm"
                       label={t("accounts:actions.refresh", { name: account.username })}
                       icon={<RefreshCw size={15} />}
                       disabled={Boolean(busy)}
@@ -79,6 +79,7 @@ export function AccountList({
                     />
                   ) : null}
                   <IconButton
+                    size="sm"
                     label={t("accounts:actions.remove", { name: account.username })}
                     icon={<Trash2 size={15} />}
                     disabled={Boolean(busy)}

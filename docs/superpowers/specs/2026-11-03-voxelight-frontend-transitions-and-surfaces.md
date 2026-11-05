@@ -126,6 +126,8 @@
 
 ### 第 3 项：同层切换和浮层（M）
 
+选中语法（第二轮收口）：卡片使用 LatticeFrame 静态点框；其余行、导航标签和侧栏使用 `--selection-fill` 实色块。当前项语义放在可聚焦控件上；真正的切换按钮与标签页继续保留各自的 ARIA 语义。
+
 1. **弹窗：** `global.css` 给 `.vx-dialog` 和 `::backdrop` 加 `overlay` 规则，`overlay`、`display` 用 `allow-discrete`。`showModal`、`close` 语义不动。首页内的弹窗要排除出 `home.css:226-228` 的 Lite 全局规则。
 2. **抽屉退场：** `closeProject` 会在同一批更新里清掉 details、loading、error（`useDiscover.ts:82-88`）。用 ref 同时冻结这四项，只在 `open` 时更新。`DiscoverPage:110` 同理，写成 `open ? modpackProject : last`，防止泄漏到后续的创建操作。
 3. **弹窗内部高度：** `CreateInstanceDialog.tsx:143-173` 的版本和整合包切换、loader 字段插入会让高度突变，进出场做完后更显眼。固定内容区最小高度，字段插入用 `reveal`。

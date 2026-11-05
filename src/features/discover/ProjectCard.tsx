@@ -27,8 +27,8 @@ export function ProjectCard({ project, targetName, selected = false, onOpen, onI
         <div className="vx-project-card__meta"><span title={t("downloads:title")}><Download size={12} aria-hidden="true" />{formatNumber(project.downloads, i18n.language, { notation: "compact" })}</span><span>{project.versions.slice(-3).join(" · ")}</span></div>
       </div>
       <div className="vx-project-card__actions">
-        <Button variant="secondary" icon={<Download size={14} />} aria-label={t("discover:install") + " · " + targetName} onClick={onInstall}>{t("discover:install")}</Button>
-        <Button variant="ghost" icon={<ArrowUpRight size={14} />} onClick={onOpen}>{t("discover:details")}</Button>
+        <Button variant="secondary" size="sm" icon={<Download size={14} />} aria-label={t("discover:install") + " · " + targetName} onClick={onInstall}>{t("discover:install")}</Button>
+        <Button variant="ghost" size="sm" icon={<ArrowUpRight size={14} />} onClick={onOpen}>{t("discover:details")}</Button>
       </div>
     </article>
   );

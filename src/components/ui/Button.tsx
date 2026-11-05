@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { cloneElement, forwardRef, isValidElement, Fragment, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -13,6 +13,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   { variant = "secondary", tone = "default", icon, loading = false, size = "md", className, children, disabled, type = "button", ...props },
   ref,
 ) {
+  const iconSize = size === "sm" ? 14 : size === "lg" ? 18 : 16;
+  const sizedIcon = isValidElement<{ width?: number; height?: number }>(icon) && icon.type !== Fragment
+    ? cloneElement(icon, { width: iconSize, height: iconSize }) : icon;
   return (
     <button
       {...props}
@@ -24,7 +27,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       disabled={disabled || loading}
       aria-busy={loading || undefined}
     >
-      {icon ? <span className="vx-button__icon" aria-hidden="true">{icon}</span> : null}
+      {icon ? <span className="vx-button__icon" aria-hidden="true">{sizedIcon}</span> : null}
       <span className="vx-button__label">{children}</span>
     </button>
   );

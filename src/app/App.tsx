@@ -22,9 +22,7 @@ import { PageErrorBoundary } from "./PageErrorBoundary";
 import { pageVariants } from "../design/motion";
 import { useMotionTier } from "../design/useMotionTier";
 import { navigationRegistry } from "./registry";
-import "../design/global.css";
 import "./shell.css";
-import "../design/surfaces.css";
 
 const implementedPages = new Set<NavigationPage>(["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]);
 

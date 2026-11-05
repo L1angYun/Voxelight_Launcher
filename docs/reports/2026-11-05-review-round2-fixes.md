@@ -1,4 +1,4 @@
-# 第二轮修复：阶段1收尾与阶段2验收
+# 第二轮修复：阶段1收尾、阶段2与阶段3验收记录
 
 日期：2026-11-05（Asia/Singapore）。下文先保留已推送的阶段1记录，再补充复核后的收尾说明；新的收尾与阶段2–4验证结果按实际执行补录。
 
@@ -73,7 +73,7 @@
 
 ## 阶段2：无障碍与交互缺陷
 
-阶段2提交哈希：待本阶段提交后补录。证据根为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage2/`；以下数值与测试均已实际运行，人工检查单列。
+阶段2提交为`99b44995c799d39806e6601de7ad790ec67a999e`，已推送并用`git ls-remote origin`确认远端只有main。证据根为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage2/`；以下数值与测试均已实际运行，人工检查单列。
 
 | 清单 | 实现及实际结果 | 测试与证据 |
 | --- | --- | --- |
@@ -107,6 +107,41 @@ M4实施调整有实际几何依据：按原建议给独立slot加−20px margin
 - 字段与搜索图：`fields-complete/field-focus-create-*/create-{collapsed,loader-keyboard-focus}.png`，以及`field-focus-search-{reduced,forced}-*/{library,discover}-search-focus.png`。
 
 人工结论仅覆盖上面明确列出的两张图；其它图已保存并有对应自动检查，不冒充逐张人工签字。真实Tauri/WebView2、Intel和读屏实际播报仍未验证。阶段3、4尚未纳入本节结论。
+
+## 阶段3：设计语言收口
+
+下表R2-04–07属于同一阶段3提交，哈希待本阶段提交后补录。证据根为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage3/`。当前源码已冻结，42张改前图与42张改后图均采集完成，采集记录中页面错误为0、源码前后校验一致；30项跨阶段回归已通过，另补两项命令栏用例2/2通过。audit-comparison.json/.md确认42页h1的x/y/宽/高精确零差异，按钮与表面节点无新增或缺失，按钮填充色无变化；表面填充与圆角变化全部对应R2-04–07，未分类差异为0。
+
+| 清单 | 实现与已完成的自动验证 | 主要证据 |
+| --- | --- | --- |
+| R2-04 | 行、侧栏和标签使用selection-fill与hairline，卡片仍用LatticeFrame点框。实例卡片的aria-current移动到可聚焦按钮，最近实例使用aria-current；当前账号可Tab到达且重复激活不发起切换。真实键盘用例验证库卡片当前态、当前账号可访问名称和焦点，Enter前后select_account调用数不增加 | `design-first/design-consistency-R2-04-c-56516-r-state-on-keyboard-targets/current-semantics.json`及`library-current-keyboard.png`、`account-current-keyboard.png`；`tsx-red.log`、`tsx-green.log`、`managed-current-red.log`、`managed-layer-green.log` |
+| R2-05 | 按钮统一为sm/md/lg的32/38/56px、999px药丸及14/16/18px图标；页面级尺寸覆盖删除。跨两主题、三宽度、七页的设计测试通过按钮与图标几何断言。游戏库D4仅按已定决策将操作按钮的半径改验999px，字段和视图切换仍为12px、38px高 | `design-red.log`中的修复前药丸/图标失败；`design-first/design-consistency-R2-05-l-369fe--38px-pills-with-16px-icons/library-primary-controls.json`及PNG；六组`design-audit.json` |
+| R2-06 | 角色预览、下载空态及详情阅读面使用panel/card与hairline；命令栏去掉额外填充和描边，探索搜索去掉嵌套panel，浅色card为白色。真实页面角落像素：浅色页面239.6667、面板247、卡片255，层级差7.3333及8均≥4；角色预览深色16>页面8.6667，浅色255>页面239.6667。面板/卡片6或12px圆角与1px hairline断言通过 | `reading-surfaces-v2/reading-surfaces.json`、六张原图及各页JSON；`after/`42页审计。差分摘要见audit-comparison.json/.md；阅读面变化全部对应计划，字段控件与世界背景单独记录，不当作panel/card填充 |
+| R2-07 | 基础CSS在App前导入，按tokens/base/primitives/features/overrides分层，清理失效覆盖；详情弹窗实测1440窗口下宽720px。普通与减少透明/高对比的几何检查通过；强制颜色测试原先错误比较跨系统滚动条模式的绝对屏幕x，修正为相同阅读面内部几何后重跑通过，未改产品迁就测试 | `design-first/design-consistency-R2-07-d-ee5b4-eps-its-720px-width-at-1440/discover-details-geometry.json`与PNG；`forced-geometry.log`、`forced-geometry/*/degraded-geometry.json`；`css-entry-red.log`、`css-entry-green.log`、`css-contract.json` |
+
+### 阶段3测量说明与已验证数值
+
+强制颜色模式启用系统滚动条后，阅读面整体屏幕x增加4px，宽度仍为1280px，标题相对阅读面左边的内缩仍为32px，各内容页标题x仍相同。最初用“与普通模式绝对x不变”代替清单所需的页面间对齐，导致12项设计测试中11项通过、1项失败。修正检查对象为同一阅读面的内部偏移和宽度，保留原失败图及JSON，再运行该项通过（7.1秒）。此次是测量坐标参照修正，没有改变产品布局、按钮要求或对齐公差。
+
+阅读面像素探针第一版将覆盖整屏但透明的玻璃管理canvas当作前景遮挡，导致页面gutter无法取样。第二版按实际玻璃surface边界检查遮挡；固定角落候选、采样区域、阈值和产品均未修改，第一版失败数据保留在`reading-surfaces/`。第二版所有样本有效，数值检查全部通过，前后源码hash一致。探针只读真实DOM和截图，没有隐藏层、重涂底色或制作测试色板。
+
+| 像素项目（1440×930） | 实测RGB平均亮度中位数 | 差值／要求 |
+| --- | ---: | --- |
+| 浅色设置页gutter → settings panel | 239.6667 → 247.0000 | +7.3333，要求≥4 |
+| 浅色settings panel → library card | 247.0000 → 255.0000 | +8.0000，要求≥4 |
+| 浅色settings panel → character preview card | 247.0000 → 255.0000 | +8.0000，要求≥4 |
+| 深色账号页gutter → character preview card | 8.6667 → 16.0000 | +7.3333，预览比页面亮 |
+| 浅色账号页gutter → character preview card | 239.6667 → 255.0000 | +15.3333，预览比页面亮 |
+
+以上是6×6无遮挡角落patch的实际像素中位数，准确DOM、候选拒绝原因、坐标及全部RGB值保存在`reading-surfaces-v2/*.json`。card与panel的层级比较取自同主题同窗口的不同真实页面，该局限保留在结果中。截图为`light-1440-{library,settings,accounts}.png`和`dark-1440-{library,settings,accounts}.png`。
+
+### 阶段3测试状态与人工检查边界
+
+- `npm test`最终654项Vitest＋42项Node通过，见`npm-test-final.log`；`npx tsc -b`最终退出0，见`tsc-final.log`。
+- `design-consistency.spec.ts`首次12项中11项通过，仅强制颜色的绝对屏幕x比较失败；该项修正坐标参照后单独通过。原日志和截图均保留，不把首次运行写成12/12。
+- jsdom不解析生产CSS层导致的10条既有断言没有删除或放宽；`isolatedStylesheetCss`只在组件单测中展开传入组件CSS的layer包装，保留原断言。生产级联仍由真实浏览器测试与42页改前/改后审计验证，未用此辅助函数模拟整套生产级联。
+- 最终跨阶段回归30/30通过，3.2分钟，见`regression.log`：12项design、5项accessibility、5项field-focus、5组M1/M2以及3项library D3。旧D4用例已按新语义改名，原grep未包含它们，两项library commandbar另跑2/2通过（9.0秒，toolbar-final-v2.log）；没有把未被筛选的用例算作通过。完整Playwright、Cargo和安装包构建未据此宣称完成。
+- **人工已查看：** `after/zh-light-1440-accounts.png`，白色角色预览卡与页面形成明确层级；`after/zh-dark-1440-library.png`，操作按钮为药丸、卡片点框仍保留，未见横向溢出。人工结论仅覆盖这两张图，未遍历全部角色预览模式，也不把42张自动截图当作全部人工通过。阶段4的世界与玻璃诊断尚未开始。
 
 ## M1、M2、S1实现与复核
 

@@ -1,3 +1,4 @@
+@layer tokens {
 :root {
   color-scheme: dark;
   --bg-base: #141516;
@@ -73,7 +74,7 @@
   --surface-solid: #faf9f5;
   --surface-panel: color-mix(in srgb, #faf9f5 94%, transparent);
   --selection-fill: color-mix(in srgb, var(--text-primary) 8%, var(--surface-panel));
-  --surface-card: #faf9f5;
+  --surface-card: #ffffff;
   --hairline: rgba(50, 45, 36, .14);
   --surface-glass: rgba(255, 254, 250, 0.76);
   --text-primary: #242522;
@@ -93,6 +94,8 @@
   --shadow-raised: 0 16px 48px rgba(50, 45, 36, 0.1);
   --shadow-glass: 0 20px 64px rgba(50, 45, 36, 0.14);
 }
+}
+@layer overrides {
 
 [data-high-contrast="true"] {
   --surface-panel: var(--surface-solid);
@@ -104,4 +107,5 @@
   --text-tertiary: var(--text-secondary);
   --border-subtle: var(--text-secondary);
   --border-strong: var(--text-primary);
+}
 }

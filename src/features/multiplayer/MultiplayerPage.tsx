@@ -19,7 +19,7 @@ export function MultiplayerPage() {
 
   return (
     <PageShell className="vx-multiplayer-page">
-      <PageHeader className="vx-page-heading" title={t("multiplayer:title")} description={t("multiplayer:subtitle")} />
+      <PageHeader title={t("multiplayer:title")} description={t("multiplayer:subtitle")} />
       <Segmented className="vx-multiplayer-tabs" semantic="tabs" label={t("multiplayer:views")} value={tab} onChange={setTab}
         idPrefix="multiplayer-tab" panelId={(id) => `multiplayer-panel-${id}`}
         options={(["servers", "managed"] as const).map((value) => ({ value, label: t(`multiplayer:tab.${value}`) }))} />

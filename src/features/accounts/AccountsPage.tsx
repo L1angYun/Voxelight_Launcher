@@ -21,7 +21,7 @@ export function AccountsPage() {
 
   return (
     <PageShell className="vx-accounts-page">
-      <PageHeader className="vx-accounts-heading" title={t("accounts:title")} />
+      <PageHeader title={t("accounts:title")} />
       <div className="vx-accounts-layout vx-workspace">
         <AccountList
           accounts={data.accounts}

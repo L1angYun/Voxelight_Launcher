@@ -259,7 +259,11 @@ describe("multiplayer", () => {
   it("cannot start a managed server until EULA is explicitly accepted", async () => {
     await render();
     await click("Managed servers");
-    expect(container.querySelector('.vx-managed-list [aria-pressed="true"]')?.textContent).toContain("Synthetic server");
+    const current = container.querySelector<HTMLButtonElement>('.vx-managed-list [aria-current="true"]');
+    expect(current).not.toBeNull();
+    expect(current?.textContent).toContain("Synthetic server");
+    expect(current?.hasAttribute("aria-pressed")).toBe(false);
+    current!.focus(); expect(document.activeElement).toBe(current);
     expect(container.querySelector(".vx-managed-detail h2")?.textContent).toBe("Synthetic server");
     const start = button(container, "Start server");
     expect(start.disabled).toBe(true);
