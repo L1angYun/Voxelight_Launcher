@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { chromium, expect, test, type Page } from "@playwright/test";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { selectValue } from "./select-helpers";
@@ -10,18 +10,7 @@ import { installWorldResourceProbe, snapshotWorldResources, type WorldResourceSn
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 import { worldAppearanceMetrics } from "./helpers/world-appearance";
 import { captureAppearanceSeries } from "./helpers/world-appearance-capture";
-
-type AppearanceBudget = {
-  outsideApplies: boolean; outsideLimit: number | null; coverageLimit: number | null;
-  sources: Record<string, { complete: boolean; metrics: Record<string, { mean: number }> }>;
-};
-async function appearanceBudget(theme: string, width: number): Promise<AppearanceBudget> {
-  const data = JSON.parse(await readFile(new URL("./data/world-island-baseline.json", import.meta.url), "utf8"));
-  const entry = data.cases[`${theme}-${width}`] as AppearanceBudget | undefined;
-  if (!entry || !entry.sources.d5e31ad?.complete || !entry.sources.a4f756e?.complete)
-    throw new Error(`Missing ten-run appearance reference for ${theme}-${width}`);
-  return entry;
-}
+import { loadAppearanceBudget as appearanceBudget } from "./helpers/world-appearance-budget";
 
 const evidence = resolve(process.env.VOXELIGHT_TASK8_EVIDENCE ?? "test-results/world-acceptance");
 
@@ -33,12 +22,78 @@ const appearanceTest = test.extend({
   },
 });
 
+/** Observe the actual renderer, independently of fixture settings. */
+async function expectWorldAppearance(page: Page, theme: string, scene: string) {
+  await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+  await expect(page.locator(".world-scene")).toHaveAttribute("data-world-scene", scene);
+}
+
+/** Test-only terrain clock override; keep every other uniform and animation live. */
+async function pinTerrainTime(page: Page, phase: number) {
+  await page.addInitScript(value => {
+    const names = new WeakMap<WebGLUniformLocation, string>();
+    const proto = WebGL2RenderingContext.prototype;
+    const locate = proto.getUniformLocation, submit = proto.uniform1f;
+    const probe = { calls: 0, applied: [] as number[] };
+    (window as Window & { __terrainTimeProbe?: typeof probe }).__terrainTimeProbe = probe;
+    proto.getUniformLocation = function(program, name) {
+      const location = locate.call(this, program, name);
+      if (location) names.set(location, name);
+      return location;
+    };
+    proto.uniform1f = function(location, supplied) {
+      if (location && names.get(location) === "uT"
+        && this.canvas instanceof HTMLCanvasElement && this.canvas.closest(".world-scene")) {
+        probe.calls++;
+        if (!probe.applied.includes(value)) probe.applied.push(value);
+        return submit.call(this, location, value);
+      }
+      return submit.call(this, location, supplied);
+    };
+  }, phase);
+}
+
+appearanceTest.describe("terrain breathing highlight safety", () => {
+  for (const width of [1280, 1920]) for (const phase of [9.7, 188, 288, 588]) {
+    appearanceTest(`dark horizon ${width} uT=${phase}: breathing retains highlight headroom`, async ({ page }, info) => {
+      appearanceTest.setTimeout(90000);
+      await page.setViewportSize({ width, height: width === 1920 ? 1080 : 720 });
+      await pinTerrainTime(page, phase);
+      await installLauncherFixture(page, { theme: "dark", effects: "full", worldScene: "horizon", worldMaterial: "lattice" });
+      await page.goto("/");
+      await expectWorldAppearance(page, "dark", "horizon");
+      const result = await captureAppearanceSeries(page, info.outputPath("terrain-phase"), { background: [7, 8, 11] });
+      await expectWorldAppearance(page, "dark", "horizon");
+      const probe = await page.evaluate(() => (window as Window & {
+        __terrainTimeProbe?: { calls: number; applied: number[] }
+      }).__terrainTimeProbe);
+      expect(probe?.calls).toBeGreaterThan(0);
+      expect(probe?.applied).toEqual([phase]);
+      const numeric = result.samples.map(sample => ({ index: sample.index,
+        p95: sample.island.p95, islandWhite: sample.island.pureWhiteFraction, lowerWhite: sample.lower.fraction,
+        pass: sample.island.p95 !== null && sample.island.p95 <= 200
+          && sample.island.pureWhiteFraction !== null && sample.island.pureWhiteFraction < .005
+          && sample.lower.fraction !== null && sample.lower.fraction < .001,
+      }));
+      await writeFile(info.outputPath("terrain-breathing.json"), JSON.stringify({
+        width, phase, probe, runtime: result.runtime, waiting: result.settlingWait, numeric,
+        medians: result.medians, allNumericPass: numeric.every(row => row.pass),
+        diagnostics: result.samples.map(sample => ({ index: sample.index, mean: sample.island.mean,
+          coverage: sample.island.coverage, valid: sample.island.valid })),
+        manual: { status: "not-assessed-by-automated-test" },
+      }, null, 2));
+      for (const frame of numeric) expect.soft(frame.pass, `phase ${phase}, frame ${frame.index}: ${JSON.stringify(frame)}`).toBe(true);
+    });
+  }
+});
+
 appearanceTest.describe("review A appearance budgets", () => {
   for (const theme of ["dark", "light"] as const) for (const width of [1280, 1050]) {
     appearanceTest(`${theme} ${width}: home lower-world coverage stays within its visual budget`, async ({ page }, info) => {
       await page.setViewportSize({ width, height: 720 });
       await installLauncherFixture(page, { theme });
       await page.goto("/");
+      await expectWorldAppearance(page, theme, "horizon");
       const sample = await captureAppearanceSeries(page, info.outputPath("appearance"), {
         background: theme === "dark" ? [7, 8, 11] : [243, 241, 235],
       });
@@ -80,9 +135,11 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
       await page.setViewportSize({ width, height });
       await installLauncherFixture(page, { theme, effects: "full", worldScene: scene, worldMaterial: "lattice" });
       await page.goto("/");
+      await expectWorldAppearance(page, theme, scene);
       const sampled = await captureAppearanceSeries(page, info.outputPath("anchored-island"), {
         background: theme === "dark" ? [7, 8, 11] : [243, 241, 235],
       });
+      await expectWorldAppearance(page, theme, scene);
       const measured = sampled.medians;
       const checks: { id: string; value: number; rule: string; pass: boolean }[] = [];
       if (scene === "horizon") checks.push(

@@ -1,10 +1,75 @@
 # 第二轮修复：阶段1五组闸门通过
 
-日期：2026-11-05（Asia/Singapore）。依据最新M1/M2/S1及用户将联合等待上限改为20秒的指令。本次范围止于阶段1。
+日期：2026-11-05（Asia/Singapore）。下文先保留已推送的阶段1记录，再补充复核后的收尾说明；新的收尾与阶段2–4验证结果按实际执行补录。
 
-**阶段1五组原生闸门5/5通过，npm test与TypeScript通过。修复提交推送并确认远端后，已完成五场景各十次候选重复（50次，250对正式截图），M1/M2逐次门槛和S1重复性均通过，无偶发失败。本次停在阶段1，没有开始阶段2–4。**
+**已推送的阶段1记录：五组原生闸门5/5通过，npm test与TypeScript通过。修复提交推送并确认远端后，完成五场景各十次候选重复（50次，250对正式截图），M1/M2逐次门槛和S1重复性均通过，无偶发失败。此记录截止时未开始阶段2–4；用户随后独立复跑并认可阶段1。**
 
 初始文档提交为 `d6916d535a5e65a22d3b390f5e82d5943be30161`。M1/M2/S1代码、测试、用户清单修订和本报告作为一个修复提交：`2f17cdb14e5d6bec41cd0a846146f02436cf30a5`。普通推送完成后，`git ls-remote origin`确认只有HEAD和refs/heads/main、均指向该提交。其后才开始候选重复测量；本次补录仅更新报告和基线JSON，不拆分或改写修复提交。未改版本、依赖、Git身份或添加AI署名，未构建安装包。
+
+## 阶段1收尾：复核后的解释与证据边界
+
+清单M1/M2的这几次修订由审查方代用户决定，用户在对话中转达并确认执行。此前报告中的“用户已批准”表示此授权链，不表示实施者自行修改验收口径。本次仍保留全部历史失败记录和原始数据。
+
+### 地形呼吸与长期分布
+
+空闲态`uT`持续推进，地形包含慢漂移和约12.5秒周期的起伏。岛面倾斜及高度变化会改变脚下ROI中顶面、侧面和柱缝的比例。下面数据来自审查方探测文件的154个离散相位（0–600、步长4，另含9.7/21.7/55.7）；本次只复算原文件，没有将它写成新运行的浏览器实测。复核原始文件发现，清单所引约33–98及51–100对应探测脚本额外隐藏角色地板的`hiddenFloor`支路；当前M2使用的仅隐藏角色canvas支路为`hiddenChar`，两组不能混写，因此同时列出。
+
+| 审查方相位扫描及隐藏对象 | ROI均值范围 | ROI均值中位数 | 有效率低于85%的相位占比 |
+| --- | ---: | ---: | ---: |
+| 深色地平线1920，仅canvas（M2口径） | 35.9101–101.1900 | 65.6238 | 69.4805% |
+| 深色地平线1280，仅canvas（M2口径） | 53.8872–101.7814 | 65.4450 | 72.7273% |
+| 深色地平线1920，canvas＋地板（清单所引诊断） | 33.1625–97.8001 | 60.3844 | 71.4286% |
+| 深色地平线1280，canvas＋地板（清单所引诊断） | 51.1542–100.0250 | 62.6690 | 73.3766% |
+
+此项已按用户确认修正：M2长期统计采用仅隐藏角色canvas的数据，1920约36–101、中位66，1280约54–102、中位65；额外隐藏地板的数据保留为诊断记录。原差异是审查方说明文字的口径笔误，不涉及门槛、验收区域或产品参数。`reviewer-terrain-drift/sampling-scope-proof.json`逐项核对两种宽度各154个相位：`terrain-correlation.json`的roi均值全部精确匹配`hiddenFloor`，与`hiddenChar`没有一项精确相同。复算脚本与原始文件同存于worklogs。
+
+这是离散相位分布，不能把该比例直接当作连续运行时间占比。审查方人工观察为各相位角色仍站在岛上，未见白斑；该观察与数值记录分开。启动附近`uT≈8–10`接近扫描中的最亮点，所以现有启动闸门用于约束过曝较重的时刻，均值下限90不是长期亮度保证。新增测试按清单仅在测试中包装`uniform1f`，固定9.7、188、288、588；每相位只判p95与两项纯白上限，均值和有效率只记录。新增测试的实际结果见下方收尾验证，长期分布说明已按用户确认修正。
+
+审查方来源为`C:/Users/LiuYu/AppData/Local/Temp/claude/c316e987faaa6d11/b19ef28c-172d-46e4-9107-7bb458e1b697/scratchpad/drift/out/terrain-correlation.json`及同目录扫描原始记录；可复核副本见本次worklogs收尾目录中的`reviewer-terrain-drift/`。
+
+### 五帧下降、山体与锚点口径
+
+深色1920在联合等待判据成立后，正式五帧均值仍从97.0644依次降至95.5334、93.7174、92.1468、88.9178。闸门采用五帧中位数93.7174，因此这一组通过；最后一帧低于90的事实仍保留。相邻两次差值小于1只限定开始采样的局部时刻，不能证明后续相位或整段空闲过程没有变化。
+
+山体的复核记录为修复前岛面ROI均值约90.5，修复后约48.6（本次正式五帧中位数48.6232）。这个ROI落在半径5岛的前排侧面和柱缝，修复后的ROI有效率中位数76.7608%；不能将亮度下降隐去，也不能把它当作岛顶均匀亮度。按审查方代用户修订的口径，这些岛面数字仅记录，数值门槛只判下半区纯白。本次该项为0%。
+
+人工图为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/revision4-result/dark-massif-1280-manual.png`。既有人工检查观察到受光面暖色及棱角仍清晰，背光面和柱缝保持暗部，没有整座山覆盖灰雾的观感；用户已认可该图。这是人工观察，不并入数值通过项。
+
+`git show d5e31ad:src/features/home/HomePage.tsx`确认旧版`data-world-anchor`挂在`.vx-home__char-col`，并非`.vx-home__feet`。历史采集使用旧版真实锚点，当前版使用feet底边中点；两个版本的DOM锚点不能描述为同一个元素。既定历史比较保留此差异，原始数据可追溯，未人为移动旧版锚点来对齐新版本。
+
+“改相机at.y后无需改ROI”的一般保证列为未验证：收尾时实际将at.y改回18.5，原camera测试仍11/11通过，反证日志为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/closeout/camera-circular-mutation-still-green.log`。因此删除了三条循环意图断言，未将它们改写为仅锁定常量的伪几何证明。DOM锚点会重新读取，只能证明坐标跟随行为；任意相机变化后是否仍覆盖实际岛面，需要重新测量，不能从剩余camera单测推出。
+
+### 收尾实际验证（口径说明已修正）
+
+真GPU八个固定相位用例与原五组闸门合计13/13通过（2.4分钟）。每相位的五帧均逐帧通过p95≤200、岛内纯白<0.5%、下半区纯白<0.1%；没有对均值或有效率新增下限。每个用例断言实际提交的data-world-scene和html[data-theme]。
+
+| 宽度 | uT | 均值中位数（记录） | 有效率中位数%（记录） | 五帧最大p95 | 最大岛内纯白% | 最大下半区纯白% | 等待ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1280 | 9.7 | 98.5213 | 98.1608 | 166.3333 | 0.000000 | 0.005159 | 2940.0 |
+| 1280 | 188 | 57.3550 | 77.6824 | 161.3333 | 0.070736 | 0.007143 | 2894.8 |
+| 1280 | 288 | 61.7836 | 67.0510 | 166.6667 | 0.010264 | 0.030159 | 2837.6 |
+| 1280 | 588 | 75.5568 | 80.5686 | 168.6667 | 0.000000 | 0.005952 | 2874.8 |
+| 1920 | 9.7 | 95.2608 | 97.5098 | 166.0000 | 0.016928 | 0.002739 | 2805.4 |
+| 1920 | 188 | 43.6518 | 64.0431 | 155.0000 | 0.033252 | 0.003551 | 2756.3 |
+| 1920 | 288 | 52.7620 | 65.0000 | 167.3333 | 0.000000 | 0.006189 | 2767.0 |
+| 1920 | 588 | 101.1906 | 93.2157 | 174.6667 | 0.000000 | 0.002029 | 2762.8 |
+
+自动验证：`npm test`为625项Vitest＋42项Node通过，实际退出0；`npx tsc -b`退出0。片元反照率回1.2、删除主题高光肩部混合的实际变异各使新增测试失败，恢复原字节后通过。旧camera循环断言在at.y=18.5下仍11/11通过，已删除三条循环断言；相机修改后的真实ROI覆盖仍未验证。
+
+基线从3,887,799字节缩至4,394字节，各限值精确保持原值。新加载器按原公式重新推导并比对限值；完整原始数据与旧单帧基线已归档。未在版本化JSON中保留GPU字符串、绝对路径或逐帧数据。
+
+本次证据根：`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/closeout`。`acceptance.json`包含八相位和五闸门的全部数值、原始文件路径；`gpu.log`、`npm-test-final.log`、`tsc-final.log`记录实际命令结果。截图仍为正常／隐藏角色两份，详见以下对应目录。
+
+- 1280／uT=9.7：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-dd257--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-dd257--retains-highlight-headroom\terrain-phase\island-2.png`。
+- 1280／uT=188：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-980cd--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-980cd--retains-highlight-headroom\terrain-phase\island-2.png`。
+- 1280／uT=288：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-6ef7a--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-6ef7a--retains-highlight-headroom\terrain-phase\island-2.png`。
+- 1280／uT=588：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-13a06--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-13a06--retains-highlight-headroom\terrain-phase\island-2.png`。
+- 1920／uT=9.7：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-186c1--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-186c1--retains-highlight-headroom\terrain-phase\island-2.png`。
+- 1920／uT=188：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-1f13a--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-1f13a--retains-highlight-headroom\terrain-phase\island-2.png`。
+- 1920／uT=288：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-db768--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-db768--retains-highlight-headroom\terrain-phase\island-2.png`。
+- 1920／uT=588：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-90ba2--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-90ba2--retains-highlight-headroom\terrain-phase\island-2.png`。
+
+阶段1收尾作为单独提交提交并推送，提交哈希在后续阶段报告中补录。说明文字笔误已按用户确认修正，后续只有门槛、验收区域或产品参数与实际画面冲突才暂停。此节点尚未执行完整Playwright、Cargo、Intel、真实Tauri/WebView2及浅色键盘巡检，未构建安装包；后续阶段的验证另行补录。
 
 ## M1、M2、S1实现与复核
 
@@ -85,7 +150,7 @@
 
 ## 保留的历史岛外基线与本次候选
 
-以下历史数值直接读取保留的基线JSON，没有重采。历史各版本先按每轮五帧取中位数，再列出十轮均值；本次正式闸门列单轮五帧中位数。按已批准口径，岛外上限=d5e31ad十轮均值+0.35×(287a3af十轮均值−d5e31ad十轮均值)。候选十次岛外原值另列于后文逐轮表，不能用历史σ代替候选σ。
+以下历史数值读取自收尾前的完整基线JSON，没有重采。完整文件现归档于 `E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/closeout/world-island-baseline.full-346b0c0.json`，SHA256为`7C43897CC15950BB8354CF4187693C137DF2F63561B68551F21DBB40F0294E20`。历史各版本先按每轮五帧取中位数，再列出十轮均值；本次正式闸门列单轮五帧中位数。按已批准口径，岛外上限=d5e31ad十轮均值+0.35×(287a3af十轮均值−d5e31ad十轮均值)。候选十次岛外原值另列于后文逐轮表，不能用历史σ代替候选σ。
 
 | 主题／宽度 | d5e31ad | 287a3af | a4f756e | 岛外上限 | 本次正式闸门 | 候选十次均值 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -94,7 +159,7 @@
 | dark-1920 | 3.510780 | 19.161258 | 8.802066 | 8.988447 | 6.728648 | 6.691205 |
 | light-1280 | 19.877717 | 83.127350 | 15.669897 | 42.015089 | 15.674985 | 15.705531 |
 
-历史岛外指标的十轮原始中位数（顺序run-0到run-9；各轮五帧原值保留在同一基线JSON的sources.runs中）：
+历史岛外指标的十轮原始中位数（顺序run-0到run-9；各轮五帧原值保留在上述worklogs完整归档的sources.runs中）：
 
 | 主题／宽度 | 版本 | 十次原始值 |
 | --- | --- | --- |
@@ -111,7 +176,7 @@
 | light-1280 | 287a3af | 83.123679、83.133915、83.132590、83.136467、83.110225、83.129491、83.127048、83.116291、83.131662、83.132132 |
 | light-1280 | a4f756e | 15.635151、15.632227、15.622695、15.637392、15.651302、15.752979、15.629996、15.719139、15.669660、15.748431 |
 
-历史采样使用当时已批准的等待方法；按本轮明确指令保留原值，不以新的20秒联合等待重采。基线JSON同时保存原始相机锚点、渲染器及每轮数据来源，可与本次样本区分。
+历史采样使用当时已批准的等待方法；按本轮明确指令保留原值，不以新的20秒联合等待重采。worklogs完整归档保存原始相机锚点、渲染器及每轮数据来源，可与本次样本区分。版本化测试基线只保留读取和推导限值所需的摘要，不再携带绝对路径、GPU字符串或逐帧数据。
 
 ## 截图与提交帧率比较
 
@@ -168,11 +233,11 @@
 
 用户已认可上一轮山体人工图；本次另查看新保存的山体图，受光面暖色和棱角清晰，没有观察到覆盖整座山的灰雾，背光面和柱缝仍暗。该观察单列在manual，不混入allAGatesPass。
 
-候选十次重复σ已在修复提交推送之后测量，详见下文；历史d5e31ad、287a3af、a4f756e均未重采，原始数值与限值摘要仍为`5eca34a43aea657009dee2c00a1a47da5a95589a97e30a5480650b8eac8f652b`。旧基线和先前失败数据均保留，不以单测或人工图替代数值门槛。
+候选十次重复σ已在修复提交推送之后测量，详见下文；历史d5e31ad、287a3af、a4f756e均未重采。收尾前完整原始数值与限值摘要为`5eca34a43aea657009dee2c00a1a47da5a95589a97e30a5480650b8eac8f652b`，完整文件已归档到worklogs，瘦身后的测试JSON只保留必要摘要。旧基线和先前失败数据均保留，不以单测或人工图替代数值门槛。
 
-本轮未运行完整Playwright、Cargo检查／测试或构建，未验证Intel、真实Tauri/WebView2或真实账号游戏流程。阶段2–4及浅色键盘巡检没有开始，符合本次只处理阶段1的范围。
+上述已推送阶段1记录未运行完整Playwright、Cargo检查／测试或构建，未验证Intel、真实Tauri/WebView2或真实账号游戏流程；当时阶段2–4及浅色键盘巡检尚未开始。后续执行结果按实际验证另行补录。
 
-## 已运行验证
+## 已推送阶段1的验证
 
 | 命令／检查 | 结果 | 日志 |
 | --- | --- | --- |
@@ -211,7 +276,7 @@ M1/M2逐次门槛：**50/50通过**；S1：**通过**。原始记录无缺失，
 | 浅色地平线 1280×720 | 10/10、10/10 | 0.007342 | 0.010388 | 2777.2–2834.6 | 157.1133–157.1387 |
 | 深色山体 1280×720 | 10/10、10/10 | 0.008319（记录） | 0.020958 | 2308.8–2974.9 | 48.6169–48.6495 |
 
-以下轮号沿用原始目录run-0至run-9，每个数值均为该轮五帧中位数。M1/M2列只汇总既定数值项；纯白与ROI有效性、完整五帧及等待过程保存在基线JSON和原始文件中。
+以下轮号沿用原始目录run-0至run-9，每个数值均为该轮五帧中位数。M1/M2列只汇总既定数值项；纯白与ROI有效性、完整五帧及等待过程保存在worklogs完整基线归档和原始采样文件中。
 
 ### 深色地平线 1280×720：十次原始结果
 
@@ -303,6 +368,6 @@ M1/M2逐次门槛：**50/50通过**；S1：**通过**。原始记录无缺失，
 - 采集命令：`node E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/capture-candidate-repeatability.mjs`；日志`candidate-repeatability.log`，全部预定50次已执行。
 - 统计命令：`node E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/analyze-candidate-repeatability.mjs`；从五帧原始数字独立复算各轮中位数、σ、等待判据和各项门槛，并检查截图存在、锚点/布局不变、真实GPU、DPR、网格/点数及计数器时间戳单调。
 - 追加基线后再次复算：脚本从`git show 2f17cdb:tests/e2e/data/world-island-baseline.json`读取采样时的不可变基线，字节SHA与采样记录一致；当前工作区只额外核查历史source/限值摘要。复算结果另存`candidate-repeatability-reproduced.json/.md`，严格比较5组、50轮、250帧及416条等待记录全部相同，证明追加结果没有改变历史依据。比较证据为`candidate-repeatability-reproduction-check.json`，原始分析未覆盖。
-- `candidate-repeatability-analysis.json`保留全部250帧数值、等待时序、帧数与四个截图检查点；`.md`为50次完整数值表和额外旧覆盖率限值对照。已同步追加到版本化`tests/e2e/data/world-island-baseline.json`的`candidateRepeatability`，未改历史source数值或原有门槛。
+- `candidate-repeatability-analysis.json`保留全部250帧数值、等待时序、帧数与四个截图检查点；`.md`为50次完整数值表和额外旧覆盖率限值对照。补测时曾追加到版本化JSON的`candidateRepeatability`；阶段1收尾时，完整数据随`world-island-baseline.full-346b0c0.json`归档到worklogs，版本化基线只保留必要摘要和限值，未更改原有门槛。
 - 本次补测是自动数字复核，没有新增人工视觉签字；山体人工检查沿用前文独立记录。完整Playwright、Cargo、安装包、Intel、真实Tauri/WebView2、浅色键盘巡检和阶段2–4仍未执行。
 - 初次五组闸门的1280／1920提交率比较及局限见前文。所有补测等待也保存data-world-frames和时间戳，但没有进行无截图对照实验。

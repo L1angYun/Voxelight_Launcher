@@ -131,6 +131,29 @@ it("updates page composition and phase on the existing renderer", async () => {
   expect(frame.front).toBeCloseTo(97.5, 0); expect(frame.profile).toBeGreaterThan(.99);
   expect(scene().dataset.worldPhase).toBe("preparing"); expect(bridge.create).toHaveBeenCalledTimes(1);
 });
+it("reports the scene from accepted draws instead of an unsubmitted requested scene", async () => {
+  await render({ effects: "lite" });
+  expect(scene().dataset.worldScene).toBe("horizon");
+  fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: false, pointsSubmitted: false });
+  await render({ effects: "lite", scene: "massif" });
+  expect(fake.draw.mock.calls.at(-1)![0].profile).toBe(1);
+  expect(scene().dataset.worldScene).toBe("horizon");
+  fake.draw.mockReturnValue({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true });
+  await render({ effects: "lite", scene: "massif", phase: "preparing" });
+  expect(scene().dataset.worldScene).toBe("massif");
+  await act(async () => callbacks.onLost());
+  expect(scene().dataset.worldScene).toBe("unavailable");
+});
+it("marks an in-flight scene morph separately from either settled terrain", async () => {
+  await render({ scene: "horizon" });
+  await render({ scene: "massif" });
+  await advance(100);
+  const profile = fake.draw.mock.calls.at(-1)![0].profile;
+  expect(profile).toBeGreaterThan(0); expect(profile).toBeLessThan(1);
+  expect(scene().dataset.worldScene).toBe("transition");
+  await advance(7000);
+  expect(scene().dataset.worldScene).toBe("massif");
+});
 it("downgrades after two real seconds even when physical simulation dt is capped", async () => {
   fake.draw.mockReturnValue({ cpuMs: 20, gpuMs: null, submitted: true, pointsSubmitted: true });
   await render(); await advance(2100, 10);

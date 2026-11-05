@@ -149,6 +149,28 @@ function voxelLighting(draw: VoxelDraw, incoming: number, island: number, theme 
     (left, right, amount) => left * (1 - amount) + right * amount);
 }
 
+// These fragment operations are component-wise, so one scalar evaluation per
+// channel runs the submitted expressions without copying their coefficients.
+// Native GPU acceptance still covers compilation and the complete pipeline.
+function voxelAlbedo(draw: VoxelDraw, incoming: [number, number, number], island: number): number[] {
+  const expression = /\balb\s*=\s*(max\(alb,[^;]+\))\s*;/.exec(draw.fragment)?.[1];
+  if (!expression) throw new Error("Submitted voxel fragment has no island albedo floor");
+  return incoming.map((channel, index) => {
+    const evaluate = new Function("alb", "uLat", "vIsland", "vec3", "max", `return (${expression});`);
+    return evaluate(channel, draw.uniforms.get("uLat"), island,
+      (...components: number[]) => components.length === 1 ? components[0] : components[index], Math.max) as number;
+  });
+}
+
+function voxelExposedHighlight(draw: VoxelDraw, incoming: number, exposure = draw.uniforms.get("uExposure"), theme = draw.uniforms.get("uLight")): number {
+  const operations = /\bcol\s*\*=\s*uExposure;[\s\S]*?(?=\bcol\s*=\s*mix\(col,\s*col\s*\*\s*\.55)/.exec(draw.fragment)?.[0];
+  if (!operations) throw new Error("Submitted voxel fragment has no exposure-to-charge operations");
+  const evaluate = new Function("col", "uExposure", "uLight", "max", "min", "mix",
+    `${operations.replace(/\bvec3\b/g, "let")} return col;`);
+  return evaluate(incoming, exposure, theme, Math.max, Math.min,
+    (left: number, right: number, amount: number) => left * (1 - amount) + right * amount) as number;
+}
+
 function floatUniformPrecision(source: string, name: string, stageDefault: string): string | undefined {
   const defaultPrecision = /\bprecision\s+(lowp|mediump|highp)\s+float\s*;/.exec(source)?.[1] ?? stageDefault;
   for (const declaration of source.matchAll(/\buniform\s+(?:(lowp|mediump|highp)\s+)?float\s+([^;]+);/g)) {
@@ -158,6 +180,42 @@ function floatUniformPrecision(source: string, name: string, stageDefault: strin
 }
 
 describe("WebGL renderer boundary", () => {
+  it("uses a sub-unit island albedo floor without raising solid or non-island fragments", () => {
+    const t = mount({ float: true }); const renderer = t.renderer!;
+    try {
+      renderer.draw(frame(), .016);
+      const lattice = t.voxelDraws.at(-1)!;
+      expect(voxelAlbedo(lattice, [.1, .2, .3], 1)).toEqual([.6, .588, .552]);
+      expect(voxelAlbedo(lattice, [1.5, .9, .1], 1)).toEqual([1.5, .9, .552]);
+      expect(voxelAlbedo(lattice, [.1, .1, .1], .5)).toEqual([.3, .294, .276]);
+      expect(voxelAlbedo(lattice, [.1, .2, .3], 0)).toEqual([.1, .2, .3]);
+      renderer.draw({ ...frame(), lat: 0 }, .016);
+      expect(voxelAlbedo(t.voxelDraws.at(-1)!, [.1, .2, .3], 1)).toEqual([.1, .2, .3]);
+    } finally { renderer.dispose(); }
+    expect(t.live.size).toBe(0);
+  });
+
+  it("compresses exposed dark fragment highlights while preserving light-theme and low values", () => {
+    const t = mount({ float: true }); const renderer = t.renderer!;
+    try {
+      renderer.draw(frame(), .016);
+      const dark = t.voxelDraws.at(-1)!;
+      expect(voxelExposedHighlight(dark, 2)).toBeCloseTo(.9714285714285714, 10);
+      expect(voxelExposedHighlight(dark, 1)).toBeCloseTo(.9, 10);
+      expect(voxelExposedHighlight(dark, .8)).toBe(.8);
+      expect(voxelExposedHighlight(dark, .4, .5)).toBe(.2);
+      // Exposure precedes the shoulder, including when exposure raises a dim input.
+      expect(voxelExposedHighlight(dark, .5, 2)).toBeCloseTo(.9, 10);
+      expect(voxelExposedHighlight(dark, 2, 1, .5)).toBeCloseTo(1.4857142857142858, 10);
+      renderer.setPalette({ light: true, ink: [1, 1, 1], point: [.2, .2, .2], accent: [.5, .6, .7], haze: [1, 1, 1] });
+      renderer.draw(frame(), .016);
+      const light = t.voxelDraws.at(-1)!;
+      expect(voxelExposedHighlight(light, 2)).toBe(2);
+      expect(voxelExposedHighlight(light, .4, .5)).toBe(.2);
+    } finally { renderer.dispose(); }
+    expect(t.live.size).toBe(0);
+  });
+
   it("limits island lighting compensation to the dark voxel theme without changing the existing field", () => {
     const t = mount({ float: true }); const renderer = t.renderer!;
     try {

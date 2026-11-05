@@ -55,6 +55,7 @@ export function WorldScene(props: WorldSceneProps) {
     let lastAnchorNdc: [number, number] = [.62, -.66];
     let previousPhase = current.current.phase;
     let renderer: WorldRenderer | null = null;
+    let submittedScene: WorldSceneId | "transition" | "unavailable" = "unavailable";
     let pointerBound = false;
     let introPending = false, introTimer: ReturnType<typeof setTimeout> | null = null;
     let introDeadline: number | null = null;
@@ -99,6 +100,7 @@ export function WorldScene(props: WorldSceneProps) {
       host!.dataset.worldFrames = String(drawn);
       host!.dataset.worldSettled = String(frame.settled && gpuComplete && !needsSubmission && !lost);
       host!.dataset.worldMaterial = renderer?.material ?? "solid";
+      host!.dataset.worldScene = submittedScene;
       host!.dataset.worldPhase = current.current.phase;
       host!.dataset.worldFront = String(Math.round(frame.front));
       host!.dataset.worldFlash = String(frame.flash);
@@ -112,7 +114,7 @@ export function WorldScene(props: WorldSceneProps) {
       publishWorldAvailability(lost || !renderer ? "css" : renderer.capabilities.floatTargets ? "available" : "solid-only");
       syncPointerBindings();
     }
-    function fallback() { lost = true; gpuComplete = false; introConsumed = true; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.worldSettled = "false"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
+    function fallback() { lost = true; gpuComplete = false; introConsumed = true; submittedScene = "unavailable"; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.worldScene = submittedScene; host!.dataset.worldSettled = "false"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
     function sample(source: "gpu" | "submission", costMs: number, elapsedMs: number) {
       if (tier.kind !== "animated" || elapsedMs <= 0) return;
       if (source !== budgetSource) { budget = createFrameBudget(16.7); budgetSource = source; }
@@ -150,6 +152,7 @@ export function WorldScene(props: WorldSceneProps) {
         const submissionGap = result.submitted && lastSubmissionAt !== null ? Math.max(0, drawAt - lastSubmissionAt) : 0;
         if (result.submitted) {
           drawn++; lastSubmissionAt = drawAt;
+          submittedScene = drawFrame.profile === 0 ? "horizon" : drawFrame.profile === 1 ? "massif" : "transition";
           host!.dataset.worldSubmissionGapMs = submissionGap.toFixed(3);
           host!.dataset.worldSkippedFrames = String(skippedSubmissions);
           skippedSubmissions = 0;
@@ -310,7 +313,7 @@ export function WorldScene(props: WorldSceneProps) {
   }, []);
   useEffect(() => runtime.current?.update(), [props.phase, props.fraction, props.page, props.scene, props.material, props.paused, props.effects, props.reducedMotion]);
   return <div ref={hostRef} className={["world-scene", props.className].filter(Boolean).join(" ")} aria-hidden="true"
-    data-world-tier="css" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-world-settled="false" data-motion="reduced" data-paused={Boolean(props.paused)}>
+    data-world-tier="css" data-world-scene="unavailable" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-world-settled="false" data-motion="reduced" data-paused={Boolean(props.paused)}>
     <canvas ref={canvasRef} className="world-scene__canvas" />
   </div>;
 }
