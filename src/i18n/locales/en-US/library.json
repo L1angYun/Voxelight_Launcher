@@ -37,13 +37,10 @@
   "zipResources": "ZIP resources",
   "selectWorldZip": "Select a Minecraft world ZIP",
   "worldZipFileType": "Minecraft world ZIP",
-  "noInstances": "No instances yet",
-  "noInstancesDescription": "Create or import an instance to manage your worlds.",
   "noSearchResults": "No matching instances",
   "noSearchDescription": "Try another keyword or clear the search.",
   "clearSearch": "Clear search",
   "openInstance": "Open instance {{name}}",
-  "ready": "Ready",
   "running": "Running",
   "detailTabs": "Instance sections",
   "overview": "Overview",
@@ -116,8 +113,6 @@
   "openLogs": "Open logs folder",
   "noDiagnosisYet": "No launch analysis yet",
   "noDiagnosisDescription": "Analyze this instance's logs for memory, Java, dependency, or graphics issues.",
-  "noDiagnosis": "No launch errors need attention.",
-  "diagnosticsExported": "Diagnostics saved.",
   "logExcerpt": "View log excerpt with credentials redacted",
   "launcherLogs": "Launcher logs",
   "noLogs": "No launcher logs yet.",
@@ -178,5 +173,9 @@
       "logs": "Logs",
       "settings": "Settings"
     }
-  }
+  },
+  "searchVersions": "Search version directories",
+  "searchVersionsPlaceholder": "Search by name, game version, or loader",
+  "versionRuntimeSummary": "{{channel}} · {{java}}",
+  "minecraft": "Minecraft"
 }

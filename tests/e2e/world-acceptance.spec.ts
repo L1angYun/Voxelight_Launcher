@@ -11,6 +11,7 @@ import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 import { worldAppearanceMetrics } from "./helpers/world-appearance";
 import { captureAppearanceSeries } from "./helpers/world-appearance-capture";
 import { loadAppearanceBudget as appearanceBudget } from "./helpers/world-appearance-budget";
+import { installWorldUniformProbe } from "./helpers/world-uniform-probe";
 
 const evidence = resolve(process.env.VOXELIGHT_TASK8_EVIDENCE ?? "test-results/world-acceptance");
 
@@ -21,6 +22,8 @@ const appearanceTest = test.extend({
     try { await use(context); } finally { await context.close(); await browser.close(); }
   },
 });
+
+appearanceTest.beforeEach(async ({ page }) => { await installWorldUniformProbe(page); });
 
 /** Observe the actual renderer, independently of fixture settings. */
 async function expectWorldAppearance(page: Page, theme: string, scene: string) {
@@ -54,7 +57,7 @@ async function pinTerrainTime(page: Page, phase: number) {
 }
 
 appearanceTest.describe("terrain breathing highlight safety", () => {
-  for (const width of [1280, 1920]) for (const phase of [9.7, 188, 288, 588]) {
+  for (const width of [1280, 1050, 1920]) for (const phase of [9.7, 188, 288, 588]) {
     appearanceTest(`dark horizon ${width} uT=${phase}: breathing retains highlight headroom`, async ({ page }, info) => {
       appearanceTest.setTimeout(90000);
       await page.setViewportSize({ width, height: width === 1920 ? 1080 : 720 });
@@ -62,7 +65,9 @@ appearanceTest.describe("terrain breathing highlight safety", () => {
       await installLauncherFixture(page, { theme: "dark", effects: "full", worldScene: "horizon", worldMaterial: "lattice" });
       await page.goto("/");
       await expectWorldAppearance(page, "dark", "horizon");
-      const result = await captureAppearanceSeries(page, info.outputPath("terrain-phase"), { background: [7, 8, 11] });
+      const result = await captureAppearanceSeries(page, info.outputPath("terrain-phase"), {
+        background: [7, 8, 11], stability: "fixed",
+      });
       await expectWorldAppearance(page, "dark", "horizon");
       const probe = await page.evaluate(() => (window as Window & {
         __terrainTimeProbe?: { calls: number; applied: number[] }
@@ -75,14 +80,22 @@ appearanceTest.describe("terrain breathing highlight safety", () => {
           && sample.island.pureWhiteFraction !== null && sample.island.pureWhiteFraction < .005
           && sample.lower.fraction !== null && sample.lower.fraction < .001,
       }));
+      // Revision 4: judge startup brightness at the same terrain phase in each
+      // width. The unfrozen burst retains its other gates and records its mean.
+      const startupMean = phase === 9.7 ? { value: result.medians.islandMean,
+        rule: "90 <= mean <= 150 at uT=9.7 after settling",
+        pass: result.medians.islandMean >= 90 && result.medians.islandMean <= 150 } : null;
       await writeFile(info.outputPath("terrain-breathing.json"), JSON.stringify({
         width, phase, probe, runtime: result.runtime, waiting: result.settlingWait, numeric,
-        medians: result.medians, allNumericPass: numeric.every(row => row.pass),
-        diagnostics: result.samples.map(sample => ({ index: sample.index, mean: sample.island.mean,
+        startupMean, medians: result.medians,
+        allNumericPass: numeric.every(row => row.pass) && (startupMean?.pass ?? true),
+        diagnostics: result.samples.map(sample => ({ index: sample.index, mean: sample.island.mean, uniforms: sample.uniforms,
           coverage: sample.island.coverage, valid: sample.island.valid })),
-        manual: { status: "not-assessed-by-automated-test" },
+        manual: { status: "not-assessed-by-automated-test", checks: phase === 9.7
+          ? [{ id: "R2-19-feet-on-island", screenshot: info.outputPath("terrain-phase", "normal-2.png") }] : [] },
       }, null, 2));
       for (const frame of numeric) expect.soft(frame.pass, `phase ${phase}, frame ${frame.index}: ${JSON.stringify(frame)}`).toBe(true);
+      if (startupMean) expect.soft(startupMean.pass, `startup brightness: ${JSON.stringify(startupMean)}`).toBe(true);
     });
   }
 });
@@ -149,7 +162,6 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
       );
       if (theme === "dark" && scene === "horizon") {
         checks.push(
-          { id: "island-mean", value: measured.islandMean, rule: "90 <= mean <= 150", pass: measured.islandMean >= 90 && measured.islandMean <= 150 },
           { id: "island-p95", value: measured.islandP95, rule: "p95 <= 200", pass: measured.islandP95 <= 200 },
           { id: "island-white", value: measured.islandWhiteFraction, rule: "pure white <0.005", pass: measured.islandWhiteFraction < .005 },
         );
@@ -180,9 +192,10 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
         allAGatesPass: checks.every(check => check.pass),
         waiting: sampled.settlingWait, medians: measured,
         frames: sampled.samples.map(sample => ({ index: sample.index, at: sample.hiddenGeometry.at,
+          uniforms: sample.uniforms,
           island: sample.island, outside: sample.outside, far: sample.far, lower: sample.lower })),
         diagnostics: { farP95: measured.farP95, outsideMeanAbsDelta: measured.outsideMeanAbsDelta,
-          island: { scope: scene === "massif" ? "record-only" : "see-numeric-checks", coverage: measured.islandCoverage,
+          island: { scope: scene === "massif" ? "record-only" : "see-numeric-checks", meanScope: theme === "dark" ? "record-only; startup mean gate uses fixed uT=9.7" : "relative baseline gate", coverage: measured.islandCoverage,
             mean: measured.islandMean, p95: measured.islandP95, whiteFraction: measured.islandWhiteFraction } },
         manual: { status: "not-assessed-by-automated-test", checks: manualScreenshot
           ? [{ id: "massif-island-surface", criterion: "Inspect mountain surface for an overall gray or dark cast", screenshot: manualScreenshot }] : [] },

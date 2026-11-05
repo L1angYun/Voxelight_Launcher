@@ -1,3 +1,4 @@
+@layer tokens, base, primitives, features, overrides;
 @layer tokens {
 :root {
   color-scheme: dark;
@@ -15,7 +16,7 @@
   --surface-glass: rgba(43, 44, 47, 0.68);
   --text-primary: #eeede9;
   --text-secondary: #b3b2af;
-  --text-tertiary: #8b8b88;
+  --text-tertiary: #8f8f8b;
   --border-subtle: rgba(237, 232, 223, 0.12);
   --border-strong: rgba(237, 232, 223, 0.23);
   --surface-hover: rgba(237, 232, 223, 0.06);
@@ -37,6 +38,7 @@
   --text-xl: 20px;
   --text-2xl: 28px;
   --text-hero: 40px;
+  --text-26: 26px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -63,6 +65,53 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-exit: cubic-bezier(.4, 0, 1, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --weight-regular: 400;
+  --weight-strong: 600;
+  --type-section: var(--weight-strong) var(--text-lg)/1.5 var(--font-ui);
+  --type-label: var(--weight-regular) var(--text-sm)/1.6 var(--font-ui);
+  --type-meta: var(--weight-regular) var(--text-xs)/1.5 var(--font-ui);
+  --type-label-color: var(--text-secondary);
+  --page-gutter: var(--space-6);
+  --radius-glass-nav: 22px;
+  --text-15: 15px;
+  --radius-24: 24px;
+  --radius-5: 5px;
+  --radius-8: 8px;
+  --text-24: 24px;
+  --radius-7: 7px;
+  --text-32: 32px;
+  --text-29: 29px;
+  --text-18: 18px;
+  --text-19: 19px;
+  --radius-2: 2px;
+  --radius-1: 1px;
+  --text-25: 25px;
+  --text-21: 21px;
+  --text-31: 31px;
+  --radius-10: 10px;
+  --text-23: 23px;
+  --radius-4: 4px;
+  --text-17: 17px;
+  --space-5px: 5px;
+  --space-1px: 1px;
+  --space-20px: 20px;
+  --space-7px: 7px;
+  --space-2px: 2px;
+  --space-10px: 10px;
+  --space-18px: 18px;
+  --space-9px: 9px;
+  --space-14px: 14px;
+  --space-13px: 13px;
+  --space-100px: 100px;
+  --space-22px: 22px;
+  --space-26px: 26px;
+  --space-28px: 28px;
+  --space-3px: 3px;
+  --space-6px: 6px;
+  --space-11px: 11px;
+  --space-88px: 88px;
+  --space-38px: 38px;
+  --space-40px: 40px;
 }
 
 [data-theme="light"] {
@@ -94,6 +143,10 @@
   --shadow-raised: 0 16px 48px rgba(50, 45, 36, 0.1);
   --shadow-glass: 0 20px 64px rgba(50, 45, 36, 0.14);
 }
+@media (max-width: 1179px) {
+:root { --page-gutter: var(--space-5); } }
+@media (min-width: 1680px) {
+:root { --page-gutter: var(--space-6); } }
 }
 @layer overrides {
 

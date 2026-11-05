@@ -27,7 +27,7 @@
   },
   "emptyServers": {
     "title": "No saved servers",
-    "description": "Add a server address to save it in this environment's multiplayer list."
+    "description": "Use “Add server” in the toolbar to save an address."
   },
   "lanTitle": "LAN worlds",
   "discoverLan": "Discover LAN",

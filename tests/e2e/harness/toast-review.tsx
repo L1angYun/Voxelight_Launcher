@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+import "../../../src/design/tokens.css";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";

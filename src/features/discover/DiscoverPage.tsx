@@ -54,13 +54,13 @@ export function DiscoverPage() {
 
   return (
     <PageShell className="vx-discover-page">
-      <PageHeader title={t("discover:title")} />
+      <PageHeader title={t("discover:title")} description={t("discover:subtitle")} />
       <div className="vx-discover-workspace vx-workspace">
         <aside className="vx-discover-catalog" aria-label={t("discover:typeLabel")}>
           <div className="vx-discover-destination vx-panel">
             <label className="vx-discover-target">
               <span><ArrowDownToLine size={15} aria-hidden="true" />{t("discover:target")}</span>
-              <Select embedded aria-label={t("discover:target")} value={selectedInstance?.id ?? ""} onChange={(id) => {
+              <Select aria-label={t("discover:target")} value={selectedInstance?.id ?? ""} onChange={(id) => {
                 if (id) selectInstance(id);
                 else selectVersion(selectedVersionId);
               }} options={[

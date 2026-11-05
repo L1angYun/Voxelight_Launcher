@@ -126,11 +126,22 @@ test("the maximum download history scrolls to its last task", async ({ page }) =
   await page.goto("/?next-ui");
   await page.locator('[data-page="downloads"]').click();
   await expect(page.locator('[data-task-id="task-long"]')).toBeVisible();
+  const history = page.locator(".vx-task-section--history");
+  const historyRows = history.locator("[data-task-id]");
+  await expect(historyRows).toHaveCount(30);
+  await expect(history.getByLabel("199 in history", { exact: true })).toBeVisible();
+  for (const count of [60, 90, 120, 150, 180, 199]) {
+    await history.getByRole("button", { name: "Show more", exact: true }).click();
+    await expect(historyRows).toHaveCount(count);
+  }
+  await expect(page.locator("[data-task-id]")).toHaveCount(200);
+  await expect(history.getByRole("button", { name: "Show more", exact: true })).toHaveCount(0);
   await page.locator("main").hover();
   await expect.poll(async () => {
     await page.mouse.wheel(0, 20000);
     return page.locator("main").evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
   }, { timeout: 30000 }).toBeLessThanOrEqual(2);
+  await expect(page.locator('[data-task-id="history-0"]')).toBeVisible();
   const bounds = await page.locator('[data-task-id="history-0"]').evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return { top: rect.top, bottom: rect.bottom, viewport: window.innerHeight };

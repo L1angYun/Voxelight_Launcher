@@ -40,3 +40,13 @@ it("measures real elapsed windows separately from rendering cost and ignores inv
   const cheap = createFrameBudget(16.7);
   for (let i = 0; i < 120; i++) expect(cheap.sample(2, 1000 / 30)).toBe("hold");
 });
+
+it("requires consecutive over-budget windows for submission fallback and resets after a healthy window", () => {
+  const budget = createFrameBudget(16.7, 2000, 2);
+  for (let window = 0; window < 4; window++) {
+    const cost = window === 1 ? 10 : 30;
+    for (let index = 0; index < 100; index++) {
+      expect(budget.sample(cost, 20)).toBe(window === 3 && index === 99 ? "downgrade" : "hold");
+    }
+  }
+});

@@ -1,4 +1,4 @@
-# 第二轮修复：阶段1收尾、阶段2与阶段3验收记录
+# 第二轮修复：阶段1收尾及阶段2–4验收记录
 
 日期：2026-11-05（Asia/Singapore）。下文先保留已推送的阶段1记录，再补充复核后的收尾说明；新的收尾与阶段2–4验证结果按实际执行补录。
 
@@ -110,7 +110,7 @@ M4实施调整有实际几何依据：按原建议给独立slot加−20px margin
 
 ## 阶段3：设计语言收口
 
-下表R2-04–07属于同一阶段3提交，哈希待本阶段提交后补录。证据根为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage3/`。当前源码已冻结，42张改前图与42张改后图均采集完成，采集记录中页面错误为0、源码前后校验一致；30项跨阶段回归已通过，另补两项命令栏用例2/2通过。audit-comparison.json/.md确认42页h1的x/y/宽/高精确零差异，按钮与表面节点无新增或缺失，按钮填充色无变化；表面填充与圆角变化全部对应R2-04–07，未分类差异为0。
+下表R2-04–07属于同一阶段3提交，`3f674c3d360308a00dc7bd18d4e674b4fb2f3a5f`已推送，并用`git ls-remote origin`确认远端只有main。证据根为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage3/`。当前源码已冻结，42张改前图与42张改后图均采集完成，采集记录中页面错误为0、源码前后校验一致；30项跨阶段回归已通过，另补两项命令栏用例2/2通过。audit-comparison.json/.md确认42页h1的x/y/宽/高精确零差异，按钮与表面节点无新增或缺失，按钮填充色无变化；表面填充与圆角变化全部对应R2-04–07，未分类差异为0。
 
 | 清单 | 实现与已完成的自动验证 | 主要证据 |
 | --- | --- | --- |
@@ -139,9 +139,387 @@ M4实施调整有实际几何依据：按原建议给独立slot加−20px margin
 
 - `npm test`最终654项Vitest＋42项Node通过，见`npm-test-final.log`；`npx tsc -b`最终退出0，见`tsc-final.log`。
 - `design-consistency.spec.ts`首次12项中11项通过，仅强制颜色的绝对屏幕x比较失败；该项修正坐标参照后单独通过。原日志和截图均保留，不把首次运行写成12/12。
-- jsdom不解析生产CSS层导致的10条既有断言没有删除或放宽；`isolatedStylesheetCss`只在组件单测中展开传入组件CSS的layer包装，保留原断言。生产级联仍由真实浏览器测试与42页改前/改后审计验证，未用此辅助函数模拟整套生产级联。
+- jsdom解析但未将CSS层应用到computed style，受此影响的10条既有断言没有删除或放宽；`isolatedStylesheetCss`只在组件单测中展开传入组件CSS的layer包装，保留原断言。生产级联仍由真实浏览器测试与42页改前/改后审计验证，未用此辅助函数模拟整套生产级联。
 - 最终跨阶段回归30/30通过，3.2分钟，见`regression.log`：12项design、5项accessibility、5项field-focus、5组M1/M2以及3项library D3。旧D4用例已按新语义改名，原grep未包含它们，两项library commandbar另跑2/2通过（9.0秒，toolbar-final-v2.log）；没有把未被筛选的用例算作通过。完整Playwright、Cargo和安装包构建未据此宣称完成。
 - **人工已查看：** `after/zh-light-1440-accounts.png`，白色角色预览卡与页面形成明确层级；`after/zh-dark-1440-library.png`，操作按钮为药丸、卡片点框仍保留，未见横向溢出。人工结论仅覆盖这两张图，未遍历全部角色预览模式，也不把42张自动截图当作全部人工通过。阶段4的世界与玻璃诊断尚未开始。
+
+## 阶段4：第五次修订后的自动验证完成，准备同一C4提交
+
+本节全部编号归属同一个待提交的 **C4：阶段4工作区修复（尚未提交、尚未推送）**。第三遍完整验收出现1920动态等待超时，当时按用户“验收冲突先停下报告”的规则停止；用户确认M2第五次修订后恢复验收，现已完成新的自动验证。C4仍只是工作编号，不代表实际提交SHA；本报告随同一提交进入版本控制，不能预先自嵌该提交的SHA。实际提交／推送后由后续补录填写SHA及外部回执，不能用此前已提交阶段的git log结果代替C4。
+
+证据根为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/`。第四次及后续第五次清单修订由审查方代用户决定，用户确认后执行。以下区分已经结束的专项数值／行为检查、人工检查和仍待完成的最终验证；R2-29按要求不做。版本仍为0.6.0，未新增依赖、构建安装包或改变全局背景。
+
+**当前执行状态：自动验证完成，准备同一C4提交。**第五次修订后的新完整Playwright为252通过、0失败、0跳过、0flaky，运行错误列表为空；新的npm为67文件674项Vitest＋77项Node通过，TypeScript由主流程确认退出0、日志无错误输出。六项原生专项、30项聚焦Node及三种S2键盘关闭检查另有独立记录。完整世界数值已汇总，主流程已单独查看最终三张固定9.7正常图，人工范围仅限这三张；当前尚未提交／推送。下文三遍历史完整252项的248通过／4失败、251通过／1失败、251通过／1失败均保留，均0跳过、0flaky。第三遍唯一失败仍是旧稳定判据下深色地平线1920动态M1/M2等待20017.1ms超时，未生成正式五帧或numeric-acceptance；此次新运行不改写该次失败。
+
+### M2第五次修订：动态结晶收敛与恢复后的专项记录
+
+动态采样保留覆盖率差严格小于0.3个百分点，将隐藏ROI均值差小于1替换为结晶uniform收敛：同一世界WebGL上下文代次、同一有效voxel程序的`uLat`、`uCry`、`uIsland`，在两次实际读取之间的绝对差分别严格小于`1e-3`。实际uniform读取间隔及隐藏截图窗口间隔都必须至少400ms；要求世界提交帧和各uniform写入序号继续推进，缺失、非有限值、旧写入或混合程序／上下文不能作为收敛证据。20秒共同deadline、超时失败及原始失败工件保留。`uT`持续驱动地形呼吸，只记录，不判稳定；动态均值也只记录。固定相位仍按覆盖率差小于0.3个百分点、隐藏ROI均值差小于1等待，固定`uT=9.7`的均值90–150及其余既定数值门槛不变。
+
+这次修改限于测试采集器、uniform探针及回归测试，没有修改产品renderer、shader、worldDirector、亮度参数、相机、ROI或历史基线。探针只在测试初始化时包装uniform位置／写入生命周期，读取时通过`getUniform`取得实际GPU值；固定时间拦截与观察器的两种安装顺序均有回归。等待及正式样本保存`uniforms`，包含`atMs`、`worldFrames`、`contextId`、`voxelProgramId`、`terrainProgramId`、四个实际浮点值和`writes`序号；等待样本另保留正常／隐藏截图前后的`frameCheckpoints`，没有把配置目标值或缺失值当成实测零值。
+
+`revision5-world-gates.log`记录六项原生专项6/6通过（1.1分钟）：深色地平线1050／1280／1920各一项固定9.7和一项动态。六份`settling.json`均记录NVIDIA GeForce RTX 5080 Laptop GPU、Direct3D11、DPR=1。以下均为本次原始JSON读数；动态均值列仅记录，不恢复为90–150门槛。
+
+| 深色地平线 | 等待模式 | 实际等待ms | 正式五帧均值中位数 | 数值结果 |
+| --- | --- | ---: | ---: | --- |
+| 1050×720 | 固定uT=9.7 | 2679.8 | 103.378767 | startupMean及allNumericPass=true |
+| 1280×720 | 固定uT=9.7 | 2866.4 | 99.360465 | startupMean及allNumericPass=true |
+| 1920×1080 | 固定uT=9.7 | 2753.7 | 92.053544 | startupMean及allNumericPass=true |
+| 1050×720 | 动态 | 6957.5 | 103.155549（记录） | allAGatesPass=true |
+| 1280×720 | 动态 | 4693.6 | 100.900381（记录） | allAGatesPass=true |
+| 1920×1080 | 动态 | 4986.8 | 92.090492（记录） | allAGatesPass=true |
+
+三个动态接受pair的实际读取间隔分别为624.9／641.7／759.9ms，覆盖率差0.084755／0.045238／0.026684pp，`uLat`与`uCry`差均为0，`uIsland`差分别为0.000002861／0.000560760／0.000511169；三组均为相同contextId=1、voxelProgramId=10、terrainProgramId=7且写入序号全部增加。1920该pair的ROI均值仍变化2.890691、`uT`变化0.762500，说明接受条件是结晶收敛，而非将继续呼吸的均值或时钟误写为稳定。原图与逐次值在`revision5-world-gates/*/{anchored-island,terrain-phase}/settling.json`、`measurements.json`，正式数值在各例`numeric-acceptance.json`或`terrain-breathing.json`。本次六项没有新增人工视觉签字，也不替代新的完整套件。
+
+`revision5-node-green.log`实际记录15项稳定等待＋15项uniform探针，共30项通过、0失败、0跳过；包含严格边界、缺失／旧写入／混合代次、删除／重链接／恢复上下文、固定时间双顺序、采集成本间隔及共同20秒deadline。`revision5-stability-red.log`与`revision5-stability-green.log`保留RED→GREEN；这些Node用例不代替真实GPU测量。
+
+S2另外实跑了指针打开后分别用真实Tab、Enter、Escape关闭的三组检查：3/3通过，三组blankFrames均为0，D3D11／DPR=1、可信键盘事件、实际rAF、最终标题／菜单及焦点检查均通过，页面错误为0。`revision5-s2-keyboard/summary.json`的sourceBefore与sourceAfter均为`83c71de0a3803a7217d65c10af092a63f65334de03403fda94d938eb6567711b`，sourceUnchanged=true；各组原始帧在`Tab.json`、`Enter.json`、`Escape.json`，执行记录为`revision5-s2-keyboard.log`。当前S2实现通过这三种关闭方式，无需追加S2产品修复；结论只覆盖本次测试范围。
+
+### 第五次修订完整套件：最终世界数值与独立人工记录
+
+以下来自完整`revision5-full/`，与上面的六项专项批次分别保留。[final-world-acceptance.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/final-world-acceptance.json)及[同名逐帧汇总](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/final-world-acceptance.md)覆盖12个固定相位、5组动态和4组S5；脚本只汇总数值，没有自动判定manual通过。固定相位的p95、岛内／下半区纯白上限及既定动态闸门均通过。
+
+| 最终固定uT=9.7 | 五帧均值中位数 | 稳定等待ms |
+| --- | ---: | ---: |
+| 深色1050×720 | 103.378671 | 2678.8 |
+| 深色1280×720 | 99.357758 | 2795.8 |
+| 深色1920×1080 | 92.053506 | 2731.4 |
+
+最终五组动态接受pair的真实GPU读数如下；均值只记录，不能把固定启动均值门槛套回动态样本。完整写入序号、上下文／程序代次、截图前后读数及正式五帧保存在[revision5-uniform-summary.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision5-uniform-summary.json)与各例原始`settling.json`／`measurements.json`。
+
+| 动态场景 | 等待ms | 实际读数间隔ms | ΔuLat | ΔuCry | ΔuIsland | 前→后uT | 前→后世界帧数 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| dark/horizon/1050 | 6884.9 | 593.0 | 0 | 0 | 0.000002861 | 8.407600→9.003400 | 1981→2122 |
+| dark/horizon/1280 | 4770.2 | 624.8 | 0 | 0 | 0.000445366 | 6.274400→6.899400 | 1466→1614 |
+| dark/horizon/1920 | 4924.8 | 745.8 | 0 | 0 | 0.000554085 | 6.216100→6.962000 | 1425→1599 |
+| dark/massif/1280 | 4438.9 | 691.5 | 0 | 0 | 0.000722408 | 5.857900→6.549600 | 1365→1530 |
+| light/horizon/1280 | 4767.6 | 632.1 | 0 | 0 | 0.000464439 | 6.257800→6.886900 | 1468→1617 |
+
+三项结晶控制在五组中均达到严格差值门槛，`uT`继续变化。实际S5预览来源的intro／idle对比度为：dark1050为8.789692／8.680488，dark1280为8.695501／9.040192，light1050为5.587494／5.114514，light1280为5.849832／5.839109，均≥4.5。原始世界记录保留D3D11、DPR=1、场景、锚点及逐次时间／帧数；外观测试在采样前后断言实际html主题，但runtime文件未独立保存主题值，此来源限制保留，不将fixture值当成另一次主题采集。
+
+**独立人工记录：**主流程实际查看最终完整套件固定9.7的[1050正常图](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision5-full/world-acceptance-terrain-b-3091c--retains-highlight-headroom/terrain-phase/normal-2.png)、[1280正常图](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision5-full/world-acceptance-terrain-b-dd257--retains-highlight-headroom/terrain-phase/normal-2.png)、[1920正常图](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision5-full/world-acceptance-terrain-b-186c1--retains-highlight-headroom/terrain-phase/normal-2.png)：脚在岛上，控制台没有遮挡人物。该人工结论仅覆盖这三张正常图，不扩写为全部12相位／动态／S5图片已人工逐张签字，也不改写自动JSON中的manual占位状态。
+
+### 阶段4按编号：数值与行为检查
+
+下表每条计划归属C4，当前均为未提交工作区改动。“通过”只指本行列出的专项检查，不替代最终全套结果。JSON所在目录保留原始截图；单测不当作视觉或读屏验证。
+
+| 编号 | 已实际验证／实现 | 证据 | 未验证／范围说明 |
+| --- | --- | --- | --- |
+| R2-08 | Segmented自动激活与设备码期间手动激活通过；额外修复当前Microsoft标签重复Enter/Space误取消会话。单位回归RED1→24/24；native ArrowRight→ArrowLeft→Enter/Space仍cancel=0，Offline激活cancel=1。 | [review-findings-v2.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/review-findings-v2.log)；[login-same-tab-green.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/login-same-tab-green.log) | 未用真实Microsoft账号登录；使用确定的本地设备码接口夹具。 |
+| R2-09 | 四页forced-colors通过。7个可见字段wrapper均1px solid CanvasText；5个实际箭头分别有8个精确CanvasText黑色核心像素；Downloads没有下拉箭头，记录不适用。brand/nav也检查CanvasText/Highlight。 | [forced-fields.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-09-fo-32286-ored-chevrons-on-four-pages/forced-fields.json)；[interface-evidence-offline.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-evidence-offline.json) | 字段1px为computed校验；箭头像素独立解码已复核。没有把computed边框厚度冒充实际像素厚度。 |
+| R2-10 | placeholder深／浅最亮已测输入背景最差对比分别5.194163 / 5.392209:1，均≥4.5；Lens最终边界opacity=65%，九行各行最高对比的最小值2.609375:1≥2.5。65%指不透明度，不是描边宽度；宽度未改。 | [summary.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/nav-placeholder-first/summary.json)；[light-selector-boundary.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/r2-10-opacity-65/review-fixes-R2-10-light-l-c9f2f-nst-its-adjacent-background/light-selector-boundary.json) | 边界45/50/55/60%的历史失败全部保留；placeholder候选范围详见下文，未遍历任意未来弹窗。 |
+| R2-11 | 深／浅1050均为按钮height=38px、font=13px、面板radius=12px；statusContainsButton=false | [profile-failure.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-11-da-9f45a-try-outside-its-live-region/profile-failure.json)；[profile-failure.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-11-li-d06be-try-outside-its-live-region/profile-failure.json) | 两主题1050的真实截图已保存；未声称读屏软件已实测。 |
+| R2-12 | LoadingStatus同一空live节点先挂载，150ms后填字；准备进度100次推送同一阶段只在阶段初始及25/50/75/100%更新，变化≤5次，按钮和progressbar不在播报节点内。 | [tsx-red.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/tsx-red.log)；[tsx-green.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/tsx-green.log) | DOM/更新频率单测；NVDA/真实读屏语音尚未验证。 |
+| R2-13 | 1440：gap=16px、两按钮top=836px；1050：gap=16px、两按钮top=638px。次操作均为secondary | [empty-home.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-13-em-7aa12-lose-and-actions-on-one-row/empty-home.json)；[empty-home.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-13-em-f9af9-lose-and-actions-on-one-row/empty-home.json) | 1050／1440均通过；修空态间距和英文按钮换行，未改首页左x。 |
+| R2-14 | English1050：detail x=296px；title height=50px / line-height=25px=2行；address wbr=7。 | [server-1050.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-14-En-b5c03-nd-the-shared-rail-position/server-1050.json) | title完整值保留在title属性；窄容器布局采用真正container query，非偷偷增加全局断点。 |
+| R2-15 | interface-quality-R2-15-en-5f72d-ontent-pages-begin-together: spread=0.0000px，accounts h2=[219.796875, 219.796875]<br>interface-quality-R2-15-en-d38f7-ontent-pages-begin-together: spread=0.0000px，accounts h2=[219.796875, 219.796875]<br>interface-quality-R2-15-zh-662ee-ontent-pages-begin-together: spread=0.0000px，accounts h2=[219.796875, 219.796875]<br>interface-quality-R2-15-zh-8ef38-ontent-pages-begin-together: spread=0.0000px，accounts h2=[219.796875, 219.796875] | [content-origins.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-15-en-5f72d-ontent-pages-begin-together/content-origins.json)；[content-origins.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-15-en-d38f7-ontent-pages-begin-together/content-origins.json)；[content-origins.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-15-zh-662ee-ontent-pages-begin-together/content-origins.json)；[content-origins.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-15-zh-8ef38-ontent-pages-begin-together/content-origins.json) | zh/en×1050/1440；首区静态选择为commandbar、discover-workspace、multiplayer-tabs、task-center、accounts-layout、settings-layout，未按结果移动ROI。 |
+| R2-16 | 最终native Doto计数=15px/900；资源标题font=13px、line-height=19.5px。此前16px/600失败已修，不能引用旧待修结论。 | [typography-contract.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/font-fixes-green/interface-quality-R2-16-21-82d0e-titles-inherit-line-spacing/typography-contract.json)；[.last-run.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/font-fixes-green/.last-run.json) | 全量h2角色盘点另见CSSreview；实体标题按R2-14仍20px，不应与16px区块标题混作一个角色。 |
+| R2-17 | 1440深色专项已完成2/2：Discover两真实flat surface空白背景均RGBA(28,29,31,255)，同相位内侧直边均RGBA(77,76,76,255)，逐像素完全相等；Settings实际Select和两number input也同值。五控件computed border均rgba(237,232,223,0.23)、1px solid、radius6px。 | [summary.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/r2-17-fields-settled/summary.json) | 不把23%原始border颜色当成屏幕RGB。首次抓到入场尾段x漂移0.007164，严格拒绝；仅增加100ms几何完全一致前置条件后重采，未改产品或像素阈值。 |
+| R2-18 | 清除Vite旧样式缓存并加载已落盘CSS后，原用例通过：199条历史默认30条，均56px；首屏完整8条；页面高2338px<4000；h2 x=[369.5, 369.5]。Show more→60，Failed→1且无Size pending，Completed→30；原任务总数200保留。 | [downloads-200.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/download-cache-green/interface-quality-R2-18-tw-f9d22-ts-in-compact-paged-history/downloads-200.json)；[download-cache-green.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/download-cache-green.log) | 前两轮7条失败均保留，未放宽8条阈值或更换夹具。过滤空态由单测验证。 |
+| R2-19 | 1050：textWidth=176px，cards=[313.5, 313.5]，feet=(676.5000,464.4063)；1920：textWidth=280px，cards=[274.65625, 274.671875]，feet=(1167.5000,687.4063)；1280：textWidth=176px，cards=[277.65625, 277.671875]，feet=(795.5000,456.4063) | [home-anchor.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-19-ho-2163b-hor-and-responsive-controls/home-anchor.json)；[home-anchor.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-19-ho-9220b-hor-and-responsive-controls/home-anchor.json)；[home-anchor.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-19-ho-b6f47-hor-and-responsive-controls/home-anchor.json) | 1920文本280px达标；原动态M2 mean88.979失败保留，现按用户第四次修订在固定uT9.7判均值，固定三宽已通过，1920动态等待超时未完成正式取样；站位人工结论在本节另列。 |
+| R2-20 | 有效响应式采样11/11通过：1050/1179/1180/1279/1280/1440/1920正常，以及1050/1920 forced-colors和减少透明；console/character交叠面积均0。全局max-width只保留1179/760。 | [css-independent-review.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/css-independent-review.json)；[responsive-reduced-transparency.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/responsive-reduced-transparency.log) | 最初两次减少透明modeApplied=false是无效模式模拟，已保留；后续保持CDP会话重测通过，不混作产品失败。第三遍对应窄视口套件通过但整体因1920动态等待失败停止；第五次修订后新的完整套件252/252通过，历史失败不改写。 |
+| R2-21 | library-grid 576行＋instance-detail 321行=897≤900；按完整layer/media/container上下文逐个选择器审计重复0。错误font shorthand已修为独立size/weight，native line-height=19.5px。 | [library-selector-audit.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/library-selector-audit.json)；[typography-contract.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/font-fixes-green/interface-quality-R2-16-21-82d0e-titles-inherit-line-spacing/typography-contract.json) | 采用现有PostCSS检查，不冒充运行stylelint；第三遍library-review／frontend-completion／ui-stress均通过；不替代世界等待闸门。 |
+| R2-22 | 最新`npm test`：120个TS/TSX、双语710键、32个后端错误码，白名单外未用键0；spacing基线和当前均428；67文件674项Vitest＋77项Node全通过。旧a4快照按预期触发守护失败 | [revision5-npm.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision5-npm.log)；`scripts/design-token-baseline.json`；`historical-guard-red.json`；旧`npm-verified.log`保留 | 第五次修订后新的完整Playwright252/252，0失败／跳过／flaky，errors为空；主流程TypeScript退出0。当前准备同一C4提交，尚未提交推送，远端CI未验证 |
+| R2-23 | zh页面h1和导航保留“角色”；按钮/登录/离线身份用“账号”；模型为经典（宽臂）/纤细（细臂），本地错误文本同步。native术语用例通过；旧accounts E2E五处完整术语定位已更新。 | [accounts-terminology.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-23-Ch-dfc22-s-and-translate-model-names/accounts-terminology.json) | 未对“角色”进行全局替换。 |
+| R2-24 | 空服务器只有一条“No saved servers”说明；右框height=380px，border=1px solid；文案指向上方已有Add server。 | [server-empty.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-24-em-74d7c-n-in-the-380px-detail-frame/server-empty.json) | 未增加第二个主按钮。 |
+| R2-25 | 真实Tab从启动按钮开始，在动画控件前经过2个最近实例；最后焦点animation=true；重复group/aria-label已去除。 | [home-tab-order.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-25-ke-2b2f3-he-single-animation-control/home-tab-order.json) | 旧round6 helper已按新DOM定位controls容器，全部bbox/count/click-hit断言保留，第三遍对应回归通过。 |
+| R2-26 | 路径tail=shared-world，client=73px / scroll=73px；名称高44.875px、行高22.44px≤2行；禁止的span aria-label=false。 | [library-long-path.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-26-En-0c8b1--segment-and-two-line-names/library-long-path.json) | 该数值用长父目录＋常见basename shared-world。原80字符basename另在压力截图记录，不能声称所有长度都不截断。 |
+| R2-27 | width=279.546875 / content=269.546875 / insets=10 / fill=false；width=167.265625 / content=157.265625 / insets=10 / fill=false；width=344.984375 / content=334.984375 / insets=10 / fill=false | [create-tracks.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/interface-final/interface-quality-R2-27-cr-039fa-their-actual-option-content/create-tracks.json) | 三个创建轨道fit-content，详情页tabs显式fill；第三遍旧详细流程回归通过。 |
+| R2-28 | nav-dark-full-solid: 6.670934:1；nav-dark-lite: 6.781874:1；nav-light-full-solid: 5.604944:1；nav-light-lite: 5.497016:1 | [summary.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/nav-placeholder-first/summary.json) | 两主题×full-solid/Lite四组，每组三帧，文本Range上2/下2行全部像素最差值；是真GPU实际背景，不拿CSS变量代替像素。 |
+
+
+### S2–S6及M2修订（均为C4未提交范围）
+
+| 编号 | 实现与已完成数值／行为检查 | 证据及范围 |
+| --- | --- | --- |
+| R2-07追补 | 阶段3 `3f674c3`已完成的层级分离之外，C4再修真实导航折射被shell层blur覆盖、tokens提前注册overrides两项生产级联回归；分别原生2/2、1/1通过 | `refraction-red/green.log`、`layer-order-red/green.log`。这些修复归C4，不写成已包含在3f674c3内 |
+| S2 | 指针关闭在实际Popup退出完成后通知；键盘／静态模式立即通知，回调去重并隔离旧退出。3项RED后Select＋HomePage53项通过。最终pointer 68帧、overlap0；keyboard（Escape）70帧、blank0、overlap0 | `s2-native-final/review-fixes-S2-picker-kee-3f88b-iately-for-keyboard-closure/picker-exit-frames.json`及关闭截图。指针仍有3个低透明度过渡帧，不扩写为指针零空白 |
+| S3 | submission预算为最近30个全部rAF回调间隔中位数×1.25，连续两个2秒超标窗口才降档，健康窗口／暂停清理历史。真实GPU计时保留独立16.7ms。5项RED后43项通过 | `s3-red.log`、`s3-green.log`。60Hz每90帧跳一帧、50Hz各10秒不降；100Hz每6回调只提交一次仍降。不作为Intel/WebView2实测 |
+| S4 | 真实曲率URL恢复后，按实际轮廓内缩4px、扣文字／图标的内部区域检查，四组差值>25占比均0%，低于0.5%；原生4/4通过 | 下面分列内部／全轮廓数值与6倍人工图。色散保持0.65，未套用浅色0.25 |
+| S5 | 预览胶囊surface-card 78%、blur(10px)、hairline；减少透明和高对比回退实底／无blur。两主题×1050／1280四组intro与idle均≥4.5 | 下表只列实际绘制的preview source，不用nominal-only区域冒充可见文字 |
+| S6 | solid裙深9、lattice仍3。相同相位3→9对照的下方诊断区精确背景点236/32000（0.7375%）→0，两主题一致；正式源码补采三个原ROI也全部0 | `solid-cliff-final/summary.json`及`dark-normal.png`、`light-normal.png`；sourceUnchanged=true |
+| M2第四次修订 | R2-19后1920动态五帧92.19→90.23→88.98→86.69→74.39，中位88.98，按旧90–150门槛失败并停止。经用户裁定，均值90–150仅在固定uT=9.7的深色地平线1050／1280／1920判；相位覆盖三宽×9.7／188／288／588，同样稳定后连拍5帧 | 动态均值仅记录，其余p95、纯白、有效性、覆盖率和岛外指标不放宽。第三遍12相位和4个其它动态闸门通过；1920动态等待20017.1ms超时，无正式五帧，按规则STOP。旧单相位92.06不代替本次验收 |
+| M2第五次修订 | 动态等待改为覆盖率差<0.3pp及三项实际GPU结晶uniform各差<1e-3，实际读数间隔≥400ms且必须有新写入／提交；固定均值等待、20秒deadline和数值门槛保持原值 | `revision5-world-gates.log`六项原生专项6/6通过；30项聚焦Node通过；`revision5-full.json`新完整套件252/252。第三遍STOP保留为历史，当前准备同一C4提交，尚未提交／推送 |
+
+### 阶段4失败记录与修复依据
+
+- **界面15/23→22/23→下载原用例通过：**空首页gap40px来自h1下边距16与stage gap24叠加；英文两按钮需329.92px，超过254.4px可用宽度。角色页两个h2相差6px，1920选择器正文仅232px。修后gap16、按钮同行，角色h2均219.796875px，选择器正文280px。`interface-first.log`及失败PNG保留。
+- **下载旧CSS缓存：**已落盘gap24px、section纵向padding16px，浏览器却仍加载gap34／padding24的Vite模块，见`download-layout-probe.json`。仅重启开发服务器重新加载，没有再加产品覆盖或放宽200任务夹具的门槛。首行y662.515625→628.515625，完整可见7→8条，总高2380→2338；`download-cache-green.log`及JSON记录原用例通过。
+- **字体遗漏已经修复：**独立RED发现Doto仍16px／600，资源标题的font简写把继承行高重置normal。只将Doto恢复15px／900、资源标题恢复独立size／weight声明。`font-fixes-green.log`原生1/1通过（5.8秒），资源标题为MiSans 13px／19.5px。旧`css-independent-review.json`、`interface-evidence-review.md`里的待修是修复前快照，不能作为最终状态。
+- **两项真实级联回归：**shell features层遗留blur(8px)覆盖glass primitives层曲率URL，删除两条冗余声明后深浅条纹2/2通过；tokens先注册overrides使后声明完整层序无法重排，匹配的R2-10阴影仍被box-shadow:none压住，将完整层序声明移到tokens最首后RED→GREEN。证据为`refraction-red/green.log`、`layer-order-red/green.log`；这是产品回归，不能归因为统计偏差。
+- **无效探针保留：**`initial-optics/`、`controlled-optics-v2/`中S4采集时真实折射未启用，标为INVALID-S4-REFRACTION-INACTIVE，不用于色散判断。S6初版包装错误draw API，标INVALID-S6-REFERENCE；改拦真实drawArraysInstanced后重采。响应式初版减少透明两例CDP detach导致modeApplied=false，不算模式验证；保留会话重测后才纳入11个有效组合。
+- **M2停止与裁定：**`world1920-comparison.json/.md`保留逐帧和等待。rail320→400使人物与脚锚点均右移40px，ROI随之移动，不能称为相同几何。失败批等待8376.9ms，最后稳定对93.707463→92.930966，差0.776497，之后五帧继续下降；帧数1879／2039／2192／2355／2530。先按旧门槛停止，再按用户裁定改测试，没有调整亮度参数迁就结果。
+
+### R2-10玻璃边界：最终65%，描边宽度和色散不变
+
+实际DOM使用`data-glass-variant="control"`。原45%内阴影被3px内缩clip裁掉，随后沿共享live contour加同色描边，居中2px经既有clip留下内侧约1px。第四次修订只允许以5个百分点步进调同一边界的不透明度；颜色`--text-secondary`、refraction0.9、dispersion0.65、描边宽2px保持不变。
+
+| 不透明度 | 九行最低对比 | 结果 |
+| ---: | ---: | --- |
+| 45% | 1.8280680777 | 失败 |
+| 50% | 1.9952213514 | 失败 |
+| 55% | 2.1706243369 | 失败 |
+| 60% | 2.3818745628 | 失败 |
+| 65% | 2.6093754999 | 通过，停止迭代 |
+
+65%按dy=-4..4的九行值：**2.6327540287、2.6093754999、2.6566645718、2.6566645718、2.6589781016、2.6370155025、2.6566645718、2.6589781016、2.6661822522**。全部≥2.5；60%失败证明65%为规定步进的最小达标值。原始RGB、样式和各步截图见`r2-10-opacity-steps.json`及`r2-10-opacity-{45,50,55,60,65}/`；除glass.css之外产品源码逐步hash一致。最终图：[light-selector-boundary.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/r2-10-opacity-65/review-fixes-R2-10-light-l-c9f2f-nst-its-adjacent-background/light-selector-boundary.png)。初始1.046581和45%真实边界1.828068–1.865199的失败也保留。
+
+### S4数值检查：内部与全轮廓分开记录
+
+读取实际clip-path，用居中8px的Path2D stroke取得内缩4px的内部，再扣实际文字／图标框，不用矩形或按亮暗挑像素。测试冻结rAF，参考仅隐藏胶囊材料，文字图标和worldFrames不动，四组框外变化均0、computed backdrop均含曲率URL。`s4-final.log`记录4/4通过（21.4秒），`s4-final-source.json`记录产品前后hash一致。
+
+| 场景 | 内部像素 | 通道差>25像素／比例 | 全轮廓比例（只记录） | 内部最大通道差 |
+| --- | ---: | --- | ---: | ---: |
+| 深色首页 | 788 | 0／0% | 3.515625% | 18 |
+| 深色游戏库 | 956 | 0／0% | 3.514377% | 18 |
+| 浅色首页 | 788 | 0／0% | 8.984375% | 1 |
+| 浅色游戏库 | 956 | 0／0% | 8.266773% | 1 |
+
+浅色全轮廓比例包含获批65%可读边界，不把内部0%写成整颗0%。早期有效v3深色全轮廓约3.49%／3.53%、内部0%保留在`controlled-optics-v3/`，但它发生在最终边界之前，只作历史。最终6倍人工检查见下表。
+
+独立条纹实测两主题均为：边缘最大位移12px（≥2）、中心0.0003223px（≤1）、live位移7px（6–8）、均匀底色差0（≤1）。证据为`interface-final/interface-quality-curvatur-{8cd61,c0c00}-ction-across-cascade-layers/refraction/glass-pixel-report.json`和原图；第三遍完整套件中对应条纹用例通过；该遍整体因1920动态等待失败停止，后续按第五次修订恢复，不能改写该遍结果。
+
+### S6正式源码和最终参数
+
+正式源码两主题三ROI：中部[980,350,1160,500)27000像素、右侧[1230,330,1410,490)28800、下方[1000,700,1200,860)32000，精确背景点全部0。背景参考实际抑制40／50次draw、改变452060／670014个地形像素；sourceUnchanged=true，见`solid-cliff-final/summary.json`。改前下方236个背景点未删除。深色“通道差≤2”可能包含暗侧面，只作诊断，未替代精确背景指标。
+
+| 参数 | 最终值 |
+| --- | --- |
+| 岛面反照率下限 | `vec3(.6,.588,.552)*uLat*vIsland` |
+| 照明补偿 | `max(vLit,mix(1.25,1.1,uLight)*uLat*isl)`，深色1.25／浅色1.1 |
+| 高光肩部 | `k=max(col-.8,0.); sh=min(col,.8)+k/(1.+5.*k); col=mix(sh,col,uLight);` |
+| 裙深 | `mix(s,mix(9.,3.,uLat),m*mix(1.,crE*crE*crE,uLat))`，solid9／lattice3 |
+| 玻璃 | refraction0.9、dispersion0.65；浅色control边界opacity65%，居中stroke2px |
+| 首页 | rail `clamp(296px,21vw,400px)`；recent auto-fill且最小240px；内容最大宽1280px不变 |
+
+相机、曝光、泛光、岛半径、全局背景没有随本阶段调整。父规格4.2／4.3已同步最终机制，第一轮105.62、远景83及覆盖率历史数字原样保留。
+
+
+### S5复用E1：无账号预览对比
+
+以下四组来自world-final内已实际通过的no-account preview用例。这里只列preview source真实绘制区域（不是nominal-only），每组还对其他首页文字执行既有验收。
+
+| 场景 | intro最差对比 | idle最差对比 | 数据 |
+| --- | ---: | ---: | --- |
+| no-account-dark-1050x720 | 8.841689 | 8.775655 | [states.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s5/no-account-dark-1050x720/states.json) |
+| no-account-dark-1280x720 | 8.491456 | 9.040192 | [states.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s5/no-account-dark-1280x720/states.json) |
+| no-account-light-1050x720 | 5.849832 | 5.493608 | [states.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s5/no-account-light-1050x720/states.json) |
+| no-account-light-1280x720 | 5.849832 | 5.835506 | [states.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s5/no-account-light-1280x720/states.json) |
+
+### R2-10占位符测量范围与原图
+
+- placeholder-dark：最亮已测输入为accounts-local-preview／Online skin URL，最差5.194163:1；[accounts-local-preview-under-placeholder.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/nav-placeholder-first/placeholder-dark/accounts-local-preview-under-placeholder.png)。
+- placeholder-light：最亮已测输入为discover-search／Search resources，最差5.392209:1；[discover-search-under-placeholder.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/nav-placeholder-first/placeholder-light/discover-search-under-placeholder.png)。
+
+候选来自库/探索搜索、角色本地URL、添加服务器地址、设置General与Java的可见启用空输入。仅隐藏placeholder字形，保留布局与实际背景；按采样背景均值亮度选最亮输入，再取该输入内容框内最差像素对比。其他候选全部留在summary，未声称遍历所有可能弹窗。六组导航/placeholder均pass、无page/console错误，sourceBefore=sourceAfter。
+
+
+### R2-28导航文字的实际背景对比
+
+solid／Lite导航为88% surface-solid。实际WorldScene与导航为兄弟节点，通过`.vx-app-body:has(> .world-scene[data-world-material="solid"])`匹配导航，而非照搬无效祖先选择器。四组合各采三帧，逐文字Range上方2行／下方2行全部x像素求最差对比。
+
+| 组合 | 最低对比 |
+| --- | ---: |
+| dark／full／solid | 6.6709342087 |
+| dark／Lite | 6.7818739363 |
+| light／full／solid | 5.6049438503 |
+| light／Lite | 5.4970162867 |
+
+全部≥4.5。`nav-placeholder-first/summary.json`及四个nav目录保存`nav-{0,1,2}.png`。导航／占位符六组均无page/console错误、DPR1、实际NVIDIA RTX5080 Laptop／D3D11，采集前后sourcehash一致；Lite运行时material为solid，不是只用CSS变量推算对比。
+
+### R2-14／19／20／21响应式和清理复核
+
+详情使用930px实际内容容器查询，全局max-width只保留1179与workspace的760兜底，wide从1680起消费令牌、内容最大宽仍1280。采样的控制台／角色bbox交叠面积全部0，服务器实体标题最多两行。
+
+| 窗口宽 | 详情容器宽 | 服务器卡实际列宽 | 选择器正文宽 |
+| ---: | ---: | --- | ---: |
+| 1050 | 715 | 657px单列 | 176 |
+| 1179 | 844 | 786px单列 | 176 |
+| 1180 | 829 | 771px单列 | 176 |
+| 1279 | 928 | 870px单列 | 176 |
+| 1280 | 929 | 871px单列 | 176 |
+| 1440 | 944 | 622.406px＋239.594px | 182.390625 |
+| 1920 | 944 | 622.406px＋239.594px | 280 |
+
+再加1050／1920各forced-colors、减少透明，总11个有效组合。数据为`css-independent-review.json`、`responsive-boundaries/results.json`、`responsive-reduced-transparency/results.json`，记录modeApplied、nativeGPU、DPR与几何。1280仍单列是实际可用空间的结果，不新增“1280必须双列”门槛。
+
+两新库CSS为576＋321=897行，完整layer／media／container条件下逐个selector（含列表内部）重复0，保留降级分支，没有压缩格式凑行数。`library-selector-audit.json`分别记录104／67条规则、122／73个selector；这是PostCSS检查，未声称执行stylelint。继承行高遗漏已经独立修复。圆角守护只对白名单中既有Select button、selection mark、launch-console content、LatticeFrame的inherit开放，保持宿主曲率；新增inherit或独立px仍拒绝。
+
+### R2-17补充像素检查
+
+`r2-17-fields-settled/summary.json`记录深色1440×930、原生D3D11、DPR1、两组通过且sourceUnchanged=true。Discover目标／来源两个flat Select空白背景各15个采样像素均为RGBA(28,29,31,255)，同0.5px栅格相位的内侧直边各9像素均为RGBA(77,76,76,255)，逐像素相同。Settings实际Select及两个number input也为这两个屏幕值；五控件computed边框都是rgba(237,232,223,.23)、1px solid、radius6px，不把声明颜色当作合成后RGB。
+
+初采`r2-17-fields-first/`捕捉到入场尾段x漂移0.007164px，按原严格条件拒绝，没有宽容成稳定。仅增加相隔100ms几何完全相等的前置检查后重采，未改产品、取样位置或像素阈值。Discover目标含metadata，高52px；来源高40px，Settings Select40px／number input39px如实记录，本条不要求这些不同内容的字段同高。
+
+### 阶段4人工检查
+
+| 项目 | 实际查看的截图与结论 | 范围 |
+| --- | --- | --- |
+| R2-09 | 独立审查逐张查看`interface-final/interface-quality-R2-09-fo-32286-ored-chevrons-on-four-pages/`四页原图；库／探索／角色的箭头和字段边界清晰，下载无下拉箭头 | 见`interface-evidence-review.md`；不把computed 1px冒充物理边框厚度实测 |
+| R2-17普通深色字段 | 主流程及界面审查实际查看[discover-fields.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/r2-17-fields-settled/discover-fields.png)与[settings-fields.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/r2-17-fields-settled/settings-fields.png)，底色／描边一致 | 保留目标字段metadata带来的52／40px高差，不强求同高；不扩展为全部状态已人工签字 |
+| S4深色首页 | [actual-6x.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s4-final/review-fixes-S4-dark-home--ae1ab--clear-with-real-refraction/glass-interior/actual-6x.png)及同目录without-indicator-6x.png | 光学审查逐张查看实际／参考各4张，共8张，未见材料新增中心接缝或单侧彩色楔形 |
+| S4深色游戏库 | [actual-6x.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s4-final/review-fixes-S4-dark-libra-81d20--clear-with-real-refraction/glass-interior/actual-6x.png)及参考图 | 可见背景细列在隐藏材料后仍同位，未称整幅画面无竖列 |
+| S4浅色首页 | [actual-6x.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s4-final/review-fixes-S4-light-home-75bc6--clear-with-real-refraction/glass-interior/actual-6x.png)及参考图 | 右下淡块在参考图仍存在，未满足进一步改色散的诊断条件 |
+| S4浅色游戏库 | [actual-6x.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/s4-final/review-fixes-S4-light-libr-b4973--clear-with-real-refraction/glass-interior/actual-6x.png)及参考图 | 两主题dispersion仍0.65，不额外使用浅色0.25 |
+| S6浅色山体 | 主流程实际查看`solid-cliff-final/light-normal.png`，正式solid9格，三个原数值区均0精确背景点 | 深色图有数据及原图，此处不补写未经记录的人工签字 |
+| M2／R2-19裁定前历史 | 第四次裁定前1920 normal/island由审查方查看：脚仍在岛上，最后一帧为呼吸倾斜、无发灰或白斑 | 只保留当时裁定依据，不作为第三遍人工验收 |
+| M2／R2-19第三遍固定9.7 | 主流程逐张实际查看[1050 normal-2](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-terrain-b-3091c--retains-highlight-headroom/terrain-phase/normal-2.png)、[1280 normal-2](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-terrain-b-dd257--retains-highlight-headroom/terrain-phase/normal-2.png)、[1920 normal-2](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-terrain-b-186c1--retains-highlight-headroom/terrain-phase/normal-2.png)：三张脚与岛顶接触，岛面有暖色和暗侧层次，未见大片纯白，控制台未遮挡人物 | 本行人工结论仅限这3张；均值103.369059／99.354945／92.052806的数值通过独立列于固定相位表，不代替动态等待 |
+| 第三遍1920超时末次正常图 | 主流程实际查看[settling-27-normal.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-round-2-a-5f78c-oundings-meet-their-budgets/anchored-island/settling-27-normal.png)：脚仍落在岛面，形态起伏，未见明显白斑 | 这是等待期单张目视，不能替代20秒稳定闸门；未声称28组等待图全部人工查看 |
+
+### 阶段4命令记录和未完成验证
+
+| 命令／批次 | 已读到的实际结果 | 日志与限制 |
+| --- | --- | --- |
+| `npm run check`（含于最新npm test） | 双语710键、120个TS/TSX、32个后端错误码，无白名单外未用键；23样式表、spacing428＝已收紧基线428 | `revision5-npm.log`；旧`npm-final.log`和429→428记录保留，旧a4快照失败见`historical-guard-red.json` |
+| 第五次修订前`npm test` | 67文件、674项Vitest；57项Node通过、0失败、0跳过，含3项cleanup回归 | `npm-verified.log`；早期674＋54批次`npm-final.log`仍保留，不替代第五次修订后的新验证 |
+| 第五次修订后最新`npm test` | 67文件、674项Vitest＋77项Node通过，0失败、0跳过 | `revision5-npm.log`；主流程新验证，保留修订前日志 |
+| interface-quality专项 | 首批15/23，下一批22/23；剩余R2-18原门槛1/1、字体R2-16/21原生1/1通过 | 保留各批失败，不拼称某一次23/23 |
+| S2／S4／R2-10专项原生 | 最终分别1/1、4/4、65%时1/1 | `s2-native-final.log`、`s4-final.log`、`r2-10-opacity-65.log`；所有RED、无效探针和一次错误grep日志均保留 |
+| `npm run build` | 最终tsc＋vite build完成330ms，保留bundle>500kB提示 | `build-final.log`；先前596ms批次`build.log`保留。本命令仅构建前端，未构建安装包 |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 122通过、0失败、1项原有网络smoke忽略；main和doc各0项通过 | `cargo-test.log`；忽略的官方元数据／JAR网络smoke不计作已通过 |
+| 第五次修订前`npx tsc -b` | 退出0，无错误输出 | `tsc-verified.log`；早期`tsc-final.log`及`optics-final-tsc.log`保留，不替代恢复后的新验证 |
+| 第五次修订后最新`npx tsc -b` | 主流程确认退出0，无错误输出 | `revision5-tsc.log`为0字节；退出状态由主流程完成的验证管线确认 |
+| 完整Playwright首轮 | 248通过、4失败、0跳过、0flaky，22.4分钟 | `full-suite.log`及`full-suite.json`；四项失败与修正如下，未删失败数据 |
+| 旧语义／分页专项重跑 | 2/2通过，11.1秒 | `legacy-semantic-green.log`；保留全部200任务与原滚动门槛 |
+| 独立Toast入口修复后重跑 | 原4/4通过，5.0秒 | `toast-harness-green.log`；1.5px、ease-in和退出中间帧约束未改 |
+| 第二遍完整252项Playwright | 251通过、1失败、0跳过、0flaky，约21.5分钟 | `full-suite-final.log/.json`；唯一迟到ACK错误与实际中间帧证据见下节，未重写该次结果 |
+| 采集器确定性Node回归 | 原清理顺序2通过／1失败→修复后3/3通过 | `screencast-cleanup-red.log`、`screencast-cleanup-green.log`，stop／ACK／detach错误仍全部记录 |
+| review-supplement＋transitions原生专项 | 7＋20＝27/27通过，2.8分钟 | `screencast-e2e-green.log`及同名输出目录；原阈值不变 |
+| 第三遍完整252项Playwright | **251通过、1失败、0跳过、0flaky，21.5分钟；STOP** | `full-suite-verified.log/.json`、`full-suite-verified/`；唯一1920动态等待超时20017.1ms，无正式五帧及numeric-acceptance。S5输出在`full-suite-verified-world-states/` |
+| 第五次修订后新完整252项Playwright | **252通过、0失败、0跳过、0flaky，22.2分钟；errors=[]** | `revision5-full.log/.json`、`revision5-full/`；JSON原始duration=1330320.944ms，不拼接前三遍结果 |
+| M2第五次修订聚焦Node | 15项稳定等待＋15项uniform探针，30通过、0失败、0跳过 | `../revision5-node-green.log`；真实GPU结果另列 |
+| M2第五次修订六项原生专项 | 固定9.7三宽＋动态三宽，6/6通过，1.1分钟 | `revision5-world-gates.log`及同名输出目录；不代替完整套件 |
+| S2三种真实键盘关闭 | Tab／Enter／Escape，3/3通过，各0空白帧，sourceUnchanged=true | `revision5-s2-keyboard/summary.json`及各组原始帧；没有追加S2产品修改 |
+| C4提交／推送／远端确认 | **自动验证完成，准备同一C4提交；尚未提交、尚未推送** | 本节全部编号归同一待提交C4；实际SHA及外部回执留待提交／推送后补录，不自嵌未来SHA，不以过往远端状态冒充本阶段回执 |
+
+### 首轮完整套件四项失败与原证据
+
+首轮`full-suite.json`的expected=248、unexpected=4、skipped=0、flaky=0。四项失败截图及错误上下文原样保留，未重写成首轮全过：
+
+1. `card-theme`旧测试仍在article检查aria-current，与R2-04已批准的按钮归属不符。只把该断言移到`.vx-instance-card__select`，原点群／边框／可操作性断言保留。
+2. `ui-stress`旧下载用例直接查未挂载history-0，与R2-18默认30条分页不符。通过真实Show more逐次30→60→90→120→150→180→199，验证总任务200，然后原样执行20000滚轮、30000ms等待、滚动余量≤2及history-0视口边界断言。两处迁移已应用，`legacy-semantic-green.log`记录原生2/2通过。
+3. Toast固定id屏幕锚点测试右缘漂移390px／下缘34px。
+4. Toast的dialog退场没有中间帧。后两项共同根因是独立harness缺tokens导入：`toast-harness-before/computed.json`中space5／font-ui／duration-exit为空，dialog和backdrop均0s。只在测试入口最前补一行tokens导入后，`toast-harness-tokens/computed.json`为space5=24px、duration-exit=80ms、host right／bottom=24px、打开dialog／backdrop=0.18s；原4项Toast全部通过。未改生产样式或放宽1.5px、ease-in、中间帧门槛。
+
+更早旧用例迁移仍保留覆盖：global-glass／round6最近卡片使用已批准的aria-current；round6定位实际animation controls，保留数量／画布上方几何／命中断言；固定id Toast按M3验证同节点、焦点、单live、旧timer无效、关闭一次，保留原几何边界。真正toggle的aria-pressed和tabs的aria-selected没有全局替换。
+
+首轮有些旧脚本仍向仓库`test-results/`写固定路径，产物已移到外部worklogs，保留相对路径与原文件内容。以下路径映射避免报告中的历史路径失联；没有删除测试源码、夹具或失败证据：
+
+| 原目录（E:/CodeX/VoxelightLauncher/test-results/） | 新目录（本节证据根下） | 文件数 |
+| --- | --- | ---: |
+| card-theme/ | full-suite-side-effects/card-theme/ | 9 |
+| reference-alignment/ | full-suite-side-effects/reference-alignment/ | 23 |
+| transitions/ | full-suite-side-effects/transitions/ | 367 |
+| world-regressions/ | full-suite-side-effects/world-regressions/ | 106 |
+
+
+### 第二遍完整套件：迟到ACK与会话清理竞态
+
+第二遍`full-suite-final.json`记录expected=251、unexpected=1、skipped=0、flaky=0。唯一失败是`review-supplement`的真实命令栏grid→list→grid采集。两份原trace均有真实trusted输入、21个满足原条件（目标mode、实际rAF、0.01<opacity<0.99）的中间态、9张与观察时间差<20ms的匹配中间PNG；list错误数组为空，grid保存`Error: cdpSession.send: Target page, context or browser has been closed`。这些证据表明失败发生在采集器清理时序；并未据此删除errors必须为空的断言或将第二遍改成通过。
+
+原`review-supplement`在会话detach前始终保留frame listener，`transitions`则在等待一份ACK Promise快照之后才移除listener。等待期间新到的frame又追加ACK，未包含在先前快照里，随后撞上detach。测试辅助`tests/e2e/helpers/stop-screencast.ts`统一执行：stop（记录失败）→同步移除确切listener→等待全部已接纳ACK（逐个记录拒绝）→detach（记录失败）。两个采集器共用它，原每帧错误记录及最终错误数组断言保留，生产代码、运动参数和画面阈值未改。
+
+`tests/unit/screencast-cleanup.test.mjs`用可控Promise和EventEmitter确定性复现：stop未完成时帧2应正常ACK；stop完成、ACK仍等待时的帧3不应再被listener接纳；detach必须等待全部已接纳ACK。旧顺序RED为2通过／1失败（listener仍为1，预期0）；修后原3项全部通过，包括stop／ACK／detach原始Error全部保留及尚未开始采集时的清理。随后两份浏览器套件7＋20＝27项原生专项全过（2.8分钟）。新增辅助与测试归R2-22验证收口，不是产品转场修复，也未放宽trusted输入、实际rAF、中间PNG、deltaMs<20或几何／时序要求。
+
+诊断与RED／GREEN日志：[screencast-cleanup-diagnostic.md](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/screencast-cleanup-diagnostic.md)、`screencast-cleanup-{red,green}.log`、`screencast-e2e-green.log`。专项图在`screencast-e2e-green/`，transitions逐帧原图在`screencast-transitions/`。
+
+两次完整失败证据仍独立保留，以下均为实际绝对路径，未用后续成功覆盖：
+
+| 批次／失败项 | 日志、原图及trace |
+| --- | --- |
+| 首轮248/252完整记录 | [full-suite.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite.json)与同目录full-suite.log |
+| 首轮卡片当前态旧归属 | [test-failed-1.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite/card-theme-shared-points-o-efb20-frame-returns-after-leaving/test-failed-1.png) |
+| 首轮Toast屏幕锚点 | [test-failed-1.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite/toast-review-M3-fixed-id-r-6fbca-preserves-its-screen-anchor/test-failed-1.png) |
+| 首轮dialog退场中间帧 | [test-failed-1.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite/toast-review-review-D1-nat-9b86c-te-exit-frames-with-ease-in/test-failed-1.png) |
+| 首轮下载旧全量渲染假设 | [test-failed-1.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite/ui-stress-the-maximum-down-60c28-ry-scrolls-to-its-last-task/test-failed-1.png) |
+| 第二遍251/252完整记录 | [full-suite-final.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-final.json)与同目录full-suite-final.log |
+| 第二遍迟到ACK错误 | [test-failed-1.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-final/review-supplement-suppleme-13924-tured-content-intermediates/test-failed-1.png)；同目录`library-list/trace.json`、`library-grid/trace.json`及匹配PNG保留 |
+
+第三遍使用独立目录`full-suite-verified.log/.json`与`full-suite-verified/`，S5为`full-suite-verified-world-states/`。现已结束为251/252，唯一1920动态等待超时；前述迟到ACK问题在本次对应采集用例已通过，但不能据此称第三遍完整通过。
+
+### 第三遍完整套件：1920稳定等待超时，按规则停止
+
+`full-suite-verified.json`记录expected=251、unexpected=1、skipped=0、flaky=0，唯一失败为`M1/M2 dark horizon 1920: anchored island and its surroundings meet their budgets`。`captureAppearanceSeries`已保存settling.json后，在“waiting.status必须stable”断言失败，实际状态timeout、耗时20017.1ms，超出原20秒上限。
+
+此用例没有进入正式五帧采样，也没有numeric-acceptance。等待期间图片和统计属于settling诊断，不能作为正式五帧中位数或亮度闸门结果。其余251项通过不会覆盖此失败；没有重试到偶然通过，也没有调整产品参数、ROI、稳定判据或等待上限。阶段4按用户规则停下，不提交、不推送。
+
+完整记录：[full-suite-verified.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified.json)、同目录full-suite-verified.log。失败原图：[test-failed-1.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-round-2-a-5f78c-oundings-meet-their-budgets/test-failed-1.png)。完整等待逐次值如下；人工结论独立列于本节人工表，不以固定相位或截图代替动态等待闸门。
+
+#### 完整稳定等待复算
+
+离线分析[revision4-timeout-analysis.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision4-timeout-analysis.json)及[同名说明](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision4-timeout-analysis.md)逐对调用未修改的`appearanceSamplesStable`，同时独立复算每个布尔条件；结果全部一致，没有合格pair被误拒绝。第三遍28次观察、27对相邻采样中，时间间隔全部≥400ms、数据均有限值；覆盖率差从index3起全部<0.3pp，但**均值差<1从未满足**。最小均值差为index14的1.0935215804（90.0412120469→88.9476904665），仍高于原严格门槛。第二遍在index9→10正确接受：93.0015685002→92.1169377773，均值差0.8846307229、覆盖率差0.0336850649pp、间隔623.9ms均满足。第三遍没有已满足判据的样本对被deadline误拒绝。
+
+| 1920采集批次 | 状态 | 实际等待ms | 观察数 | 合格pair index | 记录期间world提交率/s | 隐藏截图平均ms |
+| --- | --- | ---: | ---: | --- | ---: | ---: |
+| 第二遍full-suite-final | stable | 7610.8 | 11 | 10 | 232.182403 | 97.245455 |
+| 第三遍full-suite-verified | timeout | 20017.1 | 28 | 无 | 234.173427 | 97.128571 |
+
+两遍脚锚点都为x=1167.5、y=747.40625、2×2，角色canvas也相同，tier始终animated、grid160。本次提交率没有低于第二遍、隐藏截图平均耗时也没有增加，这些记录不支持“第三遍截图明显更慢”的解释；没有记录逐样本实际提交的uT，不能仅用页内时间或帧数认定具体地形相位。等待用时按完整采集结束计，不把隐藏PNG结束时刻偷换为完成时刻。
+
+下表为第三遍**等待观察**全序列，不是正式五帧。before／after是页内`performance.now()`的隐藏截图前后时间；worldFrames取同一before检查点。全下半区coverage单位为百分比、Δcoverage为百分点，岛ROI coverage为0–1比例。首行尚无相邻pair。
+
+| index | before ms | after ms | worldFrames | mean | 全下半区coverage% | 岛ROI coverage | 与上张间隔ms | Δmean | Δcoverage pp | gap≥400 | Δmean<1 | Δcoverage<0.3 | 全满足 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |
+| 0 | 3718.800000 | 3818.100000 | 574 | 52.088906 | 10.049412 | 0.709490 | — | — | — | — | — | — | false |
+| 1 | 4448.000000 | 4547.800000 | 744 | 71.213565 | 13.421368 | 0.844118 | 629.900000 | 19.124660 | 3.371956 | true | false | false | false |
+| 2 | 5168.800000 | 5266.600000 | 916 | 74.374779 | 14.157670 | 0.861529 | 621.000000 | 3.161214 | 0.736303 | true | false | false | false |
+| 3 | 5886.700000 | 5980.700000 | 1086 | 77.382958 | 14.272423 | 0.884431 | 620.100000 | 3.008178 | 0.114752 | true | false | true | false |
+| 4 | 6597.700000 | 6695.200000 | 1252 | 82.331114 | 14.372666 | 0.921961 | 617.000000 | 4.948156 | 0.100244 | true | false | true | false |
+| 5 | 7310.500000 | 7406.600000 | 1417 | 85.262697 | 14.467938 | 0.940471 | 615.300000 | 2.931583 | 0.095272 | true | false | true | false |
+| 6 | 8035.400000 | 8132.500000 | 1588 | 87.209142 | 14.541498 | 0.951922 | 628.800000 | 1.946446 | 0.073559 | true | false | true | false |
+| 7 | 8755.900000 | 8851.300000 | 1755 | 89.832091 | 14.599939 | 0.966588 | 623.400000 | 2.622949 | 0.058442 | true | false | true | false |
+| 8 | 9468.300000 | 9565.500000 | 1922 | 91.333635 | 14.515321 | 0.967725 | 617.000000 | 1.501544 | 0.084619 | true | false | true | false |
+| 9 | 10177.900000 | 10275.400000 | 2088 | 93.033172 | 14.505885 | 0.963804 | 612.400000 | 1.699537 | 0.009436 | true | false | true | false |
+| 10 | 10901.800000 | 10998.800000 | 2257 | 91.853701 | 14.537033 | 0.966510 | 626.400000 | 1.179472 | 0.031149 | true | false | true | false |
+| 11 | 11619.400000 | 11715.300000 | 2426 | 93.396894 | 14.672484 | 0.973804 | 620.600000 | 1.543193 | 0.135450 | true | false | true | false |
+| 12 | 12335.200000 | 12434.900000 | 2591 | 91.784062 | 14.750609 | 0.968000 | 619.900000 | 1.612832 | 0.078125 | true | false | true | false |
+| 13 | 13043.500000 | 13140.200000 | 2756 | 90.041212 | 14.824675 | 0.958745 | 608.600000 | 1.742850 | 0.074067 | true | false | true | false |
+| 14 | 13760.900000 | 13857.500000 | 2925 | 88.947690 | 14.846692 | 0.942353 | 620.700000 | 1.093522 | 0.022017 | true | false | true | false |
+| 15 | 14480.600000 | 14576.700000 | 3091 | 87.226297 | 14.802354 | 0.928471 | 623.100000 | 1.721393 | 0.044338 | true | false | true | false |
+| 16 | 15197.200000 | 15293.100000 | 3258 | 77.261221 | 14.576907 | 0.871098 | 620.500000 | 9.965076 | 0.225446 | true | false | true | false |
+| 17 | 15906.700000 | 16002.600000 | 3425 | 69.194884 | 14.352679 | 0.854510 | 613.600000 | 8.066338 | 0.224229 | true | false | true | false |
+| 18 | 16635.700000 | 16732.000000 | 3595 | 67.245268 | 14.306209 | 0.868471 | 633.100000 | 1.949616 | 0.046469 | true | false | true | false |
+| 19 | 17347.400000 | 17444.500000 | 3762 | 70.421893 | 14.247058 | 0.870471 | 615.400000 | 3.176625 | 0.059152 | true | false | true | false |
+| 20 | 18068.100000 | 18165.400000 | 3931 | 72.270383 | 14.176441 | 0.878824 | 623.600000 | 1.848490 | 0.070617 | true | false | true | false |
+| 21 | 18777.300000 | 18874.800000 | 4096 | 74.753453 | 14.155337 | 0.901176 | 611.900000 | 2.483070 | 0.021104 | true | false | true | false |
+| 22 | 19497.200000 | 19592.500000 | 4265 | 77.566308 | 14.253957 | 0.921765 | 622.400000 | 2.812855 | 0.098620 | true | false | true | false |
+| 23 | 20221.800000 | 20323.000000 | 4436 | 80.521313 | 14.268973 | 0.930157 | 629.300000 | 2.955004 | 0.015016 | true | false | true | false |
+| 24 | 20935.400000 | 21032.600000 | 4602 | 83.656690 | 14.251928 | 0.946824 | 612.400000 | 3.135377 | 0.017045 | true | false | true | false |
+| 25 | 21647.000000 | 21746.200000 | 4769 | 85.920991 | 14.236303 | 0.955373 | 614.400000 | 2.264301 | 0.015625 | true | false | true | false |
+| 26 | 22376.900000 | 22473.600000 | 4943 | 88.316313 | 14.295353 | 0.964196 | 630.700000 | 2.395322 | 0.059050 | true | false | true | false |
+| 27 | 23097.600000 | 23193.900000 | 5112 | 90.417861 | 14.249696 | 0.958196 | 624.000000 | 2.101548 | 0.045657 | true | false | true | false |
+
+原始settling：[settling.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-round-2-a-5f78c-oundings-meet-their-budgets/anchored-island/settling.json)。该目录保留`settling-{0..27}-normal.png`和`settling-{0..27}-island.png`，analysis.md逐行列出绝对路径；第二遍11次等待和已通过数据另存于full-suite-final，未拿来替换此次失败。
+
+28次采样及相邻差值的诊断图：[revision4-timeout-chart.svg](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/revision4-timeout-chart.svg)。图中红线仍为原1.0判据，首条没有前值，不绘制差值；此图不替代原始表格和截图。
+
+#### 第三遍固定相位独立记录
+
+**待审建议，尚未执行：**均值90–150已经改到固定启动相位，但动态等待仍要求相邻均值差<1。建议将这条均值稳定前置条件也仅用于固定相位用例；动态用例保留覆盖率差<0.3pp的稳定等待，20秒上限、≥400ms采样间隔、正式五帧及动态其余门槛保持原值。此为等待规则调整，已向用户提出，未擅自修改测试或产品；当前结论仍为251/252、未提交。
+
+以下三宽×四相位全部通过各自数值断言；只在uT=9.7要求均值90–150，其余相位均值及ROI有效率只记录。白像素为0–1比例（岛内要求<0.005、下半区<0.001），每个相位的p95及白像素断言针对各帧执行。它们不能替代超时的1920动态用例。
+
+| 宽度／uT | 实际等待ms | 均值中位 | p95中位 | 岛ROI有效率中位 | 岛内白比例中位 | 下半区白比例中位 | 本相位数值 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 1050/9.7 | 2560.3 | 103.369059 | 168.000000 | 0.987922 | 0.000000000 | 0.000047974 | 通过 |
+| 1050/188 | 2561.0 | 61.415057 | 162.666667 | 0.806157 | 0.000515092 | 0.000079957 | 通过 |
+| 1050/288 | 2565.2 | 65.585087 | 167.000000 | 0.684353 | 0.000048833 | 0.000250533 | 通过 |
+| 1050/588 | 2591.4 | 80.795168 | 167.000000 | 0.817843 | 0.000000000 | 0.000053305 | 通过 |
+| 1280/9.7 | 2673.7 | 99.354945 | 167.000000 | 0.982000 | 0.000000000 | 0.000055556 | 通过 |
+| 1280/188 | 2662.7 | 57.085496 | 161.000000 | 0.787922 | 0.000656234 | 0.000067460 | 通过 |
+| 1280/288 | 2676.5 | 62.466320 | 167.333333 | 0.676471 | 0.000051432 | 0.000253968 | 通过 |
+| 1280/588 | 2672.6 | 77.228664 | 167.666667 | 0.812549 | 0.000000000 | 0.000059524 | 通过 |
+| 1920/9.7 | 2591.7 | 92.052806 | 166.666667 | 0.966392 | 0.000113520 | 0.000026380 | 通过 |
+| 1920/188 | 2602.2 | 44.461747 | 160.000000 | 0.612784 | 0.000209415 | 0.000033482 | 通过 |
+| 1920/288 | 2602.1 | 52.194344 | 168.666667 | 0.637569 | 0.000000000 | 0.000061891 | 通过 |
+| 1920/588 | 2599.7 | 99.056275 | 175.333333 | 0.906784 | 0.000000000 | 0.000019278 | 通过 |
+
+三张固定启动相位正常图如下；人工结论见本节人工表。每个相位完整五帧及数值见analysis.json所列source绝对路径。
+
+- 1050：[normal-2.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-terrain-b-3091c--retains-highlight-headroom/terrain-phase/normal-2.png)。
+- 1280：[normal-2.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-terrain-b-dd257--retains-highlight-headroom/terrain-phase/normal-2.png)。
+- 1920：[normal-2.png](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage4/full-suite-verified/world-acceptance-terrain-b-186c1--retains-highlight-headroom/terrain-phase/normal-2.png)。
+
+未验证范围：Intel Graphics、真实Tauri/WebView2、NVDA语音、真实Microsoft登录／Minecraft启动、全部可能弹窗占位符、所有页面逐张人工签字。R2-17已补本节所列普通深色字段2组像素与人工检查，但不扩写为全部主题／弹窗／状态。上述未验证范围与第三遍1920等待失败分别记录；没有“全通过”结论。
 
 ## M1、M2、S1实现与复核
 

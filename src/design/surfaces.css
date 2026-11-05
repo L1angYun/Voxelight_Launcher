@@ -2,11 +2,12 @@
 /* Shared reading plane. World and lens keep their own geometry. */
 .vx-page-shell {
   width: min(100%, var(--content-max)); min-width: 0; margin: 0 auto;
-  padding: var(--space-6) var(--space-6) var(--space-7);
+  padding: var(--space-6) var(--page-gutter) var(--space-7);
 }
 .vx-page-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--space-4) var(--space-5); margin: 0 0 var(--space-6); padding: 0; }
-.vx-page-header__text { min-width: 0; }
-.vx-page-header h1 { margin: 0; font-size: var(--text-2xl); font-weight: 650; line-height: 1.25; letter-spacing: -.025em; }
+.vx-page-header__text { min-width: 0; min-block-size: calc(var(--text-2xl)*1.25 + var(--space-2) + var(--text-sm)*1.6); }
+.vx-page-shell h2 { font: var(--type-section); }
+.vx-page-header h1 { margin: 0; font-size: var(--text-2xl); font-weight: var(--weight-strong); line-height: 1.25; letter-spacing: -.025em; }
 .vx-page-header h1:focus:not(:focus-visible) { outline: none; }
 .vx-page-header__text > p { max-width: 64ch; margin-top: var(--space-2); color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.6; }
 .vx-page-header__actions { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); }
@@ -20,7 +21,6 @@
 .vx-button.vx-button--icon.vx-button--sm { width: 32px; }
 .vx-button.vx-button--icon .vx-button__label { position: absolute; }
 .vx-log-view, .vx-detail-section pre, .vx-managed-log { user-select: text; }
-.vx-task-section--history.vx-panel { padding: var(--space-5); }
 .vx-toast-host { position: fixed; z-index: 100; right: var(--space-5); bottom: var(--space-5); max-width: calc(100vw - 48px); pointer-events: none; }
 .vx-toast-host .vx-toast { pointer-events: auto; background: color-mix(in srgb, var(--surface-solid) 82%, transparent); backdrop-filter: blur(12px); }
 .vx-toast--error { border-color: var(--hairline); }
@@ -37,17 +37,61 @@
 .vx-bootstrap-state { min-height: calc(100dvh - var(--shell-height)); display: grid; align-content: center; justify-items: start; padding: var(--space-7); gap: var(--space-4); }
 .vx-bootstrap-error { margin: var(--space-4) var(--space-6); padding: var(--space-4); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
 .vx-bootstrap-error p { color: var(--danger); }
-@media(max-width: 1100px) {
-.vx-page-shell { padding-inline: var(--space-5); }
-}
 @media(max-width: 760px) {
 .vx-workspace { grid-template-columns: minmax(0,1fr); }
-.vx-page-header { gap: var(--space-3); }
 }
+.vx-action-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+.vx-section-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+.vx-resource-row > div {
+    display: grid;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+.vx-resource-row strong {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-strong);
+    overflow-wrap: anywhere;
+  }
+.vx-resource-row small {
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+.vx-form-stack {
+    display: grid;
+    gap: var(--space-20px);
+  }
+.vx-form-stack input { width: 100%; }
+.vx-form-stack textarea {
+    width: 100%;
+    resize: vertical;
+  }
+.vx-resource-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-18px);
+    min-width: 0;
+    padding: var(--space-14px) 0;
+    border-bottom: 1px dotted color-mix(in srgb, var(--text-primary) 16%, transparent);
+  }
+@media (hover: hover) and (pointer: fine) {
+    .vx-resource-row:hover { background: var(--surface-hover); }
+  }
 }
 @layer overrides {
 [data-reduced-motion="true"] .vx-dialog, [data-high-contrast="true"] .vx-dialog { transition-duration: 0s; transform: none; }
 [data-reduced-motion="true"] .vx-dialog::backdrop, [data-high-contrast="true"] .vx-dialog::backdrop { transition-duration: 0s; }
-[data-reduced-transparency="true"] .vx-panel, [data-high-contrast="true"] .vx-panel,
-[data-reduced-transparency="true"] .vx-toast-host .vx-toast, [data-high-contrast="true"] .vx-toast-host .vx-toast { background: var(--surface-solid); backdrop-filter: none; }
+[data-reduced-transparency="true"] .vx-panel, [data-high-contrast="true"] .vx-panel, [data-reduced-transparency="true"] .vx-toast-host .vx-toast, [data-high-contrast="true"] .vx-toast-host .vx-toast { background: var(--surface-solid); backdrop-filter: none; }
 }

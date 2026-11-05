@@ -27,6 +27,9 @@ vi.mock("../../lib/launcher", async (importOriginal) => ({
   command: vi.fn(),
   events: vi.fn(),
 }));
+vi.mock("../../app/AppearanceProvider", () => ({ useAppearance: () => ({
+  effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false,
+}) }));
 
 function task(overrides: Partial<DownloadTask> = {}): DownloadTask {
   return {
@@ -118,6 +121,45 @@ afterEach(async () => {
 });
 
 describe("download task center", () => {
+  it("introduces task content with a page description", async () => {
+    await render();
+    expect(container.querySelector(".vx-page-header__text p")?.textContent?.trim()).toBeTruthy();
+  });
+  it("paginates 199 terminal tasks and filters their real status without rendering fictitious progress", async () => {
+    currentTasks = [task({ id: "active" }), ...Array.from({ length: 199 }, (_, index) => task({
+      id: `history-${index}`, status: index % 2 ? "failed" : "completed", stage: index % 2 ? "failed" : "complete",
+      bytesCompleted: 0, bytesTotal: 0, total: 0, completed: index,
+    }))];
+    await render();
+    const history = container.querySelector('.vx-task-section--history')!;
+    const rows = () => [...history.querySelectorAll<HTMLElement>('[data-task-id]')];
+    expect(latestModel.tasks).toHaveLength(200);
+    expect(rows()).toHaveLength(30);
+    expect(container.querySelector('[aria-label="199 in history"]')).not.toBeNull();
+    expect(history.querySelector(".vx-lattice-progress")).toBeNull();
+    expect(history.textContent).not.toContain("Size pending");
+    await act(async () => button(history, "Show more").click());
+    expect(rows()).toHaveLength(60);
+    await act(async () => button(history, "Failed").click());
+    expect(rows()).toHaveLength(30);
+    expect(rows().every(row => row.dataset.status === "failed")).toBe(true);
+    await act(async () => button(history, "Completed").click());
+    expect(rows()).toHaveLength(30);
+    expect(rows().every(row => row.dataset.status === "completed")).toBe(true);
+    expect(article("active").querySelector(".vx-lattice-progress")).not.toBeNull();
+    expect(container.querySelector('.vx-task-section--active')?.classList.contains("vx-panel")).toBe(true);
+  });
+  it("shows a filter-specific empty state without losing history counts", async () => {
+    currentTasks = [task({ id: "done", status: "completed", stage: "complete" })];
+    await render();
+    const history = container.querySelector('.vx-task-section--history')!;
+    await act(async () => button(history, "Failed").click());
+    expect(history.querySelectorAll('[data-task-id]')).toHaveLength(0);
+    expect(history.textContent).toContain("No matching tasks");
+    expect(container.querySelector('[aria-label="1 in history"]')).not.toBeNull();
+    await act(async () => button(history, "All").click());
+    expect(article("done")).not.toBeNull();
+  });
   it("retains prepared groups across page renders and sorts timestamp offsets chronologically", async () => {
     currentTasks = [
       task({ id: "older", status: "completed", updatedAt: "2026-11-03T04:00:00+08:00" }),

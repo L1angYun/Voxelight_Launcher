@@ -2,8 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { collectTranslationUsage } from "./i18n-usage.mjs";
 
-const root = fileURLToPath(new URL("../", import.meta.url));
+const rootArgument = process.argv.indexOf("--root");
+const root = rootArgument >= 0 ? path.resolve(process.argv[rootArgument + 1]) : fileURLToPath(new URL("../", import.meta.url));
 const localeRoot = path.join(root, "src", "i18n", "locales");
 const locales = ["zh-CN", "en-US"];
 const errors = [];
@@ -108,23 +110,16 @@ function allowedLiteral(text) {
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const target = path.join(directory, entry.name);
-    if (entry.isDirectory()) return sourceFiles(target);
-    return entry.isFile() && entry.name.endsWith(".tsx") && !entry.name.includes(".test.") ? [target] : [];
+    if (entry.isDirectory()) return entry.name === "test" || entry.name === "__tests__" ? [] : sourceFiles(target);
+    return entry.isFile() && /\.tsx?$/.test(entry.name) && !/\.(?:test|spec|d)\.tsx?$/.test(entry.name) ? [target] : [];
   });
 }
 
-const files = [
-  ...sourceFiles(path.join(root, "src", "app")),
-  ...sourceFiles(path.join(root, "src", "features")),
-  ...sourceFiles(path.join(root, "src", "visual")),
-  ...sourceFiles(path.join(root, "src", "components", "ui")),
-  path.join(root, "src", "components", "PlayerAvatar.tsx"),
-  path.join(root, "src", "components", "WorldScene.tsx"),
-];
+const files = sourceFiles(path.join(root, "src"));
 
 for (const file of files) {
   const text = fs.readFileSync(file, "utf8");
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   const relative = path.relative(root, file).replaceAll("\\", "/");
   function report(node, value, kind) {
     if (allowedLiteral(value)) return;
@@ -145,8 +140,18 @@ for (const file of files) {
   visit(source);
 }
 
+const usage = collectTranslationUsage(files, [...new Set([...translationKeys].map(key => key.split(".")[0]))]);
+errors.push(...usage.errors);
+const known = new Set([...translationKeys].map(usage.canonical));
+for (const reference of usage.exact) if (!known.has(reference)) errors.push(`Missing translation key: ${reference}`);
+for (const key of translationKeys) {
+  // Backend codes are delivered at runtime and intentionally form a whitelist.
+  if (key.includes(".errors.")) continue;
+  if (!usage.exact.has(usage.canonical(key)) && !usage.patterns.some(pattern => pattern.test(key))) errors.push(`Unused translation key: ${key}`);
+}
+
 if (errors.length) {
   console.error(errors.join("\n"));
   process.exit(1);
 }
-console.log(`i18n checks passed: ${locales.length} locales, ${translationKeys.size} localized keys, ${backendCodes.size} backend error codes, ${files.length} TSX files.`);
+console.log(`i18n checks passed: ${locales.length} locales, ${translationKeys.size} localized keys, ${backendCodes.size} backend error codes, ${files.length} TS/TSX files; no unused keys outside runtime error families.`);

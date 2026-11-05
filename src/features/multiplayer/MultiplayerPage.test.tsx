@@ -202,6 +202,23 @@ afterEach(async () => {
 });
 
 describe("multiplayer", () => {
+  it("retains the complete long server name and offers semantic address break opportunities", async () => {
+    servers[0].name = "A very long server name that remains available when the visible title is clamped";
+    await render();
+    expect(container.querySelector(".vx-server-row__copy h2")?.getAttribute("title")).toBe(servers[0].name);
+    expect(container.querySelector(".vx-server-addresses strong")?.getAttribute("title")).toBe(servers[0].name);
+    const address = container.querySelector(".vx-server-row__copy p")!;
+    expect(address.textContent).toBe(servers[0].address);
+    expect(address.querySelectorAll("wbr").length).toBeGreaterThan(1);
+  });
+  it("uses one saved-server empty explanation inside the normal detail frame", async () => {
+    servers = []; await render();
+    const empty = container.querySelector('.vx-server-row--empty');
+    expect(empty).not.toBeNull();
+    expect(empty?.querySelector('.vx-empty')).not.toBeNull();
+    const title = empty!.querySelector('h2,h3,strong')!.textContent!;
+    expect(container.textContent!.split(title)).toHaveLength(2);
+  });
   it("offers one create-server action when the managed inventory is empty", async () => {
     const normal = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => name === "list_managed_servers" ? [] : normal(name, args));

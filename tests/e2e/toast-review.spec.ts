@@ -22,7 +22,7 @@ async function prepare(page: Page) {
   await expect(page.locator("html")).toHaveAttribute("data-reduced-motion", "false");
 }
 
-async function traceClick(page: Page, trigger: string, duration = 360): Promise<TraceFrame[]> {
+async function traceClick(page: Page, trigger: string, duration = 360, activate?: () => Promise<unknown>): Promise<TraceFrame[]> {
   await page.evaluate(({ trigger, duration }) => {
     const traceWindow = window as unknown as { toastReviewTrace: Promise<TraceFrame[]> };
     traceWindow.toastReviewTrace = new Promise(resolve => {
@@ -62,30 +62,53 @@ async function traceClick(page: Page, trigger: string, duration = 360): Promise<
       document.addEventListener("click", clicked, true);
     });
   }, { trigger, duration });
-  await page.locator(trigger).click();
+  if (activate) await activate(); else await page.locator(trigger).click();
   return page.evaluate(() => (window as unknown as { toastReviewTrace: Promise<TraceFrame[]> }).toastReviewTrace);
 }
 
-test("review D2: fixed-id long-to-short replacement preserves the exiting toast's screen anchor", async ({ page }, info) => {
+test("M3 fixed-id replacement updates the focused notification in place and preserves its screen anchor", async ({ page }, info) => {
+  await page.addInitScript(() => {
+    const host = window as unknown as { staleInfoTimer?: () => void };
+    const schedule = window.setTimeout.bind(window);
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 5000 && typeof handler === "function") host.staleInfoTimer = () => handler(...args);
+      return schedule(handler, timeout, ...args);
+    }) as typeof window.setTimeout;
+  });
   await prepare(page);
   await page.locator("#notify-long").click();
   await expect(page.locator(".vx-toast")).toHaveCSS("opacity", "1");
-  const frames = await traceClick(page, "#notify-short");
+  const originalNode = await page.locator(".vx-toast").elementHandle();
+  const originalClose = await page.locator(".vx-toast button").elementHandle();
+  await page.locator(".vx-toast button").focus();
+  // Model an asynchronous notification update without moving focus to the
+  // harness's trigger button. The production notify handler is unchanged.
+  const frames = await traceClick(page, "#notify-short", 360,
+    () => page.evaluate(() => document.querySelector<HTMLButtonElement>("#notify-short")!.click()));
   await writeFile(info.outputPath("toast-replacement.json"), JSON.stringify(frames, null, 2));
   const original = frames[0].toasts[0];
-  const outgoing = frames.flatMap(frame => frame.toasts.filter(toast => toast.hidden));
   const replacements = frames.flatMap(frame => frame.toasts.filter(toast => toast.text === "Failed."));
-  expect(outgoing.length, "replacement keeps the previous node for its exit").toBeGreaterThan(0);
-  expect(replacements.some(toast => toast.opacity > .01 && toast.opacity < .99), "replacement has actual entry frames").toBe(true);
-  expect(outgoing.some(toast => toast.opacity > .01 && toast.opacity < .99), "old notification has actual exit frames").toBe(true);
+  expect(replacements.length).toBeGreaterThan(0);
+  expect(frames.length).toBeGreaterThan(1);
+  expect(frames.every(frame => frame.toasts.length === 1)).toBe(true);
+  expect(await originalNode!.evaluate(element => element === document.querySelector(".vx-toast"))).toBe(true);
+  expect(await originalClose!.evaluate(element => element === document.activeElement)).toBe(true);
   for (const frame of frames.filter(frame => frame.toasts.some(toast => toast.text === "Failed."))) {
     expect(frame.toasts.filter(toast => toast.role === "alert" || toast.role === "status")).toHaveLength(1);
     expect(frame.toasts.filter(toast => toast.closeEnabled)).toHaveLength(1);
   }
-  expect(outgoing.every(toast => toast.inert && toast.hidden && toast.role === null && !toast.closeEnabled)).toBe(true);
-  expect.soft(Math.max(...outgoing.map(toast => Math.abs(toast.right - original.right))), "outgoing right edge stays fixed while host width shrinks").toBeLessThan(1.5);
-  expect.soft(Math.max(...outgoing.map(toast => Math.abs(toast.layoutBottom - original.layoutBottom))), "outgoing bottom edge stays fixed apart from its intentional 8px exit").toBeLessThan(1.5);
+  expect(frames.flatMap(frame => frame.toasts).every(toast => !toast.inert && !toast.hidden && toast.closeEnabled)).toBe(true);
+  expect.soft(Math.max(...replacements.map(toast => Math.abs(toast.right - original.right))), "replacement right edge stays fixed while its text shrinks").toBeLessThan(1.5);
+  expect.soft(Math.max(...replacements.map(toast => Math.abs(toast.layoutBottom - original.layoutBottom))), "replacement bottom edge stays fixed").toBeLessThan(1.5);
   await expect(page.locator(".vx-toast")).toHaveCount(1);
+  await page.evaluate(() => {
+    const callback = (window as unknown as { staleInfoTimer?: () => void }).staleInfoTimer;
+    if (!callback) throw new Error("The previous notification's timer was not captured");
+    callback();
+  });
+  await expect(page.getByRole("alert")).toHaveText(/Failed\./);
+  await expect(page.locator("#dismissed-count")).toHaveText("0");
+  expect(await originalClose!.evaluate(element => element === document.activeElement)).toBe(true);
   await page.locator(".vx-toast button").click();
   await expect(page.locator(".vx-toast")).toHaveCount(0);
   await expect(page.locator("#dismissed-count")).toHaveText("1");

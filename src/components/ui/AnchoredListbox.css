@@ -1,7 +1,7 @@
 @layer primitives {
 .vx-select { display: inline-block; min-width: 0; width: 100%; }
 .vx-select__surface { width: 100%; border-radius: var(--vx-lens-radius-control, 14px); transform: var(--jelly-matrix, matrix(1,0,0,1,0,0)); }
-.vx-select__button { display: grid; grid-template-columns: minmax(0,1fr) 16px; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 0; border-radius: inherit; background: transparent; color: var(--text-primary); font-family: var(--font-ui); font-size: 14px; text-align: start; }
+.vx-select__button { display: grid; grid-template-columns: minmax(0,1fr) 16px; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 0; border-radius: inherit; background: transparent; color: var(--text-primary); font-family: var(--font-ui); font-size: var(--text-md); text-align: start; }
 .vx-select__button[data-has-icon="true"] { grid-template-columns: 18px minmax(0,1fr) 16px; padding-block: 6px; min-height: 48px; }
 .vx-select__button:focus-visible { outline: none; }
 .vx-select:has(.vx-select__button:focus-visible),
@@ -12,8 +12,8 @@
 .vx-select__button:disabled { opacity: .5; cursor: not-allowed; }
 .vx-select__button[aria-expanded="true"] .vx-select__chevron { transform: rotate(180deg); }
 .vx-select__text { display: grid; gap: 2px; min-width: 0; }
-.vx-select__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 550; line-height: 18px; }
-.vx-select__metadata { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; line-height: 14px; font-variant-numeric: tabular-nums; }
+.vx-select__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: var(--weight-strong); line-height: 18px; }
+.vx-select__metadata { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: var(--text-xs); line-height: 14px; font-variant-numeric: tabular-nums; }
 .vx-select__chevron, .vx-select__button > svg { color: var(--text-secondary); }
 .vx-listbox-popover { inset: auto; z-index: 60; margin: 0; padding: 0; border: 0; overflow: visible; background: transparent; isolation: isolate; color: var(--text-primary); font-family: var(--font-ui); }
 .vx-listbox-popover::backdrop { background: transparent; pointer-events: none; }
@@ -34,12 +34,12 @@
 .vx-select__option[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .vx-select__option[data-version-directory] { margin-top: 4px; }
 .vx-select-flat-surface { background: var(--surface-solid); border: 1px solid var(--hairline); border-radius: var(--radius-sm); }
-.vx-select--flat .vx-select__surface { transform: none; border-radius: var(--radius-sm); }
+.vx-select--flat .vx-select__surface { transform: none; border-radius: var(--radius-sm); background: var(--bg-raised); border-color: var(--border-strong); }
 .vx-select--flat .vx-select__button { min-height: 38px; padding: 8px 12px; font-size: var(--text-sm); }
-.vx-select--flat .vx-select__value { font-size: var(--text-sm); font-weight: 500; }
+.vx-select--flat .vx-select__value { font-size: var(--text-sm); font-weight: var(--weight-regular); }
 .vx-listbox-surface.vx-select-flat-surface { padding: 6px; border-radius: var(--radius-md); box-shadow: var(--shadow-raised); }
 .vx-select-flat-surface .vx-select__option { border-radius: var(--radius-sm); }
-.vx-select-flat-surface .vx-select__option[aria-selected="true"] { background: var(--surface-hover); font-weight: 600; }
+.vx-select-flat-surface .vx-select__option[aria-selected="true"] { background: var(--surface-hover); font-weight: var(--weight-strong); }
 }
 @layer overrides {
 @media (forced-colors: active) {

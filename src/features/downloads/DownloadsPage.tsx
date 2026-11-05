@@ -1,8 +1,11 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity, Download, History } from "lucide-react";
 import { EmptyState } from "../../components/ui/Feedback";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
+import { Button } from "../../components/ui/Button";
+import { Segmented } from "../../components/ui/Segmented";
 import { TaskList } from "./TaskList";
 import type { DownloadTasksModel } from "./useDownloadTasks";
 import "./downloads.css";
@@ -10,6 +13,9 @@ import "./downloads.css";
 export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   const { t, i18n } = useTranslation();
   const { tasks, active, history, rates, busyTaskId, loading, error, act } = model;
+  const [historyFilter, setHistoryFilter] = useState<"all" | "failed" | "completed">("all");
+  const [historyLimit, setHistoryLimit] = useState(30);
+  const filteredHistory = historyFilter === "all" ? history : history.filter(task => task.status === historyFilter);
   const errorText = error
     ? i18n.exists(`downloads:errors.${error.code}`)
       ? t(`downloads:errors.${error.code}`, error.params)
@@ -26,7 +32,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
 
   return (
     <PageShell className="vx-downloads-page">
-      <PageHeader title={t("downloads:title")} />
+      <PageHeader title={t("downloads:title")} description={t("downloads:subtitle")} />
 
       {errorText ? (
         <p className="vx-downloads-error" role="alert">
@@ -46,7 +52,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
       {tasks.length > 0 ? (
         <div className="vx-task-center">
           <section
-            className="vx-task-section vx-task-section--active"
+            className="vx-task-section vx-task-section--active vx-panel"
             aria-labelledby="downloads-active"
           >
             <header className="vx-task-section__heading">
@@ -75,6 +81,10 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
           >
             <header className="vx-task-section__heading">
               <h2 id="downloads-history">{t("downloads:history")}</h2>
+              {history.length > 0 ? <Segmented className="vx-task-history-filters" semantic="toggle"
+                label={t("downloads:historyFilter")} value={historyFilter}
+                onChange={value => { setHistoryFilter(value); setHistoryLimit(30); }}
+                options={(["all", "failed", "completed"] as const).map(value => ({ value, label: t(`downloads:historyFilters.${value}`) }))} /> : null}
               <span
                 aria-label={t("downloads:historyCount", {
                   count: history.length,
@@ -83,15 +93,17 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
                 {history.length}
               </span>
             </header>
-            {history.length ? (
-              <TaskList tasks={history} {...listProps} />
+            {filteredHistory.length ? (
+              <TaskList tasks={filteredHistory.slice(0, historyLimit)} {...listProps} compact />
             ) : (
               <TaskSectionEmpty
                 kind="history"
-                title={t("downloads:empty.historyTitle")}
-                description={t("downloads:empty.historyDescription")}
+                title={t(history.length ? "downloads:empty.filteredTitle" : "downloads:empty.historyTitle")}
+                description={t(history.length ? "downloads:empty.filteredDescription" : "downloads:empty.historyDescription")}
               />
             )}
+            {filteredHistory.length > historyLimit ? <Button className="vx-task-history-more" size="sm" variant="secondary"
+              onClick={() => setHistoryLimit(limit => limit + 30)}>{t("downloads:showMore")}</Button> : null}
           </section>
         </div>
       ) : null}

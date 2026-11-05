@@ -45,7 +45,7 @@
   overflow: visible;
   pointer-events: none;
 }
-.vx-glass-surface--nav { border-radius: 22px; }
+.vx-glass-surface--nav { border-radius: var(--radius-glass-nav); }
 .vx-glass-surface--control { border-radius: var(--radius-pill); }
 .vx-glass-surface--dialog {
   --vx-lens-blur: var(--vx-lens-menu-blur);
@@ -63,6 +63,10 @@
 }
 }
 @layer overrides {
+[data-theme="light"] .vx-glass-surface[data-glass-variant="control"] {
+  --vx-lens-boundary: color-mix(in srgb, var(--text-secondary) 65%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-secondary) 65%, transparent), var(--shadow-raised);
+}
 .vx-glass-provider[data-glass-mode="fallback"] .vx-glass-surface {
   border-color: var(--border-subtle);
   background: var(--surface-solid);

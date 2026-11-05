@@ -41,7 +41,6 @@
   "progress": {
     "files": "{{completed}} / {{total}} files",
     "completedUnknown": "{{completed}} files · total unknown",
-    "label": "{{completed}} of {{total}}",
     "byteLabel": "{{completed}} of {{total}}",
     "byteLabelUnknown": "{{completed}} downloaded, total size unknown",
     "bytesCompleted": "{{completed}} downloaded",
@@ -57,8 +56,8 @@
     "activeDescription": "Queued downloads will appear here with their real byte progress.",
     "historyTitle": "No task history",
     "historyDescription": "Completed and recoverable tasks will stay here.",
-    "active": "No active tasks. Finished and recoverable tasks remain in history.",
-    "history": "Completed, cancelled, and recoverable tasks will remain here."
+    "filteredTitle": "No matching tasks",
+    "filteredDescription": "Choose another filter to view download history."
   },
   "errors": {
     "taskFailed": "The task did not complete. Retry when available, or return to its source.",
@@ -67,5 +66,14 @@
       "retryUnsupported": "Return to the content, modpack, or backup page to run this task again. Verified files will be reused.",
       "active": "This task is still running or queued."
     }
-  }
+  },
+  "subtitle": "Review active tasks and download history.",
+  "historyFilter": "Filter history",
+  "historyFilters": {
+    "all": "All",
+    "failed": "Failed",
+    "completed": "Completed"
+  },
+  "showMore": "Show more",
+  "historyFiles": "Files: {{count}}"
 }

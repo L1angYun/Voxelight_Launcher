@@ -139,8 +139,8 @@ function setAccounts(accounts: Account[]) {
   mockLauncher.activeAccount = accounts.find((account) => account.isSelected);
 }
 
-async function render() {
-  const i18n = createLauncherI18n("en-US", "en-US");
+async function render(language: "en-US" | "zh-CN" = "en-US") {
+  const i18n = createLauncherI18n(language, language);
   await i18n.initPromise;
   await act(async () => root.render(createElement(I18nextProvider, { i18n },
     createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(AccountsPage)))));
@@ -224,6 +224,49 @@ afterEach(async () => {
 });
 
 describe("accounts and appearance", () => {
+  it("introduces account content with its existing subtitle", async () => {
+    await render();
+    expect(container.querySelector(".vx-page-header__text p")?.textContent).toBe("Accounts, online appearance, and local previews.");
+  });
+  it("uses account terminology and localized model names while retaining the Players page title", async () => {
+    await render("zh-CN");
+    expect(container.querySelector("h1")?.textContent).toBe("角色");
+    expect(container.textContent).toContain("添加账号");
+    expect(container.textContent).not.toContain("添加角色");
+    expect(container.textContent).not.toMatch(/Classic|Slim/);
+  });
+  it("uses automatic login tabs with labelled panels before a device flow", async () => {
+    await render(); await click("Add account");
+    const microsoft = button("Microsoft"), offline = button("Offline");
+    microsoft.focus();
+    await act(async () => microsoft.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(offline);
+    expect(offline.getAttribute("aria-selected")).toBe("true");
+    const panel = container.querySelector('dialog[open] [role="tabpanel"]')!;
+    expect(panel.getAttribute("aria-labelledby")).toBe(offline.id);
+    expect(offline.id).not.toBe("");
+  });
+  it("does not cancel a device flow when arrow keys move login-tab focus", async () => {
+    await render(); await click("Add account"); vi.useFakeTimers();
+    await click("Start Microsoft login");
+    const microsoft = button("Microsoft"), offline = button("Offline");
+    microsoft.focus(); commandMock.mockClear();
+    await act(async () => microsoft.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(offline);
+    expect(microsoft.getAttribute("aria-selected")).toBe("true");
+    expect(container.textContent).toContain("TEST-CODE");
+    expect(commandMock).not.toHaveBeenCalledWith("cancel_auth_login", expect.anything());
+    await act(async () => offline.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(microsoft);
+    await act(async () => microsoft.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+    await act(async () => microsoft.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+    expect(container.textContent).toContain("TEST-CODE");
+    expect(commandMock).not.toHaveBeenCalledWith("cancel_auth_login", expect.anything());
+    await act(async () => offline.click());
+    expect(offline.getAttribute("aria-selected")).toBe("true");
+    expect(commandMock).toHaveBeenCalledWith("cancel_auth_login", { sessionId: device.sessionId });
+    expect(commandMock.mock.calls.filter(([name]) => name === "cancel_auth_login")).toHaveLength(1);
+  });
   it("keeps the current account focusable and named while activating it is a no-op", async () => {
     await render();
     const current = container.querySelector<HTMLButtonElement>('.vx-account-choice[aria-current="true"]')!;

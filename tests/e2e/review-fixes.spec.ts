@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import { installLauncherFixture } from "./fixtures";
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
+import { captureGlassInterior, installGlassFrameFreeze } from "./helpers/glass-interior-probe";
 
 test.use({ viewport: { width: 1280, height: 720 }, channel: "chromium", launchOptions: { args: ["--use-angle=d3d11"] } });
 
@@ -44,7 +45,8 @@ async function sampleHomeClick(page: Page, trigger: string, duration = 750): Pro
         rows.push({ at: performance.now() - start, identityY: identity?.getBoundingClientRect().y ?? null,
           selectorY: selector?.getBoundingClientRect().y ?? null, stageOpacity: stage ? Number(getComputedStyle(stage).opacity) : null,
           titleOpacity: title ? Number(getComputedStyle(title).opacity) : null, statusOpacity: status ? Number(getComputedStyle(status).opacity) : null,
-          cancelOpacity: cancel ? Number(getComputedStyle(cancel).opacity) : null, cancelDisabled: cancel?.disabled ?? null });
+          cancelOpacity: cancel ? Number(getComputedStyle(cancel).opacity) : null,
+          cancelDisabled: cancel ? cancel.getAttribute("aria-disabled") === "true" : null });
       };
       const clicked = (event: Event) => {
         if (!(event.target instanceof Element) || !event.target.closest(trigger)) return;
@@ -110,6 +112,129 @@ test("review B: a returned-home picker hides the title and restores it on every 
     await expect(identity).toHaveCSS("opacity", "1");
   }
 });
+
+test("S2 picker keeps the title covered until pointer exit ends and restores it immediately for keyboard closure", async ({ page }, info) => {
+  await prepareHome(page);
+  const picker = page.locator("#home-instance"), identity = page.locator(".vx-home__identity");
+  const results = [];
+  for (const mode of ["pointer", "keyboard"] as const) {
+    await picker.click();
+    await expect(identity).toHaveCSS("opacity", "0");
+    await expect(page.locator(".vx-instance-picker__popover .vx-listbox-surface")).toHaveCSS("opacity", "1");
+    await page.evaluate(mode => {
+      type Frame = { at: number; menuOpacity: number; identityOpacity: number; menuPresent: boolean };
+      const host = window as unknown as { __pickerCloseFrames: Promise<Frame[]> };
+      host.__pickerCloseFrames = new Promise(resolve => {
+        document.addEventListener(mode === "pointer" ? "pointerdown" : "keydown", () => {
+          const start = performance.now(), rows: Frame[] = [];
+          const frame = () => {
+            const menu = document.querySelector<HTMLElement>(".vx-instance-picker__popover .vx-listbox-surface");
+            const title = document.querySelector<HTMLElement>(".vx-home__identity")!;
+            rows.push({ at: performance.now() - start, menuOpacity: menu ? Number(getComputedStyle(menu).opacity) : 0,
+              identityOpacity: Number(getComputedStyle(title).opacity), menuPresent: Boolean(menu) });
+            if (performance.now() - start < 300) requestAnimationFrame(frame); else resolve(rows);
+          };
+          requestAnimationFrame(frame);
+        }, { once: true, capture: true });
+      });
+    }, mode);
+    if (mode === "pointer") await page.mouse.click(1100, 180);
+    else await picker.press("Escape");
+    const rows = await page.evaluate(() => (window as unknown as { __pickerCloseFrames: Promise<{ at: number; menuOpacity: number; identityOpacity: number; menuPresent: boolean }[]> }).__pickerCloseFrames);
+    results.push({ mode, rows });
+    await page.screenshot({ path: info.outputPath(`picker-closed-${mode}.png`), scale: "css" });
+    if (mode === "pointer") {
+      expect.soft(rows.some(row => row.menuOpacity > .05 && row.menuOpacity < .95)).toBe(true);
+      expect.soft(rows.filter(row => row.menuOpacity > .05).every(row => row.identityOpacity < .05)).toBe(true);
+    } else expect.soft(rows.filter(row => row.menuOpacity <= .05).every(row => row.identityOpacity > .05), "keyboard close must not leave a blank presentation frame").toBe(true);
+    await expect(identity).toHaveCSS("opacity", "1");
+  }
+  await writeFile(info.outputPath("picker-exit-frames.json"), JSON.stringify(results, null, 2));
+});
+
+test("R2-10 light lens selector has a readable left boundary against its adjacent background", async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 930 });
+  await installLauncherFixture(page, { theme: "light" });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const selector = page.locator(".vx-launch-console__selector");
+  await expect(selector).toHaveAttribute("data-glass-refraction", "curvature");
+  await page.mouse.move(1420, 910);
+  const geometry = await selector.evaluate(element => {
+    const matchedRules: { selector: string; shadow: string; groups: string[]; source: string | null }[] = [];
+    for (const sheet of document.styleSheets) {
+      const visit = (rules: CSSRuleList, groups: string[] = []) => {
+        for (const rule of rules) {
+          if (rule instanceof CSSStyleRule && rule.style.getPropertyValue("box-shadow") && element.matches(rule.selectorText))
+            matchedRules.push({ selector: rule.selectorText, shadow: rule.style.getPropertyValue("box-shadow"), groups,
+              source: (sheet.ownerNode as Element | null)?.getAttribute?.("data-vite-dev-id") ?? sheet.href });
+          if ("cssRules" in rule) visit((rule as CSSGroupingRule).cssRules, [...groups, "name" in rule ? String(rule.name) : rule.cssText.split("{")[0]]);
+        }
+      };
+      visit(sheet.cssRules);
+    }
+    const css = getComputedStyle(element);
+    return { bounds: element.getBoundingClientRect().toJSON(), clip: (element as HTMLElement).style.clipPath,
+      shadow: css.boxShadow, inline: element.getAttribute("style"), matchedRules,
+      secondary: css.getPropertyValue("--text-secondary"), raised: css.getPropertyValue("--shadow-raised"),
+      variant: element.getAttribute("data-glass-variant"), backdrop: css.backdropFilter,
+      dispersion: Number(css.getPropertyValue("--vx-lens-dispersion")),
+      refraction: Number(css.getPropertyValue("--vx-lens-refraction")),
+      boundary: css.getPropertyValue("--vx-lens-boundary"),
+      boundaryStrokeWidth: element.querySelector("[data-vx-boundary]")?.getAttribute("stroke-width") };
+  });
+  const image = decodePng(await page.screenshot({ path: info.outputPath("light-selector-boundary.png"), scale: "css" }));
+  const pixel = (x: number, y: number) => {
+    const offset = (y * image.width + x) * 4; return [...image.pixels.subarray(offset, offset + 3)];
+  };
+  const luminance = (rgb: number[]) => rgb.map(value => {
+    const s = value / 255; return s <= .04045 ? s / 12.92 : ((s + .055) / 1.055) ** 2.4;
+  }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+  const contrast = (a: number[], b: number[]) => {
+    const x = luminance(a), y = luminance(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05);
+  };
+  const r = geometry.bounds, radius = (r.height - 6) / 2, rows = [];
+  // The current material silhouette has a 3px inset. Inspect the fixed middle
+  // nine rows of its left arc, away from icons/text; retain every edge pixel.
+  for (let dy = -4; dy <= 4; dy++) {
+    const y = Math.round(r.y + r.height / 2 + dy);
+    const edgeX = r.x + 3 + radius - Math.sqrt(radius ** 2 - dy ** 2);
+    const background = { x: Math.floor(edgeX) - 3, y, rgb: pixel(Math.floor(edgeX) - 3, y) };
+    const strip = [];
+    for (let x = Math.floor(edgeX) - 1; x <= Math.ceil(edgeX) + 2; x++) {
+      const rgb = pixel(x, y); strip.push({ x, y, rgb, contrast: contrast(rgb, background.rgb) });
+    }
+    rows.push({ dy, edgeX, background, strip, maximumContrast: Math.max(...strip.map(sample => sample.contrast)) });
+  }
+  await writeFile(info.outputPath("light-selector-boundary.json"), JSON.stringify({ geometry, rows }, null, 2));
+  expect(geometry.variant).toBe("control");
+  expect(geometry.backdrop).toMatch(/url\(/);
+  expect(geometry.refraction).toBe(.9);
+  expect(geometry.dispersion).toBe(.65);
+  expect(geometry.boundaryStrokeWidth).toBe("2");
+  for (const row of rows) expect.soft(row.maximumContrast, `left edge row ${row.dy}`).toBeGreaterThanOrEqual(2.5);
+});
+
+for (const theme of ["dark", "light"] as const) for (const section of ["home", "library"] as const) {
+  test(`S4 ${theme} ${section}: actual lens interior stays clear with real refraction`, async ({ page }, info) => {
+    await page.setViewportSize({ width: 1440, height: 930 });
+    await installGlassFrameFreeze(page);
+    await installLauncherFixture(page, { theme, instanceCount: 2 });
+    await page.goto("/");
+    await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    if (section === "library") await page.locator('.vx-floating-nav [data-page="library"]').click();
+    await expect(page.locator(`[data-page-stage="${section}"]`)).toHaveCSS("opacity", "1");
+    await page.mouse.move(1420, 910);
+    await expect(page.locator(".vx-floating-nav")).toHaveAttribute("data-motion-settled", "true");
+    await page.waitForTimeout(350);
+    const result = await captureGlassInterior(page, info.outputPath("glass-interior"));
+    expect(result.geometry.theme).toBe(theme);
+    expect(result.measurements.interior4WithoutContent.fraction).toBeLessThan(.005);
+    // The whole silhouette includes the intended curved edge and is record-only.
+  });
+}
 
 test("review B: home metadata contains supplemental Java information without repeating the picker", async ({ page }) => {
   await prepareHome(page);

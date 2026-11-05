@@ -27,7 +27,7 @@
   },
   "emptyServers": {
     "title": "还没有保存的服务器",
-    "description": "添加地址后，服务器会保存到当前环境的游戏多人列表中。"
+    "description": "使用上方工具栏的“添加服务器”保存地址。"
   },
   "lanTitle": "局域网世界",
   "discoverLan": "搜索局域网",
