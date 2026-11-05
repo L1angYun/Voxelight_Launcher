@@ -219,6 +219,7 @@ uniform sampler2D uField;
 uniform mat4 uVP;
 uniform vec2 uOffset;
 uniform float uN, uSpan, uFront, uCharge;
+uniform float uLight;
 ${CRYSTAL_GLSL}
 out vec3 vN, vW, vL;
 out float vH, vM, vHeat, vLit, vChg, vIsland;
@@ -237,7 +238,7 @@ void main() {
   float d = length(c - uOrigin);
   float isl = 1. - smoothstep(uIsland, uIsland + 10., d);
   vIsland = isl;
-  vLit = max(vLit, 1.1 * uLat * isl);
+  vLit = max(vLit, mix(1.25, 1.1, uLight) * uLat * isl);
   vChg = uCharge * (1. - smoothstep(uFront - 30., uFront, d));
   if (uFront > 0.) vHeat = max(vHeat, uCharge * exp(-pow((d - uFront) / 2.4, 2.)));
   gl_Position = uVP * vec4(p, 1.);
@@ -254,11 +255,14 @@ void main() {
   float diff = max(dot(vN, uSun), 0.) * vLit;
   vec3 alb = mix(vec3(.26, .27, .28), vec3(1., .97, .9), smoothstep(4., 17., vH));
   alb = mix(uPoint * .62, alb, smoothstep(0., .35, vM));
-  alb = max(alb, vec3(1.2, 1.176, 1.104) * uLat * vIsland);
+  alb = max(alb, vec3(.6, .588, .552) * uLat * vIsland);
   vec3 col = alb * (vec3(.05, .06, .085) + vec3(2.5, 2.1, 1.62) * diff);
   col += alb * vec3(.03, .05, .08) * max(vN.z, 0.);
   if (vN.y > .5) col += smoothstep(.45, .5, max(abs(vL.x), abs(vL.z))) * .035 * (.2 + vLit);
   col *= uExposure;
+  vec3 k = max(col - .8, 0.);
+  vec3 sh = min(col, .8) + k / (1. + 5. * k);
+  col = mix(sh, col, uLight);
   col = mix(col, col * .55 + uAccent * .3 * (.25 + vLit), vChg * .55);
   col = mix(col, uAccent * (1. + vHeat * 1.2), clamp(vHeat * 1.05, 0., 1.) * uDim);
   // On paper, retain diffuse relief without dark fog or emitted light.
