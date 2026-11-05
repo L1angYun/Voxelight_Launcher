@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearanceProvider, resolveEffects, useAppearance } from "./AppearanceProvider";
 import { defaults, type Config, type SystemAppearance } from "../lib/launcher";
 import type { AppearanceContextValue } from "./AppearanceProvider";
+import { contrast } from "../design/accent";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -74,6 +75,20 @@ afterEach(() => {
 });
 
 describe("appearance and accessibility preferences", () => {
+  it("publishes a contrast-safe light indicator and restores the base indicator with the system theme", () => {
+    render({ ...defaults, theme: "system", accentSource: "system" }, { ...systemAppearance, accentColor: "#b4f17a" });
+    const style = document.documentElement.style;
+    const lightIndicator = style.getPropertyValue("--accent-indicator");
+    expect(lightIndicator).toMatch(/^#[0-9a-f]{6}$/);
+    expect(style.getPropertyValue("--accent")).toBe("#b4f17a");
+    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0"])
+      expect(contrast(lightIndicator, surface)).toBeGreaterThanOrEqual(3);
+    setSystemLight(false);
+    expect(style.getPropertyValue("--accent-indicator")).toBe("#b4f17a");
+    setSystemLight(true);
+    expect(style.getPropertyValue("--accent-indicator")).toBe(lightIndicator);
+  });
+
   it("follows the current system theme with an untouched default configuration", () => {
     render({ ...defaults }, systemAppearance);
     expect(current.resolvedTheme).toBe("light");

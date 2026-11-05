@@ -17,13 +17,13 @@ body {
 }
 button, input, select, textarea { font: inherit; }
 button { min-width: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
-button:disabled { cursor: not-allowed; }
+button:is(:disabled,[aria-disabled="true"]) { cursor: not-allowed; }
 
 /* Shared Select/listbox styling lives in components/ui/AnchoredListbox.css. */
 
 button svg, a svg { flex-shrink: 0; }
 button, input, select, textarea { outline-offset: 3px; }
-:focus-visible { outline: 2px solid var(--accent); }
+:focus-visible { outline: 2px solid var(--accent-indicator); }
 h1, h2, h3, h4, p, figure { margin: 0; }
 h1, h2, h3, h4, strong { overflow-wrap: anywhere; }
 input, select, textarea {
@@ -37,7 +37,7 @@ input, select, textarea {
   font-size: var(--text-md);
   line-height: 1.5;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+input:focus, select:focus, textarea:focus { border-color: var(--accent-indicator); }
 input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity: 0.9; }
 input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; min-height: 18px; flex-shrink: 0; padding: 0; accent-color: var(--accent); }
 input[type="range"] { accent-color: var(--accent); }
@@ -71,16 +71,16 @@ a { color: var(--accent-ink, var(--accent)); text-underline-offset: 3px; }
   line-height: 1.2;
   transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-fast) var(--ease-out);
 }
-.vx-button:active:not(:disabled) { transform: translateY(1px); }
+.vx-button:active:not(:disabled):not([aria-disabled="true"]) { transform: translateY(1px); }
 .vx-button--primary { background: var(--accent); color: var(--accent-foreground); }
-.vx-button--primary:hover:not(:disabled) { background: var(--accent-hover); }
+.vx-button--primary:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-hover); }
 .vx-button--secondary { background: var(--surface-solid); color: var(--text-primary); border-color: var(--border-strong); }
-.vx-button--secondary:hover:not(:disabled) { background: var(--surface-hover); }
+.vx-button--secondary:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--surface-hover); }
 .vx-button--ghost { background: transparent; color: var(--text-secondary); }
-.vx-button--ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.vx-button--ghost:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--surface-hover); color: var(--text-primary); }
 .vx-button--tone-danger { color: var(--danger); }
 .vx-button--tone-danger.vx-button--primary { color: var(--accent-foreground); }
-.vx-button:disabled { opacity: 0.48; }
+.vx-button:is(:disabled,[aria-disabled="true"]) { opacity: 0.48; }
 .vx-button__icon { display: inline-flex; align-items: center; }
 .vx-dialog {
   width: min(560px, calc(100vw - 32px));

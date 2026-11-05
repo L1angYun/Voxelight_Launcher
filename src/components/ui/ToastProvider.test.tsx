@@ -53,31 +53,40 @@ it("replaces a notification and lets the visible close action dismiss it", async
   await act(async () => document.querySelector<HTMLButtonElement>(".vx-toast button")!.click());
   expect(document.querySelector(".vx-toast")).toBeNull();
 });
-it("mounts a fresh notification when its message changes under the launcher's logical id", async () => {
+it.each([
+  { mode: "full", effects: "full", reducedMotion: false },
+  { mode: "lite", effects: "lite", reducedMotion: false },
+  { mode: "reduced motion", effects: "full", reducedMotion: true },
+])("keeps the focused close button when the launcher's notification is replaced in $mode", async ({ effects, reducedMotion }) => {
+  appearance.effects = effects; appearance.reducedMotion = reducedMotion;
   await click("#launcher");
-  const previous = document.querySelector(".vx-toast");
+  const previous = document.querySelector(".vx-toast")!;
+  const close = previous.querySelector<HTMLButtonElement>("button")!;
+  close.focus();
   await click("#launcher-replace");
-  const replacement = document.querySelector(".vx-toast");
-  expect(replacement).not.toBe(previous);
+  const replacement = document.querySelector('.vx-toast:not([aria-hidden="true"])');
+  expect(replacement).toBe(previous);
+  expect(document.activeElement).toBe(close);
+  expect(close.disabled).toBe(false);
   expect(replacement?.textContent).toContain("Launch failed");
   expect(launcherDismissed).not.toHaveBeenCalled();
-  await click("#launcher-dismiss");
-  expect(document.querySelector(".vx-toast")).toBeNull();
+  await act(async () => close.click());
+  expect(document.querySelector('.vx-toast:not([aria-hidden="true"])')).toBeNull();
   expect(launcherDismissed).toHaveBeenCalledTimes(1);
 });
-it("retires the outgoing notification's announcement and close action during replacement", async () => {
+it("retires the outgoing announcement and close action when another logical notification replaces it", async () => {
   await click("#launcher");
   const previous = document.querySelector<HTMLElement>(".vx-toast")!;
   const previousClose = previous.querySelector<HTMLButtonElement>("button")!;
   await act(async () => {
-    flushSync(() => node.querySelector<HTMLButtonElement>("#launcher-replace")!.click());
+    flushSync(() => node.querySelector<HTMLButtonElement>("#replace")!.click());
     expect(previous.getAttribute("aria-hidden")).toBe("true");
     expect(previous.hasAttribute("inert")).toBe(true);
     expect(previous.getAttribute("role")).toBeNull();
     expect(previousClose.disabled).toBe(true);
     previousClose.click();
   });
-  expect(document.querySelector(".vx-toast")?.textContent).toContain("Launch failed");
+  expect(document.querySelector(".vx-toast")?.textContent).toContain("Recovered");
   expect(launcherDismissed).not.toHaveBeenCalled();
 });
 it("starts a fresh entrance when an existing notification moves into a dialog", async () => {

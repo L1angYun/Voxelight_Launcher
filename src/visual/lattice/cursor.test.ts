@@ -195,6 +195,8 @@ afterEach(() => {
   delete document.documentElement.dataset.effects;
   delete document.documentElement.dataset.reducedMotion;
   delete document.documentElement.dataset.highContrast;
+  document.documentElement.style.removeProperty("--accent-indicator");
+  document.documentElement.style.removeProperty("--accent");
   if (originalMatchMedia)
     Object.defineProperty(window, "matchMedia", originalMatchMedia);
   else Reflect.deleteProperty(window, "matchMedia");
@@ -203,6 +205,18 @@ afterEach(() => {
 });
 
 describe("Lattice cursor halo", () => {
+  it("uses the contrast-safe indicator for pointer dots and refreshes it after a palette change", async () => {
+    document.documentElement.style.setProperty("--accent", "#b4f17a");
+    document.documentElement.style.setProperty("--accent-indicator", "#527b2f");
+    halo = mountCursorHalo(document.body);
+    pointer(document.body, 400, 300); settle();
+    expect(circles.length).toBeGreaterThan(0);
+    expect(context.fillStyle).toBe("#527b2f");
+    document.documentElement.style.setProperty("--accent-indicator", "#315f8a");
+    await Promise.resolve(); frame(2000);
+    expect(context.fillStyle).toBe("#315f8a");
+  });
+
   it("ignores unrelated and animated ancestor style/class writes without forcing target layout", async () => {
     const { element, button } = card();
     const wrapper = document.createElement("section");

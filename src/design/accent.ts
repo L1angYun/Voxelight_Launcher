@@ -6,6 +6,7 @@ export interface AccentScale {
   border: string;
   foreground: string;
   ink: string;
+  indicator: string;
 }
 
 interface Oklch {
@@ -96,6 +97,15 @@ function mix(first: string, second: string, amount: number): string {
     .join("")}`;
 }
 
+function readableAccent(base: string, oklch: Oklch, surfaces: string[], minimum: number, theme: "dark" | "light"): string {
+  let result = base;
+  for (let step = 1; step <= 100 && surfaces.some(surface => contrast(result, surface) < minimum); step++) {
+    result = oklchToHex({ ...oklch, l: oklch.l + ((theme === "light" ? 0 : 1) - oklch.l) * step / 100 });
+  }
+  if (surfaces.some(surface => contrast(result, surface) < minimum)) return theme === "light" ? "#000000" : "#ffffff";
+  return result;
+}
+
 export function buildAccentScale(color: string, theme: "dark" | "light"): AccentScale {
   const base = normalizeHex(color);
   const oklch = hexToOklch(base);
@@ -112,11 +122,8 @@ export function buildAccentScale(color: string, theme: "dark" | "light"): Accent
   const surfaces = theme === "light" ? ["#f3f1eb", "#faf9f5", "#eae7e0"] : ["#141516", "#242527", "#0d0f14"];
   // Signal fills retain the user's exact color. Text has a separate bounded
   // lightness search, tested against the lightest/darkest content surfaces.
-  let ink = base;
-  for (let step = 1; step <= 100 && surfaces.some(surface => contrast(ink, surface) < 4.5); step++) {
-    ink = oklchToHex({ ...oklch, l: oklch.l + ((theme === "light" ? 0 : 1) - oklch.l) * step / 100 });
-  }
-  if (surfaces.some(surface => contrast(ink, surface) < 4.5)) ink = theme === "light" ? "#000000" : "#ffffff";
+  const ink = readableAccent(base, oklch, surfaces, 4.5, theme);
+  const indicator = theme === "light" ? readableAccent(base, oklch, surfaces, 3, theme) : base;
   return {
     base,
     hover,
@@ -125,5 +132,6 @@ export function buildAccentScale(color: string, theme: "dark" | "light"): Accent
     border: mix(base, background, 0.42),
     foreground,
     ink,
+    indicator,
   };
 }

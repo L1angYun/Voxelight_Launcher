@@ -6,6 +6,7 @@
   --bg-overlay: rgba(20, 21, 22, 0.88);
   --surface-solid: #242527;
   --selection-fill: #26282c;
+  --accent-indicator: var(--accent);
   --surface-panel: color-mix(in srgb, var(--world-ink) 86%, transparent);
   --surface-card: #0d0f14;
   --hairline: rgba(237, 232, 223, .12);

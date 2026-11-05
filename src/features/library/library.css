@@ -98,8 +98,13 @@
   font-size: var(--text-sm);
 }
 
-.vx-library-page .vx-search input:focus {
-  outline: 0;
+.vx-library-page .vx-search:has(input:focus-visible) {
+  outline: 2px solid var(--accent-indicator);
+  outline-offset: 2px;
+}
+.vx-library-page .vx-search input:focus-visible { outline: none; }
+@media (forced-colors: active) {
+  .vx-library-page .vx-search:has(input:focus-visible) { outline-color: Highlight; }
 }
 
 .vx-library-commandbar select {

@@ -415,15 +415,16 @@ describe("HomePage", () => {
     await render();
     expect(container.textContent).toContain("37%");
     const cancel = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("取消准备"))!;
-    expect(cancel.disabled).toBe(true);
+    expect(cancel.disabled).toBe(false);
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
     await act(async () => vi.advanceTimersByTime(249));
-    expect(cancel.disabled).toBe(true);
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
     await act(async () => vi.advanceTimersByTime(1));
-    expect(cancel.disabled).toBe(false);
+    expect(cancel.getAttribute("aria-disabled")).toBe("false");
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).toHaveBeenCalledTimes(1);
   });
@@ -438,17 +439,89 @@ describe("HomePage", () => {
     mockLauncher.busy = "game.prepare"; await render();
     const cancel = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("取消准备"))!;
     await act(async () => vi.advanceTimersByTime(100));
-    expect(cancel.disabled).toBe(true);
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
     await act(async () => vi.advanceTimersByTime(149));
-    expect(cancel.disabled).toBe(true);
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
     await act(async () => vi.advanceTimersByTime(1));
-    expect(cancel.disabled).toBe(false);
+    expect(cancel.getAttribute("aria-disabled")).toBe("false");
     await act(async () => cancel.click());
     expect(mockLauncher.cancelPreparation).toHaveBeenCalledOnce();
     await act(async () => root.render(null));
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["full", "lite", "reduced"] as const)("hands keyboard focus through launch states in %s mode and keeps the cancellation guard", async mode => {
+    vi.useFakeTimers();
+    mockEffects = mode === "lite" ? "lite" : "full";
+    mockReducedMotion = mode === "reduced";
+    await render();
+    const currentAction = () => container.querySelector<HTMLButtonElement>('.vx-launch-console__content:not([inert]) button')!;
+    const launch = currentAction(); launch.focus();
+    // jsdom does not perform a native button's Enter default action; detail=0
+    // delivers its keyboard activation click to the real handler.
+    await act(async () => launch.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+    expect(mockLauncher.launch).toHaveBeenCalledOnce();
+    mockLauncher.busy = "game.prepare"; await render();
+    const cancel = currentAction();
+    expect(cancel.textContent).toContain("取消准备");
+    expect(document.activeElement).toBe(cancel);
+    expect(cancel.disabled).toBe(false);
+    await act(async () => cancel.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+    await act(async () => vi.advanceTimersByTime(249));
+    await act(async () => cancel.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+    expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
+    mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+    const stop = currentAction();
+    expect(stop.textContent).toContain("停止");
+    expect(document.activeElement).toBe(stop);
+    await act(async () => stop.click());
+    expect(mockLauncher.stop).toHaveBeenCalledOnce();
+    mockLauncher.gamePid = undefined; await render();
+    expect(currentAction().textContent).toContain("启动游戏");
+    expect(document.activeElement).toBe(currentAction());
+  });
+
+  it("returns focus to launch after cancellation and retains focus on busy actions", async () => {
+    vi.useFakeTimers();
+    await render();
+    const action = () => container.querySelector<HTMLButtonElement>('.vx-launch-console__content:not([inert]) button')!;
+    action().focus();
+    mockLauncher.busy = "config.save"; await render();
+    expect(action().disabled).toBe(false);
+    expect(action().getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(action());
+    await act(async () => action().click());
+    expect(mockLauncher.launch).not.toHaveBeenCalled();
+    mockLauncher.busy = "game.prepare"; await render();
+    expect(document.activeElement).toBe(action());
+    await act(async () => vi.advanceTimersByTime(250));
+    await act(async () => action().click());
+    expect(mockLauncher.cancelPreparation).toHaveBeenCalledOnce();
+    mockLauncher.busy = ""; await render();
+    expect(document.activeElement).toBe(action());
+    mockLauncher.gamePid = 42; await render();
+    mockLauncher.busy = "game.stop"; await render();
+    expect(action().disabled).toBe(false);
+    expect(document.activeElement).toBe(action());
+    await act(async () => action().click());
+    expect(mockLauncher.stop).not.toHaveBeenCalled();
+  });
+
+  it("leaves focus outside the console during unsolicited and asynchronous launch state changes", async () => {
+    const outside = document.createElement("button"); document.body.append(outside);
+    try {
+      await render(); outside.focus();
+      mockLauncher.busy = "game.prepare"; await render();
+      expect(document.activeElement).toBe(outside);
+      const cancel = container.querySelector<HTMLButtonElement>('.vx-launch-console__content:not([inert]) button')!;
+      cancel.focus(); outside.focus();
+      mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+      expect(document.activeElement).toBe(outside);
+      mockLauncher.gamePid = undefined; await render();
+      expect(document.activeElement).toBe(outside);
+    } finally { outside.remove(); }
   });
 
   it("keeps the same glass action surface throughout preparation and running", async () => {

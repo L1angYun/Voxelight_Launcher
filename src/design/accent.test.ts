@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { buildAccentScale, contrast } from "./accent";
 
 describe("accent color roles", () => {
+  it.each(["#b4f17a", "#ffffff", "#fff4a3", "#92ffff"])("makes %s indicators readable against every light surface", (color) => {
+    const scale = buildAccentScale(color, "light");
+    expect(scale.base).toBe(color);
+    expect(scale.indicator).toMatch(/^#[0-9a-f]{6}$/);
+    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0"])
+      expect(contrast(scale.indicator, surface)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("preserves the exact chosen indicator color in dark mode", () => {
+    for (const color of ["#b4f17a", "#ffffff", "#fff4a3", "#92ffff", "#123456"])
+      expect(buildAccentScale(color, "dark").indicator).toBe(color);
+  });
+
   it("gives accent text its own readable ink without changing the chosen signal color", () => {
     for (const theme of ["dark", "light"] as const) {
       const surfaces = theme === "light" ? ["#f3f1eb", "#faf9f5", "#eae7e0"] : ["#141516", "#242527", "#0d0f14"];

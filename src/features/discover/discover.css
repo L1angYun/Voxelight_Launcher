@@ -21,7 +21,9 @@
 .vx-discover-search { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 20px; }
 .vx-discover-search > svg { color: var(--text-secondary); flex: 0 0 auto; }
 .vx-discover-search input { flex: 1; width: 0; border: 0; background: transparent; padding-inline: 0; font-size: var(--text-md); min-height: 38px; }
-.vx-discover-search input:focus-visible { outline-offset: 4px; }
+.vx-discover-search:has(input:focus-visible) { outline: 2px solid var(--accent-indicator); outline-offset: 2px; }
+.vx-discover-search input:focus-visible { outline: none; }
+@media (forced-colors: active) { .vx-discover-search:has(input:focus-visible) { outline-color: Highlight; } }
 .vx-discover-search input::placeholder { font-size: var(--text-sm); }
 .vx-discover-results-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 28px 0 8px; padding: 0 4px 12px; border-bottom: 1px solid var(--border-strong); }
 .vx-discover-results-heading h2 { margin: 0; font-size: var(--text-lg); font-weight: 620; }

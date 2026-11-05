@@ -1,4 +1,4 @@
-# 第二轮修复：阶段1五组闸门通过
+# 第二轮修复：阶段1收尾与阶段2验收
 
 日期：2026-11-05（Asia/Singapore）。下文先保留已推送的阶段1记录，再补充复核后的收尾说明；新的收尾与阶段2–4验证结果按实际执行补录。
 
@@ -69,7 +69,44 @@
 - 1920／uT=288：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-db768--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-db768--retains-highlight-headroom\terrain-phase\island-2.png`。
 - 1920／uT=588：`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-90ba2--retains-highlight-headroom\terrain-phase\normal-2.png`；采样图`E:\CodeX\VoxelightLauncher-worklogs\review-round2\2026-11-05\closeout\gpu-results\world-acceptance-terrain-b-90ba2--retains-highlight-headroom\terrain-phase\island-2.png`。
 
-阶段1收尾作为单独提交提交并推送，提交哈希在后续阶段报告中补录。说明文字笔误已按用户确认修正，后续只有门槛、验收区域或产品参数与实际画面冲突才暂停。此节点尚未执行完整Playwright、Cargo、Intel、真实Tauri/WebView2及浅色键盘巡检，未构建安装包；后续阶段的验证另行补录。
+阶段1收尾已单独提交并推送：`e0c0fdf47271ee8684b40ab67cbc4caf21b2db28`，推送后`git ls-remote origin`确认远端只有main。说明文字笔误已按用户确认修正，后续只有门槛、验收区域或产品参数与实际画面冲突才暂停。此节点尚未执行完整Playwright、Cargo、Intel、真实Tauri/WebView2及浅色键盘巡检，未构建安装包；阶段2已完成的浅色巡检见下节。
+
+## 阶段2：无障碍与交互缺陷
+
+阶段2提交哈希：待本阶段提交后补录。证据根为`E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/stage2/`；以下数值与测试均已实际运行，人工检查单列。
+
+| 清单 | 实现及实际结果 | 测试与证据 |
+| --- | --- | --- |
+| M3 | Toast的key仅含host.id与toast.id，同id替换保留节点及关闭按钮焦点；revision仍重置通知计时。full、lite、减少动态三种模式中原关闭按钮保持activeElement，替换后仍能关闭一次 | `ToastProvider.test.tsx`：`keeps the focused close button when the launcher's notification is replaced in $mode`；与首页焦点用例共52项通过。`focus-toast-red.log`记录修复前失败，`focus-toast-green.log`记录通过 |
+| M4 | 创建表单使用单个loader-group，收起时分段控件底至实例名称标签为20px；full/lite/reduced均一致。展开焦点环外伸5px，slot内容与dialog body左右各保留6px，全部裁切祖先的净空均不小于5px | `field-focus.spec.ts`三种create用例；`fields-complete/field-focus-create-*/field-focus.json`；完整字段及既有library回归10/10通过，`fields-complete.log` |
+| R2-01 | 新增指示色并接入全局焦点、输入边框、下拉、Lattice焦点框、进度实点及光标。默认浅色`#5a9205`（90,146,5）对三种指定表面对比为3.350953/3.592623/3.064844；默认和三种高亮强调色全部≥3。深色indicator等于base，强调绿本身未改。三模式真实Tab巡检共六处轮廓均为2px solid且focus-visible=true。英文1050下载页已完成点列462个实测核心像素的最低对比为3.592623 | `indicator-values.json`、`indicator-red.log`、`indicator-green.log`（69项通过）；`accessibility-focus.spec.ts`，`light-keyboard/*/keyboard-focus.json`与`completed-columns-contrast.json` |
+| R2-02 | 启动、取消、停止保留可聚焦按钮，通过aria-disabled与点击守卫阻止忙碌操作；状态切换只接续控制台内焦点。真实键盘从启动进入取消，再到停止，结束返回启动。两次Enter相隔50.4ms，第二次落在aria-disabled=true的取消按钮，取消命令调用0次。单测另覆盖249/250ms边界、重新进入准备、取消后回焦及不抢外部焦点 | `HomePage.test.tsx`三模式`hands keyboard focus through launch states…`等；`light-keyboard/accessibility-focus-R2-02--c008b--idle-with-the-cancel-guard/cancel-guard.json`及三个状态截图 |
+| R2-03 | 去掉游戏库输入框压制外层轮廓的规则，游戏库与探索的搜索容器使用同一2px轮廓。减少动态时两者均为rgb(90,146,5)，强制颜色时均采用系统Highlight，实测rgb(55,0,110) | `field-focus.spec.ts`的search reduced/forced；`fields-complete/field-focus-search-*/search-focus.json`和两页对应截图 |
+
+M4实施调整有实际几何依据：按原建议给独立slot加−20px margin会被grid自动轨道抵消，收起间距仍为40px。最终将加载器与其上方字段放入同一个loader-group，slot的margin从0过渡至20px，保持展开/收起动画，Lite和减少动态立即切换。第一次只给slot内容留6px净空后，人工截图发现dialog body仍裁掉左右焦点环；新增裁切祖先断言先失败（`body-clip-red.log`），再给dialog body同样留出6px。最终三模式间距均20px、焦点环四边净空达标，没有放宽20±2px或5px环外伸的验收值。
+
+### 阶段2自动验证
+
+| 命令 | 实际结果 | 日志 |
+| --- | --- | --- |
+| `npm test` | 65文件、641项Vitest＋42项Node通过 | `stage2/npm-test.log` |
+| `npx tsc -b` | 最终类型检查退出0 | `stage2/tsc-final.log` |
+| `npx playwright test tests/e2e/accessibility-focus.spec.ts --output=…/stage2/light-keyboard` | 5/5通过，22.0秒；记录真实D3D11渲染器、DPR1及浅色主题 | `stage2/light-keyboard.log` |
+| `npx playwright test tests/e2e/field-focus.spec.ts tests/e2e/library-review.spec.ts --output=…/stage2/fields-complete` | 最终10/10通过，29.5秒；包含新增字段/搜索检查与既有展开动画回归 | `stage2/fields-complete.log` |
+
+全量单测在dialog body最后一项仅CSS净空修正之前运行；最终CSS通过上述10项浏览器回归和最终tsc检查。未将这15项浏览器用例描述为完整Playwright套件，也未运行Cargo或安装包构建。
+
+### 阶段2截图与人工检查
+
+以下路径均位于上述stage2证据根。浅色full/lite/reduced的首页与游戏库截图分别保存在`light-keyboard/accessibility-focus-R2-01--{a9304,91a03,ec142}-…/`，文件为`focus-home-light-{full,lite,reduced}.png`和`focus-library-light-{full,lite,reduced}.png`；各目录`keyboard-focus.json`保留真实Tab路径及轮廓数值。
+
+- **人工已查看：** `light-keyboard/accessibility-focus-R2-01--a9304-ines-remain-visible-in-full/focus-library-light-full.png`，搜索容器轮廓清晰。
+- **人工已查看：** `fields-complete/field-focus-create-full-co-0e17b-panded-focus-is-not-clipped/create-loader-keyboard-focus.png`，新图中加载器绿色焦点轮廓左右完整，四边可见。
+- 下载像素证据：`light-keyboard/accessibility-focus-R2-01--b8352--have-three-to-one-contrast/en-light-1050-downloads.png`和`downloads-under-progress.png`；检查的是进度50%任务中已完成的前40%实点列，没有把气态未完成点或抗锯齿边缘算成实体指示色。
+- 键盘状态图：`light-keyboard/accessibility-focus-R2-02--c008b--idle-with-the-cancel-guard/keyboard-{preparing,running,ended}-light.png`。
+- 字段与搜索图：`fields-complete/field-focus-create-*/create-{collapsed,loader-keyboard-focus}.png`，以及`field-focus-search-{reduced,forced}-*/{library,discover}-search-focus.png`。
+
+人工结论仅覆盖上面明确列出的两张图；其它图已保存并有对应自动检查，不冒充逐张人工签字。真实Tauri/WebView2、Intel和读屏实际播报仍未验证。阶段3、4尚未纳入本节结论。
 
 ## M1、M2、S1实现与复核
 
