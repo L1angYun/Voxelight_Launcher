@@ -14,7 +14,7 @@
 }
 
 .vx-lattice-frame[data-focused="true"] {
-  color: var(--accent);
+  color: var(--accent-indicator);
   outline: 2px solid currentColor;
   outline-offset: 1px;
   opacity: 1;

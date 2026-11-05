@@ -45,7 +45,7 @@ export function ToastProvider({ children }: { children?: ReactNode }) {
   const hostIds = useRef(new WeakMap<HTMLElement, number>());
   const current = useRef(toast); current.current = toast;
   const notify = useCallback((next: ToastMessage) => {
-    // The launcher replaces messages under one logical id; each presentation still enters afresh.
+    // Revisions renew the dwell timer; a logical notification keeps its DOM and focus.
     const revision = ++serial.current;
     setToast({ ...next, id: next.id ?? `toast-${revision}`, revision });
   }, []);
@@ -80,7 +80,7 @@ export function ToastProvider({ children }: { children?: ReactNode }) {
   }, []);
   return <ToastContext.Provider value={{ notify, dismiss }}>{children}<div ref={root} className="vx-toast-root" />
     {host ? createPortal(<div className="vx-toast-host"><AnimatePresence mode="popLayout" anchorX="right" anchorY="bottom">
-      {toast ? <Notification key={`${host.id}:${toast.id}:${toast.revision}`} toast={toast} tier={tier} dismiss={dismiss}
+      {toast ? <Notification key={`${host.id}:${toast.id}`} toast={toast} tier={tier} dismiss={dismiss}
         dismissLabel={t("common:a11y.dismissNotification")} /> : null}
     </AnimatePresence></div>, host.element) : null}
   </ToastContext.Provider>;

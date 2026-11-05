@@ -1,5 +1,5 @@
 import { FolderOpen, LoaderCircle, Play, Square, X } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useTranslation } from "react-i18next";
 import type { Instance, InstalledVersion, Progress } from "../../lib/launcher";
@@ -46,6 +46,8 @@ export function LaunchConsole({
   const launchJelly = useJellyControl<HTMLDivElement>(staticMotion);
   const preparing = busy === "game.prepare";
   const state = preparing ? "preparing" : running ? "running" : "idle";
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const ownsFocus = useRef(false);
   const cancelAvailableAt = useRef(Infinity);
   const [cancelReady, setCancelReady] = useState(false);
   useLayoutEffect(() => {
@@ -62,6 +64,21 @@ export function LaunchConsole({
     timer = setTimeout(unlock, MOTION.delay.cancelGuardMs);
     return () => { clearTimeout(timer); cancelAvailableAt.current = Infinity; };
   }, [preparing]);
+  useLayoutEffect(() => {
+    if (!ownsFocus.current || !actionsRef.current) return;
+    const active = document.activeElement;
+    // A pending operation can finish after the user has moved to another control.
+    if (active && active !== document.body && !actionsRef.current.contains(active)) {
+      ownsFocus.current = false; return;
+    }
+    const next = actionsRef.current.querySelector<HTMLButtonElement>(`[data-launch-action="${state}"]`);
+    if (next && !next.closest("[inert]")) next.focus({ preventScroll: true });
+  }, [state]);
+  const activate = (event: MouseEvent<HTMLButtonElement>, blocked: boolean, action: () => Promise<void>) => {
+    if (blocked || event.currentTarget.closest("[inert]")) return;
+    ownsFocus.current = Boolean(actionsRef.current?.contains(document.activeElement));
+    void action();
+  };
   const useBytes = Boolean(progress && progress.bytesTotal > 0);
   const completed = (useBytes ? progress?.bytesCompleted : progress?.completed) ?? 0;
   const total = (useBytes ? progress?.bytesTotal : progress?.total) ?? 0;
@@ -100,19 +117,24 @@ export function LaunchConsole({
           }) : t("home:filesUnknown", { completed: number.format(progress?.completed ?? 0) })}</span>
         </motion.div>
       ) : null}
-      <div className="vx-launch-console__actions">
+      <div ref={actionsRef} className="vx-launch-console__actions"
+        onFocusCapture={() => { ownsFocus.current = true; }}
+        onBlurCapture={event => {
+          if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) ownsFocus.current = false;
+        }}>
         <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" data-visual-owner="lens" {...launchJelly.handlers}>
           <GlassSurface variant="control" className="vx-launch-console__launch" />
             <AnimatePresence initial={false}>
               <ConsoleContent key={state} tier={tier}>
-                {preparing ? <Button variant="ghost" size="lg" icon={<X size={16} />} disabled={!cancelReady}
-                  onClick={() => { if (performance.now() >= cancelAvailableAt.current) void onCancel(); }}>
+                {preparing ? <Button variant="ghost" size="lg" icon={<X size={16} />} aria-disabled={!cancelReady} data-launch-action="preparing"
+                  onClick={event => activate(event, !cancelReady || performance.now() < cancelAvailableAt.current, onCancel)}>
                   {t("home:cancelPreparation")}
                 </Button> : running ? <div className="vx-launch-console__running" role="status">
                   <span>{t("home:running")}</span>
-                  <Button variant="ghost" size="sm" icon={<Square size={15} />} onClick={onStop} disabled={busy === "game.stop"}>{t("home:stop")}</Button>
-                </div> : <Button variant="primary" size="lg" disabled={Boolean(busy)} data-launch-primary
-                  icon={<Play size={19} fill="currentColor" />} onClick={onLaunch}>
+                  <Button variant="ghost" size="sm" icon={<Square size={15} />} aria-disabled={Boolean(busy)} data-launch-action="running"
+                    onClick={event => activate(event, Boolean(busy), onStop)}>{t("home:stop")}</Button>
+                </div> : <Button variant="primary" size="lg" aria-disabled={Boolean(busy)} data-launch-primary data-launch-action="idle"
+                  icon={<Play size={19} fill="currentColor" />} onClick={event => activate(event, Boolean(busy), onLaunch)}>
                   {t("common:actions.launch")}
                 </Button>}
               </ConsoleContent>

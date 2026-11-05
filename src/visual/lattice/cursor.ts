@@ -403,10 +403,11 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       remaining -= seconds;
     }
     const style = getComputedStyle(document.documentElement);
-    const accent = style.getPropertyValue("--accent").trim() || "#b4f17a";
+    const indicator = style.getPropertyValue("--accent-indicator").trim()
+      || style.getPropertyValue("--accent").trim() || "#b4f17a";
     const ink = style.getPropertyValue("--text-primary").trim() || "#ece7da";
     g.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    g.fillStyle = target ? ink : accent;
+    g.fillStyle = target ? ink : indicator;
     for (let index = 0; index < dots.count; index += 1) {
       g.globalAlpha = dots.alpha[index] * opacity;
       g.beginPath();

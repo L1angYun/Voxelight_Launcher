@@ -188,9 +188,9 @@
   transition: background var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast), transform var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 .vx-launch-console__launch-wrap .vx-button__icon { color: inherit; }
-.vx-launch-console__launch-wrap .vx-button:hover:not(:disabled) { background: transparent; color: var(--accent-foreground); }
-.vx-launch-console__launch-wrap .vx-button:active:not(:disabled) { transform: none; }
-.vx-launch-console__launch-wrap .vx-button:disabled { opacity: .55; }
+.vx-launch-console__launch-wrap .vx-button:hover:not(:disabled):not([aria-disabled="true"]) { background: transparent; color: var(--accent-foreground); }
+.vx-launch-console__launch-wrap .vx-button:active:not(:disabled):not([aria-disabled="true"]) { transform: none; }
+.vx-launch-console__launch-wrap .vx-button:is(:disabled,[aria-disabled="true"]) { opacity: .55; }
 .vx-launch-console__status { display: grid; gap: 8px; min-width: 0; font-size: 12px; }
 .vx-launch-console__progress-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .vx-launch-console__progress-heading > span { display: inline-flex; align-items: center; gap: 8px; }

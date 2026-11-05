@@ -63,6 +63,8 @@ afterEach(() => {
   container.remove();
   delete document.documentElement.dataset.effects;
   delete document.documentElement.dataset.reducedMotion;
+  document.documentElement.style.removeProperty("--accent-indicator");
+  document.documentElement.style.removeProperty("--accent");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -80,6 +82,18 @@ function resize(nextWidth: number) {
 }
 
 describe.each(["lite", "reduced-motion"] as const)("static progress under %s", (mode) => {
+  it("paints completed dots with the contrast-safe indicator and repaints when it changes", async () => {
+    document.documentElement.style.setProperty("--accent", "#b4f17a");
+    document.documentElement.style.setProperty("--accent-indicator", "#527b2f");
+    const canvas = await render(mode);
+    expect(pixels.get(canvas)!.some(dot => dot.alpha === 1 && dot.color === "#527b2f")).toBe(true);
+    expect(pixels.get(canvas)!.some(dot => dot.color === "#b4f17a")).toBe(false);
+    document.documentElement.style.setProperty("--accent-indicator", "#315f8a");
+    await act(async () => { await Promise.resolve(); });
+    expect(pixels.get(canvas)!.some(dot => dot.alpha === 1 && dot.color === "#315f8a")).toBe(true);
+    expect(frames).toHaveLength(0);
+  });
+
   it("keeps offscreen progress semantics immediately available and paints its bitmap only on entry", async () => {
     let enter!: IntersectionObserverCallback;
     vi.stubGlobal("IntersectionObserver", class {

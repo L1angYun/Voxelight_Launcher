@@ -173,6 +173,7 @@ export function CreateInstanceDialog({
               ...(manifest?.versions.filter((version) => version.type === channel && version.id !== manifest.latestRelease).map((version) => ({ value: version.id, label: version.id })) ?? []),
             ]} />
           </Field>
+          <div className="vx-create-loader-group">
           <Field label={t("library:loader")}>
             <Segmented semantic="toggle" label={t("library:loader")} value={loader} onChange={setLoader}
               options={(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => ({ value, label: value === "vanilla" ? t("library:vanilla") : value === "neoforge" ? "NeoForge" : value[0].toUpperCase() + value.slice(1) }))} />
@@ -185,6 +186,7 @@ export function CreateInstanceDialog({
             ...loaderVersions.map((version) => ({ value: version.id, label: `${version.id}${version.recommended ? ` / ${t("library:recommended")}` : ""}` })),
           ]} /></Field>
           <LoadingStatus active={loader !== "vanilla" && loaderLoading} className="vx-create-loader-status">{t("common:status.loading")}</LoadingStatus>
+          </div>
           </div>
           </div>
           <Field label={t("library:instanceNameOptional")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>

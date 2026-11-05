@@ -5,7 +5,7 @@
 .vx-select__button:focus-visible { outline: none; }
 .vx-select:has(.vx-select__button:focus-visible),
 .vx-jelly-control:has(> .vx-glass-surface .vx-select__button:focus-visible) {
-  outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--vx-lens-radius-control,14px);
+  outline: 2px solid var(--accent-indicator); outline-offset: 3px; border-radius: var(--vx-lens-radius-control,14px);
 }
 .vx-jelly-control > .vx-glass-surface .vx-select--embedded:has(.vx-select__button:focus-visible) { outline: none; }
 .vx-select__button:disabled { opacity: .5; cursor: not-allowed; }

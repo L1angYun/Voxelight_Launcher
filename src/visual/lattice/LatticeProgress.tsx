@@ -39,7 +39,7 @@ function readPalette(): ProgressPalette {
     style.getPropertyValue(name).trim() || fallback;
   return {
     gas: get("--text-tertiary", "rgba(255,255,255,0.38)"),
-    solid: get("--accent", "#b4f17a"),
+    solid: get("--accent-indicator", get("--accent", "#b4f17a")),
     flash: get("--text-primary", "#ece7da"),
   };
 }
