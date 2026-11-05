@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-import { chromium, expect, test, type Locator, type Page } from "@playwright/test";
+import { chromium, expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import { installLauncherFixture } from "./fixtures";
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
@@ -36,15 +36,143 @@ function contrast(first: readonly number[], second: readonly number[]) {
   return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
 }
 
-async function tabTo(page: Page, target: Locator) {
+function readKeyboardStation() {
+  const active = document.activeElement as HTMLElement | null;
+  const css = active ? getComputedStyle(active) : null;
+  const owner = active?.closest(".vx-launch-console__selector-wrap")
+    ?? active?.closest(".vx-search,.vx-discover-search,.vx-select")
+    ?? active?.closest(".vx-instance-card")?.querySelector(":scope > .vx-lattice-frame") ?? active;
+  const ownerCss = owner ? getComputedStyle(owner) : null;
+  const probe = document.createElement("span"); probe.style.color = "var(--accent-indicator)";
+  document.body.append(probe);
+  const indicatorColor = getComputedStyle(probe).color; probe.remove();
+  const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+  const context = canvas.getContext("2d")!;
+  const rgba = (color: string) => {
+    context.clearRect(0, 0, 1, 1); context.fillStyle = color; context.fillRect(0, 0, 1, 1);
+    return [...context.getImageData(0, 0, 1, 1).data];
+  };
+  const halo = document.querySelector<HTMLCanvasElement>(".vx-cursor-halo");
+  return { at: performance.now(), tag: active?.tagName, id: active?.id, className: active?.className,
+    label: active?.getAttribute("aria-label"), text: active?.textContent?.trim().slice(0, 120),
+    focusVisible: active?.matches(":focus-visible"), outlineColor: css?.outlineColor,
+    outlineStyle: css?.outlineStyle, outlineWidth: css?.outlineWidth, borderColor: css?.borderTopColor,
+    activeVisible: active?.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+    activeBounds: active?.getBoundingClientRect().toJSON(),
+    owner: owner?.className, ownerOutlineColor: ownerCss?.outlineColor,
+    ownerOutlineStyle: ownerCss?.outlineStyle, ownerOutlineWidth: ownerCss?.outlineWidth,
+    ownerOutlineOffset: ownerCss?.outlineOffset, ownerOutlineRgba: rgba(ownerCss?.outlineColor ?? "transparent"),
+    ownerVisible: (owner as HTMLElement | null)?.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+    bounds: owner?.getBoundingClientRect().toJSON(), indicatorColor, indicatorRgba: rgba(indicatorColor),
+    halo: halo ? { state: halo.dataset.haloState, opacity: getComputedStyle(halo).opacity } : null };
+}
+
+function adjacentCoordinates(bounds: { left: number; right: number; top: number; bottom: number }, outlineOffset: string, outlineWidth: string) {
+  // Preserve the original four midpoint samples for every station. Do not
+  // move or omit a point because its captured contrast is below the gate.
+  const distance = Math.max(0, parseFloat(outlineOffset)) + parseFloat(outlineWidth) + 3;
+  return [
+    { x: Math.floor(bounds.left - distance), y: Math.floor((bounds.top + bounds.bottom) / 2) },
+    { x: Math.ceil(bounds.right + distance), y: Math.floor((bounds.top + bounds.bottom) / 2) },
+    { x: Math.floor((bounds.left + bounds.right) / 2), y: Math.floor(bounds.top - distance) },
+    { x: Math.floor((bounds.left + bounds.right) / 2), y: Math.ceil(bounds.bottom + distance) },
+  ];
+}
+
+function adjacentPixels(png: ReturnType<typeof decodePng>, bounds: { left: number; right: number; top: number; bottom: number },
+  outlineOffset: string, outlineWidth: string, foreground: readonly number[]) {
+  return adjacentCoordinates(bounds, outlineOffset, outlineWidth).map(p => {
+    const inViewport = p.x >= 0 && p.y >= 0 && p.x < png.width && p.y < png.height;
+    const offset = (p.y * png.width + p.x) * 4;
+    const rgba = inViewport ? [...png.pixels.subarray(offset, offset + 4)] : null;
+    return { ...p, inViewport, rgba, rgb: rgba?.slice(0, 3) ?? null, ratio: rgba ? contrast(foreground, rgba.slice(0, 3)) : null };
+  });
+}
+
+async function readHaloPixels(page: Page, points: { x: number; y: number }[]) {
+  return page.evaluate(points => {
+    const canvas = document.querySelector<HTMLCanvasElement>(".vx-cursor-halo");
+    const context = canvas?.getContext("2d");
+    const bounds = canvas?.getBoundingClientRect();
+    const css = canvas ? getComputedStyle(canvas) : null;
+    return { at: performance.now(), state: canvas?.dataset.haloState ?? null, opacity: css?.opacity ?? "0",
+      visible: canvas?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ?? false,
+      points: points.map(point => {
+        const x = bounds?.width ? Math.floor((point.x - bounds.left) * canvas!.width / bounds.width) : -1;
+        const y = bounds?.height ? Math.floor((point.y - bounds.top) * canvas!.height / bounds.height) : -1;
+        const rgba = context && x >= 0 && y >= 0 && x < canvas!.width && y < canvas!.height
+          ? [...context.getImageData(x, y, 1, 1).data] : [0, 0, 0, 0];
+        return { ...point, rgba };
+      }) };
+  }, points);
+}
+
+async function tabTo(page: Page, target: Locator, evidence?: { info: TestInfo; path: string }) {
   const visited = [];
   for (let index = 0; index < 60; index++) {
     await page.keyboard.press("Tab");
-    visited.push(await page.evaluate(() => {
-      const active = document.activeElement as HTMLElement | null;
-      return { tag: active?.tagName, id: active?.id, className: active?.className,
-        label: active?.getAttribute("aria-label"), text: active?.textContent?.trim().slice(0, 120) };
-    }));
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const before = await page.evaluate(readKeyboardStation);
+    if (evidence) {
+      const name = `${evidence.path}-tab-${String(index).padStart(2, "0")}`;
+      expect(before.bounds, name).toBeTruthy();
+      const screenshot = evidence.info.outputPath(`${name}.png`);
+      const points = adjacentCoordinates(before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!);
+      const haloBefore = await readHaloPixels(page, points);
+      const png = decodePng(await page.screenshot({ path: screenshot, scale: "css" }));
+      const after = await page.evaluate(readKeyboardStation);
+      const haloAfter = await readHaloPixels(page, points);
+      const painted = points.map((_, i) => (haloBefore.visible && Number(haloBefore.opacity) > 0 && haloBefore.points[i].rgba[3] > 0)
+        || (haloAfter.visible && Number(haloAfter.opacity) > 0 && haloAfter.points[i].rgba[3] > 0));
+      let backgroundPng = png, backgroundScreenshot: string | null = null;
+      let underlayGeometry: ReturnType<typeof readKeyboardStation> | null = null;
+      if (painted.some(Boolean)) {
+        const halo = page.locator("canvas.vx-cursor-halo");
+        const saved = await halo.evaluate(element => {
+          const previous = { value: element.style.getPropertyValue("visibility"), priority: element.style.getPropertyPriority("visibility") };
+          element.style.setProperty("visibility", "hidden", "important"); return previous;
+        });
+        try {
+          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+          underlayGeometry = await page.evaluate(readKeyboardStation);
+          backgroundScreenshot = evidence.info.outputPath(`${name}-under-halo.png`);
+          backgroundPng = decodePng(await page.screenshot({ path: backgroundScreenshot, scale: "css" }));
+        } finally {
+          await halo.evaluate((element, previous) => {
+            if (previous.value) element.style.setProperty("visibility", previous.value, previous.priority);
+            else element.style.removeProperty("visibility");
+          }, saved);
+        }
+      }
+      const normalPoints = adjacentPixels(png, before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!, before.indicatorRgba.slice(0, 3));
+      const backgroundPoints = adjacentPixels(backgroundPng, before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!, before.indicatorRgba.slice(0, 3));
+      const adjacent = normalPoints.map((point, i) => ({ ...(painted[i] ? backgroundPoints[i] : point), normalRgba: point.rgba,
+        haloPaintBefore: haloBefore.points[i].rgba, haloPaintAfter: haloAfter.points[i].rgba,
+        source: painted[i] ? "same-coordinate-under-halo" : "normal" }));
+      const station = { ...before, after, haloBefore, haloAfter, underlayGeometry, adjacent, screenshot, backgroundScreenshot };
+      visited.push(station);
+      await writeFile(evidence.info.outputPath(`${name}.json`), JSON.stringify(station, null, 2));
+      expect.soft(before.activeVisible, name).toBe(true);
+      expect.soft(before.ownerVisible, name).toBe(true);
+      expect.soft(before.focusVisible, name).toBe(true);
+      expect.soft(before.bounds!.width, name).toBeGreaterThan(0);
+      expect.soft(before.bounds!.height, name).toBeGreaterThan(0);
+      expect.soft(after.bounds, `${name} screenshot geometry`).toEqual(before.bounds);
+      if (underlayGeometry) expect.soft(underlayGeometry.bounds, `${name} hidden halo preserves geometry`).toEqual(before.bounds);
+      expect.soft([after.tag, after.id, after.label], `${name} focused target retained`).toEqual([before.tag, before.id, before.label]);
+      expect.soft(after.indicatorRgba, name).toEqual(before.indicatorRgba);
+      expect.soft(before.indicatorRgba[3], name).toBe(255);
+      expect.soft(adjacent.every(point => point.inViewport), `${name} all four samples inside the viewport`).toBe(true);
+      // Full-mode ordinary controls may hand their outline to the shared
+      // canvas. Record that material honestly; the named global/input/frame
+      // contracts below still require their visible 2px CSS outlines.
+      for (const sample of [before, after]) if (sample.ownerOutlineStyle !== "none" && parseFloat(sample.ownerOutlineWidth!) > 0)
+        expect.soft(sample.ownerOutlineRgba, `${name} visible CSS outline`).toEqual(sample.indicatorRgba);
+      for (const point of adjacent) {
+        expect.soft(point.ratio, `${name} adjacent sample is valid`).not.toBeNull();
+        if (point.ratio !== null) expect.soft(point.ratio, `${name} adjacent pixel ${point.x},${point.y}`).toBeGreaterThanOrEqual(3);
+      }
+    } else visited.push(before);
     if (await target.evaluate(element => element === document.activeElement)) return visited;
   }
   throw new Error(`Keyboard could not reach ${await target.getAttribute("class")}: ${JSON.stringify(visited)}`);
@@ -53,42 +181,105 @@ async function tabTo(page: Page, target: Locator) {
 async function outline(owner: Locator) {
   return owner.evaluate(element => {
     const style = getComputedStyle(element), root = getComputedStyle(document.documentElement);
+    const probe = document.createElement("span"); probe.style.color = "var(--accent-indicator)";
+    document.body.append(probe);
+    const indicatorColor = getComputedStyle(probe).color; probe.remove();
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
     const context = canvas.getContext("2d")!;
     context.fillStyle = style.outlineColor; context.fillRect(0, 0, 1, 1);
+    const rgba = [...context.getImageData(0, 0, 1, 1).data], rgb = rgba.slice(0, 3);
+    context.fillStyle = indicatorColor; context.fillRect(0, 0, 1, 1);
+    const indicatorRgba = [...context.getImageData(0, 0, 1, 1).data];
     return { outlineColor: style.outlineColor, outlineStyle: style.outlineStyle,
       outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset,
-      rgb: [...context.getImageData(0, 0, 1, 1).data].slice(0, 3),
+      rgb, rgba, indicatorColor, indicatorRgb: indicatorRgba.slice(0, 3), indicatorRgba,
+      borderColor: style.borderTopColor, borderWidth: style.borderTopWidth,
+      visible: (element as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+      opacity: style.opacity, visibility: style.visibility,
       indicator: root.getPropertyValue("--accent-indicator").trim(),
       focusVisible: document.activeElement?.matches(":focus-visible"), bounds: element.getBoundingClientRect().toJSON() };
   });
 }
 
+async function inspectFocus(page: Page, owner: Locator, kind: "global" | "input" | "lattice" | "composite", name: string, info: TestInfo) {
+  const sample = await outline(owner);
+  const screenshot = info.outputPath(`${name}.png`);
+  const png = decodePng(await page.screenshot({ path: screenshot, scale: "css" }));
+  // Read pixels outside the visible ring, away from its antialiasing and the
+  // control's own content. These are the actual adjacent compositor surfaces.
+  const adjacent = adjacentPixels(png, sample.bounds, sample.outlineOffset, sample.outlineWidth, sample.rgb);
+  const after = await outline(owner);
+  expect.soft(sample.visible, name).toBe(true);
+  expect.soft(sample.bounds.width, name).toBeGreaterThan(0);
+  expect.soft(sample.bounds.height, name).toBeGreaterThan(0);
+  expect.soft(sample.focusVisible, name).toBe(true);
+  expect.soft(sample.outlineStyle, name).toBe("solid");
+  expect.soft(sample.outlineWidth, name).toBe("2px");
+  expect.soft(sample.outlineColor, `${name} resolves indicator`).toBe(sample.indicatorColor);
+  expect.soft(sample.rgb, name).toEqual(sample.indicatorRgb);
+  if (kind === "input") {
+    expect.soft(sample.borderColor, `${name} focused input border`).toBe(sample.indicatorColor);
+    expect.soft(sample.borderWidth, name).toBe("1px");
+  }
+  expect.soft(after.bounds, `${name} screenshot geometry`).toEqual(sample.bounds);
+  expect.soft(adjacent.every(point => point.inViewport), `${name} all four samples inside the viewport`).toBe(true);
+  for (const point of adjacent) {
+    expect.soft(point.ratio, `${name} adjacent sample is valid`).not.toBeNull();
+    if (point.ratio !== null) expect.soft(point.ratio, `${name} adjacent pixel ${point.x},${point.y}`).toBeGreaterThanOrEqual(3);
+  }
+  return { kind, name, ...sample, after, adjacent, screenshot };
+}
+
 for (const mode of ["full", "lite", "reduced"] as const) {
   nativeTest(`R2-01 light keyboard outlines remain visible in ${mode}`, async ({ page }, info) => {
+    nativeTest.setTimeout(120000);
     await page.setViewportSize({ width: 1280, height: 720 });
     if (mode === "reduced") await page.emulateMedia({ reducedMotion: "reduce" });
     await installLauncherFixture(page, { theme: "light", effects: mode === "lite" ? "lite" : "full", instanceCount: 2 });
     await page.goto("/");
     await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
     await page.evaluate(() => document.fonts.ready.then(() => undefined));
-    const homeTabs = await tabTo(page, page.locator(".vx-instance-picker__trigger"));
-    const home = await outline(page.locator(".vx-launch-console__selector-wrap"));
-    await page.screenshot({ path: info.outputPath(`focus-home-light-${mode}.png`), scale: "css" });
+    const homeTabs = await tabTo(page, page.locator(".vx-instance-picker__trigger"), { info, path: `home-${mode}` });
+    const home = await inspectFocus(page, page.locator(".vx-launch-console__selector-wrap"), "composite", `focus-home-light-${mode}`, info);
     await page.locator('.vx-floating-nav [data-page="library"]').click();
     await expect(page.locator('[data-page-stage="library"]')).toHaveCSS("opacity", "1");
-    const libraryTabs = await tabTo(page, page.locator(".vx-library-page .vx-search input"));
-    const library = await outline(page.locator(".vx-library-page .vx-search"));
-    await page.screenshot({ path: info.outputPath(`focus-library-light-${mode}.png`), scale: "css" });
+    const libraryTabs = await tabTo(page, page.locator(".vx-library-page .vx-search input"), { info, path: `library-${mode}` });
+    const library = await inspectFocus(page, page.locator(".vx-library-page .vx-search"), "composite", `focus-library-light-${mode}`, info);
+    const extraTabs = [], contracts = [];
+    for (const [id, selected] of [["fixture-world", true], ["fixture-world-002", false]] as const) {
+      const card = page.locator(`.vx-instance-card[data-instance-id="${id}"]`);
+      // Establish real pointer ownership first; Tab must hand off to the
+      // visible keyboard frame even while the shared cursor owns this card.
+      await card.hover();
+      const target = card.locator(".vx-instance-card__select");
+      extraTabs.push({ target: id, visited: await tabTo(page, target, { info, path: `${id}-${mode}` }) });
+      const frame = card.locator(":scope > .vx-lattice-frame");
+      await expect(frame).toHaveAttribute("data-focused", "true");
+      await expect(frame).toHaveAttribute("data-selected", String(selected));
+      await expect(frame).toHaveCSS("visibility", "visible");
+      await expect(frame).toHaveCSS("opacity", "1");
+      contracts.push(await inspectFocus(page, frame, "lattice", `focus-lattice-${selected ? "selected" : "unselected"}-${mode}`, info));
+    }
+    await page.locator(".vx-library-commandbar__actions").getByRole("button", { name: "创建实例", exact: true }).click();
+    const dialog = page.locator(".vx-create-dialog[open]");
+    await expect(dialog).toHaveCSS("opacity", "1");
+    const input = dialog.locator('input[id$="-create-instance-name"]');
+    extraTabs.push({ target: "input", visited: await tabTo(page, input, { info, path: `input-${mode}` }) });
+    contracts.push(await inspectFocus(page, input, "input", `focus-input-${mode}`, info));
+    const close = dialog.locator("[data-dialog-close]");
+    extraTabs.push({ target: "global", visited: await tabTo(page, close, { info, path: `global-${mode}` }) });
+    contracts.push(await inspectFocus(page, close, "global", `focus-global-${mode}`, info));
     const surfaces = [[243, 241, 235], [250, 249, 245], [234, 231, 224]];
     const samples = [home, library].map(value => ({ ...value, contrasts: surfaces.map(surface => contrast(value.rgb, surface)) }));
-    await writeFile(info.outputPath("keyboard-focus.json"), JSON.stringify({ mode, homeTabs, libraryTabs, surfaces, samples }, null, 2));
+    await writeFile(info.outputPath("keyboard-focus.json"), JSON.stringify({ mode, homeTabs, libraryTabs, extraTabs, contracts, surfaces, samples }, null, 2));
     for (const sample of samples) {
       expect(sample.focusVisible).toBe(true);
       expect(sample.outlineStyle).toBe("solid");
       expect(sample.outlineWidth).toBe("2px");
       expect(sample.rgb).not.toEqual([180, 241, 122]);
       expect(sample.indicator).not.toBe("");
+      expect(sample.outlineColor).toBe(sample.indicatorColor);
+      expect(sample.rgb).toEqual(sample.indicatorRgb);
       for (const ratio of sample.contrasts) expect(ratio).toBeGreaterThanOrEqual(3);
     }
   });

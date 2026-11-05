@@ -104,6 +104,7 @@
 - **问题：** 以下位置在浅色下直接用 --accent #b4f17a，对 #f3f1eb/#faf9f5 只有 1.18/1.26:1，低于 WCAG 1.4.11 要求的 3:1：global.css:26 `:focus-visible`、:40 input:focus 边框、AnchoredListbox.css:8、lattice.css:16-18（data-focused）、LatticeProgress.tsx:42 solid、cursor.ts:406。键盘巡检从未在浅色主题下跑过。
 - **修法：** 1）accent.ts buildAccentScale 新增 indicator：复用 ink 的亮度搜索，阈值 3.0，对照 #f3f1eb/#faf9f5/#eae7e0。深色下 indicator 等于 base。2）AppearanceProvider.tsx:137 后加一行 setProperty('--accent-indicator', accentScale.indicator)，tokens.css 给回退值 var(--accent)。3）上面六处改为 var(--accent-indicator)。
 - **验收：** accent.test.ts：默认色和 3 个高亮度强调色在浅色下 contrast(indicator, 三种表面) ≥3，深色下 indicator===base。新增浅色 focus-home/focus-library 截图，outline 色不是 rgb(180,241,122)。en-light-1050-downloads 的完成点阵对卡片 ≥3:1。
+- **对照表面补充（第六次修订）：** Lite／减少动态下透明阅读面后的世界把实际相邻底色压到 rgb(228,226,220)，比三种名义表面里最暗的 #eae7e0 还暗，默认 indicator rgb(90,146,5) 只有 2.92:1。修法：浅色 indicator 的亮度搜索额外对照一个“合成底色参考”。参考值取浅色 full／Lite／减少动态三种模式键盘巡检各站实测相邻像素中最暗的一个，每个通道再减 4，写成带注释的具名常量，注释里给出证据路径。色相、彩度和 3:1 门槛不变，世界参数、阅读面不透明度和采样区域也不改。ink 的对照表面不动，只在报告里记录 contrast(ink, 参考值)。改后如果仍有站点实测低于 3:1，可以按新的最暗值重算一次参考值；重算后仍不达标就停下报告。验收：accent.test.ts 对默认色和 3 个高亮度色断言对四种表面都 ≥3；浅色三种模式的键盘巡检每站实测相邻像素 ≥3:1。
 
 ### R2-02 启动 → 准备 → 运行 → 结束：每次切换焦点都掉到 body
 

@@ -16,7 +16,7 @@
 
 .vx-lattice-frame[data-focused="true"] {
   color: var(--accent-indicator);
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--accent-indicator);
   outline-offset: 1px;
   opacity: 1;
 }
@@ -41,5 +41,6 @@ canvas.vx-lattice-progress {
   .vx-lattice-frame[data-selected="true"] {
     color: Highlight;
   }
+  .vx-lattice-frame[data-focused="true"] { outline-color: Highlight; }
 }
 }

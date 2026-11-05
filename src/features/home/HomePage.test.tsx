@@ -505,6 +505,19 @@ describe("HomePage", () => {
     expect(document.activeElement).toBe(currentAction());
   });
 
+  it("allows Stop during an unrelated instance installation while retaining keyboard focus", async () => {
+    mockLauncher.gamePid = 42;
+    mockLauncher.busy = "instance.install";
+    await render();
+    const stop = container.querySelector<HTMLButtonElement>('.vx-launch-console__content:not([inert]) [data-launch-action="running"]')!;
+    stop.focus();
+    expect(stop.disabled).toBe(false);
+    expect(stop.getAttribute("aria-disabled")).toBe("false");
+    await act(async () => stop.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+    expect(mockLauncher.stop).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(stop);
+  });
+
   it("returns focus to launch after cancellation and retains focus on busy actions", async () => {
     vi.useFakeTimers();
     await render();

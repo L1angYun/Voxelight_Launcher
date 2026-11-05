@@ -29,6 +29,7 @@ function Harness() {
     <button id="notify-long" onClick={() => notify({ id: "launcher", kind: "info", onDismiss,
       message: "Preparing a large launcher installation with several additional downloads. This long notification must keep its original right and bottom alignment while a shorter launcher message replaces it." })}>Long launcher message</button>
     <button id="notify-short" onClick={() => notify({ id: "launcher", kind: "error", onDismiss, message: "Failed." })}>Short launcher message</button>
+    <button id="notify-info-update" onClick={() => notify({ id: "launcher", kind: "info", onDismiss, message: "Still preparing." })}>Update launcher progress</button>
     <button id="dismiss-launcher" onClick={() => dismiss("launcher")}>Dismiss launcher</button>
     <button id="open-dialog" onClick={() => setOpen(true)}>Open dialog</button>
     <output id="dismissed-count">{dismissed}</output>

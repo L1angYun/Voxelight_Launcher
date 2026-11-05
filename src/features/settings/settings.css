@@ -1,6 +1,5 @@
 @layer features {
 /* Settings is a workbench: one category rail, readable settings rows, persistent save action. */
-.vx-settings-heading { align-items: baseline; }
 .vx-settings-save { justify-content: flex-end; }
 .vx-settings-dirty { max-width: 24ch; color: var(--text-secondary); font-size: var(--text-xs); }
 .vx-settings-error { margin: 0 0 18px; color: var(--danger); }

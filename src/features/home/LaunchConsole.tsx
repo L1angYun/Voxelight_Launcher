@@ -143,8 +143,8 @@ export function LaunchConsole({
                   {t("home:cancelPreparation")}
                 </Button> : running ? <div className="vx-launch-console__running" role="status">
                   <span>{t("home:running")}</span>
-                  <Button variant="ghost" size="sm" icon={<Square size={15} />} aria-disabled={Boolean(busy)} data-launch-action="running"
-                    onClick={event => activate(event, Boolean(busy), onStop)}>{t("home:stop")}</Button>
+                  <Button variant="ghost" size="sm" icon={<Square size={15} />} aria-disabled={busy === "game.stop"} data-launch-action="running"
+                    onClick={event => activate(event, busy === "game.stop", onStop)}>{t("home:stop")}</Button>
                 </div> : <Button variant="primary" size="lg" aria-disabled={Boolean(busy)} data-launch-primary data-launch-action="idle"
                   icon={<Play size={19} fill="currentColor" />} onClick={event => activate(event, Boolean(busy), onLaunch)}>
                   {t("common:actions.launch")}

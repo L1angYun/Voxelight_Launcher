@@ -38,7 +38,6 @@ input, select, textarea {
   font-size: var(--text-md);
   line-height: 1.5;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--accent-indicator); }
 input::placeholder, textarea::placeholder { color: var(--text-tertiary); opacity: 1; }
 input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; min-height: 18px; flex-shrink: 0; padding: 0; accent-color: var(--accent); }
 input[type="range"] { accent-color: var(--accent); }
@@ -112,6 +111,8 @@ a { color: var(--accent-ink, var(--accent)); text-underline-offset: 3px; }
   background: var(--bg-raised);
   color: var(--text-primary);
 }
+/* Follow the field border shorthand so keyboard focus keeps its indicator. */
+input:focus, select:focus, textarea:focus { border-color: var(--accent-indicator); }
 .vx-empty { display: grid; justify-items: start; gap: 12px; padding: 32px 0; }
 .vx-empty__icon { color: var(--text-tertiary); }
 .vx-empty h2 { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-strong); }

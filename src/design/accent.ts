@@ -16,6 +16,12 @@ interface Oklch {
 }
 
 const DEFAULT_ACCENT = "#b4f17a";
+// Full/Lite/reduced keyboard routes: darkest of 576 adjacent pixels is RGB
+// (149,149,144), at (415,471) below the Vanilla segment, including neighboring
+// label-edge compositing. The approved single recalculation subtracts four
+// per channel. Only indicators use this margin; ink retains its three surfaces.
+// Evidence: E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-05/review23/revision6-expanded-reference.json
+const LIGHT_INDICATOR_COMPOSITE_REFERENCE = "#91918c";
 
 function clamp(value: number, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
@@ -123,7 +129,9 @@ export function buildAccentScale(color: string, theme: "dark" | "light"): Accent
   // Signal fills retain the user's exact color. Text has a separate bounded
   // lightness search, tested against the lightest/darkest content surfaces.
   const ink = readableAccent(base, oklch, surfaces, 4.5, theme);
-  const indicator = theme === "light" ? readableAccent(base, oklch, surfaces, 3, theme) : base;
+  const indicator = theme === "light"
+    ? readableAccent(base, oklch, [...surfaces, LIGHT_INDICATOR_COMPOSITE_REFERENCE], 3, theme)
+    : base;
   return {
     base,
     hover,

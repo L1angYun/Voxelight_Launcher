@@ -114,6 +114,31 @@ test("M3 fixed-id replacement updates the focused notification in place and pres
   await expect(page.locator("#dismissed-count")).toHaveText("1");
 });
 
+test("M3 same-kind fixed-id updates preserve the status role and the only visible notification", async ({ page }, info) => {
+  await prepare(page);
+  await page.locator("#notify-long").click();
+  const toast = page.locator(".vx-toast"), close = toast.locator("button");
+  await expect(toast).toHaveCSS("opacity", "1");
+  await expect(toast).toHaveAttribute("role", "status");
+  const original = await toast.elementHandle();
+  await close.focus();
+  const frames = await traceClick(page, "#notify-info-update", 360,
+    () => page.evaluate(() => document.querySelector<HTMLButtonElement>("#notify-info-update")!.click()));
+  await writeFile(info.outputPath("toast-same-role-replacement.json"), JSON.stringify(frames, null, 2));
+  expect(frames.length).toBeGreaterThan(1);
+  expect(frames.some(frame => frame.toasts.some(value => value.text === "Still preparing."))).toBe(true);
+  for (const frame of frames) {
+    expect(frame.toasts).toHaveLength(1);
+    expect(frame.toasts[0]).toMatchObject({ role: "status", hidden: false, inert: false, closeEnabled: true });
+  }
+  expect(await original!.evaluate(element => element === document.querySelector(".vx-toast"))).toBe(true);
+  await expect(toast).toHaveCount(1);
+  await expect(close).toBeFocused();
+  await close.click();
+  await expect(toast).toHaveCount(0);
+  await expect(page.locator("#dismissed-count")).toHaveText("1");
+});
+
 test("review D2: dialog hosting and return both replay entrance without stealing focus", async ({ page }, info) => {
   await prepare(page);
   await page.locator("#notify-short").click();
