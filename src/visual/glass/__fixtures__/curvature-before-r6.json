@@ -1,0 +1,310 @@
+{
+  "baseline": "0cc8f5500a59e1885ad778751d35eb438e7147ab",
+  "scope": "15 real resting surface geometries captured before S4 revision6; low-refraction compatibility cases are synthetic, not real app surfaces.",
+  "cases": [
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-floating-nav__indicator",
+      "shape": {
+        "width": 61,
+        "height": 44,
+        "radius": 22,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        61,
+        44
+      ],
+      "beforeBytesSha256": "4f5112d495decb196f1ef9d20fd9ce8d58b123bd501c16af7f870158b43ee758",
+      "boundarySha256": "2d398b6930f39eacf165b8e43988fa65744e8d3b841c025d90489e8fc5f5b2f4"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-launch-console__selector",
+      "shape": {
+        "width": 256,
+        "height": 50,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        256,
+        50
+      ],
+      "beforeBytesSha256": "9b0b8f05a167eb388ae41e76a360fd41bfbdc937b090c4b5897ed52a691af00f",
+      "boundarySha256": "3192c56a23d4b6e15bd6c604caca8bf279170b8aa5019227b81d851522d4da29"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-launch-console__launch",
+      "shape": {
+        "width": 296,
+        "height": 56,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        296,
+        56
+      ],
+      "beforeBytesSha256": "68145651c767bd05743963bb3bfc068d2a95e9821b98db594f28bcd71f606087",
+      "boundarySha256": "08a4b56f6e5815ad29cbeeb68e0f8af06587094c098428073bfb2b4ebb377c3f"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-select__surface",
+      "shape": {
+        "width": 180,
+        "height": 50,
+        "radius": 14,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        180,
+        50
+      ],
+      "beforeBytesSha256": "05e49c9ae613ac00c55960b94a3029478e7c935e078a4b3129bf3b3d85c95237",
+      "boundarySha256": "33072de1020b91d83719e8ce012778abbcdba2eb07662e2d1d0ad81a4372d3a2"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--dialog vx-listbox-surface",
+      "shape": {
+        "width": 324,
+        "height": 198,
+        "radius": 20,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        324,
+        198
+      ],
+      "beforeBytesSha256": "e0c4d05d8590cbea5745e5cf7d30f3f5bd41df82a7eaa403232574927c4d48d4",
+      "boundarySha256": "821356725313f04ffdb0e29408fd6d1213ab51648894a2929e8d0500b4ee1b8a"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-floating-nav__indicator",
+      "shape": {
+        "width": 68,
+        "height": 44,
+        "radius": 22,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        68,
+        44
+      ],
+      "beforeBytesSha256": "a00ef85686fd925ef1e889c382937122669f29200a9e49c8d2f21cc8990d20cb",
+      "boundarySha256": "c430c4f46f80998b33a927633deadfcaaf660e473a385911b862649384d44cfe"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-launch-console__selector",
+      "shape": {
+        "width": 262,
+        "height": 50,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        262,
+        50
+      ],
+      "beforeBytesSha256": "f85e0ca391ea3c8e20f33940c129386338c557ecdaaafa4923fc0c482edecba4",
+      "boundarySha256": "c2a3e96614215cfc97c1e518cf27dccadbbe5b5a53e09748fc136bc7ff1c39dc"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-launch-console__launch",
+      "shape": {
+        "width": 302,
+        "height": 56,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        302,
+        56
+      ],
+      "beforeBytesSha256": "b0d0561624eb709125059bac1896c68f68de482189c613f864c82175ed45262f",
+      "boundarySha256": "5f637e92209285808bf5097b34300c83ba580e64999ddd5b8ea09bdf23cdf34b"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-launch-console__selector",
+      "shape": {
+        "width": 360,
+        "height": 50,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        360,
+        50
+      ],
+      "beforeBytesSha256": "331aa558b550209ae7fbbf89a24cc3d96bf873b48b44a4c72ddf15970c499df3",
+      "boundarySha256": "aa2525108cd5771374876b170ddc4b8d8fa2bf87110caf67d2d6c219a024f010"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-launch-console__launch",
+      "shape": {
+        "width": 400,
+        "height": 56,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        400,
+        56
+      ],
+      "beforeBytesSha256": "086130905ab02ceeb4531359a7f9755366b80db39c0e5fb7f6d4bd14c23273d4",
+      "boundarySha256": "ea394198205239ee6045ca521df683734b0b4f214db1fd4234f96d7d7e8a10f7"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--dialog vx-listbox-surface",
+      "shape": {
+        "width": 362,
+        "height": 198,
+        "radius": 20,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        362,
+        198
+      ],
+      "beforeBytesSha256": "8ffc89efe205bf6743f48100a8dc698459482589579d44aa18ea0f9eaa7bd008",
+      "boundarySha256": "62b0f4f0ad82882dd1c9df8d1787048057f207af5ee6dd887113e93a63f21b0a"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--dialog vx-listbox-surface",
+      "shape": {
+        "width": 324,
+        "height": 360,
+        "radius": 20,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        324,
+        360
+      ],
+      "beforeBytesSha256": "5679372fbf406259d2180a25f04ac96a2f5659cfdb4e2546c73be8610d622b12",
+      "boundarySha256": "0622fddea261eed9bc2952030c294d07def880e204ba585de84d08d715c48e50"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-floating-nav__indicator",
+      "shape": {
+        "width": 80,
+        "height": 44,
+        "radius": 22,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        80,
+        44
+      ],
+      "beforeBytesSha256": "f2ac0b4f3a7395471bd7366df44989aff2f8056932e781cefbaa2f1a9492c691",
+      "boundarySha256": "a8782d1545fd2a3ae6e26749ee84ee3a84204cd0284c33da82174c8f87f4dedb"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--control vx-floating-nav__indicator",
+      "shape": {
+        "width": 71,
+        "height": 44,
+        "radius": 22,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        71,
+        44
+      ],
+      "beforeBytesSha256": "38c06b2e155856e893df220d91185dfba8bc98f8079732b1881e1c44af288200",
+      "boundarySha256": "a5d5ae9e46a34fe852eaa404d1d734a6faffc0973b0b2633a5498a96fdf1e2c5"
+    },
+    {
+      "owner": "vx-glass-surface vx-glass-surface--dialog vx-listbox-surface",
+      "shape": {
+        "width": 180,
+        "height": 194,
+        "radius": 20,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        180,
+        194
+      ],
+      "beforeBytesSha256": "dfb5aee99581e94004100ffc5ea1a54bf8450f810e71f479d3d044455fa89223",
+      "boundarySha256": "2d3ad6d3f53524ce3c9e8f41f82efa3489c43974a2fb9fff326fbdf2de9af76c"
+    }
+  ],
+  "compatibility": [
+    {
+      "shape": {
+        "width": 320,
+        "height": 160,
+        "radius": 20,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.2,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        320,
+        160
+      ],
+      "beforeBytesSha256": "f8eebfec90b932bb76dc7293d6dce38d8579b7689f58f57622f3db99686b0a05"
+    },
+    {
+      "shape": {
+        "width": 560,
+        "height": 320,
+        "radius": 24,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.2,
+        "dispersion": 0.65
+      },
+      "mapSize": [
+        512,
+        293
+      ],
+      "beforeBytesSha256": "0b9e39076efaae92bf7e2b278f5d9630b07cfe4eed620e22138a5e7650af62a8"
+    }
+  ]
+}

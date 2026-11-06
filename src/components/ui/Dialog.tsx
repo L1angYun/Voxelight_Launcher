@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import { IconButton } from "./Button";
 import { cn } from "../../lib/utils";
 import { notifyDialogLayer } from "./ToastProvider";
+import { SelectionProjectionContext } from "./SelectionMark";
 
 function focusable(dialog: HTMLDialogElement): HTMLElement[] {
   return [
@@ -95,6 +96,18 @@ export function Dialog({
     }
     const last = items[items.length - 1];
     const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+    if (currentIndex < 0) {
+      // Arrow navigation may focus an unselected manual tab (tabIndex=-1).
+      // Resume sequential navigation from its DOM position, not from the trap edge.
+      const active = document.activeElement;
+      const direction = event.shiftKey ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING;
+      const candidates = event.shiftKey ? [...items].reverse() : items;
+      const next = active && dialog.contains(active)
+        ? candidates.find(item => active.compareDocumentPosition(item) & direction) : undefined;
+      event.preventDefault();
+      (next ?? (event.shiftKey ? last : items[0])).focus();
+      return;
+    }
     if (event.shiftKey) {
       event.preventDefault();
       items[currentIndex <= 0 ? items.length - 1 : currentIndex - 1].focus();
@@ -105,6 +118,7 @@ export function Dialog({
   }
 
   return (
+    <SelectionProjectionContext.Provider value={false}>
     <dialog
       ref={ref}
       className={cn("vx-dialog", className)}
@@ -134,5 +148,6 @@ export function Dialog({
       <div className="vx-dialog__body">{children}</div>
       {footer ? <div className="vx-dialog__footer">{footer}</div> : null}
     </dialog>
+    </SelectionProjectionContext.Provider>
   );
 }

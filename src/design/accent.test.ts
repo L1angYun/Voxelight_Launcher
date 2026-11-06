@@ -6,9 +6,11 @@ describe("accent color roles", () => {
     const scale = buildAccentScale(color, "light");
     expect(scale.base).toBe(color);
     expect(scale.indicator).toMatch(/^#[0-9a-f]{6}$/);
-    // The fourth surface is the measured composite minimum minus four per channel.
-    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0", "#91918c"])
+    // Revision 7 uses complete edge medians, rather than individual foreground pixels.
+    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0", "#dad8d2"])
       expect(contrast(scale.indicator, surface)).toBeGreaterThanOrEqual(3);
+    // Against black, contrast is strictly increasing with relative luminance.
+    expect(contrast(scale.indicator, "#000000")).toBeGreaterThanOrEqual(contrast(scale.ink, "#000000"));
   });
 
   it("preserves the exact chosen indicator color in dark mode", () => {

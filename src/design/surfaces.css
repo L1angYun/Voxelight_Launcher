@@ -70,7 +70,7 @@
   }
 .vx-form-stack {
     display: grid;
-    gap: var(--space-20px);
+    gap: var(--space-5);
   }
 .vx-form-stack input { width: 100%; }
 .vx-form-stack textarea {
@@ -81,9 +81,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-18px);
+    gap: var(--space-4);
     min-width: 0;
-    padding: var(--space-14px) 0;
+    padding: var(--space-4) 0;
     border-bottom: 1px dotted color-mix(in srgb, var(--text-primary) 16%, transparent);
   }
 @media (hover: hover) and (pointer: fine) {

@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useId, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { SelectionGroup, SelectionMark } from "./SelectionMark";
 import "./selection.css";
@@ -31,11 +31,8 @@ export function Segmented<Value extends string>({
   const generatedId = useId();
   const prefix = idPrefix ?? `selection-${generatedId}`;
   const buttons = useRef(new Map<Value, HTMLButtonElement>());
-  const [focusedValue, setFocusedValue] = useState(value);
   const enabled = options.filter((option) => !option.disabled);
-  const preferredStop = activation === "manual" ? focusedValue : value;
-  const tabStop = enabled.some((option) => option.value === preferredStop) ? preferredStop
-    : enabled.some((option) => option.value === value) ? value : enabled[0]?.value;
+  const tabStop = enabled.some((option) => option.value === value) ? value : enabled[0]?.value;
   const tabs = semantic === "tabs";
   const Container = semantic === "nav" ? "nav" : "div";
 
@@ -52,7 +49,6 @@ export function Segmented<Value extends string>({
     if (next === undefined) return;
     event.preventDefault();
     const option = enabled[next];
-    setFocusedValue(option.value);
     if (activation === "automatic") onChange(option.value);
     buttons.current.get(option.value)?.focus();
   }
@@ -72,8 +68,7 @@ export function Segmented<Value extends string>({
       aria-controls={tabs ? typeof panelId === "function" ? panelId(option.value) : panelId : undefined}
       tabIndex={tabs ? tabStop === option.value ? 0 : -1 : undefined}
       disabled={option.disabled}
-      onFocus={() => setFocusedValue(option.value)}
-      onClick={() => { setFocusedValue(option.value); onChange(option.value); }} onKeyDown={(event) => navigate(event, option.value)}>
+      onClick={() => onChange(option.value)} onKeyDown={(event) => navigate(event, option.value)}>
       {value === option.value ? <SelectionMark location={option.value} /> : null}
       <span className="vx-selection__label">{option.icon}{option.label}</span>
     </button>)}

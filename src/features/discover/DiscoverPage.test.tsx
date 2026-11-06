@@ -160,6 +160,8 @@ describe("DiscoverPage", () => {
     expect(container.querySelector(".vx-page-header__text p")?.textContent).toBe("查找与当前实例兼容的内容。");
     for (const selector of [".vx-discover-target", ".vx-discover-source"]) {
       expect(container.querySelector(`${selector} .vx-select`)?.classList.contains("vx-select--flat")).toBe(true);
+      expect(container.querySelector(`${selector} .vx-select__surface`)).not.toBeNull();
+      expect(container.querySelector(`${selector} .vx-select--embedded`)).toBeNull();
     }
   });
   it("clears cards after a new search fails and lets the same query retry restore usable results", async () => {

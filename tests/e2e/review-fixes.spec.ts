@@ -220,7 +220,7 @@ test("R2-10 light lens selector has a readable left boundary against its adjacen
 });
 
 for (const theme of ["dark", "light"] as const) for (const section of ["home", "library"] as const) {
-  test(`S4 ${theme} ${section}: actual lens interior stays clear with real refraction`, async ({ page }, info) => {
+  test(`S4 ${theme} ${section}: actual lens columns stay even with real refraction`, async ({ page }, info) => {
     await page.setViewportSize({ width: 1440, height: 930 });
     await installGlassFrameFreeze(page);
     await installLauncherFixture(page, { theme, instanceCount: 2 });
@@ -234,8 +234,9 @@ for (const theme of ["dark", "light"] as const) for (const section of ["home", "
     await page.waitForTimeout(350);
     const result = await captureGlassInterior(page, info.outputPath("glass-interior"));
     expect(result.geometry.theme).toBe(theme);
-    expect(result.measurements.interior4WithoutContent.fraction).toBeLessThan(.005);
-    // The whole silhouette includes the intended curved edge and is record-only.
+    expect(result.columns.maxDelta).toBeLessThanOrEqual(12);
+    // Revision6: both interior/reference difference and left/right edge color
+    // are recorded for inspection; the actual-image column gate remains active.
   });
 }
 

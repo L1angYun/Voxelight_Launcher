@@ -274,6 +274,7 @@ export function LoginDialog({
       className="vx-login-dialog"
     >
       <Segmented semantic="tabs" label={t("accounts:loginMethods")} value={tab} onChange={changeTab}
+        className="vx-account-login-tabs"
         idPrefix="login-method" panelId={id => `login-panel-${id}`} activation={device ? "manual" : "automatic"}
         options={(["microsoft", "offline", "authlib"] as const).map(value => ({ value, label: t(`accounts:method.${value}`) }))} />
       {error ? <p className="vx-account-login__error" role="alert">{error}</p> : null}

@@ -18,7 +18,10 @@ export interface GlassPixelReport {
   };
   maxEdgeShift: number;
   maxCenterShift: number;
-  liveShift: number;
+  liveShift: number | null;
+  liveShiftPass: boolean;
+  liveOffsets: Array<{ x: number; offset: number }>;
+  bevelOffsets: Array<{ x: number; offset: number }>;
   maxUniformDelta: number;
   pass: boolean;
 }

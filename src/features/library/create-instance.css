@@ -2,6 +2,8 @@
 .vx-create-dialog .vx-dialog__body { display: grid; gap: 18px; padding: 0 6px 6px; margin-inline: -6px; margin-bottom: -6px; }
 .vx-create-dialog .vx-dialog__body > .vx-selection { justify-self: start; }
 .vx-create-panel { min-block-size: 197px; }
+/* M4 keeps the approved single-field gap while composing the shared spacing scale. */
+.vx-create-panel > .vx-form-stack { gap: calc(var(--space-4) + var(--space-1)); }
 .vx-create-project { margin: 0; color: var(--text-primary); font-weight: var(--weight-strong); }
 .vx-create-loader-group { min-width: 0; }
 .vx-create-loader-slot { display: grid; grid-template-rows: 0fr; margin-block-start: 0; transition: grid-template-rows var(--duration-normal) var(--ease-out), margin-block-start var(--duration-normal) var(--ease-out); }
@@ -14,7 +16,7 @@
     align-items: flex-start;
     gap: var(--space-2);
   }
-.vx-check-row input { margin-top: var(--space-2px); }
+.vx-check-row input { margin-top: var(--space-1); }
 .vx-muted { color: var(--text-secondary); }
 }
 @layer overrides {

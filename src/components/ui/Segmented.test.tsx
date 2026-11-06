@@ -39,12 +39,13 @@ describe("shared selection controls", () => {
     expect(document.activeElement).toBe(last);
     expect(first.getAttribute("aria-selected")).toBe("true");
     expect(last.getAttribute("aria-selected")).toBe("false");
-    expect(last.tabIndex).toBe(0); expect(first.tabIndex).toBe(-1);
+    expect(first.tabIndex).toBe(0); expect(last.tabIndex).toBe(-1);
     act(() => last.click());
     expect(last.getAttribute("aria-selected")).toBe("true");
     key(last, "Home");
     expect(document.activeElement).toBe(first);
     expect(last.getAttribute("aria-selected")).toBe("true");
+    expect(last.tabIndex).toBe(0); expect(first.tabIndex).toBe(-1);
   });
   it("moves tab focus and selection together, skips disabled tabs, and wraps", () => {
     render(<Example />);

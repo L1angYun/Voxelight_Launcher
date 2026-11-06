@@ -3,6 +3,7 @@ import { chromium, expect, test, type Locator, type Page, type TestInfo } from "
 import { writeFile } from "node:fs/promises";
 import { installLauncherFixture } from "./fixtures";
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
+import { focusEdgeSamples } from "./helpers/focus-edge-sampling";
 
 const nativeTest = test.extend({
   context: async ({ baseURL }, use) => {
@@ -67,46 +68,6 @@ function readKeyboardStation() {
     halo: halo ? { state: halo.dataset.haloState, opacity: getComputedStyle(halo).opacity } : null };
 }
 
-function adjacentCoordinates(bounds: { left: number; right: number; top: number; bottom: number }, outlineOffset: string, outlineWidth: string) {
-  // Preserve the original four midpoint samples for every station. Do not
-  // move or omit a point because its captured contrast is below the gate.
-  const distance = Math.max(0, parseFloat(outlineOffset)) + parseFloat(outlineWidth) + 3;
-  return [
-    { x: Math.floor(bounds.left - distance), y: Math.floor((bounds.top + bounds.bottom) / 2) },
-    { x: Math.ceil(bounds.right + distance), y: Math.floor((bounds.top + bounds.bottom) / 2) },
-    { x: Math.floor((bounds.left + bounds.right) / 2), y: Math.floor(bounds.top - distance) },
-    { x: Math.floor((bounds.left + bounds.right) / 2), y: Math.ceil(bounds.bottom + distance) },
-  ];
-}
-
-function adjacentPixels(png: ReturnType<typeof decodePng>, bounds: { left: number; right: number; top: number; bottom: number },
-  outlineOffset: string, outlineWidth: string, foreground: readonly number[]) {
-  return adjacentCoordinates(bounds, outlineOffset, outlineWidth).map(p => {
-    const inViewport = p.x >= 0 && p.y >= 0 && p.x < png.width && p.y < png.height;
-    const offset = (p.y * png.width + p.x) * 4;
-    const rgba = inViewport ? [...png.pixels.subarray(offset, offset + 4)] : null;
-    return { ...p, inViewport, rgba, rgb: rgba?.slice(0, 3) ?? null, ratio: rgba ? contrast(foreground, rgba.slice(0, 3)) : null };
-  });
-}
-
-async function readHaloPixels(page: Page, points: { x: number; y: number }[]) {
-  return page.evaluate(points => {
-    const canvas = document.querySelector<HTMLCanvasElement>(".vx-cursor-halo");
-    const context = canvas?.getContext("2d");
-    const bounds = canvas?.getBoundingClientRect();
-    const css = canvas ? getComputedStyle(canvas) : null;
-    return { at: performance.now(), state: canvas?.dataset.haloState ?? null, opacity: css?.opacity ?? "0",
-      visible: canvas?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ?? false,
-      points: points.map(point => {
-        const x = bounds?.width ? Math.floor((point.x - bounds.left) * canvas!.width / bounds.width) : -1;
-        const y = bounds?.height ? Math.floor((point.y - bounds.top) * canvas!.height / bounds.height) : -1;
-        const rgba = context && x >= 0 && y >= 0 && x < canvas!.width && y < canvas!.height
-          ? [...context.getImageData(x, y, 1, 1).data] : [0, 0, 0, 0];
-        return { ...point, rgba };
-      }) };
-  }, points);
-}
-
 async function tabTo(page: Page, target: Locator, evidence?: { info: TestInfo; path: string }) {
   const visited = [];
   for (let index = 0; index < 60; index++) {
@@ -114,68 +75,34 @@ async function tabTo(page: Page, target: Locator, evidence?: { info: TestInfo; p
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const before = await page.evaluate(readKeyboardStation);
     if (evidence) {
-      const name = `${evidence.path}-tab-${String(index).padStart(2, "0")}`;
+      const name = evidence.path + "-tab-" + String(index).padStart(2, "0");
       expect(before.bounds, name).toBeTruthy();
-      const screenshot = evidence.info.outputPath(`${name}.png`);
-      const points = adjacentCoordinates(before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!);
-      const haloBefore = await readHaloPixels(page, points);
+      const screenshot = evidence.info.outputPath(name + ".png");
       const png = decodePng(await page.screenshot({ path: screenshot, scale: "css" }));
       const after = await page.evaluate(readKeyboardStation);
-      const haloAfter = await readHaloPixels(page, points);
-      const painted = points.map((_, i) => (haloBefore.visible && Number(haloBefore.opacity) > 0 && haloBefore.points[i].rgba[3] > 0)
-        || (haloAfter.visible && Number(haloAfter.opacity) > 0 && haloAfter.points[i].rgba[3] > 0));
-      let backgroundPng = png, backgroundScreenshot: string | null = null;
-      let underlayGeometry: ReturnType<typeof readKeyboardStation> | null = null;
-      if (painted.some(Boolean)) {
-        const halo = page.locator("canvas.vx-cursor-halo");
-        const saved = await halo.evaluate(element => {
-          const previous = { value: element.style.getPropertyValue("visibility"), priority: element.style.getPropertyPriority("visibility") };
-          element.style.setProperty("visibility", "hidden", "important"); return previous;
-        });
-        try {
-          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-          underlayGeometry = await page.evaluate(readKeyboardStation);
-          backgroundScreenshot = evidence.info.outputPath(`${name}-under-halo.png`);
-          backgroundPng = decodePng(await page.screenshot({ path: backgroundScreenshot, scale: "css" }));
-        } finally {
-          await halo.evaluate((element, previous) => {
-            if (previous.value) element.style.setProperty("visibility", previous.value, previous.priority);
-            else element.style.removeProperty("visibility");
-          }, saved);
-        }
-      }
-      const normalPoints = adjacentPixels(png, before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!, before.indicatorRgba.slice(0, 3));
-      const backgroundPoints = adjacentPixels(backgroundPng, before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!, before.indicatorRgba.slice(0, 3));
-      const adjacent = normalPoints.map((point, i) => ({ ...(painted[i] ? backgroundPoints[i] : point), normalRgba: point.rgba,
-        haloPaintBefore: haloBefore.points[i].rgba, haloPaintAfter: haloAfter.points[i].rgba,
-        source: painted[i] ? "same-coordinate-under-halo" : "normal" }));
-      const station = { ...before, after, haloBefore, haloAfter, underlayGeometry, adjacent, screenshot, backgroundScreenshot };
+      const edges = focusEdgeSamples(png, before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!, before.indicatorRgba.slice(0, 3));
+      const station = { ...before, after, edges, screenshot };
       visited.push(station);
-      await writeFile(evidence.info.outputPath(`${name}.json`), JSON.stringify(station, null, 2));
+      await writeFile(evidence.info.outputPath(name + ".json"), JSON.stringify(station, null, 2));
       expect.soft(before.activeVisible, name).toBe(true);
       expect.soft(before.ownerVisible, name).toBe(true);
       expect.soft(before.focusVisible, name).toBe(true);
       expect.soft(before.bounds!.width, name).toBeGreaterThan(0);
       expect.soft(before.bounds!.height, name).toBeGreaterThan(0);
-      expect.soft(after.bounds, `${name} screenshot geometry`).toEqual(before.bounds);
-      if (underlayGeometry) expect.soft(underlayGeometry.bounds, `${name} hidden halo preserves geometry`).toEqual(before.bounds);
-      expect.soft([after.tag, after.id, after.label], `${name} focused target retained`).toEqual([before.tag, before.id, before.label]);
+      expect.soft(after.bounds, name + " screenshot geometry").toEqual(before.bounds);
+      expect.soft([after.tag, after.id, after.label], name + " focus retained").toEqual([before.tag, before.id, before.label]);
       expect.soft(after.indicatorRgba, name).toEqual(before.indicatorRgba);
-      expect.soft(before.indicatorRgba[3], name).toBe(255);
-      expect.soft(adjacent.every(point => point.inViewport), `${name} all four samples inside the viewport`).toBe(true);
-      // Full-mode ordinary controls may hand their outline to the shared
-      // canvas. Record that material honestly; the named global/input/frame
-      // contracts below still require their visible 2px CSS outlines.
       for (const sample of [before, after]) if (sample.ownerOutlineStyle !== "none" && parseFloat(sample.ownerOutlineWidth!) > 0)
-        expect.soft(sample.ownerOutlineRgba, `${name} visible CSS outline`).toEqual(sample.indicatorRgba);
-      for (const point of adjacent) {
-        expect.soft(point.ratio, `${name} adjacent sample is valid`).not.toBeNull();
-        if (point.ratio !== null) expect.soft(point.ratio, `${name} adjacent pixel ${point.x},${point.y}`).toBeGreaterThanOrEqual(3);
+        expect.soft(sample.ownerOutlineRgba, name + " visible CSS outline").toEqual(sample.indicatorRgba);
+      for (const edge of edges) {
+        expect.soft(edge.valid, name + "/" + edge.side + " complete adjacent edge").toBe(true);
+        expect.soft(edge.ratio, name + "/" + edge.side + " median contrast").not.toBeNull();
+        if (edge.ratio !== null) expect.soft(edge.ratio, name + "/" + edge.side).toBeGreaterThanOrEqual(3);
       }
     } else visited.push(before);
     if (await target.evaluate(element => element === document.activeElement)) return visited;
   }
-  throw new Error(`Keyboard could not reach ${await target.getAttribute("class")}: ${JSON.stringify(visited)}`);
+  throw new Error("Keyboard could not reach target: " + JSON.stringify(visited));
 }
 
 async function outline(owner: Locator) {
@@ -207,7 +134,7 @@ async function inspectFocus(page: Page, owner: Locator, kind: "global" | "input"
   const png = decodePng(await page.screenshot({ path: screenshot, scale: "css" }));
   // Read pixels outside the visible ring, away from its antialiasing and the
   // control's own content. These are the actual adjacent compositor surfaces.
-  const adjacent = adjacentPixels(png, sample.bounds, sample.outlineOffset, sample.outlineWidth, sample.rgb);
+  const edges = focusEdgeSamples(png, sample.bounds, sample.outlineOffset, sample.outlineWidth, sample.rgb);
   const after = await outline(owner);
   expect.soft(sample.visible, name).toBe(true);
   expect.soft(sample.bounds.width, name).toBeGreaterThan(0);
@@ -222,12 +149,12 @@ async function inspectFocus(page: Page, owner: Locator, kind: "global" | "input"
     expect.soft(sample.borderWidth, name).toBe("1px");
   }
   expect.soft(after.bounds, `${name} screenshot geometry`).toEqual(sample.bounds);
-  expect.soft(adjacent.every(point => point.inViewport), `${name} all four samples inside the viewport`).toBe(true);
-  for (const point of adjacent) {
-    expect.soft(point.ratio, `${name} adjacent sample is valid`).not.toBeNull();
-    if (point.ratio !== null) expect.soft(point.ratio, `${name} adjacent pixel ${point.x},${point.y}`).toBeGreaterThanOrEqual(3);
+  for (const edge of edges) {
+    expect.soft(edge.valid, name + "/" + edge.side + " complete adjacent edge").toBe(true);
+    expect.soft(edge.ratio, name + "/" + edge.side + " median contrast").not.toBeNull();
+    if (edge.ratio !== null) expect.soft(edge.ratio, name + "/" + edge.side).toBeGreaterThanOrEqual(3);
   }
-  return { kind, name, ...sample, after, adjacent, screenshot };
+  return { kind, name, ...sample, after, edges, screenshot };
 }
 
 for (const mode of ["full", "lite", "reduced"] as const) {

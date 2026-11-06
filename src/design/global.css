@@ -44,7 +44,7 @@ input[type="range"] { accent-color: var(--accent); }
 input[type="color"] { padding: 4px; }
 a { color: var(--accent-ink, var(--accent)); text-underline-offset: 3px; }
 ::-webkit-scrollbar { width: 7px; height: 7px; }
-::-webkit-scrollbar-thumb { border-radius: var(--radius-8); background: color-mix(in srgb, var(--text-tertiary) 55%, transparent); }
+::-webkit-scrollbar-thumb { border-radius: var(--radius-sm); background: color-mix(in srgb, var(--text-tertiary) 55%, transparent); }
 ::selection { background: var(--accent-soft); color: var(--text-primary); }
 .sr-only {
   position: absolute;

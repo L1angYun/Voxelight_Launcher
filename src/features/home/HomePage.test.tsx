@@ -518,6 +518,27 @@ describe("HomePage", () => {
     expect(document.activeElement).toBe(stop);
   });
 
+  it("allows only one pending Stop while an unrelated installation keeps the global busy label", async () => {
+    mockLauncher.gamePid = 42;
+    mockLauncher.busy = "instance.install";
+    let finish!: () => void;
+    vi.mocked(mockLauncher.stop).mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    await render();
+    const stop = container.querySelector<HTMLButtonElement>('.vx-launch-console__content:not([inert]) [data-launch-action="running"]')!;
+    stop.focus();
+    await act(async () => { stop.click(); stop.click(); });
+    expect(mockLauncher.stop).toHaveBeenCalledTimes(1);
+    expect(stop.getAttribute("aria-disabled")).toBe("true");
+    expect(stop.disabled).toBe(false);
+    expect(document.activeElement).toBe(stop);
+    expect(mockLauncher.busy).toBe("instance.install");
+    await act(async () => finish());
+    expect(stop.getAttribute("aria-disabled")).toBe("false");
+    await act(async () => stop.click());
+    expect(mockLauncher.stop).toHaveBeenCalledTimes(2);
+    await act(async () => finish());
+  });
+
   it("returns focus to launch after cancellation and retains focus on busy actions", async () => {
     vi.useFakeTimers();
     await render();
