@@ -11,9 +11,10 @@ import type { Config } from "../../../src/lib/launcher";
 import "../../../src/design/global.css";
 import "../../../src/design/surfaces.css";
 
+const theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";
 const config: Config = {
   gameDirectory: "C:\\ToastReview", javaPath: "", maxMemoryMb: 4096, jvmArguments: "", versionIsolation: true,
-  theme: "dark", downloadConcurrency: 6, microsoftClientId: "", downloadLimitKib: 0, downloadSource: "official",
+  theme, downloadConcurrency: 6, microsoftClientId: "", downloadLimitKib: 0, downloadSource: "official",
   screenWidth: 1280, screenHeight: 720, language: "en-US", accentColor: "#b4f17a", effects: "full",
   worldScene: "horizon", worldMaterial: "lattice", accentSource: "voxelight", soundEnabled: false,
   javaAutoDownload: false, defaultSkin: "steve",

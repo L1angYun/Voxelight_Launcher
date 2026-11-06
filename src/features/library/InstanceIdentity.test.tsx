@@ -7,13 +7,15 @@ import type { MotionTier } from "../../design/motion";
 
 type LayoutEvents = { onLayoutAnimationStart?: () => void; onLayoutAnimationComplete?: () => void };
 const layoutEvents = new Map<string, LayoutEvents>();
+const layoutBindings = new Map<string, { layoutId?: string; dependency?: string }>();
 // jsdom has no layout projection. Drive Motion's public lifecycle boundary;
 // the identity component still owns the real card DOM and its cleanup.
-vi.mock("motion/react", () => ({ motion: { span: ({ layoutId: _layoutId, layoutDependency: _dependency,
+vi.mock("motion/react", () => ({ motion: { span: ({ layoutId, layoutDependency,
   transition: _transition, onLayoutAnimationStart, onLayoutAnimationComplete, ...props }:
   HTMLAttributes<HTMLSpanElement> & LayoutEvents & { ref?: Ref<HTMLSpanElement>; "data-identity": string;
     layoutId?: string; layoutDependency?: string; transition?: unknown }) => {
   layoutEvents.set(props["data-identity"], { onLayoutAnimationStart, onLayoutAnimationComplete });
+  layoutBindings.set(props["data-identity"], { layoutId, dependency: layoutDependency });
   return createElement("span", props);
 } } }));
 vi.mock("../../lib/launcher", () => ({ desktop: false }));
@@ -40,10 +42,20 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   layoutEvents.clear();
+  layoutBindings.clear();
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 
 describe("return identity card elevation", () => {
+  it.each(["instance", "version-directory"] as const)("passes a stable %s shared layout key and distinct placement dependencies to Motion", kind => {
+    render({ kind, placement: "card" });
+    expect(layoutBindings.get("origin")).toEqual({ layoutId: `${kind}-identity-origin`, dependency: "origin:card" });
+    render({ kind, placement: "detail", returning: false });
+    expect(layoutBindings.get("origin")).toEqual({ layoutId: `${kind}-identity-origin`, dependency: "origin:detail" });
+    render({ kind, placement: "card", tier: "fade" });
+    expect(layoutBindings.get("origin")).toEqual({ layoutId: undefined, dependency: undefined });
+  });
+
   it.each(["instance", "version-directory"] as const)("raises only the returning %s card for its active flight", kind => {
     render({ kind });
     expect(card().hasAttribute("data-identity-flight")).toBe(false);

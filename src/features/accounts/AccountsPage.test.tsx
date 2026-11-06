@@ -235,6 +235,19 @@ describe("accounts and appearance", () => {
     expect(container.textContent).not.toContain("添加角色");
     expect(container.textContent).not.toMatch(/Classic|Slim/);
   });
+  it("names the current zh account while retaining the Players page title", async () => {
+    await render("zh-CN");
+    expect(container.querySelector('.vx-account-choice[aria-current="true"]')?.getAttribute("aria-label"))
+      .toBe("当前账号 CyanFixture");
+    expect(container.querySelector("h1")?.textContent).toBe("角色");
+  });
+  it("names the empty zh account list without confusing accounts and characters", async () => {
+    setAccounts([]);
+    await render("zh-CN");
+    expect(container.querySelector(".vx-account-list .vx-empty h2")?.textContent).toBe("还没有账号");
+    expect(container.querySelector("h1")?.textContent).toBe("角色");
+  });
+
   it("uses automatic login tabs with labelled panels before a device flow", async () => {
     await render(); await click("Add account");
     const microsoft = button("Microsoft"), offline = button("Offline");
@@ -254,6 +267,8 @@ describe("accounts and appearance", () => {
     await act(async () => microsoft.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
     expect(document.activeElement).toBe(offline);
     expect(microsoft.getAttribute("aria-selected")).toBe("true");
+    expect(microsoft.tabIndex).toBe(0);
+    expect(offline.tabIndex).toBe(-1);
     expect(container.textContent).toContain("TEST-CODE");
     expect(commandMock).not.toHaveBeenCalledWith("cancel_auth_login", expect.anything());
     await act(async () => offline.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true })));

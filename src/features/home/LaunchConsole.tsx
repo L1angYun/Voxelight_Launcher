@@ -50,6 +50,15 @@ export function LaunchConsole({
   const ownsFocus = useRef(false);
   const cancelAvailableAt = useRef(Infinity);
   const [cancelReady, setCancelReady] = useState(false);
+  const stopInFlight = useRef(false);
+  const [stopping, setStopping] = useState(false);
+  async function requestStop() {
+    if (stopInFlight.current) return;
+    stopInFlight.current = true;
+    setStopping(true);
+    try { await onStop(); }
+    finally { stopInFlight.current = false; setStopping(false); }
+  }
   useLayoutEffect(() => {
     setCancelReady(false);
     cancelAvailableAt.current = Infinity;
@@ -143,8 +152,8 @@ export function LaunchConsole({
                   {t("home:cancelPreparation")}
                 </Button> : running ? <div className="vx-launch-console__running" role="status">
                   <span>{t("home:running")}</span>
-                  <Button variant="ghost" size="sm" icon={<Square size={15} />} aria-disabled={busy === "game.stop"} data-launch-action="running"
-                    onClick={event => activate(event, busy === "game.stop", onStop)}>{t("home:stop")}</Button>
+                  <Button variant="ghost" size="sm" icon={<Square size={15} />} aria-disabled={busy === "game.stop" || stopping} data-launch-action="running"
+                    onClick={event => activate(event, busy === "game.stop" || stopping, requestStop)}>{t("home:stop")}</Button>
                 </div> : <Button variant="primary" size="lg" aria-disabled={Boolean(busy)} data-launch-primary data-launch-action="idle"
                   icon={<Play size={19} fill="currentColor" />} onClick={event => activate(event, Boolean(busy), onLaunch)}>
                   {t("common:actions.launch")}

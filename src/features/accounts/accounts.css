@@ -1,7 +1,7 @@
 @layer features {
 .vx-account-list, .vx-appearance-panel { min-width: 0; }
 .vx-account-section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; min-height: 44px; margin-bottom: 20px; padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-strong); box-sizing: content-box; }
-.vx-account-section-heading h2 { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-strong); }
+.vx-account-section-heading h2 { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-strong); }
 .vx-account-list__items { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .vx-account-row { position: relative; min-width: 0; padding: 12px 10px; border-radius: var(--radius-sm); border: 1px solid transparent; }
 .vx-account-row[data-selected="true"] { background: var(--selection-fill); border-color: transparent; color: var(--text-primary); font-weight: var(--weight-strong); box-shadow: inset 0 0 0 1px var(--hairline); border-radius: var(--radius-sm); }
@@ -50,6 +50,7 @@
 .vx-default-skins__choices input { margin: 2px 0 0; width: 16px; height: 16px; min-height: 16px; }
 .vx-default-skins__choices strong, .vx-default-skins__choices small { display: block; overflow-wrap: anywhere; }
 .vx-default-skins__choices small { margin-top: 4px; color: var(--text-tertiary); font-size: var(--text-xs); line-height: 1.5; }
+.vx-account-login-tabs { display: flex; inline-size: fit-content; margin-block-end: var(--space-5); }
 .vx-account-login__panel { display: grid; gap: 20px; }
 .vx-account-login__panel > p { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.6; }
 .vx-account-login__panel input { font-size: var(--text-sm); border-radius: var(--radius-sm); }
@@ -64,6 +65,12 @@
 .vx-account-profile-choice { display: block; width: 100%; min-width: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text-primary); text-align: start; font-size: var(--text-sm); line-height: 1.5; }
 .vx-account-profile-choice > span { display: grid; min-width: 0; gap: var(--space-1); overflow-wrap: anywhere; }
 .vx-account-profile-choice:hover:not(:disabled) { background: var(--surface-hover); }
+.vx-account-profile-choice:disabled { color: var(--text-tertiary); }
+/* Match Button's disabled cue; forced colors retain native GrayText at full opacity. */
+@media (forced-colors: none) {
+  .vx-account-profile-choice:disabled { opacity: 0.48; }
+}
+.vx-account-profile-choice:focus-visible { outline-offset: calc(-1 * var(--space-1)); }
 .vx-account-profiles strong, .vx-account-profiles small { display: block; }
 .vx-account-profiles strong { font-weight: var(--weight-strong); }
 .vx-account-profiles small { color: var(--text-tertiary); font-size: var(--text-xs); }

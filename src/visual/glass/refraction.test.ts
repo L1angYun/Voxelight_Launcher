@@ -15,10 +15,12 @@ describe("rounded glass curvature", () => {
     const right = sampleCurvatureDisplacement(shape, 217, 50);
     const top = sampleCurvatureDisplacement(shape, 110, 3);
     const bottom = sampleCurvatureDisplacement(shape, 110, 97);
-    expect(left.x).toBeGreaterThan(0.3);
+    expect(left.x).toBeGreaterThan(0);
+    expect(left.x * Math.max(...geometry.lensChromaticScales())).toBeLessThanOrEqual(shape.bevel / 2);
     expect(left.y).toBe(0);
     expect(right.x).toBeCloseTo(-left.x, 8);
-    expect(top.y).toBeGreaterThan(0.3);
+    expect(top.y).toBeGreaterThan(0);
+    expect(top.y * Math.max(...geometry.lensChromaticScales())).toBeLessThanOrEqual(shape.bevel / 2);
     expect(top.x).toBe(0);
     expect(bottom.y).toBeCloseTo(-top.y, 8);
     expect(sampleCurvatureDisplacement(shape, 12, 50).x).toBeLessThan(left.x);

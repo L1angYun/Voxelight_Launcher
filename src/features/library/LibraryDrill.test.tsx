@@ -13,7 +13,7 @@ import { isolatedStylesheetCss } from "../../test/isolatedStylesheetCss";
 vi.mock("../../lib/launcher", async (original) => ({ ...await original<typeof import("../../lib/launcher")>(), command: vi.fn(), desktop: true }));
 vi.mock("@tauri-apps/api/core", async (original) => ({ ...await original<typeof import("@tauri-apps/api/core")>(), convertFileSrc: (path: string) => `asset://fixture/${path}` }));
 vi.mock("../../app/controller/LauncherProvider", () => ({ useLauncher: () => launcher }));
-vi.mock("../../app/AppearanceProvider", () => ({ useAppearance: () => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }) }));
+vi.mock("../../app/AppearanceProvider", () => ({ useAppearance: () => ({ effects: fullMotion ? "full" : "lite", reducedMotion: !fullMotion, reducedTransparency: false, highContrast: false }) }));
 vi.mock("../../visual/glass/GlassSystem", () => ({ GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => <div className={className}>{children}</div> }));
 vi.mock("../../visual/overture/OvertureProvider", () => ({ useOverture: () => ({ play: vi.fn() }) }));
 
@@ -25,6 +25,7 @@ let root: Root;
 let main: HTMLElement;
 let container: HTMLDivElement;
 let style: HTMLStyleElement;
+let fullMotion = false;
 
 function makeInstance(id: string, name: string): Instance {
   return { id, name, versionId: "1.21.1", gameDirectory: `C:\\Fixtures\\${id}`, createdAt: "2026-11-03T08:00:00Z",
@@ -73,6 +74,7 @@ async function back() { await act(async () => container.querySelector<HTMLButton
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   launcher = fixture();
+  fullMotion = false;
   commandMock.mockReset();
   commandMock.mockImplementation(async (name) => {
     if (["list_local_resources", "list_worlds", "list_screenshots", "list_instance_backups"].includes(name)) return [];
@@ -196,14 +198,49 @@ describe("library drill focus and scroll", () => {
 });
 
 describe("library drill identity continuity", () => {
-  it("keeps the same computed identity color on both ends of the drill", async () => {
+  function identitySnapshot(element: Element) {
+    return {
+      identity: element.getAttribute("data-identity"),
+      kind: element.getAttribute("data-identity-kind"),
+      layoutId: element.getAttribute("data-layout-id"),
+      letter: element.querySelector(".vx-instance-identity__letter")?.textContent ?? null,
+      icon: element.querySelector("img")?.getAttribute("src") ?? null,
+    };
+  }
+
+  it.each([false, true])("preserves the instance identity key, kind and artwork across drill and back (full motion=%s)", async (full) => {
+    fullMotion = full;
     await render();
-    const color = getComputedStyle(card().querySelector(".vx-instance-identity")!).getPropertyValue("--identity-color").trim();
-    expect(color).not.toBe("");
+    const expected = { identity: "first-world", kind: "instance",
+      layoutId: full ? "instance-identity-first-world" : null, letter: "第", icon: null };
+    expect(identitySnapshot(card().querySelector(".vx-instance-identity")!)).toEqual(expected);
     await openCard();
-    const headerColor = getComputedStyle(container.querySelector(".vx-detail-header .vx-instance-identity")!).getPropertyValue("--identity-color").trim();
-    expect(headerColor).not.toBe("");
-    expect(headerColor).toBe(color);
+    expect(identitySnapshot(container.querySelector(".vx-detail-header .vx-instance-identity")!)).toEqual(expected);
+    await back();
+    expect(identitySnapshot(card().querySelector(".vx-instance-identity")!)).toEqual(expected);
+  });
+
+  it("preserves the chosen icon and shared identity key when drilling an icon-backed instance", async () => {
+    fullMotion = true;
+    launcher.data.instances[0].iconPath = "first-world.png";
+    await render();
+    const expected = { identity: "first-world", kind: "instance", layoutId: "instance-identity-first-world",
+      letter: null, icon: "asset://fixture/first-world.png" };
+    expect(identitySnapshot(card().querySelector(".vx-instance-identity")!)).toEqual(expected);
+    await openCard();
+    expect(identitySnapshot(container.querySelector(".vx-detail-header .vx-instance-identity")!)).toEqual(expected);
+    await back();
+    expect(identitySnapshot(card().querySelector(".vx-instance-identity")!)).toEqual(expected);
+  });
+
+  it("keeps version-directory identity separate from instance identity in its detail header", async () => {
+    fullMotion = true;
+    await render(); await click("版本目录");
+    const expected = { identity: "1.21.1", kind: "version-directory", layoutId: "version-directory-identity-1.21.1",
+      letter: "M", icon: null };
+    expect(identitySnapshot(versionCard().querySelector(".vx-instance-identity")!)).toEqual(expected);
+    await act(async () => versionCard().click());
+    expect(identitySnapshot(container.querySelector(".vx-detail-header .vx-instance-identity")!)).toEqual(expected);
   });
 
   it("keeps a failed icon fallback through card-detail-card subtree replacement", async () => {

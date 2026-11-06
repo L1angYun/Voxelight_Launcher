@@ -28,7 +28,7 @@
     "unknown": "账号"
   },
   "actions": {
-    "current": "当前角色 {{name}}",
+    "current": "当前账号 {{name}}",
     "select": "选择 {{name}}",
     "refresh": "刷新 {{name}} 的会话",
     "remove": "移除 {{name}}",
@@ -36,7 +36,7 @@
     "retryDefault": "重试默认角色"
   },
   "empty": {
-    "title": "还没有角色",
+    "title": "还没有账号",
     "description": "添加离线账号，或登录账号以管理线上外观。"
   },
   "microsoft": {

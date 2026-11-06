@@ -5,7 +5,7 @@
   justify-content: center;
   flex-shrink: 0;
   overflow: hidden;
-  border-radius: var(--radius-8);
+  border-radius: var(--radius-sm);
   background: var(--surface-solid);
   color: var(--text-secondary);
 }

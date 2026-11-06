@@ -92,25 +92,96 @@ function transitions(image, row) {
   return result;
 }
 
-function matchOffsets(reference, actual) {
+function matchOffsets(reference, actual, pairingRadius = 12) {
   return reference.map((edge) => {
-    const match = actual.filter((other) => other.direction === edge.direction && Math.abs(other.x - edge.x) < 12)
+    const match = actual.filter((other) => other.direction === edge.direction && Math.abs(other.x - edge.x) < pairingRadius)
       .sort((a, b) => Math.abs(a.x - edge.x) - Math.abs(b.x - edge.x))[0];
     return match ? { x: edge.x, offset: match.x - edge.x } : null;
   }).filter(Boolean);
+}
+
+/** Intersect the rounded SDF's flat core (distance <= -profileWidth) with a PNG row. */
+export function flatGlassScanline(geometry, clip, row) {
+  const { left, top, width, height, radius, inset, profileWidth } = geometry;
+  const localY = clip.y + row + .5 - top;
+  const inner = inset + profileWidth;
+  if (localY < inner || localY > height - inner || width <= 2 * inner) return null;
+  const flatRadius = Math.max(0, radius - profileWidth);
+  const cornerY = Math.max(0, Math.abs(localY - height / 2) - (height / 2 - inner - flatRadius));
+  const roundInset = flatRadius - Math.sqrt(Math.max(0, flatRadius ** 2 - cornerY ** 2));
+  const localLeft = inner + roundInset, localRight = width - localLeft;
+  // Transition coordinates interpolate between integer pixel-center indices.
+  const offset = left - clip.x - .5;
+  return { row, localY, localLeft, localRight, pngLeft: localLeft + offset, pngRight: localRight + offset };
+}
+
+export function measureGlassLiveShift(offsets, flatRegion) {
+  const liveOffsets = [], bevelOffsets = [];
+  const inFlatRegion = x => flatRegion !== null && x >= flatRegion.pngLeft && x <= flatRegion.pngRight;
+  for (const edge of offsets) {
+    (inFlatRegion(edge.x) && inFlatRegion(edge.x + edge.offset) ? liveOffsets : bevelOffsets).push(edge);
+  }
+  const liveShift = liveOffsets.length ? liveOffsets.reduce((sum, edge) => sum + edge.offset, 0) / liveOffsets.length : null;
+  return { liveOffsets, bevelOffsets, liveShift,
+    liveShiftPass: liveOffsets.length > 0 && liveOffsets.every(({ offset }) => offset >= 6 && offset <= 8) };
 }
 
 export async function probeGlassRefraction(page, outputDirectory, selector = ".vx-floating-nav__indicator") {
   await mkdir(outputDirectory, { recursive: true });
   const target = page.locator(selector).first();
   await target.waitFor({ state: "visible" });
-  const initial = await target.evaluate((element) => {
+  const initial = await target.evaluate(async (element) => {
+    const { lensBoundaryPath, lensChromaticScales } = await import("/src/visual/glass/geometry.ts");
     // The pattern is behind the entire chrome, outside every slider ancestor.
     // Inserting it inside indicator-slot would bypass a broken Backdrop Root.
     const parent = document.querySelector(".vx-app-body");
     if (!parent) throw new Error("Missing real global backdrop host");
     const box = element.getBoundingClientRect(), parentBox = parent.getBoundingClientRect();
     const computed = getComputedStyle(element);
+    const image = element.querySelector("feImage[data-vx-curvature]");
+    const contour = element.querySelector("[data-vx-contour]");
+    if (!image || !contour) throw new Error("The stripe probe requires the live displacement image and contour");
+    const width = Number(image.getAttribute("width")), height = Number(image.getAttribute("height"));
+    const radius = Number.parseFloat(computed.borderTopLeftRadius);
+    const bevel = Number.parseFloat(computed.getPropertyValue("--vx-lens-edge-width"));
+    const refraction = Number.parseFloat(computed.getPropertyValue("--vx-lens-refraction"));
+    const dispersion = Number.parseFloat(computed.getPropertyValue("--vx-lens-dispersion"));
+    const inset = contour.getBBox().x;
+    const scales = [...element.querySelectorAll("feDisplacementMap")];
+    const restingScales = lensChromaticScales(0, 0, refraction, dispersion);
+    const restingShape = { width, height, radius, inset, bevel, refraction, dispersion };
+    let translationOnly = true;
+    for (let node = element; node; node = node.parentElement) {
+      const transform = getComputedStyle(node).transform;
+      if (transform === "none") continue;
+      const m = new DOMMatrixReadOnly(transform);
+      translationOnly &&= [m.m11 - 1, m.m22 - 1, m.m33 - 1, m.m44 - 1, m.m12, m.m13, m.m14,
+        m.m21, m.m23, m.m24, m.m31, m.m32, m.m34].every(value => Math.abs(value) < 1e-6);
+    }
+    // feImage uses userSpaceOnUse and the rounded layout dimensions. An
+    // English label can give the DOM a fractional width without scaling that
+    // geometry. Use the actual DOM bounds for capture and CSS pixels for SDF.
+    if (!translationOnly || element.offsetWidth !== width || element.offsetHeight !== height
+      || !Object.values(restingShape).every(Number.isFinite) || width <= 0 || height <= 0 || bevel <= 0 || inset < 0
+      || contour.getAttribute("d") !== lensBoundaryPath(restingShape)
+      || scales.length !== restingScales.length || scales.some((node, index) =>
+        Math.abs(Number(node.getAttribute("scale")) - restingScales[index]) > .000501)) {
+      throw new Error(`The stripe probe requires settled geometry: ${JSON.stringify({ box: box.toJSON(), restingShape, translationOnly })}`);
+    }
+    const left = box.left + window.scrollX, top = box.top + window.scrollY;
+    const effectiveRadius = Math.min(radius, width / 2 - inset, height / 2 - inset);
+    const effectiveBevel = Math.min(bevel, .44 * (width - 2 * inset), .44 * (height - 2 * inset));
+    const preserved = .48 * Math.max(...restingScales, ...restingScales.map(scale => Number(scale.toFixed(3)))) <= .5 * effectiveBevel;
+    const geometry = { left, top, width, height, inset, radius: effectiveRadius, effectiveBevel,
+      profileWidth: preserved ? effectiveBevel : Math.min(effectiveBevel, effectiveRadius) };
+    const x = Math.floor(left), y = Math.floor(top);
+    const crop = { x, y, width: Math.ceil(box.right + window.scrollX) - x, height: Math.ceil(box.bottom + window.scrollY) - y };
+    const snapshot = () => {
+      const b = element.getBoundingClientRect();
+      return JSON.stringify([b.left + window.scrollX, b.top + window.scrollY, b.width, b.height,
+        element.dataset.lensOpticsEpoch, image.getAttribute("href"), element.style.clipPath,
+        scales.map(node => node.getAttribute("scale"))]);
+    };
     const layer = document.createElement("div");
     layer.dataset.vxProbeStripes = "true";
     Object.assign(layer.style, {
@@ -128,6 +199,7 @@ export async function probeGlassRefraction(page, outputDirectory, selector = ".v
     window.__vxGlassPixelProbe = {
       element, parent, layer, style, elementStyle: element.style.cssText,
       parentStyle: parent.style.cssText, filter: computed.backdropFilter,
+      snapshot, initialSnapshot: snapshot(),
     };
     document.head.append(style);
     if (getComputedStyle(parent).position === "static") parent.style.position = "relative";
@@ -141,12 +213,20 @@ export async function probeGlassRefraction(page, outputDirectory, selector = ".v
     }
     return { width: box.width, height: box.height, radius: Number.parseFloat(computed.borderTopLeftRadius),
       filter: computed.backdropFilter, backgroundColor: computed.backgroundColor, backgroundImage: computed.backgroundImage,
-      sourceParentClass: parent.className, ancestorBackdropFilters };
+      sourceParentClass: parent.className, ancestorBackdropFilters, geometry, crop };
   });
   const settle = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const capture = async (name) => {
     await settle();
-    return decodePng(await target.screenshot({ path: join(outputDirectory, `${name}.png`), scale: "css" }));
+    const stable = () => page.evaluate(() => {
+      const s = window.__vxGlassPixelProbe;
+      return s.snapshot() === s.initialSnapshot;
+    });
+    if (!await stable()) throw new Error(`Lens geometry or map changed before ${name}`);
+    const image = decodePng(await page.screenshot({ clip: initial.crop, path: join(outputDirectory, `${name}.png`), scale: "css" }));
+    if (image.width !== initial.crop.width || image.height !== initial.crop.height || !await stable())
+      throw new Error(`Lens geometry, map, or PNG coordinate grid changed during ${name}`);
+    return image;
   };
   try {
     const full = await capture("stripes-full");
@@ -181,11 +261,15 @@ export async function probeGlassRefraction(page, outputDirectory, selector = ".v
       rows.push({ y, edges: matchOffsets(transitions(plain, y), transitions(full, y))
         .filter((edge) => edge.x < 32 || edge.x > full.width - 32) });
     }
-    const liveOffsets = matchOffsets(transitions(full, middle), transitions(moved, middle))
-      .filter((edge) => edge.x > safeMargin && edge.x < full.width - safeMargin);
+    const liveFlatRegion = flatGlassScanline(initial.geometry, initial.crop, middle);
+    const beforeEdges = transitions(full, middle);
+    // Same-polarity stripe boundaries repeat every 32px. Half that period
+    // identifies a correspondence without using the 6–8px acceptance band.
+    const paired = matchOffsets(beforeEdges, transitions(moved, middle), 16);
+    const unmatchedLiveEdges = beforeEdges.filter(edge => !paired.some(pair => pair.x === edge.x));
+    const live = measureGlassLiveShift(paired, liveFlatRegion);
     const maxEdgeShift = Math.max(0, ...rows.flatMap((row) => row.edges.map((edge) => Math.abs(edge.offset))));
     const maxCenterShift = Math.max(0, ...centerOffsets.map((edge) => Math.abs(edge.offset)));
-    const liveShift = liveOffsets.reduce((sum, edge) => sum + edge.offset, 0) / Math.max(1, liveOffsets.length);
     let maxUniformDelta = 0;
     for (let y = Math.floor(full.height * 0.4); y < full.height * 0.6; y++) {
       for (let x = Math.floor(full.width * 0.3); x < full.width * 0.7; x++) {
@@ -200,8 +284,8 @@ export async function probeGlassRefraction(page, outputDirectory, selector = ".v
       diff[at + 3] = 255;
     }
     await writeFile(join(outputDirectory, "stripes-difference-4x.png"), encodePng({ ...full, pixels: diff }));
-    const report = { initial, maxEdgeShift, maxCenterShift, liveShift, maxUniformDelta, rows, centerOffsets, liveOffsets,
-      pass: maxEdgeShift >= 2 && maxCenterShift <= 1 && Math.abs(liveShift - 7) <= 1 && maxUniformDelta <= 1 };
+    const report = { initial, maxEdgeShift, maxCenterShift, maxUniformDelta, rows, centerOffsets, liveFlatRegion, unmatchedLiveEdges, ...live,
+      pass: maxEdgeShift >= 2 && maxCenterShift <= 1 && live.liveShiftPass && maxUniformDelta <= 1 };
     await writeFile(join(outputDirectory, "glass-pixel-report.json"), `${JSON.stringify(report, null, 2)}\n`);
     return report;
   } finally {
