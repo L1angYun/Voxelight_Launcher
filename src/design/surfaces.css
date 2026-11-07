@@ -22,7 +22,7 @@
 .vx-button.vx-button--icon .vx-button__label { position: absolute; }
 .vx-log-view, .vx-detail-section pre, .vx-managed-log { user-select: text; }
 .vx-toast-host { position: fixed; z-index: 100; right: var(--space-5); bottom: var(--space-5); max-width: calc(100vw - 48px); pointer-events: none; }
-.vx-toast-host .vx-toast { pointer-events: auto; background: color-mix(in srgb, var(--surface-solid) 82%, transparent); backdrop-filter: blur(12px); }
+.vx-toast-host .vx-toast { pointer-events: auto; }
 .vx-toast--error { border-color: var(--hairline); }
 .vx-toast--error > span { color: var(--danger); }
 .vx-dialog { opacity: 0; transform: translateY(var(--overlay-offset)) scale(var(--overlay-scale)); transition: opacity var(--duration-exit) var(--ease-exit), transform var(--duration-exit) var(--ease-exit), display var(--duration-exit) allow-discrete, overlay var(--duration-exit) allow-discrete; }
@@ -94,4 +94,10 @@
 [data-reduced-motion="true"] .vx-dialog, [data-high-contrast="true"] .vx-dialog { transition-duration: 0s; transform: none; }
 [data-reduced-motion="true"] .vx-dialog::backdrop, [data-high-contrast="true"] .vx-dialog::backdrop { transition-duration: 0s; }
 [data-reduced-transparency="true"] .vx-panel, [data-high-contrast="true"] .vx-panel, [data-reduced-transparency="true"] .vx-toast-host .vx-toast, [data-high-contrast="true"] .vx-toast-host .vx-toast { background: var(--surface-solid); backdrop-filter: none; }
+[data-reduced-transparency="true"] .vx-dialog::backdrop,
+[data-high-contrast="true"] .vx-dialog::backdrop { background: var(--scrim-strong); backdrop-filter: none; }
+[data-effects="lite"] .vx-dialog::backdrop { backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) {
+  .vx-dialog::backdrop { background: var(--scrim-strong); backdrop-filter: none; }
+}
 }

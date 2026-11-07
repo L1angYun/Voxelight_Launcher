@@ -170,7 +170,7 @@ for (const theme of ["dark", "light"] as const) {
     await expect(page.locator(".vx-settings-content")).toHaveCSS("opacity", "1");
     const field = page.locator(".vx-settings-content .vx-select__button").first();
     await field.click();
-    const flatMenu = page.locator(".vx-listbox-surface.vx-select-flat-surface");
+    const flatMenu = page.locator(".vx-listbox-popover:not(.vx-instance-picker__popover) > .vx-listbox-surface.vx-glass-surface");
     await expect(flatMenu).toHaveCSS("opacity", "1");
     await inspect("flat menu option", flatMenu.locator('[role="option"][aria-selected="true"]'));
     await page.keyboard.press("Escape");

@@ -9,7 +9,7 @@
   --surface-solid: #242527;
   --selection-fill: #26282c;
   --accent-indicator: var(--accent);
-  --surface-panel: color-mix(in srgb, var(--world-ink) 86%, transparent);
+  --surface-panel: color-mix(in srgb, var(--world-ink) 86%, var(--bg-base));
   --surface-card: #0d0f14;
   --hairline: rgba(237, 232, 223, .12);
   --rail-w: 248px;
@@ -89,7 +89,7 @@
   --bg-raised: #eae7e0;
   --bg-overlay: rgba(243, 241, 235, 0.9);
   --surface-solid: #faf9f5;
-  --surface-panel: color-mix(in srgb, #faf9f5 94%, transparent);
+  --surface-panel: color-mix(in srgb, #faf9f5 94%, var(--bg-base));
   --selection-fill: color-mix(in srgb, var(--text-primary) 8%, var(--surface-panel));
   --surface-card: #ffffff;
   --hairline: rgba(50, 45, 36, .14);

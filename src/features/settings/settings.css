@@ -20,7 +20,7 @@
 .vx-settings-group {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0;
   padding: 22px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--surface-solid) 48%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 48%, var(--surface-panel));
 }
 .vx-settings-group h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-lg); font-weight: var(--weight-strong); }
 .vx-settings-group > p { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.6; }

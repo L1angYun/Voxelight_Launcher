@@ -29,7 +29,7 @@
 .vx-select__option[data-has-icon="true"] { grid-template-columns: 18px minmax(0,1fr) 16px; min-height: 60px; }
 .vx-select__option > svg { color: var(--text-secondary); }
 .vx-select__option[data-active="true"] { background: var(--surface-hover); }
-.vx-select__option[aria-selected="true"] { background: var(--selection-fill); }
+.vx-select__option[aria-selected="true"] { background: var(--selection-fill); font-weight: var(--weight-strong); }
 .vx-select__option[aria-selected="true"] > [data-selected-mark] { color: var(--accent-ink, var(--accent)); }
 .vx-select__option[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .vx-select__option[data-version-directory] { margin-top: 4px; }
@@ -37,9 +37,6 @@
 .vx-select--flat .vx-select__surface { transform: none; border-radius: var(--radius-sm); background: var(--bg-raised); border-color: var(--border-strong); }
 .vx-select--flat .vx-select__button { min-height: 38px; padding: 8px 12px; font-size: var(--text-sm); }
 .vx-select--flat .vx-select__value { font-size: var(--text-sm); font-weight: var(--weight-regular); }
-.vx-listbox-surface.vx-select-flat-surface { padding: 6px; border-radius: var(--radius-md); box-shadow: var(--shadow-raised); }
-.vx-select-flat-surface .vx-select__option { border-radius: var(--radius-sm); }
-.vx-select-flat-surface .vx-select__option[aria-selected="true"] { background: var(--selection-fill); font-weight: var(--weight-strong); }
 }
 @layer overrides {
 @media (forced-colors: active) {

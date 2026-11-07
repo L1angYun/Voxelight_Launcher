@@ -152,16 +152,33 @@
     background: var(--surface-hover);
     color: var(--text-primary);
   }
-  .vx-detail-manage__menu {
-    position: absolute;
-    top: calc(100% + 7px);
-    right: 0;
-    z-index: 8;
-    min-width: 168px;
+  .vx-detail-manage__popover {
+    inset: auto;
+    z-index: 60;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    overflow: visible;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+  }
+  .vx-detail-manage__popover::backdrop { background: transparent; pointer-events: none; }
+  .vx-detail-manage__menu.vx-glass-surface {
+    width: 100%;
+    max-height: inherit;
+    overflow-y: auto;
     padding: var(--space-1);
-    border-radius: var(--radius-sm);
-    background: var(--surface-solid);
-    box-shadow: var(--shadow-raised);
+    border-radius: var(--vx-lens-radius-menu, 20px);
+    opacity: 1;
+    transition: opacity var(--menu-enter, 0s) var(--ease-out);
+  }
+  .vx-detail-manage__popover[data-open="false"] > .vx-detail-manage__menu {
+    opacity: 0;
+    transition-duration: var(--menu-exit, 0s);
+  }
+  @starting-style {
+    .vx-detail-manage__popover[data-open="true"] > .vx-detail-manage__menu { opacity: 0; }
   }
   .vx-detail-manage__menu button {
     width: 100%;
@@ -209,7 +226,7 @@
     min-width: 0;
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface-solid) 24%, transparent);
+    background: color-mix(in srgb, var(--surface-solid) 24%, var(--surface-panel));
   }
   .vx-resource-list { display: grid; }
   .vx-screenshot {
@@ -221,7 +238,7 @@
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     text-align: left;
-    background: color-mix(in srgb, var(--surface-solid) 24%, transparent);
+    background: color-mix(in srgb, var(--surface-solid) 24%, var(--surface-panel));
   }
   .vx-log-view {
     font: var(--weight-regular) var(--text-xs)/1.65 var(--font-mono);
@@ -282,21 +299,6 @@
     min-height: 42px;
     padding: var(--space-3) var(--space-3);
   }
-  .vx-detail-manage::details-content {
-    opacity: 0;
-    transition: opacity var(--menu-exit, 0s) var(--ease-out), content-visibility var(--menu-exit, 0s) allow-discrete;
-  }
-  .vx-detail-manage[open]::details-content {
-    opacity: 1;
-    transition-duration: var(--menu-enter, 0s);
-  }
-  @starting-style  {
-    .vx-detail-manage[open]::details-content { opacity: 0; }
-  }
-  .vx-detail-manage .vx-detail-manage__menu {
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-  }
   @media (max-width: 1179px) {
     .vx-detail-workspace { padding: var(--space-5); }
   }
@@ -317,6 +319,6 @@
     background: var(--surface-solid);
   }
   @media (prefers-reduced-motion: reduce) {
-    .vx-detail-manage::details-content { transition-duration: 0s; }
+    .vx-detail-manage__menu.vx-glass-surface { transition-duration: 0s; }
   }
 }

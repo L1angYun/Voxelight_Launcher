@@ -5,7 +5,7 @@ import { createCurvatureMap, lensBoundaryPath, lensChromaticScales, sampleCurvat
 import baseline from "./__fixtures__/curvature-before-r6.json";
 
 describe("S4 size-bounded source sampling", () => {
-  for (const [width, height, radius] of [[68, 44, 22], [40, 32, 16], [96, 40, 20]]) {
+  for (const [width, height, radius] of [[68, 44, 22], [40, 32, 16], [96, 40, 20], [168, 44, 20], [280, 200, 20]]) {
     it(`${width}x${height}: the actual encoded top-bevel mapping has derivative at least one half`, () => {
       const shape = { width, height, radius, bevel: 20, inset: 3, refraction: .9, dispersion: .65 };
       const bevel = Math.min(20, (width - 6) * .44, (height - 6) * .44);

@@ -198,7 +198,7 @@ test("review D1: native dialog and backdrop retain actual intermediate exit fram
   expect(frames.at(-1)!.backdropCurve).toContain(expectedCurve);
 });
 
-type MaterialPreference = "reduced-transparency" | "contrast-more" | "forced-colors";
+type MaterialPreference = "default" | "lite" | "reduced-transparency" | "contrast-more" | "forced-colors";
 
 async function toastMaterial(page: Page) {
   return page.locator(".vx-toast").evaluate(element => {
@@ -236,7 +236,7 @@ async function toastMaterial(page: Page) {
 
 function assertToastMaterial(value: Awaited<ReturnType<typeof toastMaterial>>, theme: "dark" | "light", mode: MaterialPreference) {
   expect(value.theme).toBe(theme);
-  expect(value.effects).toBe("full");
+  expect(value.effects).toBe(mode === "lite" ? "lite" : "full");
   expect(value.dpr).toBe(1);
   expect(value.renderer).toMatch(/D3D11|Direct3D11/);
   expect(value.renderer).not.toMatch(/swiftshader|llvmpipe|software|basic render/i);
@@ -244,7 +244,7 @@ function assertToastMaterial(value: Awaited<ReturnType<typeof toastMaterial>>, t
   expect(value.reducedMotion, "motion reduction is not the material preference under test").toBe("false");
   expect(value.media.reducedMotion).toBe(false);
   expect(value.reducedTransparency).toBe(String(mode === "reduced-transparency"));
-  expect(value.highContrast).toBe(String(mode !== "reduced-transparency"));
+  expect(value.highContrast).toBe(String(mode === "contrast-more" || mode === "forced-colors"));
   expect(value.media.reducedTransparency).toBe(mode === "reduced-transparency");
   expect(value.media.contrastMore).toBe(mode === "contrast-more");
   expect(value.media.forcedColors).toBe(mode === "forced-colors");
@@ -257,7 +257,7 @@ function assertToastMaterial(value: Awaited<ReturnType<typeof toastMaterial>>, t
 }
 
 for (const theme of ["dark", "light"] as const) {
-  for (const mode of ["reduced-transparency", "contrast-more", "forced-colors"] as const) {
+  for (const mode of ["default", "lite", "reduced-transparency", "contrast-more", "forced-colors"] as const) {
     test(`Toast material ${theme}/${mode}: root and modal notifications stay opaque without backdrop blur`, async ({ page }, info) => {
       await page.emulateMedia({ reducedMotion: "no-preference", contrast: mode === "contrast-more" ? "more" : "no-preference",
         forcedColors: mode === "forced-colors" ? "active" : "none" });
@@ -271,10 +271,12 @@ for (const theme of ["dark", "light"] as const) {
           { name: "prefers-contrast", value: "no-preference" },
           { name: "forced-colors", value: "none" },
         ] });
-        await page.goto(`/tests/e2e/harness/toast-review.html?theme=${theme}`);
+        await page.goto(`/tests/e2e/harness/toast-review.html?theme=${theme}&effects=${mode === "lite" ? "lite" : "full"}`);
         await expect(page.locator("#notify-short")).toBeVisible();
         await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-        await expect(page.locator("html")).toHaveAttribute(mode === "reduced-transparency" ? "data-reduced-transparency" : "data-high-contrast", "true");
+        await expect(page.locator("html")).toHaveAttribute("data-effects", mode === "lite" ? "lite" : "full");
+        await expect(page.locator("html")).toHaveAttribute("data-reduced-transparency", String(mode === "reduced-transparency"));
+        await expect(page.locator("html")).toHaveAttribute("data-high-contrast", String(mode === "contrast-more" || mode === "forced-colors"));
         await page.locator("#notify-short").click();
         await expect(page.locator(".vx-toast")).toHaveCSS("opacity", "1");
         const root = await toastMaterial(page);
