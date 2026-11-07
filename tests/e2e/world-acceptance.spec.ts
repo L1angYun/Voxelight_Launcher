@@ -12,8 +12,9 @@ import { worldAppearanceMetrics } from "./helpers/world-appearance";
 import { captureAppearanceSeries } from "./helpers/world-appearance-capture";
 import { loadAppearanceBudget as appearanceBudget } from "./helpers/world-appearance-budget";
 import { installWorldUniformProbe } from "./helpers/world-uniform-probe";
+import { evidenceDirectory } from "./helpers/evidence-directory";
 
-const evidence = resolve(process.env.VOXELIGHT_TASK8_EVIDENCE ?? "test-results/world-acceptance");
+const evidence = evidenceDirectory("world-acceptance");
 
 const appearanceTest = test.extend({
   context: async ({ baseURL }, use) => {

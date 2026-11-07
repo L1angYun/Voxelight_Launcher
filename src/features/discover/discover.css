@@ -8,6 +8,18 @@
 .vx-discover-context dt { color: var(--text-secondary); }
 .vx-discover-context dd { margin: 0; overflow-wrap: anywhere; text-align: right; font-variant-numeric: tabular-nums; }
 .vx-discover-destination > .vx-button { margin-top: 16px; width: 100%; }
+.vx-dialog.vx-install-target { width: min(680px, calc(100vw - 48px)); }
+.vx-install-target__section + .vx-install-target__section { margin-top: var(--space-5); }
+.vx-install-target__section h3, .vx-install-target__section summary { margin: 0 0 var(--space-3); font-size: var(--text-lg); font-weight: var(--weight-strong); }
+.vx-install-target__section summary { cursor: pointer; }
+.vx-install-target__rows { display: grid; gap: var(--space-2); }
+.vx-install-target__row { display: grid; gap: var(--space-1); width: 100%; padding: var(--space-4); text-align: start; background: var(--bg-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-primary); }
+.vx-install-target__row[aria-checked="true"] { border-color: var(--accent-indicator); background: var(--selection-fill); }
+.vx-install-target__row[aria-disabled="true"] { color: var(--text-secondary); }
+.vx-install-target__row strong { font-size: var(--text-xl); overflow-wrap: anywhere; }
+.vx-install-target__row span, .vx-install-target__row small { font-size: var(--text-xs); overflow-wrap: anywhere; }
+.vx-install-target__create { display: grid; gap: var(--space-4); margin-top: var(--space-4); }
+.vx-install-target__summary, .vx-install-target__warning { margin: var(--space-3) 0 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.6; overflow-wrap: anywhere; }
 .vx-discover-source { display: grid; gap: 8px; padding-inline: 12px; font-size: var(--text-xs); color: var(--text-secondary); }
 .vx-discover-types { display: flex; flex-direction: column; align-items: stretch; }
 .vx-discover-types > button { min-height: 44px; padding: 12px 16px; }

@@ -539,6 +539,18 @@ pub(super) fn recover(directory: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub(super) async fn preflight(
+    state: &LauncherState,
+    api: &reqwest::Client,
+    selected: Version,
+    minecraft: &str,
+    loader: Option<&str>,
+    kind: ResourceKind,
+) -> Result<(), String> {
+    resolve_plan(state, api, selected, true, &[], minecraft, loader, kind).await?;
+    Ok(())
+}
+
 pub(super) async fn install(
     state: &Arc<LauncherState>,
     directory: &Path,
@@ -548,7 +560,11 @@ pub(super) async fn install(
     selected: Version,
     kind: ResourceKind,
     enabled: bool,
+    progress: Option<&ResourceProgress>,
 ) -> Result<ResourceInstall, String> {
+    if let Some(progress) = progress {
+        progress.stage(state, "resource-plan", "检查资源及必需前置");
+    }
     recover(directory)?;
     let api = client(false)?;
     let locals = scan(state, &api, directory, kind).await?;
@@ -629,7 +645,8 @@ pub(super) async fn install(
             )?;
             fs::rename(&raw, alternate).map_err(|e| e.to_string())?;
         }
-        let installed = download_verified(state, file, &next, kind).await?;
+        let installed =
+            download_verified_progress(state, file, &next, kind, client(true)?, progress).await?;
         if action.destination != file.filename {
             let target = safe_join(&next, &action.destination)?;
             if target.exists() {
@@ -658,6 +675,9 @@ pub(super) async fn install(
     };
     let path = journal_path(&root, &id)?;
     save_journal(&path, &journal)?;
+    if let Some(progress) = progress {
+        progress.stage(state, "resource-commit", "提交已校验资源及必需前置");
+    }
     commit_using(directory, &transaction, &path, &mut journal, |from, to| {
         fs::rename(from, to)
     })?;
@@ -779,6 +799,7 @@ pub(super) async fn update_one(
         new,
         kind,
         current.enabled,
+        None,
     )
     .await
 }

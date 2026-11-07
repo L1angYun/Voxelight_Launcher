@@ -174,10 +174,15 @@ pub fn create_instance(
     name: String,
     version_id: String,
 ) -> Result<Instance, String> {
-    let name = name.trim().to_owned();
-    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
-        return Err("实例名需要为 1–80 个可显示字符".into());
-    }
+    create_instance_inner(&state, name, version_id)
+}
+
+pub(crate) fn create_instance_inner(
+    state: &LauncherState,
+    name: String,
+    version_id: String,
+) -> Result<Instance, String> {
+    let name = validate_instance_name(&name)?;
     validate_id(&version_id)?;
     let config = state.snapshot()?.config;
     let (loader, loader_version) = installed_loader(&config, &version_id);
@@ -203,6 +208,14 @@ pub fn create_instance(
         data.instances.push(instance.clone());
         Ok(instance)
     })
+}
+
+pub(crate) fn validate_instance_name(name: &str) -> Result<String, String> {
+    let name = name.trim().to_owned();
+    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+        return Err("实例名需要为 1–80 个可显示字符".into());
+    }
+    Ok(name)
 }
 
 #[tauri::command]
@@ -457,6 +470,56 @@ mod tests {
         assert!(validate_visual_preferences(&config).is_err());
         config.language = "en-US".into();
         assert!(validate_visual_preferences(&config).is_ok());
+    }
+
+    #[test]
+    fn create_instance_inner_validates_name_and_records_loader() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/command-tests");
+        let root = parent.join(uuid::Uuid::new_v4().to_string());
+        for (id, metadata) in [
+            (
+                "fabric-test",
+                json!({"inheritsFrom":"1.21.1","launcherMetadata":{"loader":"fabric","loaderVersion":"0.16.9"}}),
+            ),
+            ("1.21.1", json!({"id":"1.21.1"})),
+        ] {
+            let directory = root.join("versions").join(id);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+        }
+        let state = LauncherState {
+            data: std::sync::Mutex::new(Persisted {
+                config: Config {
+                    game_directory: root.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            data_dir: root.clone(),
+            client: crate::storage::test_client(),
+            operation: tokio::sync::Mutex::new(()),
+            control: Default::default(),
+            games: Default::default(),
+        };
+        for name in [
+            String::new(),
+            " ".into(),
+            "x".repeat(81),
+            "bad\u{0}name".into(),
+        ] {
+            assert!(create_instance_inner(&state, name, "fabric-test".into()).is_err());
+        }
+        assert!(state.snapshot().unwrap().instances.is_empty());
+        let instance =
+            create_instance_inner(&state, "  Fabric API  ".into(), "fabric-test".into()).unwrap();
+        assert_eq!(instance.name, "Fabric API");
+        assert_eq!(instance.category, "normal");
+        assert_eq!(instance.loader, "fabric");
+        assert_eq!(instance.loader_version, "0.16.9");
+        assert_eq!(instance.version_id, "fabric-test");
+        assert_eq!(state.snapshot().unwrap().instances.len(), 1);
+        assert!(root.starts_with(parent));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

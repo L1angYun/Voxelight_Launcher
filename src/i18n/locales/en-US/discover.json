@@ -31,8 +31,41 @@
     "unknown": "Unknown relationship"
   },
   "external": "Open project page",
+  "installTarget": {
+    "newInstance": "New instance",
+    "title": "Choose install location · {{title}}",
+    "compatible": "Compatible locations",
+    "incompatible": "Incompatible ({{count}})",
+    "installInto": "Install into {{name}}",
+    "createAndInstall": "Create and install",
+    "gameVersion": "Game version",
+    "loaderVersion": "Loader version",
+    "name": "Instance name",
+    "recommended": "Recommended",
+    "summary": "Install {{loader}} {{loaderVersion}} and Minecraft {{gameVersion}}, then {{title}} and its required dependencies.",
+    "noLoaderVersions": "No loader versions are available for this game version. Choose another game version.",
+    "shaderWarning": "Shaders need a compatible rendering loader such as Iris or OptiFine. Install it separately; Iris will not be installed automatically.",
+    "creating": "Creating the instance and installing the resource…",
+    "downloads": "View in Downloads",
+    "cancel": "Cancel installation",
+    "waitForTask": "The installation task has not started yet. Try cancelling again shortly.",
+    "curseforge": "Create a compatible instance, then select it to install this CurseForge project.",
+    "reason": {
+      "vanilla": "Vanilla cannot load mods",
+      "loaderMismatch": "Incompatible loader",
+      "gameVersionMismatch": "Incompatible game version",
+      "running": "Instance is running",
+      "metadataMissing": "Version information is unavailable"
+    },
+    "unsupported": {
+      "datapack": "Datapacks belong in a world's datapacks folder and are not supported yet",
+      "noSupportedLoader": "This project has no Fabric, NeoForge, Forge, or Quilt versions",
+      "noVersions": "No downloadable versions"
+    }
+  },
   "notice": {
     "resourceInstalled": "Resource installed.",
-    "instanceInstalled": "Instance installed."
+    "instanceInstalled": "Instance installed.",
+    "resourceInstalledNew": "Resource installed into the new instance."
   }
 }

@@ -3,7 +3,7 @@
 use crate::{
     errors::{expected, AppResult},
     models::{ResourceDependency, ResourceProject, ResourceProjectDetails, ResourceVersion},
-    resources::{resource_directory, version_context, ResourceInstall, ResourceKind},
+    resources::{ResourceInstall, ResourceKind},
     storage::{safe_join, validate_id, LauncherState},
 };
 use futures_util::StreamExt;
@@ -62,13 +62,8 @@ fn curseforge_details(
     let mut seen = std::collections::HashSet::new();
     let versions = files
         .into_iter()
-        .filter(|file| {
-            file.is_available
-                && file
-                    .game_versions
-                    .iter()
-                    .any(|version| version == minecraft)
-        })
+        .filter(|file| file.is_available)
+        .take(30)
         .map(|file| {
             for dependency in &file.dependencies {
                 let kind = match dependency.relation_type {
@@ -86,14 +81,27 @@ fn curseforge_details(
                     });
                 }
             }
+            let compatible =
+                !minecraft.is_empty() && file.game_versions.iter().any(|game| game == minecraft);
+            let loaders = file
+                .game_versions
+                .iter()
+                .filter_map(|tag| match tag.to_ascii_lowercase().as_str() {
+                    "fabric" => Some("fabric".into()),
+                    "quilt" => Some("quilt".into()),
+                    "forge" => Some("forge".into()),
+                    "neoforge" => Some("neoforge".into()),
+                    _ => None,
+                })
+                .collect();
             ResourceVersion {
                 id: file.id.to_string(),
                 name: file.file_name.clone(),
                 version_number: file.file_name,
                 date_published: file.file_date,
                 game_versions: file.game_versions,
-                loaders: Vec::new(),
-                compatible: true,
+                loaders,
+                compatible,
             }
         })
         .collect();
@@ -134,7 +142,7 @@ fn curseforge_details(
 pub async fn get_curseforge_project_details(
     state: State<'_, Arc<LauncherState>>,
     project_id: String,
-    version_id: String,
+    version_id: Option<String>,
     instance_id: Option<String>,
     resource_type: String,
 ) -> AppResult<ResourceProjectDetails> {
@@ -144,23 +152,47 @@ pub async fn get_curseforge_project_details(
         ResourceKind::parse(&resource_type).map_err(expected)?
     };
     let id = crate::curseforge::project_id(&project_id).map_err(expected)?;
-    let target =
-        crate::resources::resource_game_context(&state, &version_id, instance_id.as_deref(), kind)
-            .map_err(expected)?;
+    let target = version_id
+        .as_deref()
+        .filter(|version| !version.is_empty())
+        .and_then(|version| {
+            crate::resources::resource_context(&state, version, instance_id.as_deref()).ok()
+        });
     let key = service_key(&state).map_err(expected)?;
     let client = api_client().map_err(expected)?;
-    let project: Project = api(&client, &key, &format!("mods/{id}"), &[])
+    let project: Response<Project> = api(&client, &key, &format!("mods/{id}"), &[])
         .await
         .map_err(expected)?;
-    let files = files_page(&client, &key, id, &target.0, target.1.as_deref(), 0)
+    let filter = target.as_ref().filter(|target| {
+        resource_type != "modpack" && (kind != ResourceKind::Mod || target.loader.is_some())
+    });
+    let game = filter
+        .map(|target| target.game_version.as_str())
+        .unwrap_or("");
+    let loader = filter
+        .and_then(|target| target.loader.as_deref())
+        .filter(|_| kind == ResourceKind::Mod);
+    let files = files_page(&client, &key, id, game, loader, 0)
         .await
         .map_err(expected)?;
-    Ok(curseforge_details(
-        project,
+    let mut details = curseforge_details(
+        project.data,
         files,
         &resource_type,
-        &target.0,
-    ))
+        target
+            .as_ref()
+            .map(|target| target.game_version.as_str())
+            .unwrap_or(""),
+    );
+    if resource_type == "mod" {
+        for version in &mut details.versions {
+            version.compatible &= target
+                .as_ref()
+                .and_then(|target| target.loader.as_deref())
+                .is_some_and(|loader| version.loaders.iter().any(|tag| tag == loader));
+        }
+    }
+    Ok(details)
 }
 #[derive(Clone, Deserialize)]
 struct Author {
@@ -428,10 +460,12 @@ async fn files_page(
     offset: usize,
 ) -> Result<Vec<CfFile>, String> {
     let mut query = vec![
-        ("gameVersion".into(), minecraft.into()),
         ("pageSize".into(), "50".into()),
         ("index".into(), offset.to_string()),
     ];
+    if !minecraft.is_empty() {
+        query.push(("gameVersion".into(), minecraft.into()));
+    }
     if let Some(loader) = loader {
         query.push(("modLoaderType".into(), loader_code(loader)?.to_string()));
     }
@@ -820,28 +854,25 @@ pub async fn install_curseforge_resource(
     instance_id: Option<String>,
     resource_type: String,
     file_id: Option<u64>,
-) -> Result<ResourceInstall, String> {
+) -> AppResult<ResourceInstall> {
     let id = self::project_id(&project_id)?;
     let kind = ResourceKind::parse(&resource_type)?;
     let _operation = state.operation.lock().await;
+    crate::resources::require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
     let task = state
         .control
         .begin("resource", &project_id, "安装 CurseForge 资源");
-    let result = async {
+    let result: AppResult<ResourceInstall> = async {
         state.control.checkpoint().await?;
+        let target =
+            crate::resources::resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         let key = service_key(&state)?;
         let client = api_client()?;
-        let data = state.snapshot()?;
-        let directory = resource_directory(&data, &version_id, instance_id.as_deref(), kind)?;
-        let (minecraft, detected) =
-            version_context(Path::new(&data.config.game_directory), &version_id)?;
-        let loader = if kind == ResourceKind::Mod {
-            Some(detected.as_deref().ok_or(
-                "当前是原版 Minecraft，请先安装并选择 Fabric、Forge、NeoForge 或 Quilt 加载器版本",
-            )?)
-        } else {
-            None
-        };
+        let directory = target.directory;
+        let minecraft = target.minecraft;
+        let loader = target.loader.as_deref();
+        let detected =
+            crate::resources::resource_context(&state, &version_id, instance_id.as_deref())?.loader;
         let project: Response<Project> = api(&client, &key, &format!("mods/{id}"), &[]).await?;
         if project.data.id != id
             || project.data.game_id != 432
@@ -866,15 +897,15 @@ pub async fn install_curseforge_resource(
             files
                 .into_iter()
                 .next()
-                .ok_or("没有适用于所选 Minecraft 版本和加载器的 CurseForge 文件")?
+                .ok_or_else(|| crate::resources::no_compatible_version(&minecraft, loader))?
         };
         if !compatible(&file, &minecraft, loader) {
-            return Err("所选 CurseForge 文件与 Minecraft 版本或加载器不兼容".into());
+            return Err(crate::resources::no_compatible_version(&minecraft, loader));
         }
         if project.data.allow_mod_distribution == Some(false)
             || file.download_url.as_deref().is_none_or(|s| s.is_empty())
         {
-            return Err(distribution_error(&project.data, &file));
+            return Err(distribution_error(&project.data, &file).into());
         }
         let game_dir = directory.parent().ok_or("目标游戏目录无效")?;
         check_dependencies(
@@ -898,9 +929,13 @@ pub async fn install_curseforge_resource(
         })
     }
     .await;
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
+    state.control.finish(
+        &task,
+        result
+            .as_ref()
+            .err()
+            .map(|error| error.detail.as_deref().unwrap_or(&error.code)),
+    );
     result
 }
 
@@ -914,6 +949,17 @@ mod tests {
             "hashes":[{"algo":1,"value":"a9993e364706816aba3e25717850c26c9cd0d89d"},{"algo":2,"value":"900150983cd24fb0d6963f7d28e17f72"}],
             "gameVersions":["1.21.1","Fabric"],"dependencies":[{"modId":789,"relationType":3}]
         })).unwrap()
+    }
+    #[test]
+    fn curseforge_details_without_a_target_keep_available_versions() {
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "id":456, "gameId":432, "name":"Example", "slug":"example", "classId":6
+        }))
+        .unwrap();
+        let details = curseforge_details(project, vec![example()], "mod", "");
+        assert_eq!(details.versions.len(), 1);
+        assert!(!details.versions[0].compatible);
+        assert_eq!(details.versions[0].loaders, ["fabric"]);
     }
     #[test]
     fn official_file_contract_and_loader_tags_are_checked() {

@@ -24,7 +24,7 @@ function deferredSearch() {
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.mocked(searchResources).mockReset().mockResolvedValue([project]);
-  vi.mocked(command).mockReset().mockResolvedValue(null);
+  vi.mocked(command).mockReset().mockImplementation(async name => name === "get_resource_context" ? { gameVersion: "1.21.1", loader: "fabric" } : null);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
@@ -79,7 +79,7 @@ it.each(["success", "failure"] as const)("ignores a superseded same-query %s aft
   vi.mocked(searchResources).mockReturnValueOnce(first.promise).mockReturnValueOnce(retry.promise);
   await act(async () => root.render(<Harness />));
   await act(async () => current.setSearch(""));
-  expect(searchResources).toHaveBeenNthCalledWith(2, "", "mod", "1.21.1");
+  expect(searchResources).toHaveBeenNthCalledWith(2, "", "mod", "1.21.1", "fabric");
   const latest = { ...project, project_id: "retry-result", title: "Retry result" };
   await act(async () => retry.resolve([latest]));
   await act(async () => {
@@ -98,7 +98,7 @@ it("keeps the retry pending when a superseded same-query request fails", async (
   vi.mocked(searchResources).mockReturnValueOnce(first.promise).mockReturnValueOnce(retry.promise);
   await act(async () => root.render(<Harness />));
   await act(async () => current.setSearch(""));
-  expect(searchResources).toHaveBeenNthCalledWith(2, "", "mod", "1.21.1");
+  expect(searchResources).toHaveBeenNthCalledWith(2, "", "mod", "1.21.1", "fabric");
   await act(async () => first.reject(new Error("superseded request failed")));
   expect(current.loading).toBe(true);
   expect(current.error).toBe("");

@@ -47,7 +47,7 @@ function mockRemote(page: import("@playwright/test").Page) {
 }
 
 test("discovery shows real details, installs into the selected instance, and switches source", async ({ page }) => {
-  await installLauncherFixture(page);
+  await installLauncherFixture(page, { instanceLoader: "fabric" });
   await mockRemote(page);
   await page.route("https://api.modrinth.com/v2/search?**", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [project] }) });
@@ -68,7 +68,7 @@ test("discovery shows real details, installs into the selected instance, and swi
 });
 
 test("modpack installation uses the shared create flow", async ({ page }) => {
-  await installLauncherFixture(page);
+  await installLauncherFixture(page, { noInstances: true, versionDirectoryCount: 0 });
   await mockRemote(page);
   await page.route("https://api.modrinth.com/v2/search?**", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [{ ...project, project_type: "modpack" }] }) });
@@ -76,7 +76,7 @@ test("modpack installation uses the shared create flow", async ({ page }) => {
   await page.goto("/?next-ui");
   await page.getByRole("button", { name: "探索", exact: true }).click();
   await page.getByRole("tab", { name: "整合包", exact: true }).click();
-  await page.getByRole("button", { name: "安装 · 合成测试世界", exact: true }).first().click();
+  await page.getByRole("button", { name: /^安装 · / }).first().click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByRole("heading", { name: "安装整合包", exact: true })).toBeVisible();
   await expect.poll(async () => {

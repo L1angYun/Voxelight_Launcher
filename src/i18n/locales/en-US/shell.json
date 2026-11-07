@@ -19,6 +19,7 @@
     "instance.installed": "Instance installed."
   },
   "operations": {
+    "resource.install": "Installing resource",
     "game.prepare": "Preparing game",
     "game.stop": "Stopping game",
     "preparation.cancel": "Cancelling preparation",
@@ -27,6 +28,14 @@
     "folder.open": "Opening folder"
   },
   "errors": {
+    "resource.loaderRequired": "This target needs a mod loader. Choose a compatible instance or create one.",
+    "resource.noCompatibleVersion": "This project has no resource version for that game version and loader. Choose another instance.",
+    "resource.versionMissing": "Install Minecraft or create a compatible instance first.",
+    "resource.installAfterCreate": "The instance was created, but the resource installation failed. Retry installing the resource.",
+    "resource.sourceUnsupported": "Automatic target selection is not supported for this source yet. Create a compatible instance first.",
+    "resource.loaderUnavailable": "No loader versions are available for this game version. Choose another game version.",
+    "resource.manifestUnavailable": "Unable to load the Minecraft version list. Check your connection and try again.",
+    "download.cancelled": "Installation cancelled.",
     "instance.running": "This instance is already running. Do not launch it twice.",
     "instance.notFound": "The instance no longer exists. Refresh the library.",
     "backup.notFound": "No matching instance backup was found.",

@@ -19,6 +19,7 @@
     "instance.installed": "实例已安装完成。"
   },
   "operations": {
+    "resource.install": "正在安装资源",
     "game.prepare": "正在准备游戏",
     "game.stop": "正在结束游戏",
     "preparation.cancel": "正在取消准备",
@@ -27,6 +28,14 @@
     "folder.open": "正在打开目录"
   },
   "errors": {
+    "resource.loaderRequired": "此目标需要模组加载器。请选择兼容的实例，或新建实例。",
+    "resource.noCompatibleVersion": "此项目没有适用于该游戏版本和加载器的资源版本。请选择其他实例。",
+    "resource.versionMissing": "请先安装 Minecraft 或创建兼容的实例。",
+    "resource.installAfterCreate": "实例已创建，但资源安装失败。可以重试安装资源。",
+    "resource.sourceUnsupported": "此来源暂不支持自动选择安装位置，请先创建兼容的实例。",
+    "resource.loaderUnavailable": "此游戏版本没有可安装的加载器版本，请选择其他游戏版本。",
+    "resource.manifestUnavailable": "无法获取 Minecraft 版本列表，请检查网络后重试。",
+    "download.cancelled": "安装已取消。",
     "instance.running": "此实例已在运行，请勿重复启动。",
     "instance.notFound": "实例不存在，请刷新实例列表。",
     "backup.notFound": "没有找到对应的实例备份。",

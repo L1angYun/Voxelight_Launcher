@@ -1,8 +1,9 @@
 //! Modrinth installation and resource management share the launcher's game directory rules.
 use crate::{
-    errors::{expected, AppResult},
+    errors::{expected, AppError, AppResult},
     models::{
-        Persisted, ResourceDependency, ResourceProject, ResourceProjectDetails, ResourceVersion,
+        Instance, Persisted, ResourceDependency, ResourceProject, ResourceProjectDetails,
+        ResourceVersion,
     },
     storage::{safe_join, validate_id, LauncherState},
 };
@@ -18,6 +19,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 
 #[path = "resource_transactions.rs"]
@@ -90,8 +92,6 @@ struct Project {
     #[serde(default)]
     author: Option<String>,
     #[serde(default)]
-    versions: Vec<String>,
-    #[serde(default)]
     external_url: Option<String>,
 }
 
@@ -151,6 +151,47 @@ pub struct ResourceInstall {
     pub warning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_id: Option<String>,
+}
+
+/// Resource transfers use the same progress/task channel as the loader phase.
+pub(super) struct ResourceProgress {
+    app: Option<AppHandle>,
+    version_id: String,
+}
+
+impl ResourceProgress {
+    fn new(app: Option<&AppHandle>, version_id: &str) -> Self {
+        Self {
+            app: app.cloned(),
+            version_id: version_id.into(),
+        }
+    }
+
+    fn emit(
+        &self,
+        state: &LauncherState,
+        stage: &str,
+        completed: usize,
+        total: usize,
+        bytes_completed: u64,
+        bytes_total: u64,
+        message: &str,
+    ) {
+        let event = serde_json::json!({
+            "operation": "resource", "versionId": self.version_id, "stage": stage,
+            "completed": completed, "total": total, "bytesCompleted": bytes_completed,
+            "bytesTotal": bytes_total, "message": message,
+        });
+        state.control.record(&event);
+        if let Some(app) = &self.app {
+            let _ = app.emit("launcher://progress", &event);
+            let _ = app.emit("launcher://tasks", state.control.list());
+        }
+    }
+
+    fn stage(&self, state: &LauncherState, stage: &str, message: &str) {
+        self.emit(state, stage, 0, 0, 0, 0, message);
+    }
 }
 
 #[derive(Serialize)]
@@ -348,7 +389,11 @@ async fn project_versions(
     Ok(versions)
 }
 
-fn modrinth_details(project: Project, versions: Vec<Version>) -> ResourceProjectDetails {
+fn modrinth_details(
+    project: Project,
+    versions: Vec<Version>,
+    context: Option<&ResourceContext>,
+) -> ResourceProjectDetails {
     let mut dependencies = Vec::new();
     let mut seen = HashSet::new();
     for version in &versions {
@@ -375,6 +420,15 @@ fn modrinth_details(project: Project, versions: Vec<Version>) -> ResourceProject
             }
         }
     }
+    let mut game_versions = Vec::new();
+    for version in &versions {
+        for game in &version.game_versions {
+            if !game_versions.contains(game) {
+                game_versions.push(game.clone());
+            }
+        }
+    }
+    let needs_loader = project.project_type == "mod";
     ResourceProjectDetails {
         project: ResourceProject {
             project_id: project.id,
@@ -385,19 +439,29 @@ fn modrinth_details(project: Project, versions: Vec<Version>) -> ResourceProject
             downloads: project.downloads.unwrap_or(0),
             author: project.author.unwrap_or_default(),
             project_type: project.project_type,
-            versions: project.versions,
+            versions: game_versions,
             external_url: project.external_url,
         },
         versions: versions
             .into_iter()
-            .map(|version| ResourceVersion {
-                id: version.id,
-                name: version.name,
-                version_number: version.version_number,
-                date_published: version.date_published,
-                game_versions: version.game_versions,
-                loaders: version.loaders,
-                compatible: true,
+            .map(|version| {
+                let matches = context.is_some_and(|target| {
+                    (!needs_loader || target.loader.is_some())
+                        && compatible(
+                            &version,
+                            &target.game_version,
+                            target.loader.as_deref().filter(|_| needs_loader),
+                        )
+                });
+                ResourceVersion {
+                    id: version.id,
+                    name: version.name,
+                    version_number: version.version_number,
+                    date_published: version.date_published,
+                    game_versions: version.game_versions,
+                    loaders: version.loaders,
+                    compatible: matches,
+                }
             })
             .collect(),
         dependencies,
@@ -408,7 +472,7 @@ fn modrinth_details(project: Project, versions: Vec<Version>) -> ResourceProject
 pub async fn get_modrinth_project_details(
     state: tauri::State<'_, Arc<LauncherState>>,
     project_id: String,
-    version_id: String,
+    version_id: Option<String>,
     instance_id: Option<String>,
     resource_type: String,
 ) -> AppResult<ResourceProjectDetails> {
@@ -418,8 +482,10 @@ pub async fn get_modrinth_project_details(
         ResourceKind::parse(&resource_type).map_err(expected)?
     };
     identifier(&project_id).map_err(expected)?;
-    let target =
-        resource_target(&state, &version_id, instance_id.as_deref(), kind).map_err(expected)?;
+    let context = version_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .and_then(|id| resource_context(&state, id, instance_id.as_deref()).ok());
     let api = client(false).map_err(expected)?;
     let project: Project = api_json(&api, &format!("project/{project_id}"), &[])
         .await
@@ -432,15 +498,46 @@ pub async fn get_modrinth_project_details(
     if project.project_type != expected_type {
         return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
     }
-    let versions = project_versions(
-        &api,
-        &project.id,
-        &target.minecraft,
-        target.loader.as_deref(),
+    let filter = context.as_ref().filter(|target| {
+        resource_type != "modpack" && (kind != ResourceKind::Mod || target.loader.is_some())
+    });
+    let mut versions = if let Some(target) = filter {
+        project_versions(
+            &api,
+            &project.id,
+            &target.game_version,
+            target
+                .loader
+                .as_deref()
+                .filter(|_| kind == ResourceKind::Mod),
+        )
+        .await?
+    } else {
+        all_project_versions(&api, &project.id).await?
+    };
+    versions.truncate(30);
+    Ok(modrinth_details(project, versions, context.as_ref()))
+}
+
+async fn all_project_versions(
+    api: &reqwest::Client,
+    project_id: &str,
+) -> Result<Vec<Version>, String> {
+    identifier(project_id)?;
+    let mut versions: Vec<Version> = api_json(
+        api,
+        &format!("project/{project_id}/version"),
+        &[("include_changelog".into(), "false".into())],
     )
-    .await
-    .map_err(expected)?;
-    Ok(modrinth_details(project, versions))
+    .await?;
+    if versions
+        .iter()
+        .any(|version| version.project_id != project_id)
+    {
+        return Err("Modrinth 版本与项目标识不一致".into());
+    }
+    versions.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+    Ok(versions)
 }
 
 /// Resolve an inherited loader version to its vanilla Minecraft version.
@@ -552,16 +649,6 @@ fn enabled_mod_hashes(directory: &Path) -> Result<HashSet<String>, String> {
     Ok(hashes)
 }
 
-/// A failed download leaves no partially installed JAR/ZIP and never overwrites a different user file.
-async fn download_verified(
-    state: &LauncherState,
-    file: &ResourceFile,
-    directory: &Path,
-    kind: ResourceKind,
-) -> Result<PathBuf, String> {
-    download_verified_with_client(state, file, directory, kind, client(true)?).await
-}
-
 enum DownloadAttemptError {
     Retry(String),
     Fatal(String),
@@ -579,12 +666,13 @@ impl From<&str> for DownloadAttemptError {
     }
 }
 
-async fn download_verified_with_client(
+async fn download_verified_progress(
     state: &LauncherState,
     file: &ResourceFile,
     directory: &Path,
     kind: ResourceKind,
     client: reqwest::Client,
+    progress: Option<&ResourceProgress>,
 ) -> Result<PathBuf, String> {
     validate_id(&file.filename)?;
     if !kind.accepts(&file.filename) {
@@ -601,6 +689,17 @@ async fn download_verified_with_client(
         return Err("资源大小无效或超过 1 GiB，请从项目页面手动下载".into());
     }
     let url = cdn_url(&file.url)?;
+    if let Some(progress) = progress {
+        progress.emit(
+            state,
+            "resource-download",
+            0,
+            1,
+            0,
+            file.size,
+            &format!("下载 {}", file.filename),
+        );
+    }
     reject_links(directory)?;
     fs::create_dir_all(directory).map_err(|_| "无法创建资源目录，请检查目录权限")?;
     reject_links(directory)?;
@@ -610,6 +709,17 @@ async fn download_verified_with_client(
             && fs::metadata(&target).map_err(|_| "无法读取已有文件")?.len() == file.size
             && file_sha512(&target)? == expected
         {
+            if let Some(progress) = progress {
+                progress.emit(
+                    state,
+                    "resource-download",
+                    1,
+                    1,
+                    file.size,
+                    file.size,
+                    &format!("复用已校验文件 {}", file.filename),
+                );
+            }
             return Ok(target);
         }
         return Err(format!(
@@ -670,6 +780,17 @@ async fn download_verified_with_client(
                     .write_all(&chunk)
                     .await
                     .map_err(|_| "资源写入失败，请检查磁盘空间")?;
+                if let Some(progress) = progress {
+                    progress.emit(
+                        state,
+                        "resource-download",
+                        0,
+                        1,
+                        size,
+                        file.size,
+                        &format!("下载 {}", file.filename),
+                    );
+                }
             }
             output.flush().await.map_err(|_| "写入资源文件失败")?;
             output.sync_all().await.map_err(|_| "无法保存资源文件")?;
@@ -690,6 +811,17 @@ async fn download_verified_with_client(
             tokio::fs::rename(&temp, &checked)
                 .await
                 .map_err(|_| "无法将已校验资源移入目标目录")?;
+            if let Some(progress) = progress {
+                progress.emit(
+                    state,
+                    "resource-download",
+                    1,
+                    1,
+                    size,
+                    file.size,
+                    &format!("已校验 {}", file.filename),
+                );
+            }
             Ok(checked)
         }
         .await;
@@ -712,25 +844,29 @@ async fn download_verified_with_client(
     Err(last_error)
 }
 
-struct ResourceTarget {
-    directory: PathBuf,
-    minecraft: String,
-    loader: Option<String>,
+pub(crate) struct ResourceTarget {
+    pub(crate) directory: PathBuf,
+    pub(crate) minecraft: String,
+    pub(crate) loader: Option<String>,
 }
 
-fn resource_target(
+pub(crate) fn resource_target(
     state: &LauncherState,
     version_id: &str,
     instance_id: Option<&str>,
     kind: ResourceKind,
-) -> Result<ResourceTarget, String> {
+) -> AppResult<ResourceTarget> {
     let data = state.snapshot()?;
     let directory = resource_directory(&data, version_id, instance_id, kind)?;
     let root = Path::new(&data.config.game_directory);
     reject_links(root)?;
-    let (minecraft, detected_loader) = version_context(root, version_id)?;
+    let (minecraft, detected_loader) = context_for_version(root, version_id)?;
     let loader = if kind == ResourceKind::Mod {
-        Some(detected_loader.ok_or("当前是原版 Minecraft，无法加载模组。请先安装 Fabric、Forge、NeoForge 或 Quilt，并选择对应加载器版本。")?)
+        Some(detected_loader.ok_or_else(|| {
+            AppError::new("resource.loaderRequired")
+                .with_param("versionId", version_id)
+                .with_detail("当前是原版 Minecraft，无法加载模组。请创建或选择带加载器的实例。")
+        })?)
     } else {
         None
     };
@@ -741,14 +877,384 @@ fn resource_target(
     })
 }
 
-pub(crate) fn resource_game_context(
+fn context_for_version(root: &Path, version_id: &str) -> AppResult<(String, Option<String>)> {
+    version_context(root, version_id).map_err(|error| {
+        if error == "请先安装目标 Minecraft 版本，再安装资源" {
+            AppError::new("resource.versionMissing")
+                .with_param("versionId", version_id)
+                .with_detail(error)
+        } else {
+            expected(error)
+        }
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceContext {
+    pub game_version: String,
+    pub loader: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_resource_context(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+) -> AppResult<ResourceContext> {
+    resource_context(&state, &version_id, instance_id.as_deref())
+}
+
+pub(crate) fn resource_context(
     state: &LauncherState,
     version_id: &str,
     instance_id: Option<&str>,
-    kind: ResourceKind,
-) -> Result<(String, Option<String>), String> {
-    let target = resource_target(state, version_id, instance_id, kind)?;
-    Ok((target.minecraft, target.loader))
+) -> AppResult<ResourceContext> {
+    let data = state.snapshot()?;
+    resource_directory(&data, version_id, instance_id, ResourceKind::Mod)?;
+    let (game_version, loader) =
+        context_for_version(Path::new(&data.config.game_directory), version_id)?;
+    Ok(ResourceContext {
+        game_version,
+        loader,
+    })
+}
+
+pub(crate) fn no_compatible_version(game: &str, loader: Option<&str>) -> AppError {
+    AppError::new("resource.noCompatibleVersion")
+        .with_param("gameVersion", game)
+        .with_param("loader", loader.unwrap_or("vanilla"))
+        .with_detail(format!(
+            "没有适用于 Minecraft {game} / {} 的兼容版本",
+            loader.unwrap_or("vanilla")
+        ))
+}
+
+fn version_lite(version: &Version) -> crate::resource_targets::VersionLite {
+    crate::resource_targets::VersionLite {
+        id: version.id.clone(),
+        game_versions: version.game_versions.clone(),
+        loaders: version.loaders.clone(),
+        version_type: version.version_type.clone(),
+        date_published: version.date_published.clone(),
+    }
+}
+
+fn same_directory(a: &Path, b: &Path) -> bool {
+    let a = a.canonicalize().unwrap_or_else(|_| a.to_owned());
+    let b = b.canonicalize().unwrap_or_else(|_| b.to_owned());
+    #[cfg(windows)]
+    {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
+}
+
+fn target_running(
+    data: &Persisted,
+    version_id: &str,
+    instance_id: Option<&str>,
+    running: &[crate::processes::RunningGame],
+) -> bool {
+    let instance =
+        instance_id.and_then(|id| data.instances.iter().find(|instance| instance.id == id));
+    let directory = crate::minecraft::game_directory(&data.config, version_id, instance).ok();
+    running.iter().any(|game| {
+        (instance_id.is_some() && game.instance_id.as_deref() == instance_id)
+            || directory
+                .as_ref()
+                .is_some_and(|directory| same_directory(directory, Path::new(&game.game_directory)))
+    })
+}
+
+pub(crate) fn require_resource_stopped(
+    state: &LauncherState,
+    version_id: &str,
+    instance_id: Option<&str>,
+) -> AppResult<()> {
+    if target_running(
+        &state.snapshot()?,
+        version_id,
+        instance_id,
+        &state.games.snapshot()?,
+    ) {
+        return Err(AppError::new("instance.running")
+            .with_detail("此目标的游戏仍在运行，请先退出游戏再安装资源。"));
+    }
+    Ok(())
+}
+
+fn target_candidates(
+    state: &LauncherState,
+) -> AppResult<Vec<crate::resource_targets::TargetCandidate>> {
+    let data = state.snapshot()?;
+    let running = state.games.snapshot()?;
+    let root = Path::new(&data.config.game_directory);
+    let mut candidates = Vec::new();
+    for instance in &data.instances {
+        let context = version_context(root, &instance.version_id).ok();
+        candidates.push(crate::resource_targets::TargetCandidate {
+            kind: "instance".into(),
+            instance_id: Some(instance.id.clone()),
+            version_id: instance.version_id.clone(),
+            name: instance.name.clone(),
+            game_version: context.as_ref().map(|context| context.0.clone()),
+            loader: context.and_then(|context| context.1),
+            last_played: instance.last_played.clone(),
+            running: target_running(&data, &instance.version_id, Some(&instance.id), &running),
+        });
+    }
+    for version in crate::minecraft::scan_versions(&data.config) {
+        let context = version_context(root, &version.id).ok();
+        candidates.push(crate::resource_targets::TargetCandidate {
+            kind: "version".into(),
+            instance_id: None,
+            version_id: version.id.clone(),
+            name: version.id.clone(),
+            game_version: context.as_ref().map(|context| context.0.clone()),
+            loader: context.and_then(|context| context.1),
+            last_played: None,
+            running: target_running(&data, &version.id, None, &running),
+        });
+    }
+    Ok(candidates)
+}
+
+fn require_modrinth(source: &str) -> AppResult<()> {
+    if source == "modrinth" {
+        Ok(())
+    } else {
+        Err(AppError::new("resource.sourceUnsupported")
+            .with_detail("此来源暂不支持自动规划安装位置，请先创建带加载器的实例。"))
+    }
+}
+
+#[tauri::command]
+pub async fn resolve_resource_targets(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    source: String,
+    project_id: String,
+    resource_type: String,
+) -> AppResult<crate::resource_targets::ResourceTargetPlan> {
+    require_modrinth(&source)?;
+    let kind = ResourceKind::parse(&resource_type)?;
+    identifier(&project_id)?;
+    let api = client(false)?;
+    let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
+    if project.project_type != kind.project_type() {
+        return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
+    }
+    let versions = all_project_versions(&api, &project.id).await?;
+    let metadata: Vec<_> = versions.iter().map(version_lite).collect();
+    let manifest = crate::minecraft::manifest(&state)
+        .await
+        .map_err(|error| AppError::new("resource.manifestUnavailable").with_detail(error))?;
+    let manifest = manifest["versions"]
+        .as_array()
+        .ok_or_else(|| {
+            AppError::new("resource.manifestUnavailable").with_detail("官方 Minecraft 版本列表为空")
+        })?
+        .iter()
+        .filter_map(|version| {
+            Some((
+                version["id"].as_str()?.to_owned(),
+                version["type"].as_str()?.to_owned(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    Ok(crate::resource_targets::build_plan(
+        &project.id,
+        &project.title,
+        &project.project_type,
+        kind,
+        &target_candidates(&state)?,
+        &metadata,
+        &manifest,
+    ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceInstanceResult {
+    pub instance: Instance,
+    pub install: ResourceInstall,
+}
+
+fn after_create_error(error: AppError, instance: Option<&Instance>) -> AppError {
+    match instance {
+        None => error,
+        Some(instance) => AppError::new("resource.installAfterCreate")
+            .with_param("instanceId", instance.id.clone())
+            .with_param("instanceName", instance.name.clone())
+            .with_param("versionId", instance.version_id.clone())
+            .with_param("causeCode", error.code.clone())
+            .with_detail(error.detail.unwrap_or(error.code)),
+    }
+}
+
+fn finish_resource_task(
+    app: Option<&AppHandle>,
+    state: &LauncherState,
+    task: &str,
+    error: Option<&AppError>,
+) {
+    state.control.finish(
+        task,
+        error.map(|error| error.detail.as_deref().unwrap_or(&error.code)),
+    );
+    if let Some(app) = app {
+        let _ = app.emit("launcher://tasks", state.control.list());
+    }
+}
+
+async fn create_resource_instance_then_install<F, Fut>(
+    state: &LauncherState,
+    name: String,
+    version_id: String,
+    install: F,
+) -> AppResult<ResourceInstanceResult>
+where
+    F: FnOnce(Instance) -> Fut,
+    Fut: std::future::Future<Output = AppResult<ResourceInstall>>,
+{
+    // This is the registration boundary: a cancelled loader never leaves an instance.
+    state.control.checkpoint().await?;
+    let instance = crate::commands::create_instance_inner(state, name, version_id)?;
+    let result = async {
+        state.control.checkpoint().await?;
+        install(instance.clone()).await
+    }
+    .await;
+    let install = result.map_err(|error| after_create_error(error, Some(&instance)))?;
+    Ok(ResourceInstanceResult { instance, install })
+}
+
+#[tauri::command]
+pub async fn create_instance_for_resource(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<LauncherState>>,
+    source: String,
+    project_id: String,
+    resource_type: String,
+    game_version: String,
+    loader: String,
+    loader_version: Option<String>,
+    name: String,
+) -> AppResult<ResourceInstanceResult> {
+    require_modrinth(&source)?;
+    let kind = ResourceKind::parse(&resource_type)?;
+    identifier(&project_id)?;
+    validate_id(&game_version)?;
+    validate_id(&loader)?;
+    if !["fabric", "quilt", "forge", "neoforge"].contains(&loader.as_str())
+        && !(loader == "vanilla" && kind != ResourceKind::Mod)
+    {
+        return Err(no_compatible_version(&game_version, Some(&loader)));
+    }
+    if let Some(version) = loader_version
+        .as_deref()
+        .filter(|version| !version.is_empty())
+    {
+        validate_id(version)?;
+    }
+    let name = crate::commands::validate_instance_name(&name)?;
+    let _operation = state.operation.lock().await;
+    let task = state.control.begin(
+        "resource",
+        &project_id,
+        &format!("创建 {loader} {game_version} 实例并安装资源"),
+    );
+    let progress = ResourceProgress::new(Some(&app), &game_version);
+    progress.stage(&state, "resource-preflight", "检查资源及必需前置");
+    let result: AppResult<ResourceInstanceResult> = async {
+        state.control.checkpoint().await?;
+        let api = client(false)?;
+        let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
+        if project.project_type != kind.project_type() {
+            return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
+        }
+        let resource_loader = (kind == ResourceKind::Mod).then_some(loader.as_str());
+        let versions = project_versions(&api, &project.id, &game_version, resource_loader).await?;
+        let metadata: Vec<_> = versions.iter().map(version_lite).collect();
+        let chosen =
+            crate::resource_targets::validate_request(&metadata, kind, &loader, &game_version)?;
+        let selected = versions
+            .iter()
+            .find(|version| version.id == chosen.id)
+            .cloned()
+            .ok_or_else(|| no_compatible_version(&game_version, resource_loader))?;
+        if selected.project_id != project.id {
+            return Err(expected("Modrinth 版本与项目标识不一致"));
+        }
+        resource_transactions::preflight(
+            &state,
+            &api,
+            selected.clone(),
+            &game_version,
+            resource_loader,
+            kind,
+        )
+        .await?;
+        state.control.checkpoint().await?;
+        progress.stage(&state, "resource-loader", "安装 Minecraft 及加载器");
+        let version_id = if loader == "vanilla" {
+            crate::minecraft::install(&state, &app, &game_version).await?;
+            game_version.clone()
+        } else {
+            crate::loaders::install_loader_inner(
+                &state,
+                &app,
+                &loader,
+                &game_version,
+                loader_version.as_deref().unwrap_or("latest"),
+            )
+            .await?
+            .version_id
+        };
+        progress.stage(&state, "resource-create", "创建实例");
+        let install_state = state.inner().clone();
+        let install_app = app.clone();
+        create_resource_instance_then_install(
+            &state,
+            name.clone(),
+            version_id.clone(),
+            move |instance| async move {
+                let target =
+                    resource_target(&install_state, &version_id, Some(&instance.id), kind)?;
+                let resource_progress = ResourceProgress::new(Some(&install_app), &version_id);
+                let install = resource_transactions::install(
+                    &install_state,
+                    &target.directory,
+                    &target.minecraft,
+                    target.loader.as_deref(),
+                    &project.title,
+                    selected,
+                    kind,
+                    true,
+                    Some(&resource_progress),
+                )
+                .await?;
+                resource_progress.emit(
+                    &install_state,
+                    "complete",
+                    1,
+                    1,
+                    0,
+                    0,
+                    "实例及资源安装完成",
+                );
+                Ok(install)
+            },
+        )
+        .await
+    }
+    .await;
+    finish_resource_task(Some(&app), &state, &task, result.as_ref().err());
+    result
 }
 
 fn history_target(
@@ -762,22 +1268,23 @@ fn history_target(
 
 #[tauri::command]
 pub async fn install_resource(
+    app: AppHandle,
     state: tauri::State<'_, Arc<LauncherState>>,
     project_id: String,
     version_id: String,
     instance_id: Option<String>,
     resource_type: String,
-) -> Result<ResourceInstall, String> {
+) -> AppResult<ResourceInstall> {
     let kind = ResourceKind::parse(&resource_type)?;
     identifier(&project_id)?;
     let _operation = state.operation.lock().await;
-    if let Some(id) = instance_id.as_deref() {
-        state.games.require_instance_stopped(id)?;
-    }
+    require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
     let task = state
         .control
         .begin("resource", &project_id, "安装 Modrinth 资源及必需前置");
-    let result = async {
+    let progress = ResourceProgress::new(Some(&app), &version_id);
+    progress.stage(&state, "resource-plan", "检查资源安装位置");
+    let result: AppResult<ResourceInstall> = async {
         state.control.checkpoint().await?;
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         let api = client(false)?;
@@ -792,17 +1299,18 @@ pub async fn install_resource(
             target.loader.as_deref(),
         )
         .await?;
-        let version = versions.into_iter().next().ok_or_else(|| {
-            format!(
-                "没有适用于 Minecraft {}{} 的兼容版本",
-                target.minecraft,
-                target
-                    .loader
-                    .as_deref()
-                    .map(|loader| format!(" / {loader}"))
-                    .unwrap_or_default()
-            )
-        })?;
+        let metadata: Vec<_> = versions.iter().map(version_lite).collect();
+        let chosen = crate::resource_targets::validate_request(
+            &metadata,
+            kind,
+            target.loader.as_deref().unwrap_or("vanilla"),
+            &target.minecraft,
+        )?;
+        let version = versions
+            .iter()
+            .find(|version| version.id == chosen.id)
+            .cloned()
+            .ok_or_else(|| no_compatible_version(&target.minecraft, target.loader.as_deref()))?;
         if version.project_id != project.id {
             return Err("Modrinth 版本与项目标识不一致".into());
         }
@@ -815,13 +1323,16 @@ pub async fn install_resource(
             version,
             kind,
             true,
+            Some(&progress),
         )
         .await
+        .map_err(expected)
     }
     .await;
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
+    if result.is_ok() {
+        progress.emit(&state, "complete", 1, 1, 0, 0, "资源安装完成");
+    }
+    finish_resource_task(Some(&app), &state, &task, result.as_ref().err());
     result
 }
 
@@ -831,13 +1342,13 @@ pub async fn check_resource_updates(
     version_id: String,
     instance_id: Option<String>,
     resource_type: String,
-) -> Result<Vec<resource_transactions::ResourceUpdate>, String> {
+) -> AppResult<Vec<resource_transactions::ResourceUpdate>> {
     let kind = ResourceKind::parse(&resource_type)?;
     let _operation = state.operation.lock().await;
     let task = state
         .control
         .begin("resource-check", &version_id, "检查 Modrinth 资源更新");
-    let result = async {
+    let result: AppResult<Vec<resource_transactions::ResourceUpdate>> = async {
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         resource_transactions::updates(
             &state,
@@ -847,11 +1358,16 @@ pub async fn check_resource_updates(
             kind,
         )
         .await
+        .map_err(expected)
     }
     .await;
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
+    state.control.finish(
+        &task,
+        result
+            .as_ref()
+            .err()
+            .map(|error| error.detail.as_deref().unwrap_or(&error.code)),
+    );
     result
 }
 
@@ -863,16 +1379,14 @@ pub async fn update_resource(
     resource_type: String,
     file_name: String,
     new_version_id: String,
-) -> Result<ResourceInstall, String> {
+) -> AppResult<ResourceInstall> {
     let kind = ResourceKind::parse(&resource_type)?;
     let _operation = state.operation.lock().await;
-    if let Some(id) = instance_id.as_deref() {
-        state.games.require_instance_stopped(id)?;
-    }
+    require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
     let task = state
         .control
         .begin("resource-update", &file_name, "更新资源及必需前置");
-    let result = async {
+    let result: AppResult<ResourceInstall> = async {
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         resource_transactions::update_one(
             state.inner(),
@@ -884,11 +1398,16 @@ pub async fn update_resource(
             &new_version_id,
         )
         .await
+        .map_err(expected)
     }
     .await;
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
+    state.control.finish(
+        &task,
+        result
+            .as_ref()
+            .err()
+            .map(|error| error.detail.as_deref().unwrap_or(&error.code)),
+    );
     result
 }
 
@@ -1031,6 +1550,280 @@ pub async fn toggle_resource(
 mod tests {
     use super::*;
 
+    fn resource_fixture() -> (PathBuf, Arc<LauncherState>) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/resource-tests")
+            .join(uuid::Uuid::new_v4().to_string());
+        for (id, metadata) in [
+            (
+                "fabric-test",
+                serde_json::json!({"inheritsFrom":"1.21.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.9"}],"launcherMetadata":{"loaderVersion":"0.16.9"}}),
+            ),
+            ("1.21.1", serde_json::json!({"id":"1.21.1"})),
+        ] {
+            let directory = root.join("versions").join(id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+        }
+        let state = Arc::new(LauncherState {
+            data: std::sync::Mutex::new(Persisted {
+                config: crate::models::Config {
+                    game_directory: root.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            data_dir: root.clone(),
+            client: crate::storage::test_client(),
+            operation: tokio::sync::Mutex::new(()),
+            control: Default::default(),
+            games: Default::default(),
+        });
+        (root, state)
+    }
+
+    fn cleanup_fixture(root: PathBuf) {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests");
+        assert!(
+            root.is_absolute()
+                && root.starts_with(parent)
+                && root.file_name().unwrap().to_string_lossy().len() == 36
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_loader_registers_no_instance_and_finishes_cancelled() {
+        let (root, state) = resource_fixture();
+        let task = state.control.begin("resource", "project", "创建并安装");
+        state.control.cancel(Some(&task));
+        let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
+            &state,
+            "Example".into(),
+            "fabric-test".into(),
+            |_| async { panic!("cancelled install must not start") },
+        ));
+        let error = result.err().unwrap();
+        assert_eq!(error.code, "download.cancelled");
+        finish_resource_task(None, &state, &task, Some(&error));
+        assert!(state.snapshot().unwrap().instances.is_empty());
+        assert!(!root.join("instances").exists());
+        let jobs = state.control.list();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].status, "cancelled");
+        assert_eq!(jobs[0].kind, "resource");
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn cancellation_after_creation_keeps_instance_and_finishes_cancelled() {
+        let (root, state) = resource_fixture();
+        let task = state.control.begin("resource", "project", "创建并安装");
+        let install_state = state.clone();
+        let install_task = task.clone();
+        let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
+            &state,
+            "Example".into(),
+            "fabric-test".into(),
+            move |_| async move {
+                install_state.control.cancel(Some(&install_task));
+                install_state.control.checkpoint().await?;
+                panic!("cancelled resource install must stop")
+            },
+        ));
+        let error = result.err().unwrap();
+        assert_eq!(error.code, "resource.installAfterCreate");
+        assert_eq!(error.params["causeCode"], "download.cancelled");
+        let instances = state.snapshot().unwrap().instances;
+        assert_eq!(instances.len(), 1);
+        assert_eq!(error.params["instanceId"], instances[0].id);
+        assert_eq!(error.params["instanceName"], "Example");
+        assert_eq!(error.params["versionId"], "fabric-test");
+        assert!(Path::new(&instances[0].game_directory).is_dir());
+        finish_resource_task(None, &state, &task, Some(&error));
+        assert_eq!(state.control.list().len(), 1);
+        assert_eq!(state.control.list()[0].status, "cancelled");
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn resource_failure_keeps_created_instance_and_retry_identity() {
+        let (root, state) = resource_fixture();
+        let task = state.control.begin("resource", "project", "创建并安装");
+        let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
+            &state,
+            "Example".into(),
+            "fabric-test".into(),
+            |_| async { Err(expected("磁盘写入失败")) },
+        ));
+        let error = result.err().unwrap();
+        assert_eq!(error.code, "resource.installAfterCreate");
+        assert_eq!(error.detail.as_deref(), Some("磁盘写入失败"));
+        assert_eq!(state.snapshot().unwrap().instances.len(), 1);
+        assert_eq!(
+            error.params["instanceId"],
+            state.snapshot().unwrap().instances[0].id
+        );
+        finish_resource_task(None, &state, &task, Some(&error));
+        assert_eq!(state.control.list()[0].status, "failed");
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn resource_progress_records_stages_and_bytes_in_the_same_task() {
+        let (root, state) = resource_fixture();
+        let task = state.control.begin("resource", "project", "创建并安装");
+        let progress = ResourceProgress::new(None, "fabric-test");
+        progress.stage(&state, "resource-loader", "安装加载器");
+        progress.emit(
+            &state,
+            "resource-download",
+            0,
+            1,
+            12,
+            24,
+            "下载 example.jar",
+        );
+        let job = &state.control.list()[0];
+        assert_eq!(job.id, task);
+        assert_eq!(job.kind, "resource");
+        assert_eq!(job.stage, "resource-download");
+        assert_eq!((job.bytes_completed, job.bytes_total), (12, 24));
+        progress.emit(&state, "complete", 1, 1, 24, 24, "资源安装完成");
+        finish_resource_task(None, &state, &task, None);
+        assert_eq!(state.control.list().len(), 1);
+        assert_eq!(state.control.list()[0].status, "completed");
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn planner_candidates_resolve_inherited_metadata_and_version_directories() {
+        let (root, state) = resource_fixture();
+        let instance =
+            crate::commands::create_instance_inner(&state, "Imported".into(), "fabric-test".into())
+                .unwrap();
+        state
+            .update(|data| {
+                data.instances[0].loader.clear();
+                Ok(())
+            })
+            .unwrap();
+        let context = resource_context(&state, "fabric-test", Some(&instance.id)).unwrap();
+        assert_eq!(context.game_version, "1.21.1");
+        assert_eq!(context.loader.as_deref(), Some("fabric"));
+        let candidates = target_candidates(&state).unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.instance_id.as_deref() == Some(&instance.id))
+            .unwrap();
+        assert_eq!(candidate.game_version.as_deref(), Some("1.21.1"));
+        assert_eq!(candidate.loader.as_deref(), Some("fabric"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.kind == "version" && candidate.version_id == "fabric-test"));
+        let error = resource_target(&state, "not-installed", None, ResourceKind::ResourcePack)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "resource.versionMissing");
+        assert_eq!(error.params["versionId"], "not-installed");
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn running_version_directory_protects_shared_game_files() {
+        let (root, state) = resource_fixture();
+        let mut data = state.snapshot().unwrap();
+        data.config.version_isolation = true;
+        let directory =
+            crate::minecraft::game_directory(&data.config, "fabric-test", None).unwrap();
+        let games = vec![crate::processes::RunningGame {
+            pid: 7,
+            version_id: "fabric-test".into(),
+            instance_id: None,
+            game_directory: directory.to_string_lossy().into_owned(),
+            started_at: "now".into(),
+        }];
+        assert!(target_running(&data, "fabric-test", None, &games));
+        assert!(!target_running(&data, "1.21.1", None, &games));
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn dependency_preflight_rejects_unverifiable_required_dependency_before_creation() {
+        let (root, state) = resource_fixture();
+        let version: Version = serde_json::from_value(serde_json::json!({
+            "id":"example-version", "project_id":"example", "game_versions":["1.21.1"], "loaders":["fabric"],
+            "dependencies":[{"dependency_type":"required"}],
+            "files":[{"filename":"example.jar","url":"https://cdn.modrinth.com/example.jar","primary":true,"size":3,"hashes":{"sha512":"a".repeat(128)}}]
+        })).unwrap();
+        let error = tauri::async_runtime::block_on(resource_transactions::preflight(
+            &state,
+            &state.client,
+            version,
+            "1.21.1",
+            Some("fabric"),
+            ResourceKind::Mod,
+        ))
+        .unwrap_err();
+        assert!(error.contains("必需前置没有可核验"));
+        assert!(state.snapshot().unwrap().instances.is_empty());
+        assert!(!root.join("instances").exists());
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn project_details_without_target_or_with_vanilla_keep_browsable_versions() {
+        for context in [
+            None,
+            Some(ResourceContext {
+                game_version: "1.21.1".into(),
+                loader: None,
+            }),
+        ] {
+            let project: Project = serde_json::from_value(serde_json::json!({
+                "id":"example", "title":"Example", "project_type":"mod", "versions":["version-id-not-game"]
+            })).unwrap();
+            let versions: Vec<Version> = serde_json::from_value(serde_json::json!([{
+                "id":"version-id-not-game", "project_id":"example", "game_versions":["1.21.1"], "loaders":["fabric"], "files":[]
+            }])).unwrap();
+            let details = modrinth_details(project, versions, context.as_ref());
+            assert_eq!(details.versions.len(), 1);
+            assert!(!details.versions[0].compatible);
+            assert_eq!(details.project.versions, ["1.21.1"]);
+        }
+    }
+
+    #[test]
+    fn vanilla_mod_target_returns_structured_loader_required() {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests");
+        let root = parent.join(uuid::Uuid::new_v4().to_string());
+        let version = root.join("versions/1.21.1");
+        fs::create_dir_all(&version).unwrap();
+        fs::write(version.join("1.21.1.json"), r#"{"id":"1.21.1"}"#).unwrap();
+        let state = LauncherState {
+            data: std::sync::Mutex::new(Persisted {
+                config: crate::models::Config {
+                    game_directory: root.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            data_dir: root.clone(),
+            client: crate::storage::test_client(),
+            operation: tokio::sync::Mutex::new(()),
+            control: Default::default(),
+            games: Default::default(),
+        };
+        let error = resource_target(&state, "1.21.1", None, ResourceKind::Mod)
+            .err()
+            .unwrap();
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], "resource.loaderRequired");
+        assert_eq!(value["params"]["versionId"], "1.21.1");
+        assert!(root.starts_with(parent));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn interrupted_modrinth_downloads_retry_with_a_clean_temporary_file() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1093,16 +1886,23 @@ mod tests {
                 sha512: format!("{:x}", Sha512::digest(b"abcdef")),
             },
         };
-        let downloaded = tauri::async_runtime::block_on(download_verified_with_client(
+        let task = state.control.begin("resource", "example", "下载资源");
+        let progress = ResourceProgress::new(None, "1.21.1");
+        let downloaded = tauri::async_runtime::block_on(download_verified_progress(
             &state,
             &file,
             &directory,
             ResourceKind::Mod,
             client,
+            Some(&progress),
         ))
         .unwrap();
         assert_eq!(server.join().unwrap(), 3);
         assert_eq!(fs::read(downloaded).unwrap(), b"abcdef");
+        let job = &state.control.list()[0];
+        assert_eq!(job.id, task);
+        assert_eq!(job.stage, "resource-download");
+        assert_eq!((job.bytes_completed, job.bytes_total), (6, 6));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
         assert!(root.starts_with(&parent));
         fs::remove_dir_all(root).unwrap();
@@ -1206,7 +2006,6 @@ mod tests {
                 icon_url: Some("icon.png".into()),
                 downloads: Some(100),
                 author: Some("Author".into()),
-                versions: vec!["1.21.1".into()],
                 external_url: None,
             },
             vec![Version {
@@ -1235,8 +2034,13 @@ mod tests {
                 environment: String::new(),
                 files: vec![],
             }],
+            Some(&ResourceContext {
+                game_version: "1.21.1".into(),
+                loader: Some("fabric".into()),
+            }),
         );
         assert_eq!(details.project.downloads, 100);
+        assert_eq!(details.project.versions, ["1.21.1"]);
         assert!(details.versions.iter().all(|version| version.compatible));
         assert_eq!(details.dependencies[0].kind, "required");
         assert_eq!(details.dependencies[1].kind, "unknown");

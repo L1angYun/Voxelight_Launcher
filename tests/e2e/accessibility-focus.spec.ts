@@ -4,6 +4,8 @@ import { writeFile } from "node:fs/promises";
 import { installLauncherFixture } from "./fixtures";
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 import { focusEdgeSamples } from "./helpers/focus-edge-sampling";
+import { captureFocusFrame, installFocusHaloPaintProbe } from "./helpers/focus-halo-capture";
+import { referenceAttempts } from "./helpers/focus-reference-attempts";
 
 const nativeTest = test.extend({
   context: async ({ baseURL }, use) => {
@@ -68,20 +70,63 @@ function readKeyboardStation() {
     halo: halo ? { state: halo.dataset.haloState, opacity: getComputedStyle(halo).opacity } : null };
 }
 
+type KeyboardStation = ReturnType<typeof readKeyboardStation>;
+type VisitedStation = KeyboardStation & { after?: KeyboardStation; edges?: ReturnType<typeof focusEdgeSamples>;
+  screenshot?: string; haloCapture?: Awaited<ReturnType<typeof captureFocusFrame>>["haloCapture"];
+  referenceCapture?: Awaited<ReturnType<typeof captureFocusFrame>>["referenceCapture"]; backgroundAttempts?: unknown[] };
+
+type SampleGeometry = { bounds: { left: number; right: number; top: number; bottom: number };
+  offset: string; width: string; foreground: number[] };
+
+async function sampleAdjacentFocus<T>(page: Page, screenshot: string, initial: T, read: () => Promise<T>,
+  geometry: (value: T) => SampleGeometry, identity: (value: T) => unknown) {
+  const { result, attempts } = await referenceAttempts(async attempt => {
+    const before = attempt === 0 ? initial : await read();
+    const currentScreenshot = attempt === 0 ? screenshot : screenshot.replace(/\.png$/, ".retry-1.png");
+    const g = geometry(before);
+    const { image, referenceImage, haloPaint, haloCapture, referenceCapture } = await captureFocusFrame(page,
+      currentScreenshot, g.bounds, g.offset, g.width);
+    const after = await read();
+    const edges = focusEdgeSamples(image, g.bounds, g.offset, g.width, g.foreground, haloPaint, referenceImage);
+    const record = { before, after, edges, screenshot: currentScreenshot, haloCapture, referenceCapture };
+    await writeFile(currentScreenshot.replace(/\.png$/, ".sampling.json"), JSON.stringify(record, null, 2));
+    // Ring width/color belong to the normal frame. The existing halo can
+    // suppress the native outline later; that reference-time CSS is not a
+    // second measurement of the normal ring. Its layout and focus must hold.
+    expect(geometry(after).bounds, currentScreenshot + " normal/reference bounds").toEqual(g.bounds);
+    expect(identity(after), currentScreenshot + " focus retained").toEqual(identity(before));
+    return record;
+  });
+  return { ...result, backgroundAttempts: attempts.map((attempt, index) => {
+    const deltas = attempt.edges.flatMap(edge => edge.maxBackgroundDelta === null ? [] : [edge.maxBackgroundDelta]);
+    return { index, screenshot: attempt.screenshot, referenceScreenshot: attempt.referenceCapture.screenshot,
+      samplingEvidence: attempt.screenshot.replace(/\.png$/, ".sampling.json"),
+      replacedCount: attempt.edges.reduce((sum, edge) => sum + edge.replacedCount, 0),
+      backgroundCheckApplies: attempt.edges.some(edge => edge.backgroundCheckApplies),
+      maxBackgroundDelta: deltas.length ? Math.max(...deltas) : null,
+      backgroundWithinTolerance: attempt.edges.every(edge => edge.backgroundWithinTolerance),
+      backgroundStable: attempt.edges.every(edge => edge.backgroundStable),
+      retryReason: attempt.edges.some(edge => edge.invalidReason === "background-frame-drift") ? "background-frame-drift" : null,
+    };
+  }) };
+}
+
 async function tabTo(page: Page, target: Locator, evidence?: { info: TestInfo; path: string }) {
-  const visited = [];
+  const visited: VisitedStation[] = [];
   for (let index = 0; index < 60; index++) {
     await page.keyboard.press("Tab");
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    const before = await page.evaluate(readKeyboardStation);
+    const initial = await page.evaluate(readKeyboardStation);
     if (evidence) {
       const name = evidence.path + "-tab-" + String(index).padStart(2, "0");
-      expect(before.bounds, name).toBeTruthy();
+      expect(initial.bounds, name).toBeTruthy();
       const screenshot = evidence.info.outputPath(name + ".png");
-      const png = decodePng(await page.screenshot({ path: screenshot, scale: "css" }));
-      const after = await page.evaluate(readKeyboardStation);
-      const edges = focusEdgeSamples(png, before.bounds!, before.ownerOutlineOffset!, before.ownerOutlineWidth!, before.indicatorRgba.slice(0, 3));
-      const station = { ...before, after, edges, screenshot };
+      const captured = await sampleAdjacentFocus(page, screenshot, initial, () => page.evaluate(readKeyboardStation), value => ({
+        bounds: value.bounds!, offset: value.ownerOutlineOffset!, width: value.ownerOutlineWidth!, foreground: value.indicatorRgba.slice(0, 3),
+      }), value => [value.tag, value.id, value.label, value.focusVisible]);
+      const { before, after, ...details } = captured;
+      const { edges } = captured;
+      const station = { ...before, after, ...details };
       visited.push(station);
       await writeFile(evidence.info.outputPath(name + ".json"), JSON.stringify(station, null, 2));
       expect.soft(before.activeVisible, name).toBe(true);
@@ -99,7 +144,7 @@ async function tabTo(page: Page, target: Locator, evidence?: { info: TestInfo; p
         expect.soft(edge.ratio, name + "/" + edge.side + " median contrast").not.toBeNull();
         if (edge.ratio !== null) expect.soft(edge.ratio, name + "/" + edge.side).toBeGreaterThanOrEqual(3);
       }
-    } else visited.push(before);
+    } else visited.push(initial);
     if (await target.evaluate(element => element === document.activeElement)) return visited;
   }
   throw new Error("Keyboard could not reach target: " + JSON.stringify(visited));
@@ -129,13 +174,14 @@ async function outline(owner: Locator) {
 }
 
 async function inspectFocus(page: Page, owner: Locator, kind: "global" | "input" | "lattice" | "composite", name: string, info: TestInfo) {
-  const sample = await outline(owner);
+  const initial = await outline(owner);
   const screenshot = info.outputPath(`${name}.png`);
-  const png = decodePng(await page.screenshot({ path: screenshot, scale: "css" }));
+  const captured = await sampleAdjacentFocus(page, screenshot, initial, () => outline(owner), value => ({
+    bounds: value.bounds, offset: value.outlineOffset, width: value.outlineWidth, foreground: value.rgb,
+  }), value => [value.focusVisible, value.indicatorColor]);
+  const { before: sample, after, edges, ...details } = captured;
   // Read pixels outside the visible ring, away from its antialiasing and the
   // control's own content. These are the actual adjacent compositor surfaces.
-  const edges = focusEdgeSamples(png, sample.bounds, sample.outlineOffset, sample.outlineWidth, sample.rgb);
-  const after = await outline(owner);
   expect.soft(sample.visible, name).toBe(true);
   expect.soft(sample.bounds.width, name).toBeGreaterThan(0);
   expect.soft(sample.bounds.height, name).toBeGreaterThan(0);
@@ -154,7 +200,7 @@ async function inspectFocus(page: Page, owner: Locator, kind: "global" | "input"
     expect.soft(edge.ratio, name + "/" + edge.side + " median contrast").not.toBeNull();
     if (edge.ratio !== null) expect.soft(edge.ratio, name + "/" + edge.side).toBeGreaterThanOrEqual(3);
   }
-  return { kind, name, ...sample, after, edges, screenshot };
+  return { kind, name, ...sample, after, edges, ...details };
 }
 
 for (const mode of ["full", "lite", "reduced"] as const) {
@@ -163,6 +209,7 @@ for (const mode of ["full", "lite", "reduced"] as const) {
     await page.setViewportSize({ width: 1280, height: 720 });
     if (mode === "reduced") await page.emulateMedia({ reducedMotion: "reduce" });
     await installLauncherFixture(page, { theme: "light", effects: mode === "lite" ? "lite" : "full", instanceCount: 2 });
+    await installFocusHaloPaintProbe(page);
     await page.goto("/");
     await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
     await page.evaluate(() => document.fonts.ready.then(() => undefined));
@@ -211,6 +258,33 @@ for (const mode of ["full", "lite", "reduced"] as const) {
     }
   });
 }
+
+nativeTest("R3-3 ruled focus sampling: the previously failing Close station retains its exact geometry", async ({ page }, info) => {
+  nativeTest.setTimeout(120000);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installLauncherFixture(page, { theme: "light", effects: "full", instanceCount: 2 });
+  await installFocusHaloPaintProbe(page);
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const close = page.locator(".vx-window-chrome__controls").getByRole("button", { name: "关闭", exact: true });
+  const visited = await tabTo(page, close, { info, path: "close-site" });
+  const station = visited.at(-1)!;
+  expect(station.label).toBe("关闭");
+  expect(station.bounds).toMatchObject({ left: 1215, top: 22, right: 1253, bottom: 60 });
+  expect(station.edges!.map(edge => edge.distance)).toEqual([6, 5, 6, 5]);
+  expect(station.edges![0].points.map(point => point.x)).toEqual(Array(38).fill(1209));
+  for (const edge of station.edges!) {
+    expect(edge.replacedPoints.every(point => point.haloAlpha! > 0)).toBe(true);
+    expect(edge.unaffectedPoints.every(point => point.haloAlpha === 0)).toBe(true);
+    expect(edge.backgroundStable).toBe(true);
+    if (edge.backgroundCheckApplies && edge.maxBackgroundDelta !== null)
+      expect(edge.maxBackgroundDelta).toBeLessThanOrEqual(8);
+  }
+  await writeFile(info.outputPath("failed-close-site.json"), JSON.stringify({
+    ruling: "normal alpha>0 uses immediate halo-hidden reference; drift>8 retries once; original geometry and 3:1 retained", visited,
+  }, null, 2));
+});
 
 nativeTest("R2-01 en light 1050 downloads completed columns have three-to-one contrast", async ({ page }, info) => {
   await page.setViewportSize({ width: 1050, height: 720 });

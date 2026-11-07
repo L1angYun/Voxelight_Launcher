@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, Box, Layers3, Package, Search, Sparkles } from "lucide-react";
 import { useLauncher } from "../../app/controller/LauncherProvider";
@@ -10,6 +10,7 @@ import { ProjectCard } from "./ProjectCard";
 import { ProjectDetailsDrawer } from "./ProjectDetailsDrawer";
 import { CreateInstanceDialog } from "../library/CreateInstanceDialog";
 import { useDiscover } from "./useDiscover";
+import { InstallTargetDialog } from "./InstallTargetDialog";
 import type { ResourceProject } from "../../lib/launcher";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { Segmented } from "../../components/ui/Segmented";
@@ -23,26 +24,29 @@ import "./discover.css";
 const resourceTypes = ["mod", "resourcepack", "shader", "modpack"] as const;
 const resourceIcons = { mod: Box, resourcepack: Layers3, shader: Sparkles, modpack: Package };
 
-export function DiscoverPage() {
+export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
   const { t, i18n } = useTranslation();
   const { data, selectedVersionId, selectedInstance, selectInstance, selectVersion } = useLauncher();
   const { play } = useOverture();
   const { notify } = useToast();
   const lastModpack = useRef<ResourceProject | undefined>(undefined);
   const [creating, setCreating] = useState(false);
-  const discover = useDiscover();
+  const discover = useDiscover({
+    onNotice: code => {
+      notify({ message: t("discover:notice." + code), kind: "success" });
+      if (code === "resourceInstalledNew") play({ id: "discover-resource-instance-" + Date.now(), kind: "instance-installed" });
+    },
+    onFeedback: next => notify({ message: errorText(next.error.code, t), kind: next.kind,
+      action: next.retry ? { label: t("common:actions.retry"), onClick: next.retry } : undefined }),
+  });
   const {
     source, setSource, resourceType, setResourceType, query, setQuery, setSearch,
-    resources, loading, stale, resultKey, error, notice, selectedProject, details, detailsLoading, detailsError,
-    modpackProject, setModpackProject, loadProject, closeProject, installProject, installed, clearNotice,
+    resources, loading, stale, resultKey, error, selectedProject, details, detailsLoading, detailsError,
+    modpackProject, setModpackProject, loadProject, closeProject, installProject, installed,
+    targetFlow, closeTarget, installInto, createAndInstall, context,
   } = discover;
   const createOpen = Boolean(modpackProject || creating);
   if (createOpen) lastModpack.current = modpackProject;
-  useEffect(() => {
-    if (!notice) return;
-    notify({ message: t("discover:notice." + notice), kind: "success" });
-    clearNotice();
-  }, [clearNotice, notice, notify, t]);
   const targetName = selectedInstance?.name || (selectedVersionId ? t("library:versionDirectory") + " · " + selectedVersionId : t("discover:versionDirectory"));
 
   async function installedWithOverture(versionId: string, instanceId?: string) {
@@ -69,10 +73,11 @@ export function DiscoverPage() {
               ]} />
             </label>
             <dl className="vx-discover-context">
-              <div><dt>{t("library:version")}</dt><dd>{selectedVersionId || "—"}</dd></div>
-              <div><dt>{t("library:loader")}</dt><dd>{selectedInstance?.loader || (selectedVersionId ? "Vanilla" : "—")}</dd></div>
+              <div><dt>{t("library:version")}</dt><dd>{context?.gameVersion || "—"}</dd></div>
+              <div><dt>{t("library:loader")}</dt><dd>{context?.loader || (context ? "Vanilla" : "—")}</dd></div>
             </dl>
             {!selectedVersionId ? <Button variant="secondary" onClick={() => setCreating(true)}>{t("library:createInstance")}</Button> : null}
+            {resourceType === "shader" ? <p className="vx-install-target__warning" role="note">{t("discover:installTarget.shaderWarning")}</p> : null}
           </div>
           <label className="vx-discover-source"><span>{t("discover:source")}</span>
             <Select
@@ -111,6 +116,8 @@ export function DiscoverPage() {
         </section>
       </div>
       <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} onInstall={() => selectedProject && installProject(selectedProject)} onClose={closeProject} />
+      <InstallTargetDialog flow={targetFlow} onClose={closeTarget} onInstall={installInto} onCreate={createAndInstall}
+        onCreateInstance={() => setCreating(true)} onDownloads={onDownloads} />
       <CreateInstanceDialog project={createOpen ? modpackProject : lastModpack.current} open={createOpen}
         onOpenChange={(open) => { if (!open) { setModpackProject(undefined); setCreating(false); } }} onInstalled={installedWithOverture} />
     </PageShell>

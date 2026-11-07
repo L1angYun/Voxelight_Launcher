@@ -3,8 +3,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { selectValue } from "./select-helpers";
+import { evidenceDirectory } from "./helpers/evidence-directory";
 
-const evidence = resolve(process.env.VOXELIGHT_E2E_EVIDENCE ?? "test-results/reference-alignment");
+const evidence = evidenceDirectory("reference-alignment");
 
 for (const [width, height] of [[1440, 930], [1050, 720]]) {
   test(`settings navigation height stays constant through all six sections at ${width}`, async ({ page }) => {

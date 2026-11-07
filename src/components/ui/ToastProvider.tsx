@@ -3,11 +3,11 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
-import { IconButton } from "./Button";
+import { Button, IconButton } from "./Button";
 import { motionDuration, MOTION, type MotionTier } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 
-export interface ToastMessage { message: string; kind?: "info" | "error" | "success"; id?: string; onDismiss?: () => void }
+export interface ToastMessage { message: string; kind?: "info" | "error" | "success"; id?: string; onDismiss?: () => void; action?: { label: string; onClick: () => void } }
 interface ToastEntry extends ToastMessage { id: string; revision: number }
 const empty = { notify: (_message: ToastMessage) => {}, dismiss: (_id?: string) => {} };
 const ToastContext = createContext(empty);
@@ -29,7 +29,7 @@ const Notification = forwardRef<HTMLDivElement, {
     exit={{ opacity: 0, transform: tier === "full" ? `translateY(${MOTION.toast.offset}px)` : "none",
       transition: { duration: motionDuration(tier, "exit"), ease: MOTION.easeExit } }}
     transition={{ duration: motionDuration(tier, "enter"), ease: MOTION.ease }}>
-    <span>{toast.message}</span><IconButton label={dismissLabel} icon={<X size={16} />} disabled={!present}
+    <span>{toast.message}</span>{toast.action ? <Button size="sm" variant="ghost" disabled={!present} onClick={() => { dismiss(toast.id, toast.revision); toast.action?.onClick(); }}>{toast.action.label}</Button> : null}<IconButton label={dismissLabel} icon={<X size={16} />} disabled={!present}
       onClick={() => dismiss(toast.id, toast.revision)} />
   </motion.div>;
 });

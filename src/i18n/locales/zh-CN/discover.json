@@ -31,8 +31,41 @@
     "unknown": "未知关系"
   },
   "external": "打开项目页面",
+  "installTarget": {
+    "newInstance": "新建实例",
+    "title": "选择安装位置 · {{title}}",
+    "compatible": "兼容的安装位置",
+    "incompatible": "不兼容 ({{count}})",
+    "installInto": "安装到 {{name}}",
+    "createAndInstall": "创建并安装",
+    "gameVersion": "游戏版本",
+    "loaderVersion": "加载器版本",
+    "name": "实例名称",
+    "recommended": "推荐",
+    "summary": "将安装 {{loader}} {{loaderVersion}}、Minecraft {{gameVersion}}，然后安装 {{title}} 及必需前置。",
+    "noLoaderVersions": "此游戏版本没有可安装的加载器版本，请选择其他游戏版本。",
+    "shaderWarning": "光影需要兼容的渲染加载器（如 Iris 或 OptiFine）。请自行安装；此操作不会自动安装 Iris。",
+    "creating": "正在创建实例并安装资源…",
+    "downloads": "在下载中查看",
+    "cancel": "取消安装",
+    "waitForTask": "安装任务尚未开始，请稍后再取消。",
+    "curseforge": "请先创建兼容的实例，再选择该实例安装此 CurseForge 项目。",
+    "reason": {
+      "vanilla": "原版，无法加载模组",
+      "loaderMismatch": "加载器不兼容",
+      "gameVersionMismatch": "游戏版本不兼容",
+      "running": "实例正在运行",
+      "metadataMissing": "无法读取版本信息"
+    },
+    "unsupported": {
+      "datapack": "数据包需安装到存档 datapacks 目录，暂不支持",
+      "noSupportedLoader": "该项目没有 Fabric、NeoForge、Forge 或 Quilt 版本",
+      "noVersions": "没有可下载版本"
+    }
+  },
   "notice": {
     "resourceInstalled": "资源已安装。",
-    "instanceInstalled": "实例已安装完成。"
+    "instanceInstalled": "实例已安装完成。",
+    "resourceInstalledNew": "资源已安装到新实例。"
   }
 }

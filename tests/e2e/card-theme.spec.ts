@@ -3,8 +3,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { captureWorld } from "./helpers/world-image";
+import { evidenceDirectory } from "./helpers/evidence-directory";
 
-const evidence = resolve(process.env.VOXELIGHT_E2E_EVIDENCE ?? "test-results", "card-theme");
+const evidence = evidenceDirectory("card-theme");
 test.beforeEach(async ({ page }) => {
   await mkdir(evidence, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 930 });
