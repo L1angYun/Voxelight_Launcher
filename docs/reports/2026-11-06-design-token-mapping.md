@@ -132,6 +132,12 @@ R2-16明确保护的15／17／19px保持数值，改用描述用途的名称。�
 | 101 | src/features/settings/settings.css | .vx-settings-section > header h2 | font-size | var(--text-lg) | var(--text-xl) | 16→20（+4） |
 | 102 | src/design/tokens.css | :root | --type-section | var(--weight-strong) var(--text-lg)/1.5 var(--font-ui) | var(--weight-strong) var(--text-xl)/1.5 var(--font-ui) | 16→20（+4） |
 
+## 6921a83 复核后的区块标题裁定
+
+上表保留历史102条替换，不将当时的16→20当作最终值。第12–15、22、93–94、97、99–102条涉及区块角色的字号最终均为16px；R2-14 服务器详情等实体标题仍为20px；第99条涉及的托管服务器名称是实体，保持20px，只有同条控制台区块回到16px。R2-16 与此区分一致。
+
+补记原附录遗漏：`.vx-detail-section h2` 在 6921a83 把继承的16px/1.35改为 `--type-section` 的20px/1.5；本次恢复16px/1.35。该条是历史漏项说明，不重写当时按像素别名统计的102条。
+
 ## 完整套件后的两处局部修正
 
 首次304项完整运行提供真实RED：full／Lite／减少动态collapsedGap24超出原18–22；导入panel204.59375不等于原197；1050／1280 commandbar view padding4不等于原2。修复只改产品，相关测试及数值断言未修改。`geometry-contract-green.json`重跑原6个失败及5个相邻用例，11/11通过、34.2秒、0失败／跳过／flaky。

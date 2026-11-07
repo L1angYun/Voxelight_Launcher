@@ -16,11 +16,11 @@ interface Oklch {
 }
 
 const DEFAULT_ACCENT = "#b4f17a";
-// Revision 7: darkest of 576 complete adjacent edge medians is (222,220,214),
-// below the full-mode Home tab. Subtract four per channel; individual glyph
-// and divider pixels are diagnostic only. Ink retains its original surfaces.
-// Evidence: E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/revision7-edge-reference.json
-const LIGHT_INDICATOR_COMPOSITE_REFERENCE = "#dad8d2";
+// Revision 7, corrected edge coordinates: the darkest of 576 adjacent
+// medians is (223,221.5,215.5), left of the full-mode Close control.
+// Subtract four per channel and round down to an 8-bit color. Ink is unchanged.
+// Evidence: E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/follow-ups/focus/recomputed-reference.json
+const LIGHT_INDICATOR_COMPOSITE_REFERENCE = "#dbd9d3";
 
 function clamp(value: number, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));

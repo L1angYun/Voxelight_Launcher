@@ -7,10 +7,16 @@ describe("accent color roles", () => {
     expect(scale.base).toBe(color);
     expect(scale.indicator).toMatch(/^#[0-9a-f]{6}$/);
     // Revision 7 uses complete edge medians, rather than individual foreground pixels.
-    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0", "#dad8d2"])
+    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0", "#dbd9d3"])
       expect(contrast(scale.indicator, surface)).toBeGreaterThanOrEqual(3);
     // Against black, contrast is strictly increasing with relative luminance.
     expect(contrast(scale.indicator, "#000000")).toBeGreaterThanOrEqual(contrast(scale.ink, "#000000"));
+  });
+
+  it("uses the recalibrated light indicator for the default accent without changing ink", () => {
+    const scale = buildAccentScale("#b4f17a", "light");
+    expect(scale.indicator).toBe("#538900");
+    expect(scale.ink).toBe("#3f7400");
   });
 
   it("preserves the exact chosen indicator color in dark mode", () => {

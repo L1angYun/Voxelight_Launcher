@@ -30,6 +30,12 @@ function pixelEncodedToken(name) {
     || /^--(?:text|radius)-\d+(?:$|-)/.test(name)
     || /^--space-\d+$/.test(name) && !spacingScale.has(name);
 }
+function repeatsPixelValue(name, value) {
+  if (!name.startsWith("--") || spacingScale.has(name)) return false;
+  const suffix = /(\d+)$/.exec(name);
+  const pixels = /^\+?(\d+(?:\.\d*)?|\.\d+)px$/i.exec(value.trim());
+  return Boolean(suffix && pixels && Number(suffix[1]) === Number(pixels[1]));
+}
 function variableReferences(value) {
   const names = []; let quote = "";
   for (let at = 0; at < value.length; at++) {
@@ -111,7 +117,8 @@ export function inspectStylesheet(css, filename) {
   sheet.walkDecls(declaration => {
     const label = `${filename}:${declaration.source?.start?.line ?? "?"}`;
     const names = [declaration.prop, ...variableReferences(declaration.value)];
-    for (const name of new Set(names.filter(pixelEncodedToken)))
+    for (const name of new Set(names.filter(name => pixelEncodedToken(name)
+      || name === declaration.prop && repeatsPixelValue(name, declaration.value))))
       errors.push(`${label}: pixel-encoded custom property is not a design scale (${name})`);
     if (spacingScale.has(declaration.prop) && declaration.value !== spacingScale.get(declaration.prop))
       errors.push(`${label}: ${declaration.prop} must retain its scale value ${spacingScale.get(declaration.prop)}`);

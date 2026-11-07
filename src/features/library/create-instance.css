@@ -8,7 +8,10 @@
 .vx-create-loader-group { min-width: 0; }
 .vx-create-loader-slot { display: grid; grid-template-rows: 0fr; margin-block-start: 0; transition: grid-template-rows var(--duration-normal) var(--ease-out), margin-block-start var(--duration-normal) var(--ease-out); }
 .vx-create-loader-slot[data-expanded="true"] { grid-template-rows: 1fr; margin-block-start: 20px; }
-.vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 6px 6px; margin: 0 -6px -6px; }
+.vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 6px; margin: 0 -6px; }
+/* Give the focus outline room only while the slot is open; bottom padding
+   otherwise paints a strip of the label even when the grid track is 0fr. */
+.vx-create-loader-slot[data-expanded="true"] > .vx-create-loader-slot__content { padding-block-end: 6px; margin-block-end: -6px; }
 .vx-create-loader-status { position: absolute; inset-inline-start: 18px; inset-block-end: 18px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); pointer-events: none; }
 .vx-create-panel:not([data-section-motion="full"]) .vx-create-loader-slot { transition: none; }
 .vx-check-row {

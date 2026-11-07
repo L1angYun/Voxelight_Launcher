@@ -24,9 +24,9 @@ nativeTest.afterEach(async ({ page }, info) => {
   expect(runtime.dpr).toBe(1);
 });
 
-async function prepare(page: Page, width = 1440, stress = false) {
+async function prepare(page: Page, width = 1440, stress = false, overrides: { language?: "en-US"; firstInstanceName?: string } = {}) {
   await page.setViewportSize({ width, height: width <= 1150 ? 720 : width === 1920 ? 1080 : 930 });
-  await installLauncherFixture(page, { theme: "dark", instanceCount: 2, stress });
+  await installLauncherFixture(page, { theme: "dark", instanceCount: 2, stress, ...overrides });
   await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({
     contentType: "application/json", body: JSON.stringify({ hits: [] }),
   }));
@@ -107,32 +107,72 @@ nativeTest("R2-17 zh dark Discover selectors expose matching surfaces and Settin
   expect(fields.input).toEqual(fields.select);
 });
 
-nativeTest("R2-14 content h2 uses 20px and each page reserves its only 28px text for h1", async ({ page }, info) => {
+nativeTest("R2-14 server entity h2 uses 20px while R2-16 sections use 16px", async ({ page }, info) => {
   nativeTest.setTimeout(120000);
-  await prepare(page);
+  await prepare(page, 1050, true);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await navigate(page, "multiplayer");
+  await expect(page.locator('[data-page-stage="multiplayer"] h1')).toHaveText("Multiplayer");
+  const serverTitle = page.locator(".vx-server-row__copy h2");
+  await expect(serverTitle).toHaveText("Community Survival & Creative Building Server — Europe West With A Very Long But Valid Name");
+  await expect(serverTitle).toBeVisible();
+  const server = await serverTitle.evaluate(element => {
+    const css = getComputedStyle(element);
+    return { text: element.textContent, size: parseFloat(css.fontSize), lineHeight: parseFloat(css.lineHeight),
+      height: element.getBoundingClientRect().height };
+  });
+  await page.screenshot({ path: info.outputPath("en-dark-1050-server-title.png"), scale: "css" });
+  expect.soft(server.size).toBe(20);
+  expect.soft(server.height).toBeGreaterThan(0);
+  expect.soft(server.height).toBeLessThanOrEqual(2 * server.lineHeight);
+  await expect(page.locator(".vx-server-inventory > h2")).toHaveCount(1);
+  const managedTab = page.getByRole("tab", { name: "Managed servers" });
+  const serversTab = page.getByRole("tab", { name: "Servers", exact: true });
+  await managedTab.click();
+  const managedTitle = page.locator(".vx-managed-overview h2");
+  const managedConsole = page.locator(".vx-managed-console h2");
+  await expect(managedTitle).toHaveText(server.text!);
+  await expect(managedTitle).toBeVisible();
+  await expect(managedConsole).toBeVisible();
+  const size = (element: Element) => parseFloat(getComputedStyle(element).fontSize);
+  const managed = { entity: await managedTitle.evaluate(size), console: await managedConsole.evaluate(size) };
+  expect.soft(managed.entity, "the managed server's name is an entity title").toBe(20);
+  expect.soft(managed.console, "the console is a section").toBe(16);
+  await serversTab.click();
+  await expect(serverTitle).toBeVisible();
   const rows = [];
   for (const destination of ["library", "discover", "multiplayer", "downloads", "accounts", "settings"]) {
     await navigate(page, destination);
     rows.push(await page.locator(`[data-page-stage="${destination}"]`).evaluate((stage, pageId) => {
       const shown = (element: Element) => element.checkVisibility({ opacityProperty: true, visibilityProperty: true })
         && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-      const h2 = [...stage.querySelectorAll("h2")].filter(shown).map(element => ({ text: element.textContent, size: parseFloat(getComputedStyle(element).fontSize) }));
+      const h2 = [...stage.querySelectorAll("h2")].filter(shown).map(element => ({
+        text: element.textContent, size: parseFloat(getComputedStyle(element).fontSize),
+        role: element.matches(".vx-server-row__copy h2") ? "entity" : "section",
+      }));
       const large = [...stage.querySelectorAll("*")].filter(element => shown(element)
         && [...element.childNodes].some(node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())
         && parseFloat(getComputedStyle(element).fontSize) === 28).map(element => ({ tag: element.tagName, text: element.textContent }));
       return { page: pageId, h2, large };
     }, destination));
   }
-  await openFirstInstance(page);
-  const detail = await page.locator(".vx-detail-workspace h2").evaluateAll(elements => elements.map(element => ({ text: element.textContent, size: parseFloat(getComputedStyle(element).fontSize) })));
-  await writeFile(info.outputPath("heading-scale.json"), JSON.stringify({ rows, detail }, null, 2));
+  await navigate(page, "library");
+  await page.locator('.vx-instance-card[data-instance-id="long-instance"] .vx-instance-card__select').click();
+  await expect(page.locator(".vx-detail-workspace")).toHaveCSS("opacity", "1");
+  const detail = await page.locator(".vx-detail-section h2").evaluateAll(elements => elements.map(element => ({
+    text: element.textContent, size: parseFloat(getComputedStyle(element).fontSize), lineHeight: parseFloat(getComputedStyle(element).lineHeight),
+  })));
+  await writeFile(info.outputPath("heading-scale.json"), JSON.stringify({ server, managed, rows, detail }, null, 2));
   for (const row of rows) {
     expect.soft(row.large, `${row.page} 28px text`).toHaveLength(1);
     expect.soft(row.large[0]?.tag, row.page).toBe("H1");
-    for (const heading of row.h2) expect.soft(heading.size, `${row.page}/${heading.text}`).toBe(20);
+    for (const heading of row.h2) expect.soft(heading.size, `${row.page}/${heading.text}`).toBe(heading.role === "entity" ? 20 : 16);
   }
   expect(detail.length).toBeGreaterThan(0);
-  for (const heading of detail) expect.soft(heading.size, `detail/${heading.text}`).toBe(20);
+  for (const heading of detail) {
+    expect.soft(heading.size, `detail/${heading.text}`).toBe(16);
+    expect.soft(heading.lineHeight, `detail/${heading.text}`).toBeCloseTo(16 * 1.35, 2);
+  }
 });
 
 nativeTest("R2-26 unchanged 1920 stress fixture records the full directory-tail budget", async ({ page }, info) => {
@@ -152,13 +192,21 @@ nativeTest("R2-26 unchanged 1920 stress fixture records the full directory-tail 
 });
 
 nativeTest("R2-26 common names fit their actual scroll box without line-clamp hiding overflow", async ({ page }, info) => {
-  await prepare(page, 1920); await navigate(page, "library");
+  const wrapped = "Western Wilderness Workshop District";
+  await prepare(page, 1920, false, { language: "en-US", firstInstanceName: wrapped }); await navigate(page, "library");
+  await expect(page.locator('[data-page-stage="library"] h1')).toHaveText("Library");
   const names = await page.locator(".vx-instance-card[data-instance-id] .vx-instance-card__name").evaluateAll(elements => elements.map(element => ({
     text: element.textContent, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight,
     scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
+    lineHeight: parseFloat(getComputedStyle(element).lineHeight),
+    height: element.getBoundingClientRect().height,
   })));
   await writeFile(info.outputPath("common-name-overflow.json"), JSON.stringify(names, null, 2));
+  await page.screenshot({ path: info.outputPath("common-name-overflow.png"), scale: "css" });
   expect(names).toHaveLength(2);
+  const twoLine = names.find(name => name.text === wrapped);
+  expect(twoLine).toBeDefined();
+  expect(twoLine!.height / twoLine!.lineHeight).toBeCloseTo(2, 2);
   for (const name of names) {
     expect(name.scrollHeight, name.text!).toBeLessThanOrEqual(name.clientHeight);
     expect(name.scrollWidth, name.text!).toBeLessThanOrEqual(name.clientWidth);

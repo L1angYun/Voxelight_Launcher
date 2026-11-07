@@ -33,6 +33,7 @@
   .vx-detail-section:first-child { padding-top: 0; }
   .vx-detail-section h2 {
     font: var(--type-section);
+    line-height: 1.35;
     color: var(--text-primary);
   }
   .vx-detail-section p,
