@@ -23,7 +23,15 @@ const XBOX_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_API: &str = "https://api.minecraftservices.com";
 const SCOPE: &str = "XboxLive.signin offline_access";
-const CLIENT_HELP: &str = "请先在设置中填写你自己合法注册的 Microsoft 应用 Client ID，并为个人 Microsoft 账号开启公共客户端/设备代码流；Minecraft/Xbox 服务可能还要求应用准入。不能使用其它启动器的 Client ID。";
+pub const CLIENT_MISSING: &str = "请先在设置中填写你自己合法注册的 Microsoft 应用 Client ID，并为个人 Microsoft 账号开启公共客户端/设备代码流；Minecraft/Xbox 服务可能还要求应用准入。不能使用其它启动器的 Client ID。";
+pub const CLIENT_REJECTED: &str =
+    "Microsoft 应用配置被拒绝，请开启公共客户端流并支持个人 Microsoft 账号，再重试登录。";
+pub const APP_NOT_APPROVED: &str = "Microsoft 账号已登录成功，但此应用尚未通过 Mojang 的 Minecraft API 审核。请完成应用审核或使用已获准的 Client ID。";
+pub const MC_RATE_LIMITED: &str = "Minecraft 认证请求过于频繁，请稍后重试。";
+pub const MC_EXCHANGE_FAILED: &str =
+    "Minecraft 令牌交换失败，请检查应用的 Minecraft 服务准入与账号权限";
+pub const XBOX_FAILED: &str =
+    "Xbox Live 认证失败，请检查账号档案、账号限制和应用的 Xbox/Minecraft 访问权限。";
 
 enum RequestBody {
     Empty,
@@ -221,7 +229,7 @@ impl AuthService {
     pub async fn begin_microsoft(&self, client_id: &str) -> Result<DeviceLogin, String> {
         let client_id = client_id.trim();
         if uuid::Uuid::parse_str(client_id).is_err() {
-            return Err(CLIENT_HELP.into());
+            return Err(CLIENT_MISSING.into());
         }
         let response = self
             .transport
@@ -430,7 +438,7 @@ impl AuthService {
     ) -> Result<(CredentialRecord, PlayerProfile), String> {
         let xbox = self.transport.send(AuthRequest::json("POST",XBOX_URL,json!({"Properties":{"AuthMethod":"RPS","SiteName":"user.auth.xboxlive.com","RpsTicket":format!("d={}",token.access_token)},"RelyingParty":"http://auth.xboxlive.com","TokenType":"JWT"}))).await?;
         if xbox.status != 200 {
-            return Err("Xbox Live 认证失败，请确认账号已建立 Xbox 档案，且此应用有合法的 Xbox/Minecraft 访问权限".into());
+            return Err(XBOX_FAILED.into());
         }
         let xbox_token = string_field(&xbox.body, "Token")?;
         let xsts = self.transport.send(AuthRequest::json("POST",XSTS_URL,json!({"Properties":{"SandboxId":"RETAIL","UserTokens":[xbox_token]},"RelyingParty":"rp://api.minecraftservices.com/","TokenType":"JWT"}))).await?;
@@ -459,7 +467,7 @@ impl AuthService {
             ))
             .await?;
         if minecraft.status != 200 {
-            return Err("Minecraft 令牌交换失败，请检查应用的 Minecraft 服务准入与账号权限".into());
+            return Err(minecraft_login_error(minecraft.status, &minecraft.body));
         }
         let access_token = string_field(&minecraft.body, "access_token")?;
         let lifetime = minecraft.body["expires_in"]
@@ -868,7 +876,10 @@ impl AuthService {
 
     async fn refresh_record(&self, record: CredentialRecord) -> Result<CredentialRecord, String> {
         let mut next = if record.account_type == "microsoft" {
-            let client_id = record.microsoft_client_id.as_deref().ok_or(CLIENT_HELP)?;
+            let client_id = record
+                .microsoft_client_id
+                .as_deref()
+                .ok_or(CLIENT_MISSING)?;
             let old_refresh = record
                 .refresh_token
                 .as_deref()
@@ -1155,8 +1166,21 @@ fn oauth_error(value: &Value) -> String {
         "invalid_grant" | "interaction_required" => {
             "登录授权已失效或需要重新确认，请重新登录".into()
         }
-        "invalid_client" | "unauthorized_client" | "invalid_scope" => CLIENT_HELP.into(),
+        "invalid_client" | "unauthorized_client" | "invalid_scope" => CLIENT_REJECTED.into(),
         _ => "Microsoft 授权失败，请检查应用配置与网络后重试".into(),
+    }
+}
+fn minecraft_login_error(status: u16, body: &Value) -> String {
+    if status == 403
+        && body["errorMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains("Invalid app registration"))
+    {
+        APP_NOT_APPROVED.into()
+    } else if status == 429 {
+        MC_RATE_LIMITED.into()
+    } else {
+        MC_EXCHANGE_FAILED.into()
     }
 }
 fn xsts_error(value: &Value) -> String {
@@ -1169,7 +1193,7 @@ fn xsts_error(value: &Value) -> String {
             "Xbox 要求完成年龄或成人身份验证，请到 Xbox 官网处理".into()
         }
         Some(2148916238) => "此儿童账号需要加入 Microsoft 家庭并获得监护人许可".into(),
-        _ => "Xbox XSTS 授权失败，请检查账号限制和应用准入".into(),
+        _ => XBOX_FAILED.into(),
     }
 }
 fn authlib_error(status: u16) -> String {
@@ -1531,6 +1555,145 @@ mod tests {
             authlib_server: Some("https://auth.example.invalid/api/".into()),
             client_token: Some("test-client-token".into()),
         }
+    }
+
+    #[test]
+    fn builtin_client_id_is_sent_in_the_device_oauth_form() {
+        run(async {
+            let (service, transport, _) = service(vec![Box::new(|request| {
+                assert_eq!(request.url, DEVICE_URL);
+                let RequestBody::Form(form) = request.body else {
+                    panic!("expected form")
+                };
+                assert!(form.contains(&(
+                    "client_id".into(),
+                    "11111111-1111-1111-1111-111111111111".into()
+                )));
+                Ok(AuthResponse {
+                    status: 200,
+                    body: json!({"device_code":"test-device-secret","user_code":"TEST-CODE","verification_uri":"https://microsoft.com/devicelogin","expires_in":900,"interval":5}),
+                })
+            })]);
+            let config = crate::models::Config::default();
+            let client = crate::auth_commands::effective_client_id(
+                &config,
+                Some("11111111-1111-1111-1111-111111111111"),
+            );
+            service.begin_microsoft(&client).await.unwrap();
+            assert_eq!(transport.calls.lock().unwrap().len(), 1);
+            transport.done();
+            let absent = crate::auth_commands::effective_client_id(&config, None);
+            assert!(service.begin_microsoft(&absent).await.is_err());
+            assert_eq!(transport.calls.lock().unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn oauth_client_rejections_have_a_stable_error_code() {
+        for error in ["invalid_client", "unauthorized_client", "invalid_scope"] {
+            assert_eq!(
+                crate::errors::expected(oauth_error(&json!({"error":error}))).code,
+                "auth.clientRejected"
+            );
+        }
+    }
+
+    #[test]
+    fn minecraft_app_not_approved_does_not_save_credentials() {
+        run(async {
+            let mut steps = vec![device_step(), token_step()];
+            steps.extend(exchange_steps().into_iter().take(2));
+            steps.push(reply(
+                &format!("{MC_API}/authentication/login_with_xbox"),
+                403,
+                json!({"errorMessage":"Invalid app registration, see https://aka.ms/AppRegInfo for more information"}),
+            ));
+            let (service, transport, secrets) = service(steps);
+            let login = service
+                .begin_microsoft("11111111-1111-1111-1111-111111111111")
+                .await
+                .unwrap();
+            due(&service, &login.session_id);
+            let error = service
+                .poll_microsoft(&login.session_id)
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error, APP_NOT_APPROVED);
+            assert_eq!(crate::errors::expected(error).code, "auth.appNotApproved");
+            assert!(secrets.entries.lock().unwrap().is_empty());
+            transport.done();
+        });
+    }
+
+    #[test]
+    fn microsoft_exchange_failures_have_stable_error_codes() {
+        run(async {
+            for (status, body, code) in [
+                (429, json!({}), "auth.rateLimited"),
+                (
+                    403,
+                    json!({"errorMessage":"another failure"}),
+                    "auth.minecraftExchangeFailed",
+                ),
+                (
+                    500,
+                    json!({"errorMessage":"Invalid app registration"}),
+                    "auth.minecraftExchangeFailed",
+                ),
+            ] {
+                let mut steps = vec![device_step(), token_step()];
+                steps.extend(exchange_steps().into_iter().take(2));
+                steps.push(reply(
+                    &format!("{MC_API}/authentication/login_with_xbox"),
+                    status,
+                    body,
+                ));
+                let (service, transport, secrets) = service(steps);
+                let login = service
+                    .begin_microsoft("11111111-1111-1111-1111-111111111111")
+                    .await
+                    .unwrap();
+                due(&service, &login.session_id);
+                let error = service
+                    .poll_microsoft(&login.session_id)
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(crate::errors::expected(error).code, code);
+                assert!(secrets.entries.lock().unwrap().is_empty());
+                transport.done();
+            }
+        });
+    }
+
+    #[test]
+    fn xbox_failures_have_a_stable_error_code() {
+        run(async {
+            for xsts_failure in [false, true] {
+                let mut steps = vec![device_step(), token_step()];
+                if xsts_failure {
+                    steps.extend(exchange_steps().into_iter().take(1));
+                    steps.push(reply(XSTS_URL, 403, json!({})));
+                } else {
+                    steps.push(reply(XBOX_URL, 403, json!({})));
+                }
+                let (service, transport, secrets) = service(steps);
+                let login = service
+                    .begin_microsoft("11111111-1111-1111-1111-111111111111")
+                    .await
+                    .unwrap();
+                due(&service, &login.session_id);
+                let error = service
+                    .poll_microsoft(&login.session_id)
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(crate::errors::expected(error).code, "auth.xboxFailed");
+                assert!(secrets.entries.lock().unwrap().is_empty());
+                transport.done();
+            }
+        });
     }
 
     #[test]

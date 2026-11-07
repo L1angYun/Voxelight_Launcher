@@ -262,6 +262,29 @@ describe("global settings", () => {
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ microsoftClientId: "22222222-2222-2222-2222-222222222222" }));
   });
 
+  it("labels the Client ID as optional when a built-in Microsoft app is available", async () => {
+    mockLauncher.config.microsoftClientId = "";
+    commandMock.mockImplementationOnce(async () => ({ curseforgeConfigured: false, microsoftBuiltin: true }));
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Microsoft Client ID"]')!;
+    expect(input.closest("label")?.textContent).toContain("Microsoft Client ID (optional)");
+    expect(input.placeholder).toBe("Leave empty to use the built-in app");
+    expect(input.value).toBe("");
+    expect(container.textContent).toContain("A built-in Microsoft app is available. Leave this field empty to use it.");
+    await click("Game");
+    await fill("Game window width", "1600");
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ microsoftClientId: "" }));
+  });
+
+  it("keeps the existing Client ID label when service status omits the built-in flag", async () => {
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Microsoft Client ID"]')!;
+    expect(input.closest("label")?.textContent?.trim()).toBe("Microsoft application Client ID");
+    expect(input.placeholder).toBe("Client ID from your app registration");
+    expect(container.textContent).not.toContain("A built-in Microsoft app is available");
+  });
+
   it("sets and clears a custom background through the existing commands", async () => {
     mocks.open.mockResolvedValue("C:\\SyntheticFixture\\background.png");
     await render();

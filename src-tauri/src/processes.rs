@@ -237,7 +237,10 @@ pub fn redact(text: &str) -> String {
         .expect("constant regex");
     let text = bearer.replace_all(text, "${1}[已隐藏]");
     let pattern=regex::Regex::new(r#"(?i)((?:access[_-]?token|refresh[_-]?token|authorization|client[_-]?secret|password|x-api-key)[\s"':=]+)([^\s,;"']+)"#).expect("constant regex");
-    pattern.replace_all(&text, "${1}[已隐藏]").into_owned()
+    let text = pattern.replace_all(&text, "${1}[已隐藏]");
+    let client_id = regex::Regex::new(r#"(?i)(--clientId[\s,'\"=]+|clientid=)([^\s,;\"'\]]+)"#)
+        .expect("constant regex");
+    client_id.replace_all(&text, "${1}[已隐藏]").into_owned()
 }
 #[tauri::command]
 pub fn diagnose_instance(
@@ -348,6 +351,22 @@ pub fn export_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_redact_client_id_arguments_and_assignments() {
+        const ID: &str = "11111111-1111-1111-1111-111111111111";
+        for input in [
+            format!("--clientId, {ID}"),
+            format!("--clientId {ID}"),
+            format!("--clientId={ID}"),
+            format!("clientid={ID}"),
+            format!("--CLIENTID, '{ID}']"),
+        ] {
+            let masked = redact(&input);
+            assert!(!masked.contains(ID));
+            assert!(masked.contains("[已隐藏]"));
+        }
+    }
 
     #[test]
     fn diagnostics_identify_jvm_and_mod_failures_and_redact_credentials() {

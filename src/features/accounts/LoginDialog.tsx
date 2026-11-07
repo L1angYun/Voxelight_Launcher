@@ -26,16 +26,19 @@ export function LoginDialog({
   open,
   onOpenChange,
   config,
+  builtinClientId,
   onChanged,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   config: Config;
+  builtinClientId: boolean;
   onChanged: () => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<LoginTab>("microsoft");
   const [clientId, setClientId] = useState(config.microsoftClientId || "");
+  const [savedClientId, setSavedClientId] = useState(config.microsoftClientId || "");
   const [offlineName, setOfflineName] = useState("");
   const [server, setServer] = useState("");
   const [username, setUsername] = useState("");
@@ -85,7 +88,10 @@ export function LoginDialog({
     };
   }, []);
 
-  useEffect(() => setClientId(config.microsoftClientId || ""), [config.microsoftClientId]);
+  useEffect(() => {
+    setClientId(config.microsoftClientId || "");
+    setSavedClientId(config.microsoftClientId || "");
+  }, [config.microsoftClientId]);
   useEffect(() => {
     if (!open) resetAttempt();
   }, [open]);
@@ -152,6 +158,7 @@ export function LoginDialog({
     setError("");
     try {
       await command("save_config", { config: { ...config, microsoftClientId: clientId.trim() } });
+      if (mounted.current) setSavedClientId(clientId.trim());
       await callbacks.current.onChanged();
       if (mounted.current) setNotice(t("accounts:notice.clientIdSaved"));
     } catch (cause) {
@@ -161,16 +168,37 @@ export function LoginDialog({
     }
   }
 
+  async function restoreBuiltin() {
+    if (!builtinClientId || busy) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await command("save_config", { config: { ...config, microsoftClientId: "" } });
+      if (mounted.current) {
+        setClientId("");
+        setSavedClientId("");
+      }
+      await callbacks.current.onChanged();
+      if (mounted.current) setNotice(t("accounts:notice.builtinRestored"));
+    } catch (cause) {
+      report(cause);
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  }
+
   async function startMicrosoft() {
-    if (!clientId.trim()) {
+    if (!clientId.trim() && !builtinClientId) {
       report(new LauncherError("auth.clientIdRequired"));
       return;
     }
     const attempt = newAttempt();
     try {
-      if (clientId.trim() !== config.microsoftClientId) {
+      if (clientId.trim() !== savedClientId.trim()) {
         await command("save_config", { config: { ...config, microsoftClientId: clientId.trim() } });
         if (!isCurrent(attempt)) throw cancelled();
+        setSavedClientId(clientId.trim());
         await callbacks.current.onChanged();
       }
       const result = await command<DeviceLogin>("begin_microsoft_login");
@@ -264,6 +292,21 @@ export function LoginDialog({
     }
   }
 
+  const hasOverride = Boolean(savedClientId.trim());
+  const clientIdField = (
+    <label>
+      {t(builtinClientId ? "accounts:microsoft.clientIdOptional" : "accounts:microsoft.clientId")}
+      <input
+        aria-label={t(builtinClientId ? "accounts:microsoft.clientIdOptional" : "accounts:microsoft.clientId")}
+        value={clientId}
+        onChange={(event) => setClientId(event.target.value)}
+        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        autoComplete="off"
+        disabled={busy}
+      />
+    </label>
+  );
+
   return (
     <Dialog
       open={open}
@@ -285,21 +328,23 @@ export function LoginDialog({
           {!device ? (
             <>
               <p>{t("accounts:microsoft.description")}</p>
-              <label>
-                {t("accounts:microsoft.clientId")}
-                <input
-                  aria-label={t("accounts:microsoft.clientId")}
-                  value={clientId}
-                  onChange={(event) => setClientId(event.target.value)}
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  autoComplete="off"
-                  disabled={busy}
-                />
-              </label>
-              {!config.microsoftClientId ? <p className="vx-account-login__help">{t("accounts:microsoft.clientIdHelp")}</p> : null}
+              {builtinClientId ? (
+                <>
+                  <p role="status">{t(hasOverride ? "accounts:microsoft.customActive" : "accounts:microsoft.builtinActive")}</p>
+                  <details open={hasOverride} className="vx-account-client-override">
+                    <summary>{t("accounts:microsoft.customOverride")}</summary>
+                    {clientIdField}
+                    <div className="vx-action-row">
+                      <Button variant="secondary" disabled={busy || !clientId.trim()} onClick={() => void saveClientId()}>{t("accounts:microsoft.saveClientId")}</Button>
+                      {hasOverride ? <Button variant="ghost" disabled={busy} onClick={() => void restoreBuiltin()}>{t("accounts:microsoft.useBuiltin")}</Button> : null}
+                    </div>
+                  </details>
+                </>
+              ) : clientIdField}
+              {!builtinClientId && !config.microsoftClientId ? <p className="vx-account-login__help">{t("accounts:microsoft.clientIdHelp")}</p> : null}
               <div className="vx-action-row">
-                <Button variant="secondary" disabled={busy || !clientId.trim()} onClick={() => void saveClientId()}>{t("accounts:microsoft.saveClientId")}</Button>
-                <Button variant="primary" loading={busy} disabled={!clientId.trim()} onClick={() => void startMicrosoft()}>{t("accounts:microsoft.start")}</Button>
+                {!builtinClientId ? <Button variant="secondary" disabled={busy || !clientId.trim()} onClick={() => void saveClientId()}>{t("accounts:microsoft.saveClientId")}</Button> : null}
+                <Button variant="primary" loading={busy} disabled={!builtinClientId && !clientId.trim()} onClick={() => void startMicrosoft()}>{t("accounts:microsoft.start")}</Button>
               </div>
             </>
           ) : (
