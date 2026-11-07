@@ -110,6 +110,67 @@ export function farMetrics(image: DecodedPng) {
     invalidReason: values.length ? null : "远景 ROI 没有可采样像素" };
 }
 
+/** D65-relative CIE L* after the standard sRGB transfer, without RGB averaging or rounding. */
+function cieLightness(r: number, g: number, b: number) {
+  const linear = (channel: number) => {
+    const encoded = channel / 255;
+    return encoded <= .04045 ? encoded / 12.92 : ((encoded + .055) / 1.055) ** 2.4;
+  };
+  const y = .2126 * linear(r) + .7152 * linear(g) + .0722 * linear(b);
+  return y > 216 / 24389 ? 116 * Math.cbrt(y) - 16 : (24389 / 27) * y;
+}
+
+/**
+ * R3-4 silhouette measurements from every normal-frame RGB sample. Keep the
+ * legacy far-field ROI, compare it with a separate sky strip, and count only
+ * complete16px tiles anchored to that ROI's top-left. No color/alpha filtering.
+ */
+export function silhouetteMetrics(image: DecodedPng, background: readonly [number, number, number]) {
+  requirePixels(image);
+  if (background.length !== 3 || !background.every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 255))
+    throw new Error("Silhouette background must contain three finite RGB channels in [0,255]");
+  const farBounds: PixelBounds = [Math.round(.703 * image.width), Math.round(.326 * image.height),
+    Math.round(.9375 * image.width), Math.round(.556 * image.height)];
+  const skyBounds: PixelBounds = [Math.round(.703 * image.width), Math.round(.15 * image.height),
+    Math.round(.9375 * image.width), Math.round(.28 * image.height)];
+  const farWidth = farBounds[2] - farBounds[0], farHeight = farBounds[3] - farBounds[1];
+  const skySamples = (skyBounds[2] - skyBounds[0]) * (skyBounds[3] - skyBounds[1]);
+  if (farWidth <= 0 || farHeight <= 0 || skySamples <= 0)
+    throw new Error("Silhouette far and sky ROIs must contain sample pixels");
+  const tileSize = 16, tileColumns = Math.floor(farWidth / tileSize), tileRows = Math.floor(farHeight / tileSize);
+  const tileCount = tileColumns * tileRows;
+  if (!tileCount) throw new Error("Silhouette far ROI must contain a complete16px tile");
+
+  const farValues: number[] = [];
+  let farTotal = 0, skyTotal = 0;
+  for (let y = farBounds[1]; y < farBounds[3]; y++) for (let x = farBounds[0]; x < farBounds[2]; x++) {
+    const at = (y * image.width + x) * 4;
+    const value = cieLightness(image.pixels[at], image.pixels[at + 1], image.pixels[at + 2]);
+    farValues.push(value); farTotal += value;
+  }
+  for (let y = skyBounds[1]; y < skyBounds[3]; y++) for (let x = skyBounds[0]; x < skyBounds[2]; x++) {
+    const at = (y * image.width + x) * 4;
+    skyTotal += cieLightness(image.pixels[at], image.pixels[at + 1], image.pixels[at + 2]);
+  }
+  const farSamples = farValues.length, farMeanL = farTotal / farSamples, skyMeanL = skyTotal / skySamples;
+  let strongTiles = 0;
+  for (let row = 0; row < tileRows; row++) for (let column = 0; column < tileColumns; column++) {
+    let total = 0;
+    for (let y = row * tileSize; y < (row + 1) * tileSize; y++)
+      for (let x = column * tileSize; x < (column + 1) * tileSize; x++) total += farValues[y * farWidth + x];
+    if (Math.abs(total / (tileSize * tileSize) - skyMeanL) >= 4) strongTiles++;
+  }
+  farValues.sort((left, right) => left - right);
+  const backgroundL = cieLightness(...background);
+  return {
+    method: "normal frame; all RGB pixels; sRGB linear Y to full-precision CIE L*; nearest-rank P05; complete16px far-anchored tiles",
+    farBounds, skyBounds, farSamples, skySamples, farMeanL, skyMeanL, backgroundL,
+    deltaL: farMeanL - skyMeanL, tiles: strongTiles / tileCount,
+    farP05: farValues[Math.ceil(.05 * farSamples) - 1], skyOffset: skyMeanL - backgroundL,
+    tileSize, tileColumns, tileRows, tileCount, strongTiles, valid: true,
+  };
+}
+
 /** Normal visible frame; exact white includes every pixel in the lower-world rectangle. */
 export function lowerWorldWhiteMetrics(image: DecodedPng) {
   requirePixels(image);

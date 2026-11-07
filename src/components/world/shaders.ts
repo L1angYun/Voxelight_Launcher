@@ -177,7 +177,7 @@ uniform sampler2D uPos, uVel, uField;
 uniform mat4 uVP;
 uniform vec3 uEye;
 uniform vec2 uOffset;
-uniform float uN, uS, uSpan, uDpr, uFogD, uRunDim, uFront, uPointGain, uHome;
+uniform float uN, uS, uSpan, uDpr, uFogD, uRunDim, uFront, uPointGain, uHome, uLight;
 ${CRYSTAL_GLSL}
 out float vAlpha, vHot;
 void main() {
@@ -187,6 +187,7 @@ void main() {
   vec4 f = texelFetch(uField, clamp(ivec2(uv * uN), ivec2(0), ivec2(int(uN) - 1)), 0);
   float h = (f.r * 255. * 256. + f.g * 255.) / 65535. * 40.;
   float cr = crystal(c, f.a, maskM(c)), speed = length(V.xyz), dist = length(P.xyz - uEye);
+  float ridge = uLight * uHome * (1. - uMask) * (1. - P.w) * smoothstep(6., 18., h) * smoothstep(80., 130., dist);
   float fog = exp(-pow(dist / (uFogD * 1.12), 3.));
   float flying = smoothstep(.6, 3.5, length(P.xz - c));
   float alpha = (.42 + 1.47 * f.b * (.55 + .45 * smoothstep(3., 20., h))) * (1. + .5 * uHome * smoothstep(10., 26., h)) * (1. - smoothstep(.35, .9, cr));
@@ -195,7 +196,7 @@ void main() {
   vHot = clamp((speed - 7.) * .035 + V.w * 1.2, 0., 1.);
   if (uFront > 0.) vHot = max(vHot, exp(-pow((length(c - uOrigin) - uFront) / 3.2, 2.)));
   gl_Position = uVP * vec4(P.xyz, 1.);
-  gl_PointSize = uDpr * (1.15 + P.w * .9 + min(speed, 30.) * .035) * clamp(58. / max(dist, .001), mix(.72, 1.05, uHome), 2.7) * (1. + .45 * uHome * smoothstep(8., 26., h));
+  gl_PointSize = uDpr * (1.15 + P.w * .9 + min(speed, 30.) * .035) * clamp(58. / max(dist, .001), mix(.72, 1.05, uHome), 2.7) * (1. + .45 * uHome * smoothstep(8., 26., h)) * (1. + 0.75 * ridge);
 }`;
 
 export const POINT_FRAGMENT = `#version 300 es
