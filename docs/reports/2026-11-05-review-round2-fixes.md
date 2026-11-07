@@ -971,7 +971,7 @@ S4第五次口径及冻结状态现为历史：[s4-frozen-before-non-s4.json](E:
 
 ### S4第六次修订最终结果：限幅、几何采样及完整套件通过
 
-**旧liveShift采样区域冲突已经用户批准的几何筛选修复。** 三处调用共用同一个probe，只对前后端点都处于实际扫描行平坦区的样本判6–8，每条入选样本均须通过且至少一条；斜面与未配对样本保留记录。旧5／1失败和后续尺寸假设2／2失败不回写。最终304项已全部通过，后续提交和推送按用户指定的一笔CVERIFY执行；其实际结果由提交后回执核验。
+**旧liveShift采样区域冲突已经用户批准的几何筛选修复。** 三处调用共用同一个probe，只对前后端点都处于实际扫描行平坦区的样本判6–8，每条入选样本均须通过且至少一条；斜面与未配对样本保留记录。旧5／1失败和后续尺寸假设2／2失败不回写。最终304项已全部通过，并已合入CVERIFY提交 `6921a83eb198a3665e858956d3f473557623dcf5`，正常推送完成；[远端读数](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/s4-r6/git-ls-remote-origin.log)与[提交回执](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/s4-r6/commit-receipt.json)确认该提交。
 
 **数值实现与已运行验证。** `geometry.ts`使用每个表面钳制后的有效B及最大RGB通道幅度判断预算；已满足预算的分支保留旧计算和编码。需要限幅的场使用有平坦内部的单调轮廓，`curvatureBounds.ts`对实际8bit编码及双线性采样的法线导数作下界检查，包含弯曲逆映射、单元格内法线区间及图像边缘的clamp条带。每次进一步缩幅后重新检查编码结果，不以连续曲线的理想导数代替8bit实际贴图。
 
@@ -1358,16 +1358,16 @@ Toast两主题×减少透明／contrast-more／forced-colors共6例，每例root
 
 | 宽/视图 | 导航 / 页眉 % | 操作栏 / 卡片表，或上下文 / 工作区 % | 区外 % | 区内归类 |
 | --- | --- | --- | ---: | --- |
-| 1050/content | 0.544 / 10.899 | 13.267 / 10.155 | 0.046 | 上下文：侧栏选块及内距（有意）；工作区：紧凑 padding 恢复、资源标题行距继承（修复）；工具栏间距及空态标题在当时的映射（有意，区块字号已在后续修订恢复）。 |
-| 1050/worlds | 0.542 / 10.854 | 16.627 / 6.003 | 0.013 | 上下文：侧栏选块及内距（有意）；工作区：紧凑 padding 恢复（修复），世界面板间距及历史区块／空态标题导致的高度差（有意的当时映射，后续恢复区块字号）。 |
-| 1050/logs | 0.566 / 10.857 | 18.904 / 17.628 | 0.086 | 上下文：侧栏选块及内距（有意）；工作区：紧凑 padding 恢复（修复），日志块间距、圆角与历史区块标题（有意的当时映射，后续恢复区块字号）。 |
-| 1440/grid | 0.531 / 3.086 | 13.292 / 7.823 | 0.101 | 操作栏：恢复原2px inset（修复），间距刻度及宽屏列轨（有意）；卡区：卡片/footer 间距与路径排列（有意）。 |
-| 1440/list | 0.571 / 3.225 | 13.025 / 13.077 | 0.189 | 操作栏：恢复原2px inset（修复），间距与宽屏列轨（有意）；列表区：行和 footer 刻度（有意），压力尾段限制另列。 |
-| 1440/overview | 0.550 / 8.667 | 10.165 / 13.646 | 0.069 | 上下文：侧栏行选块、间距（有意）；工作区：紧凑规则恢复是级联修复，数据单元间距／圆角归刻度是有意。 |
-| 1440/content | 0.665 / 8.802 | 13.453 / 7.063 | 0.026 | 上下文：侧栏选块及内距（有意）；工作区：紧凑 padding 恢复、资源标题行距继承（修复）；工具栏间距及空态标题在当时的映射（有意，区块字号已在后续修订恢复）。 |
-| 1440/worlds | 0.533 / 8.789 | 17.077 / 4.252 | 0.026 | 上下文：侧栏选块及内距（有意）；工作区：紧凑 padding 恢复（修复），世界面板间距及历史区块／空态标题导致的高度差（有意的当时映射，后续恢复区块字号）。 |
-| 1440/logs | 0.544 / 8.726 | 18.853 / 14.832 | 0.012 | 上下文：侧栏选块及内距（有意）；工作区：紧凑 padding 恢复（修复），日志块间距、圆角与历史区块标题（有意的当时映射，后续恢复区块字号）。 |
-| 1440/settings | 0.531 / 8.726 | 20.758 / 27.517 | 0.016 | 上下文：侧栏选块及内距（有意）；工作区：紧凑级联修复，表单刻度、标签与历史区块标题（有意的当时映射，后续恢复区块字号）。 |
+| 1050/content | 0.544 / 10.899 | 13.267 / 10.155 | 0.046 | 上下文：侧栏选块及内距（有意）；工作区：紧凑22→24四边为有意刻度规范化，覆盖顺序修复属于此前分拆回归的修复过程；工具栏间距及当批空态标题映射（有意，后续恢复区块字号）。图中没有资源行，不把资源标题行距修复归因为本对差异。 |
+| 1050/worlds | 0.542 / 10.854 | 16.627 / 6.003 | 0.013 | 上下文：侧栏选块及内距（有意）；工作区：紧凑22→24四边为有意刻度规范化，覆盖顺序修复属于此前分拆回归的修复过程；世界面板间距及当批区块／空态标题带来的高度变化（有意的历史映射，后续恢复区块字号）。 |
+| 1050/logs | 0.566 / 10.857 | 18.904 / 17.628 | 0.086 | 上下文：侧栏选块及内距（有意）；工作区：紧凑22→24四边为有意刻度规范化，覆盖顺序修复属于此前分拆回归的修复过程；日志块间距、圆角及当批区块标题（有意的历史映射，后续恢复区块字号）。 |
+| 1440/grid | 0.531 / 3.086 | 13.292 / 7.823 | 0.101 | 操作栏：间距刻度加宽列轨道（有意为之），来自控件宽度变化后的轨道分配；旧版与最终版inset均2px，列模板均为minmax(180px,1fr) auto auto，本对无inset恢复或模板恢复；卡区：卡片/footer间距与路径排列（有意）。 |
+| 1440/list | 0.571 / 3.225 | 13.025 / 13.077 | 0.189 | 操作栏：间距刻度加宽列轨道（有意为之），来自控件宽度变化后的轨道分配；旧版与最终版inset均2px，列模板均为minmax(180px,1fr) auto auto，本对无inset恢复或模板恢复；列表区：行和footer刻度（有意），压力尾段限制另列。 |
+| 1440/overview | 0.550 / 8.667 | 10.165 / 13.646 | 0.069 | 上下文：侧栏行选块、间距（有意）；工作区：常规padding24/26/28/26→24/24/32/24为有意规范化，1440不适用紧凑规则；数据单元间距／圆角及当批标题映射（有意）。 |
+| 1440/content | 0.665 / 8.802 | 13.453 / 7.063 | 0.026 | 上下文：侧栏选块及内距（有意）；工作区：常规padding24/26/28/26→24/24/32/24为有意规范化，1440不适用紧凑规则；工具栏间距及当批空态标题映射（有意，后续恢复区块字号）。图中没有资源行，不把资源标题行距修复归因为本对差异。 |
+| 1440/worlds | 0.533 / 8.789 | 17.077 / 4.252 | 0.026 | 上下文：侧栏选块及内距（有意）；工作区：常规padding24/26/28/26→24/24/32/24为有意规范化，1440不适用紧凑规则；世界面板间距及当批标题映射（有意，后续恢复区块字号）。 |
+| 1440/logs | 0.544 / 8.726 | 18.853 / 14.832 | 0.012 | 上下文：侧栏选块及内距（有意）；工作区：常规padding24/26/28/26→24/24/32/24为有意规范化，1440不适用紧凑规则；日志块间距／圆角及当批标题映射（有意，后续恢复区块字号）。 |
+| 1440/settings | 0.531 / 8.726 | 20.758 / 27.517 | 0.016 | 上下文：侧栏选块及内距（有意）；工作区：常规padding24/26/28/26→24/24/32/24为有意规范化，1440不适用紧凑规则；表单刻度、标签及当批标题映射（有意，后续恢复区块字号）。 |
 
 分区矩形、改前与改后两套比例及差值图见[原始比较JSON](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/library/comparison-geometry-final/comparison.json)。此次补充按已有源审计、图和区域统计归类，未重拍14对，也未把像素逐个分配给某个CSS改动。
 
@@ -1390,7 +1390,7 @@ Toast两主题×减少透明／contrast-more／forced-colors共6例，每例root
 
 下载代理实际查看最终 [英文1050](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/non-s4-downloads-final-green/verification-downloads-R2--f8383--failed-and-completed-tasks/downloads-200-columns.png) 与 [英文1920](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/non-s4-downloads-final-green/verification-downloads-R2--4be14--failed-and-completed-tasks/downloads-200-columns.png)：status、size、date与Retry实际在同一行横向显示，失败／完成行列对齐。该观察仅覆盖这两张，不扩大为全部六组均逐张人工签字。
 
-library代理实际查看最新 `candidate-geometry-final/` 的1050 grid／list／overview／settings及1440 content／worlds／logs共7张，配合已查看的7张 `baseline-clean/`构成最终7组、14张正常图。逐张路径和各视图差异说明见[最终人工清单](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/library/final-assessment.md)。commandbar此次2px位置变化属于恢复既定几何，不再标为有意2→4刻度变化。`candidate-after-authlib/`及更早各批人工记录保留历史，未替代最新图；没有声称全部28张正常图或14张diff图均人工看过。
+library代理实际查看最新 `candidate-geometry-final/` 的1050 grid／list／overview／settings及1440 content／worlds／logs共7张，配合已查看的7张 `baseline-clean/`构成最终7组、14张正常图。逐张路径和各视图差异说明见[最终人工清单](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/library/final-assessment.md)。commandbar在中间实现中出现过4px inset，随后恢复2px，这是中间回归修复；本节旧基线和最终配对均为2px，不能用该修复解释两版截图差异。`candidate-after-authlib/`及更早各批人工记录保留历史，未替代最新图；没有声称全部28张正常图或14张diff图均人工看过。
 
 Authlib追加修复后，token代理实际查看了 [深色contrast-more](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/non-s4-authlib-contrast-green/verification-dialogs-verif-64900-pearance-dark-contrast-more/authlib-disabled-accessibility.png)、[浅色contrast-more](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/non-s4-authlib-contrast-green/verification-dialogs-verif-96aef-earance-light-contrast-more/authlib-disabled-accessibility.png) 和 [浅色forced-colors](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-06/verification/non-s4-authlib-contrast-green/verification-dialogs-verif-7105b-earance-light-forced-colors/authlib-disabled-accessibility.png) 三张禁用态图，用于核查高对比禁用弱化及系统GrayText保留；此人工范围与11项数值／行为通过分别记录。
 
@@ -1466,6 +1466,8 @@ Authlib追加修复后，token代理实际查看了 [深色contrast-more](E:/Cod
 
 ## 6921a83 独立复核后的修订
 
+本节已合入并正常推送提交 `301029025bb2014f6be9eeb44be36e990913d9cf`；[远端原始读数](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/follow-ups/git-ls-remote-origin.log)和[提交回执](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/follow-ups/commit-receipt.json)记录该完整SHA。下方的精确主题定位保留作复查方式。
+
 用户独立复核确认 6921a83 的提交身份、远端、716＋96、tsc、完整 304/304 和人工视觉结果。本节单独记录随后第1–11项；证据在 `E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/follow-ups/`。最终完整套件305/305通过；实测命令及提交归属见本节末。
 
 | 编号 | 处理与实测 | 证据 |
@@ -1506,3 +1508,31 @@ Node v24.18.0、Core Ultra 9 275HX。每个尺寸12种按产品量化刻度选�
 审计读取实际 GPU 字符串，确认 19 个设计用例、5 个焦点用例、12 个固定相位、5 个动态世界场景及4组S4均为 RTX 5080 Laptop D3D11、DPR1；其余测试不一概写作原生。三模式最低边对比为3.433399／3.277515／3.277515，576边全部合格。S4实际四组（深首页／深库页／浅首页／浅库页）列差5.347884／4.162157／5.123016／3.056157，均≤12；四个共用条纹用例均通过。完整套件也覆盖了 `npm run test:design` 所选的19项，未在本轮另行执行该命令。校验前后的389个源码／测试／脚本文件指纹相同，SHA256为 `710a53cdb7b1a75976316ac54b961fb6be3d06c9ccf41666bc19c22702e3aac1`。
 
 本节第1–11项属于同一提交 `fix: close 6921a83 review follow-ups`。仓库内以 `git log main -1 --format=%H --grep='^fix: close 6921a83 review follow-ups$' -- docs/reports/2026-11-05-review-round2-fixes.md` 取得本节的完整 SHA；[提交回执](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/follow-ups/commit-receipt.json)逐项记录该 SHA，[远端原始读数](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/follow-ups/git-ls-remote-origin.log)记录推送后远端 ref。报告不将自身提交的哈希写入自身内容。
+
+<a id="final-round-two-cleanup"></a>
+
+## 第二轮最终清理（3010290 独立复核后）
+
+本节只涉及单向姿态字节夹具、一条托管服务器标题CSS及对应浏览器断言、历史报告说明。归属唯一提交 `chore: final round two cleanup`；完整SHA可由 `git log main -1 --format=%H --grep='^chore: final round two cleanup$' -- docs/reports/2026-11-05-review-round2-fixes.md` 精确定位。提交后[回执](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/commit-receipt.json)记录该SHA、四项归属和推送确认，[远端原始读数](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/git-ls-remote-origin.log)保留ls-remote结果。
+
+| 项 | 实际处理及证据 |
+| --- | --- |
+| 1 字节锁单向姿态 | 保留原12姿态／60摘要，新增(2.4,0)、(−2.4,0)、(0,−1.2)、(0,1.2)，压力均非0，覆盖80×44、400×56、360×50、324×198、324×360，现16姿态／80摘要。期望值全部由 `git show 6921a83` 的独立原生成器计算，先复算确认原60摘要一致；源码blob和SHA见[oracle-provenance.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/axis/oracle-provenance.json)。 |
+| 1 变异RED | 把单向弯曲迭代分支从1改0：原夹具5/5通过，扩展后五种尺寸全失败、20个新增摘要全不同；恢复后5/5通过。保留[变异失败日志](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/axis/02-expanded-fixture-mutant-red.log)、[恢复后通过日志](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/axis/03-expanded-fixture-restored-green.log)和[源码恢复核对](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/axis/mutation-integrity.json)。geometry.ts前后字节和SHA完全一致，产品算法没有改动。 |
+| 2 实体标题 | `.vx-managed-overview h2` 显式 `font-weight:var(--weight-strong)`、`line-height:1.25`，保持20px。标题用例新增字重600和实际行距25px断言。修改前字重已经由全局继承为600；真实RED是行距30≠25，[title-red.log](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/title-red.log)保留；修改后20/600/25，控制台区块仍16。[最终heading-scale.json](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/playwright/verification-library-R2-14-e9150-ile-R2-16-sections-use-16px/heading-scale.json)。 |
+| 3 历史图归因 | 1440 grid/list两端inset都2px，删除“恢复inset”作为配对差异解释，改为间距与控件宽度造成的列轨重新分配；列模板本身未改。1440详情5行统一说明常规padding24/26/28/26→24/24/32/24是有意规范化，紧凑规则不适用。1050三行明确紧凑22→24也是刻度规范化；覆盖顺序修复另记为中间回归过程。content两张均空资源区，删除资源行距修复的错误因果归属。逐区数值、原截图、mask和门槛未改；lastAnchorNdc仍仅定性说明，无像素因果拆分。 |
+| 4 历史完成状态 | 原974行改成CVERIFY已提交／推送，引用6921a83完整SHA及真实ls-remote回执。3010290独立小节补 `301029025bb2014f6be9eeb44be36e990913d9cf` 及其远端回执；不再将已完成的前两次提交写作未来操作。 |
+
+最终实际运行：
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm test` | 退出0；72文件、722项Vitest＋99项Node；CSS守护23文件／359。[完整日志](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/npm-test.log)。扩展的是表驱动夹具，所以Vitest项数不变。 |
+| `npx tsc -b` | 退出0，[日志](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/tsc.log)为空。 |
+| `node node_modules/@playwright/test/cli.js test tests/e2e/verification-library.spec.ts tests/e2e/review-fixes.spec.ts tests/e2e/interface-quality.spec.ts -g 'R2-14 server entity|S4 (dark|light)|curvature (dark|light):' --output=… --reporter=list,json` | **7/7通过**，42.469684秒，0失败／跳过／flaky，全部首次通过，退出0。[原始JSON](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/playwright.json)、[日志](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/playwright.log)、[独立读数审计](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/playwright-audit.json)。 |
+
+上述7项是：英文深色1050真实服务器及托管实体／区块标题1项；深浅×首页／库页S4列剖面4项；interface-quality深浅真实背景折射2项。7份runtime实际均为RTX 5080 Laptop D3D11；标题及折射上下文DPR1，四组S4也各自记录DPR1。S4列差5.347884／4.162278／5.123016／3.065416均≤12；两条纹用例live=7、edge≈3、center≈0.000322，通过原门槛。首次筛选只命中标题的1/1通过批次另存 `title-green.json/.log`，没有当作7项结果。
+
+主流程实际打开了本批托管标题的[修改前图](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/title-red/verification-library-R2-14-e9150-ile-R2-16-sections-use-16px/en-dark-1050-managed-title.png)及[修改后图](E:/CodeX/VoxelightLauncher-worklogs/review-round2/2026-11-07/final-cleanup/playwright/verification-library-R2-14-e9150-ile-R2-16-sections-use-16px/en-dark-1050-managed-title.png)：标题仍为两行粗体，行距更紧；该观察不扩大为本批全部S4图均已逐张人工复看。
+
+本轮依用户要求**未重跑完整Playwright**，也未重测三版本性能、未重拍原26／14对历史取证。未改版本、依赖或贴图产品算法，未构建安装包。上一轮完整305/305及1628张字节一致属于用户独立复核结论，不冒称本轮新增测量。
