@@ -135,9 +135,16 @@ nativeTest("R2-14 server entity h2 uses 20px while R2-16 sections use 16px", asy
   await expect(managedTitle).toBeVisible();
   await expect(managedConsole).toBeVisible();
   const size = (element: Element) => parseFloat(getComputedStyle(element).fontSize);
-  const managed = { entity: await managedTitle.evaluate(size), console: await managedConsole.evaluate(size) };
+  const typography = await managedTitle.evaluate(element => {
+    const css = getComputedStyle(element);
+    return { weight: css.fontWeight, lineHeight: parseFloat(css.lineHeight) };
+  });
+  const managed = { entity: await managedTitle.evaluate(size), console: await managedConsole.evaluate(size), ...typography };
   expect.soft(managed.entity, "the managed server's name is an entity title").toBe(20);
+  expect.soft(managed.weight, "the managed entity title has the same strong weight as server details").toBe("600");
+  expect.soft(managed.lineHeight, "the managed entity title uses 1.25 line spacing").toBe(25);
   expect.soft(managed.console, "the console is a section").toBe(16);
+  await page.screenshot({ path: info.outputPath("en-dark-1050-managed-title.png"), scale: "css" });
   await serversTab.click();
   await expect(serverTitle).toBeVisible();
   const rows = [];

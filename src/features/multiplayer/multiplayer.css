@@ -94,7 +94,7 @@
 .vx-managed-detail { display: grid; gap: 16px; min-width: 0; }
 .vx-managed-overview, .vx-managed-console { padding: 20px; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--surface-panel); }
 .vx-managed-overview > header, .vx-managed-console > header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
-.vx-managed-overview h2 { margin: 0; font-size: var(--text-xl); }
+.vx-managed-overview h2 { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-strong); line-height: 1.25; }
 .vx-managed-console h2 { margin: 0; font: var(--type-section); }
 .vx-managed-overview header p { margin: 4px 0 0; color: var(--text-secondary); font-size: var(--text-xs); }
 .vx-managed-directory { overflow-wrap: anywhere; color: var(--text-tertiary); font-family: var(--font-mono); font-size: var(--text-xs); }
