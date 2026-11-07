@@ -127,10 +127,12 @@ describe("shared Select", () => {
     expect(listbox()).toBeNull();
   });
 
-  it("keeps ordinary controls flat and only opts named lens controls into glass", async () => {
+  it("keeps ordinary triggers flat while every popup uses glass", async () => {
     await render();
     await key("ArrowDown");
-    expect(document.querySelectorAll("[data-test-glass]")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-test-glass]")).toHaveLength(1);
+    expect(trigger().closest("[data-test-glass]")).toBeNull();
+    expect(listbox()?.closest("[data-test-glass]")?.classList.contains("vx-listbox-surface")).toBe(true);
     await key("Escape");
     await render({ material: "glass" });
     await key("ArrowDown");

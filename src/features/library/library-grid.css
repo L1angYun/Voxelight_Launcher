@@ -80,7 +80,6 @@
     gap: var(--space-1);
     padding: var(--space-1);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface-solid) 30%, transparent);
   }
   .vx-library-page .vx-library-scope button {
     font: var(--weight-strong) var(--text-sm)/normal var(--font-ui);
@@ -111,7 +110,7 @@
     min-height: 38px;
     padding: 0 var(--space-3);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--bg-raised) 34%, transparent);
+    background: var(--bg-raised);
   }
   .vx-library-page .vx-search input {
     width: 100%;
@@ -146,7 +145,6 @@
     margin: 0;
     padding: var(--space-1);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--bg-raised) 24%, transparent);
   }
   .vx-library-page .vx-library-commandbar :is(.vx-search, .vx-field, .vx-select__surface, .vx-select__button) {
     block-size: 38px;
@@ -359,7 +357,8 @@
     min-height: 274px;
     padding: var(--space-6) var(--space-7);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--surface-solid) 28%, transparent);
+    background: var(--surface-panel);
+    border: 1px solid var(--hairline);
   }
   .vx-library-empty .vx-empty__icon {
     display: grid;

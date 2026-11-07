@@ -143,8 +143,8 @@ export function LaunchConsole({
         onBlurCapture={event => {
           if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) ownsFocus.current = false;
         }}>
-        <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" data-visual-owner="lens" {...launchJelly.handlers}>
-          <GlassSurface variant="control" className="vx-launch-console__launch" />
+        <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" {...launchJelly.handlers}>
+          <div className="vx-launch-console__launch" aria-hidden="true" />
             <AnimatePresence initial={false}>
               <ConsoleContent key={state} tier={tier}>
                 {preparing ? <Button variant="ghost" size="lg" icon={<X size={16} />} aria-disabled={!cancelReady} data-launch-action="preparing"

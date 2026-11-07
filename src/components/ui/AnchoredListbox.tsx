@@ -197,7 +197,7 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
     {embedded ? button : <SelectSurface glass={material === "glass"} variant="control" className="vx-select__surface">{button}</SelectSurface>}
     {portalRoot ? createPortal(<AnimatePresence custom={animatePopup} onExitComplete={() => { if (!openRef.current) notifyOpen(false); }}>
       {open ? <Popup key={listId} popupRef={popupRef} placement={placement} animate={animatePopup} className={popupClassName}>
-        <SelectSurface glass={material === "glass"} variant="dialog" className="vx-listbox-surface">
+        <SelectSurface glass variant="dialog" className="vx-listbox-surface">
           <ul ref={listRef} id={listId} role="listbox" aria-label={label} className="vx-select__listbox" style={{ maxHeight: Math.max(0, (placement?.maxHeight ?? 360) - 14) }}>
             {options.map((option, index) => <li key={option.value} {...option.dataAttributes} id={`${listId}-${index}`} role="option"
               aria-selected={index === selectedIndex} aria-disabled={option.disabled || undefined} data-active={index === active}

@@ -60,7 +60,7 @@ vi.mock("../../visual/character/CharacterCanvas", () => ({
   }),
 }));
 vi.mock("../../visual/glass/GlassSystem", () => ({
-  GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => createElement("div", { className }, children),
+  GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => createElement("div", { className: `vx-glass-surface ${className ?? ""}` }, children),
 }));
 const defaultSkinMock = vi.hoisted(() => vi.fn());
 vi.mock("../../lib/defaultSkin", () => ({
@@ -580,10 +580,12 @@ describe("HomePage", () => {
     } finally { outside.remove(); }
   });
 
-  it("keeps the same glass action surface throughout preparation and running", async () => {
+  it("keeps the same solid accent action surface throughout preparation and running", async () => {
     await render();
     const surface = container.querySelector(".vx-launch-console__launch");
     expect(surface).not.toBeNull();
+    expect(surface!.classList.contains("vx-glass-surface")).toBe(false);
+    expect(surface!.closest("[data-visual-owner='lens']")).toBeNull();
     const content = container.querySelector(".vx-launch-console__launch-wrap")!;
     expect(surface!.contains(content.querySelector("button"))).toBe(false);
     expect(getComputedStyle(surface!).height).toBe("56px");

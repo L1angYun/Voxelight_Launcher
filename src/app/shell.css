@@ -137,7 +137,7 @@ input, textarea, [contenteditable="true"] { user-select: text; }
   padding: 10px 12px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  background: var(--surface-glass);
+  background: var(--bg-raised);
   color: var(--text-secondary);
   font-size: var(--text-xs);
   user-select: text;

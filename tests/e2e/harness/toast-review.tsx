@@ -11,11 +11,13 @@ import type { Config } from "../../../src/lib/launcher";
 import "../../../src/design/global.css";
 import "../../../src/design/surfaces.css";
 
-const theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";
+const parameters = new URLSearchParams(location.search);
+const theme = parameters.get("theme") === "light" ? "light" : "dark";
+const effects = parameters.get("effects") === "lite" ? "lite" : "full";
 const config: Config = {
   gameDirectory: "C:\\ToastReview", javaPath: "", maxMemoryMb: 4096, jvmArguments: "", versionIsolation: true,
   theme, downloadConcurrency: 6, microsoftClientId: "", downloadLimitKib: 0, downloadSource: "official",
-  screenWidth: 1280, screenHeight: 720, language: "en-US", accentColor: "#b4f17a", effects: "full",
+  screenWidth: 1280, screenHeight: 720, language: "en-US", accentColor: "#b4f17a", effects,
   worldScene: "horizon", worldMaterial: "lattice", accentSource: "voxelight", soundEnabled: false,
   javaAutoDownload: false, defaultSkin: "steve",
 };

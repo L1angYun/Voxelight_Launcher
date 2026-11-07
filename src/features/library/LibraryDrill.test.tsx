@@ -14,7 +14,7 @@ vi.mock("../../lib/launcher", async (original) => ({ ...await original<typeof im
 vi.mock("@tauri-apps/api/core", async (original) => ({ ...await original<typeof import("@tauri-apps/api/core")>(), convertFileSrc: (path: string) => `asset://fixture/${path}` }));
 vi.mock("../../app/controller/LauncherProvider", () => ({ useLauncher: () => launcher }));
 vi.mock("../../app/AppearanceProvider", () => ({ useAppearance: () => ({ effects: fullMotion ? "full" : "lite", reducedMotion: !fullMotion, reducedTransparency: false, highContrast: false }) }));
-vi.mock("../../visual/glass/GlassSystem", () => ({ GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => <div className={className}>{children}</div> }));
+vi.mock("../../visual/glass/GlassSystem", () => ({ GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => <div className={`vx-glass-surface ${className ?? ""}`}>{children}</div> }));
 vi.mock("../../visual/overture/OvertureProvider", () => ({ useOverture: () => ({ play: vi.fn() }) }));
 
 const css = ["src/features/library/library-grid.css", "src/features/library/instance-detail.css"]
@@ -58,7 +58,7 @@ async function render(navResetTick = 0) {
   await act(async () => root.render(<I18nextProvider i18n={i18n}><LibraryPage navResetTick={navResetTick} /></I18nextProvider>));
 }
 function button(label: string) {
-  const found = [...container.querySelectorAll<HTMLButtonElement>("button")].find((element) => element.textContent?.trim() === label || element.getAttribute("aria-label") === label);
+  const found = [...main.querySelectorAll<HTMLButtonElement>("button")].find((element) => element.textContent?.trim() === label || element.getAttribute("aria-label") === label);
   if (!found) throw new Error(`Missing button: ${label}`);
   return found;
 }
@@ -86,15 +86,107 @@ beforeEach(() => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function () { this.open = true; } });
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function () { this.open = false; this.dispatchEvent(new Event("close")); } });
-  main = document.createElement("main"); main.className = "vx-app-main"; main.id = "main-content";
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.matches(".vx-detail-manage > summary") ? new DOMRect(900, 160, 38, 38) : new DOMRect();
+  });
+  main = document.createElement("main"); main.className = "vx-app-main vx-glass-provider"; main.id = "main-content";
   container = document.createElement("div"); main.append(container); document.body.append(main); root = createRoot(container);
   style = document.createElement("style"); style.textContent = css; document.head.append(style);
 });
 afterEach(() => {
-  act(() => root.unmount()); main.remove(); style.remove(); vi.restoreAllMocks();
+  act(() => root.unmount()); main.remove(); style.remove(); vi.restoreAllMocks(); vi.useRealTimers();
 });
 
 describe("library drill focus and scroll", () => {
+  it("portals the glass management menu outside a fading page and anchors it to its disclosure", async () => {
+    await render(); await openCard();
+    container.dataset.pageStage = "library"; container.style.opacity = ".4";
+    const disclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    const summary = disclosure.querySelector<HTMLElement>("summary")!;
+    vi.spyOn(summary, "getBoundingClientRect").mockReturnValue(new DOMRect(900, 160, 38, 38));
+    await act(async () => { summary.click(); disclosure.dispatchEvent(new Event("toggle")); });
+    const menu = main.querySelector<HTMLElement>(".vx-detail-manage__menu")!;
+    const popup = menu?.parentElement;
+    expect(disclosure.open).toBe(true);
+    expect(menu?.classList.contains("vx-glass-surface")).toBe(true);
+    expect(popup?.parentElement).toBe(main);
+    expect(popup?.closest("[data-page-stage]")).toBeNull();
+    expect(popup?.style.position).toBe("fixed");
+    expect(popup?.style.left).toBe("770px");
+    expect(popup?.style.top).toBe("205px");
+    expect(popup?.style.opacity).toBe("1");
+    await act(async () => summary.click());
+    expect(disclosure.open).toBe(false);
+  });
+
+  it("keeps the management popup inside its closest open dialog and Escape closes only the disclosure", async () => {
+    const dialog = document.createElement("dialog"); dialog.open = true;
+    main.append(dialog); dialog.append(container);
+    await render(); await openCard();
+    const disclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    const summary = disclosure.querySelector<HTMLElement>("summary")!;
+    await act(async () => { summary.click(); disclosure.dispatchEvent(new Event("toggle")); });
+    const menu = dialog.querySelector<HTMLElement>(".vx-detail-manage__menu")!;
+    expect(menu?.parentElement?.parentElement).toBe(dialog);
+    const action = menu?.querySelector("button");
+    await act(async () => { action?.focus(); action?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(disclosure.open).toBe(false);
+    expect(dialog.open).toBe(true);
+    expect(document.activeElement).toBe(summary);
+    expect(dialog.querySelector(".vx-detail-manage__menu")).toBeNull();
+  });
+
+  it("closes the management disclosure on an outside pointer while preserving its native Tab access", async () => {
+    await render(); await openCard();
+    const disclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    const summary = disclosure.querySelector<HTMLElement>("summary")!;
+    await act(async () => { summary.focus(); summary.click(); disclosure.dispatchEvent(new Event("toggle")); });
+    const action = main.querySelector<HTMLButtonElement>(".vx-detail-manage__menu button")!;
+    await act(async () => summary.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(action);
+    await act(async () => action.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(summary);
+    await act(async () => main.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    expect(disclosure.open).toBe(false);
+    expect(main.querySelector(".vx-detail-manage__menu")).toBeNull();
+  });
+
+  it("continues forward Tab navigation from the portalled action into the detail content", async () => {
+    await render(); await openCard();
+    const disclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    await act(async () => disclosure.querySelector<HTMLElement>("summary")!.click());
+    const action = main.querySelector<HTMLButtonElement>(".vx-detail-manage__menu button")!;
+    await act(async () => { action.focus(); action.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); });
+    expect(disclosure.open).toBe(false);
+    expect(document.activeElement).toBe(container.querySelector('[role="tab"][aria-selected="true"]'));
+  });
+
+  it("keeps the glass owner mounted for its fade and cancels stale removal when reopened", async () => {
+    fullMotion = true; vi.useFakeTimers();
+    await render(); await openCard();
+    const disclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    const summary = disclosure.querySelector<HTMLElement>("summary")!;
+    await act(async () => summary.click());
+    const menu = main.querySelector<HTMLElement>(".vx-detail-manage__menu")!;
+    const popup = menu.parentElement!;
+    await act(async () => main.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    expect(disclosure.open).toBe(false);
+    expect(main.querySelector(".vx-detail-manage__menu")).toBe(menu);
+    expect(popup.dataset.open).toBe("false");
+    expect(popup.hasAttribute("inert")).toBe(true);
+    expect(popup.style.opacity).toBe("1");
+    expect(getComputedStyle(menu).opacity).toBe("0");
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    await act(async () => summary.click());
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(disclosure.open).toBe(true);
+    expect(main.querySelector(".vx-detail-manage__menu")).toBe(menu);
+    expect(popup.dataset.open).toBe("true");
+    await act(async () => main.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(main.querySelector(".vx-detail-manage__menu")).toBeNull();
+  });
+
   it.each(["grid", "list"])("opens a %s card with the old subtree gone and a visible focused detail title", async (view) => {
     await render();
     if (view === "list") await click("列表视图");
