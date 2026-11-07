@@ -62,9 +62,11 @@ function lensBody(shape: CurvatureGeometry) {
   const inset = Math.max(0, Math.min(shape.inset ?? 0, width / 8, height / 8));
   const pressure = Math.max(0, Math.min(1.16, shape.optics?.pressure ?? 0));
   const radius = clampRadius((Number.isFinite(shape.radius) ? shape.radius : 0) * (1 + pressure * 0.08), width - 2 * inset, height - 2 * inset);
-  return { width, height, inset, pressure, radius,
-    bendX: Math.max(-8, Math.min(8, shape.optics?.bendX ?? 0)) * 0.32,
-    bendY: Math.max(-8, Math.min(8, shape.optics?.bendY ?? 0)) * 0.32 };
+  const bendX = Math.max(-8, Math.min(8, shape.optics?.bendX ?? 0)) * 0.32;
+  const bendY = Math.max(-8, Math.min(8, shape.optics?.bendY ?? 0)) * 0.32;
+  // With one zero bend the other axis already converges in one iteration.
+  const warpIterations = bendX === 0 && bendY === 0 ? 0 : bendX === 0 || bendY === 0 ? 1 : 3;
+  return { width, height, inset, pressure, radius, bendX, bendY, warpIterations };
 }
 
 function lensDistance(body: ReturnType<typeof lensBody>, x: number, y: number): number {
@@ -72,7 +74,7 @@ function lensDistance(body: ReturnType<typeof lensBody>, x: number, y: number): 
   let ux = px, uy = py;
   // Invert the same smooth bow used to draw the contour. Bounded displacement
   // makes three fixed-point steps accurate without moving the layout box.
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < body.warpIterations; i++) {
     const qx = Math.max(-1, Math.min(1, ux / (body.width / 2)));
     const qy = Math.max(-1, Math.min(1, uy / (body.height / 2)));
     ux = px - body.bendX * (1 - qy * qy);
@@ -80,7 +82,9 @@ function lensDistance(body: ReturnType<typeof lensBody>, x: number, y: number): 
   }
   const qx = Math.abs(ux) - body.width / 2 + body.inset + body.radius;
   const qy = Math.abs(uy) - body.height / 2 + body.inset + body.radius;
-  return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(0, qx), Math.max(0, qy)) - body.radius;
+  const outerX = Math.max(0, qx), outerY = Math.max(0, qy);
+  const outside = outerX === 0 ? outerY : outerY === 0 ? outerX : Math.hypot(outerX, outerY);
+  return Math.min(Math.max(qx, qy), 0) + outside - body.radius;
 }
 
 /** The actual local silhouette, shared by clipping and directional reflection. */
@@ -160,7 +164,7 @@ function sampleField(body: ReturnType<typeof lensBody>, bevel: number, profileWi
   }
   const dx = lensDistance(body, x + 0.25, y) - lensDistance(body, x - 0.25, y);
   const dy = lensDistance(body, x, y + 0.25) - lensDistance(body, x, y - 0.25);
-  const length = Math.hypot(dx, dy) || 1;
+  const length = (dx === 0 ? Math.abs(dy) : dy === 0 ? Math.abs(dx) : Math.hypot(dx, dy)) || 1;
   return {
     x: dx === 0 ? 0 : -dx / length * pull,
     y: dy === 0 ? 0 : -dy / length * pull,
@@ -181,14 +185,23 @@ export function createCurvatureMap(shape: CurvatureGeometry): {
   const data = new Uint8ClampedArray(width * height * 4);
   const body = lensBody(shape), field = curvatureField(shape, body);
   const samples = field.preserve ? null : new Float64Array(width * height * 2);
+  const affected = samples ? new Uint32Array(width * height) : null;
+  let affectedCount = 0;
   for (let row = 0; row < height; row += 1) {
     for (let column = 0; column < width; column += 1) {
       const at = (row * width + column) * 4;
       const offset = sampleField(body, field.bevel, field.profileWidth, field.preserve,
         (column + 0.5) * sourceWidth / width, (row + 0.5) * sourceHeight / height);
-      if (samples) {
-        samples[(row * width + column) * 2] = offset.x;
-        samples[(row * width + column) * 2 + 1] = offset.y;
+      if (samples && affected) {
+        // Neutral RG is independent of the ratio. Re-encode only the bevel
+        // when trying another amplitude; the flat center is filled once.
+        data[at] = data[at + 1] = 128;
+        if (offset.x !== 0 || offset.y !== 0) {
+          affected[affectedCount] = row * width + column;
+          samples[affectedCount * 2] = offset.x;
+          samples[affectedCount * 2 + 1] = offset.y;
+          affectedCount++;
+        }
       } else {
         data[at] = Math.round((0.5 + offset.x) * 255);
         data[at + 1] = Math.round((0.5 + offset.y) * 255);
@@ -196,18 +209,19 @@ export function createCurvatureMap(shape: CurvatureGeometry): {
       data[at + 3] = 255;
     }
   }
-  if (samples) {
+  if (samples && affected) {
     const lowerBound = createNormalDerivativeCheck(body, width, height);
     let ratio = field.ratio;
     for (let attempt = 0; attempt < 130; attempt++) {
-      for (let pixel = 0; pixel < width * height; pixel++) {
-        data[pixel * 4] = Math.round((.5 + samples[pixel * 2] * ratio) * 255);
-        data[pixel * 4 + 1] = Math.round((.5 + samples[pixel * 2 + 1] * ratio) * 255);
+      for (let sample = 0; sample < affectedCount; sample++) {
+        const at = affected[sample] * 4;
+        data[at] = Math.round((.5 + samples[sample * 2] * ratio) * 255);
+        data[at + 1] = Math.round((.5 + samples[sample * 2 + 1] * ratio) * 255);
       }
       // Check actual bytes after every reduction: quantization is not monotone
       // in amplitude. A neutral map is the finite final fallback, never an
       // unverified map that violates the derivative floor.
-      if (lowerBound(data, field.scale) >= .5 + 1e-7) break;
+      if (lowerBound.accepts(data, field.scale, .5 + 1e-7)) break;
       ratio = attempt === 128 ? 0 : ratio * .9;
     }
   }

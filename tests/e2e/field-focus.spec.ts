@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Locator } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import { installLauncherFixture } from "./fixtures";
+import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 
 test.use({ channel: "chromium", viewport: { width: 1280, height: 930 },
   launchOptions: { args: ["--use-angle=d3d11"], ignoreDefaultArgs: ["--enable-unsafe-swiftshader"] } });
@@ -137,6 +138,49 @@ for (const mode of ["reduced", "forced"] as const) test(`search ${mode}: library
   }
   await writeFile(info.outputPath("search-focus.json"), JSON.stringify({ mode, expectedColor, results, lattice }, null, 2));
   expect(results[0].outlineColor).toBe(results[1].outlineColor);
+});
+
+test("M4 collapsed loader version slot paints no label pixels at 1280px", async ({ page }, info) => {
+  await start(page, "full");
+  await page.locator(".vx-library-commandbar__actions").getByRole("button", { name: "创建实例", exact: true }).click();
+  const dialog = page.locator(".vx-create-dialog[open]");
+  await expect(dialog).toHaveCSS("opacity", "1");
+  const slot = dialog.locator(".vx-create-loader-slot");
+  const label = slot.locator('label[for$="-create-loader-version"]');
+  await expect(label).toHaveCount(1);
+  // Freeze only the animated backdrop, leaving all form styles and the real
+  // clipping hierarchy intact. Hiding the label must not change its geometry.
+  await page.addStyleTag({ content: ".world-scene canvas, .vx-glass-canvas { visibility:hidden!important }" });
+  const measure = async (state: string) => {
+    await expect.poll(() => slot.evaluate(node => node.getAnimations({ subtree: true }).length)).toBe(0);
+    const clip = await label.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      const x = Math.floor(bounds.left), y = Math.floor(bounds.top);
+      return { x, y, width: Math.ceil(bounds.right) - x, height: Math.ceil(bounds.bottom) - y };
+    });
+    expect(clip.width).toBeGreaterThan(0);
+    expect(clip.height).toBeGreaterThan(0);
+    const screenshot = async (suffix: string) => decodePng(await page.screenshot({
+      path: info.outputPath(`loader-label-${state}-${suffix}.png`), clip, scale: "css",
+    }));
+    const normal = await screenshot("normal");
+    const mask = await page.addStyleTag({ content: '.vx-create-loader-slot label[for$="-create-loader-version"] { visibility:hidden!important }' });
+    const hidden = await screenshot("hidden");
+    await mask.evaluate(element => element.parentNode?.removeChild(element));
+    let changed = 0;
+    for (let at = 0; at < normal.pixels.length; at += 4) {
+      if ([0, 1, 2].some(channel => normal.pixels[at + channel] !== hidden.pixels[at + channel])) changed++;
+    }
+    return { clip, changed };
+  };
+  await expect(slot).toHaveAttribute("data-expanded", "false");
+  const collapsed = await measure("collapsed");
+  await dialog.getByRole("button", { name: "Fabric", exact: true }).click();
+  await expect(slot).toHaveAttribute("data-expanded", "true");
+  const expanded = await measure("expanded");
+  await writeFile(info.outputPath("loader-label-pixels.json"), JSON.stringify({ collapsed, expanded }, null, 2));
+  expect(expanded.changed, "positive control: the expanded label paints visible text").toBeGreaterThan(0);
+  expect(collapsed.changed, "the collapsed label must contribute no pixels").toBe(0);
 });
 
 test("M4 loading status keeps its twelve-pixel inset inside the loader Select", async ({ page }, info) => {

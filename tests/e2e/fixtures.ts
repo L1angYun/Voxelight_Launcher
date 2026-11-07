@@ -10,6 +10,8 @@ export async function installLauncherFixture(
     noAccount?: boolean;
     noInstances?: boolean;
     instanceCount?: number;
+    firstInstanceName?: string;
+    language?: "en-US" | "zh-CN";
     versionDirectoryCount?: number;
     defaultModel?: "classic" | "slim";
     theme?: "dark" | "light" | "system";
@@ -91,7 +93,7 @@ export async function installLauncherFixture(
       downloadSource: "official",
       screenWidth: 1280,
       screenHeight: 720,
-      language: options.stress ? "en-US" : "zh-CN",
+      language: options.language ?? (options.stress ? "en-US" : "zh-CN"),
       accentColor: "#b4f17a",
       effects: options.effects ?? "full",
       worldScene: options.worldScene ?? "horizon",
@@ -141,7 +143,7 @@ export async function installLauncherFixture(
       { length: Math.max(0, Math.floor(options.instanceCount ?? 1)) },
       (_, index) => ({
         id: index === 0 ? "fixture-world" : `fixture-world-${String(index + 1).padStart(3, "0")}`,
-        name: index === 0 ? "合成测试世界" : `合成测试世界 ${String(index + 1).padStart(3, "0")}`,
+        name: index === 0 ? options.firstInstanceName ?? "合成测试世界" : `合成测试世界 ${String(index + 1).padStart(3, "0")}`,
         versionId: "1.21.1",
         gameDirectory: index === 0 ? "C:\\SyntheticFixture\\world" : `C:\\SyntheticFixture\\world-${index + 1}`,
         createdAt: "2026-10-25T08:00:00Z",

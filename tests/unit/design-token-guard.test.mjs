@@ -41,6 +41,19 @@ test("design guard keeps the real spacing scale and explicit semantic roles usab
   assert(inspectStylesheet(":root { --space-1: 13px; }", "src/design/tokens.css").errors.some(error => error.includes("--space-1")));
 });
 
+test("custom properties cannot encode their pixel value as a bare numeric suffix", () => {
+  const result = inspectStylesheet(
+    ":root { --font-18: 18px; --gap-13: 13px; --corner-7: 07.0PX; --layoutLevel24: 24px; }",
+    "src/design/tokens.css",
+  );
+  for (const name of ["--font-18", "--gap-13", "--corner-7", "--layoutLevel24"])
+    assert(result.errors.some(error => error.includes(name) && error.includes("pixel-encoded")), name);
+  assert.deepEqual(inspectStylesheet(
+    ":root { --component-level-2: 18px; --z-18: 18; --space-1: 4px; --radius-window-control: 8px; }",
+    "src/design/tokens.css",
+  ).errors, []);
+});
+
 test("feature styles cannot override button geometry through modifiers or selector groups", () => {
   for (const property of ["height", "min-height", "block-size", "min-block-size", "border-radius", "border-top-left-radius"]) {
     const result = inspectStylesheet(`@layer features { .page :is(.vx-button, .vx-button--md) { ${property}: var(--space-5); } }`, "src/features/demo.css");

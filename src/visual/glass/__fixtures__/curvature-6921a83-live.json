@@ -1,0 +1,228 @@
+{
+  "commit": "6921a83eb198a3665e858956d3f473557623dcf5",
+  "poses": [
+    {
+      "bendX": 0,
+      "bendY": 0,
+      "pressure": 0,
+      "stretch": 0,
+      "heading": 0,
+      "energy": 0
+    },
+    {
+      "bendX": 0.24,
+      "bendY": -0.12,
+      "pressure": 0.105,
+      "stretch": 0.036,
+      "heading": 0.08,
+      "energy": 0
+    },
+    {
+      "bendX": 1.44,
+      "bendY": -0.48,
+      "pressure": 0.24,
+      "stretch": 0.12,
+      "heading": 0.2,
+      "energy": 0
+    },
+    {
+      "bendX": 3.6,
+      "bendY": -0.96,
+      "pressure": 0.51,
+      "stretch": 0.204,
+      "heading": 0.32,
+      "energy": 0
+    },
+    {
+      "bendX": 6,
+      "bendY": -2.04,
+      "pressure": 0.81,
+      "stretch": 0.252,
+      "heading": 0.44,
+      "energy": 0
+    },
+    {
+      "bendX": 7.92,
+      "bendY": -3.6,
+      "pressure": 1.155,
+      "stretch": 0.336,
+      "heading": 0.6,
+      "energy": 0
+    },
+    {
+      "bendX": 5.76,
+      "bendY": 1.08,
+      "pressure": 0.93,
+      "stretch": 0.276,
+      "heading": 1.32,
+      "energy": 0
+    },
+    {
+      "bendX": -4.08,
+      "bendY": 2.52,
+      "pressure": 0.72,
+      "stretch": 0.216,
+      "heading": 2.48,
+      "energy": 0
+    },
+    {
+      "bendX": -1.8,
+      "bendY": 1.44,
+      "pressure": 0.48,
+      "stretch": -0.12,
+      "heading": 3.04,
+      "energy": 0
+    },
+    {
+      "bendX": -0.72,
+      "bendY": 0.48,
+      "pressure": 0.255,
+      "stretch": -0.084,
+      "heading": -0.48,
+      "energy": 0
+    },
+    {
+      "bendX": 0.12,
+      "bendY": 0.12,
+      "pressure": 0.105,
+      "stretch": -0.036,
+      "heading": -0.16,
+      "energy": 0
+    },
+    {
+      "bendX": 0,
+      "bendY": 0,
+      "pressure": 0.015,
+      "stretch": 0.012,
+      "heading": 0,
+      "energy": 0
+    }
+  ],
+  "cases": [
+    {
+      "shape": {
+        "width": 80,
+        "height": 44,
+        "radius": 22,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "maps": [
+        "8362c47dd5e5da559aaac926a1c5a4c92a95335e8a1d47523b4f1bd2b2585190",
+        "ef9151cd653184ea9887e6ec57ae3a4ae90f193c088c513bc4bf50d2b9c49080",
+        "0a93e998777c82ac299936b95655497d7c3fe2032ef9bdee1320b297313398dd",
+        "9f9534ee428ae0c3c23c509549b86f5433ddef2beb231fd2b494056443038f5a",
+        "257f89956d04b818a42c9d6126abfe97e34c773039295b6341ed93408bcf3fd8",
+        "2e683586c99f28227a79872f8378f7bd29f477dfafc6a4c861c3c02cc2cc4b65",
+        "63354c57cb0e80fb5f476d0ef14cb65a3b77aae9da3543d3e36cb55ba42f241f",
+        "fbbdb2a6557fa9761888a77d77d17bdd93ed01cdddaa7b3760a06d28de309ef8",
+        "b2de8036374ecb71f4252e1eeac70f9be54f5b60f9610b87f7d9978bd4b27558",
+        "45a371d5ceb9255ecfa593c98e65ed8a1b1a65935b18f52ff6afad50395f85d5",
+        "29bd0f2f6ba802dd4dab8ec52c62d3b4412333bc10b4adcf5b81b80167e7a399",
+        "7f2d49ca599557fe36e47b11c8ad357434f8d5cb04745e30a4b47fc5b80691a9"
+      ]
+    },
+    {
+      "shape": {
+        "width": 400,
+        "height": 56,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "maps": [
+        "63acce9f89f2a926a1adb3b71bbfb5eb653b74c7b469f06c7f4a0affc88afb80",
+        "eef342db97c2d4cf9440d7f5f7c4a00599138573af94622a75a6fa593b13df0f",
+        "1d259d40d18df7718a79e69e000bcd69acb56c409e3964f89b5e3fdf024c55fb",
+        "08f7b8520786f42093bdd49484c1ca37c8806d4584d5aa628e8f740ec64bdeaf",
+        "7a1401de2e8e30f2f3e27a19ac1f3db5cb0d900fdcf7407a0158fc96b2d8fadd",
+        "85af271594b3b61e5d5861acbafc7d4e9e8108dbb4ee0c07dcc593e9ddaf8a1f",
+        "b395d2a19db026219895f70fbc8631fcbdc5ceb647f1f112a37d643b7651ccbc",
+        "a826ad8f6c9dd7c73ea6fa521319498e616d80a54448b0f4c4a9fa0e88a1aee7",
+        "b3393fe114152ad4d461764364793d3254dbf5e24ea1c84e19317d5c63670e9c",
+        "8254f3d57fee43a2a336c26d2ad9b6e03ed2f65c51c193dd05338eac768fd20d",
+        "90308ed3bf962db708a39ce7c905d25e82427c22776d676e2172b12335efdaac",
+        "a5cc4837c91f5b374bd02dc39b6709a972003f54766c8c4eea0bd42416e01688"
+      ]
+    },
+    {
+      "shape": {
+        "width": 360,
+        "height": 50,
+        "radius": 999,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "maps": [
+        "88bc36f67589779d8d1d3c5dabd9fc3c99ae3bb2e437360914d82f6ed2f22f88",
+        "0495487d65aedc5bef4128e36e053ededcd0ee786de52df03ce98b1f8e249b4f",
+        "5ecf296c8fdd1ebadfcd02d9eb0029ba75885a07b36ae9db1752028841548006",
+        "8d766837967fd6299168637d46a35d03a723c3d330edc6a029cd43fa94051d85",
+        "e3ee5d2df9b365157dddaaa4a5bf784209078280241076c8855b2cd353b61cdf",
+        "b4271c29bd9c0e92646a7c846e4fcf0e0a7c78f4fba50f1b3e53cf0271ecaf45",
+        "14994a6638c72576d707114963d2306a892e0fd08849787b9db42bebab833818",
+        "9637e7fdd3185878c18a7c2f549e6082131255cd032926d940f1f35110e547e3",
+        "b4ff1c0001b190d0f3d60c216bb08ccdf7a4c1f421a89d2301e16bf64a5a3112",
+        "8f81bc6e2f3ed81339ba21668fe0f86b4944424adcdd1ed7d00bc386ee245f15",
+        "0cc2cb7961dbf00a355e963967a91e62558ffd47a214b130a7254b662d7b1678",
+        "7da5eb3a5156f2fd162015d134f420eb5dc6b9d4a6dbdf5395e693ed69321d58"
+      ]
+    },
+    {
+      "shape": {
+        "width": 324,
+        "height": 198,
+        "radius": 20,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "maps": [
+        "ab8fbdc695eb6230dd68fc6b07511ec398c1d083c114d987fc09d280a4439348",
+        "15858101d280b936d7fa92f45832abad272f0a97ab57e46346006a2690d81f31",
+        "e40684812d53f5dfaffb63609214ce56be156b13ec5e338157bfd50b96ac1a5b",
+        "9a4e7b0fc9530514f4d2d669b3db4f49504a3dc5794178eb951a3708011fe15b",
+        "846fd42d7464440fb55f3e58d5c30fa22f154c06e13cded1fe13abcde4b21b86",
+        "3984edb2145a910e0fce7e105d1893522b666af1ca1e2e36f3ca051640433e13",
+        "669212dd76141da9115ac02f5a88678410bd04431a7010d1a135edcfe126b41d",
+        "f157044c1e77ba728b47b66907f2e6d29a533b0aebcd96018fa1705274f51368",
+        "fb7f0f73d787eaad91667aabcae80bf24d3cf8b8360f6313ba66bedb756d0be3",
+        "e6d004115454a5bb82094222d846507c60608319b0350164e54d0ff89de1add0",
+        "0c59b576e6542ff4213b5860886b982c2178be80fcfeb5e78860e665679a890c",
+        "90f78906425b22a7d220cc05dd5b3ec0085fee4aba4af4248176fbd66f96c59c"
+      ]
+    },
+    {
+      "shape": {
+        "width": 324,
+        "height": 360,
+        "radius": 20,
+        "bevel": 20,
+        "inset": 3,
+        "refraction": 0.9,
+        "dispersion": 0.65
+      },
+      "maps": [
+        "26c0ab5a5bbd64844202e064e8d2197b3415f3801074799611eef718ad2cd15c",
+        "842e4b3cc1e97319f277af57c3472d228c496a774cc4146d4de488c108dd1ae8",
+        "7cf0a70cf39671598658569b87555900f9dff59beb1856b6549b847fceae80d0",
+        "b2ae22160f5be0423c5dca1ebe4289bb0f962121b3dc14a7cb90800af403f620",
+        "7a279539e7edaa29583213e3f8457d8f6f26b5e6472644d336be3b07a25c708e",
+        "4bd0515029b3341de44e7ed6f1017f3e0b4af181f82e92979c9ec7035c9675a2",
+        "6bff2c54d42a102a90661dbb38c6e5f8bf9a449a7279e56f08d24edebd0eae51",
+        "bb9f1b6e42e11555670a4e05c04057c4079fc95c2fc8d70d4e1c2ac838ab6f08",
+        "c1b4b286672d62fa48e44685bec888107cdde06bad74732058ce6b8dbdd23753",
+        "dfc2a46e0cd01d0ee6b30d8244c600a1c4ee688bcbbd442281e55cee57a294b9",
+        "9b6320c33286880569b1c482653b73f467f2c421e1d882b1b609410675bf0a59",
+        "09da6b4a2937b8a79c19f2b27e31242ad239a54d736e861631695b99fe9b0d4e"
+      ]
+    }
+  ]
+}
