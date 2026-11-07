@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
-    "check": "node scripts/check-i18n.mjs && node scripts/check-design-tokens.mjs",
+    "check": "node scripts/check-i18n.mjs && node scripts/check-design-tokens.mjs && node scripts/check-public-secrets.mjs",
     "test": "npm run check && vitest run && npm run test:node",
     "test:node": "node --test tests/unit/*.test.mjs",
     "test:e2e": "playwright test",

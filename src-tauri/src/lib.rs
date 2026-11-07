@@ -3,6 +3,7 @@ mod appearance;
 mod auth;
 mod auth_commands;
 mod auth_dto;
+mod client_id;
 mod commands;
 mod content;
 mod curseforge;

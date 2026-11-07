@@ -55,6 +55,9 @@
 .vx-account-login__panel > p { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.6; }
 .vx-account-login__panel input { font-size: var(--text-sm); border-radius: var(--radius-sm); }
 .vx-account-login__panel form { display: grid; gap: 16px; }
+.vx-account-client-override summary { cursor: pointer; color: var(--text-secondary); font-size: var(--text-sm); }
+.vx-account-client-override[open] summary { margin-bottom: var(--space-4); }
+.vx-account-client-override .vx-action-row { margin-top: var(--space-4); }
 .vx-account-login__help { padding: 16px; border-radius: var(--radius-sm); background: var(--bg-raised); font-size: var(--text-sm); }
 .vx-account-login__footnote { margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-size: var(--text-xs); line-height: 1.6; }
 .vx-account-device { display: grid; justify-items: start; gap: 16px; }

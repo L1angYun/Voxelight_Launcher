@@ -38,7 +38,8 @@ export function AccountsPage() {
           onChanged={reload}
         />
       </div>
-      <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} config={config} onChanged={reload} />
+      <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} config={config}
+        builtinClientId={data.capabilities.microsoftBuiltinClientId === true} onChanged={reload} />
     </PageShell>
   );
 }

@@ -10,13 +10,17 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
   const { t } = useTranslation();
   const [key, setKey] = useState("");
   const [configured, setConfigured] = useState(false);
+  const [builtin, setBuiltin] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
-    void command<{ curseforgeConfigured: boolean }>("get_service_status")
+    void command<{ curseforgeConfigured: boolean; microsoftBuiltin?: boolean }>("get_service_status")
       .then((value) => {
-        if (active) setConfigured(value.curseforgeConfigured);
+        if (active) {
+          setConfigured(value.curseforgeConfigured);
+          setBuiltin(value.microsoftBuiltin === true);
+        }
       })
       .catch(onError);
     return () => {
@@ -72,14 +76,15 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
         <h3><KeyRound size={17} />{t("settings:service.title")}</h3>
         <p>{t("settings:service.description")}</p>
         <label>
-          {t("settings:service.clientId")}
+          {t(builtin ? "settings:service.clientIdOptional" : "settings:service.clientId")}
           <input
             aria-label="Microsoft Client ID"
             value={config.microsoftClientId}
-            placeholder={t("settings:service.clientIdPlaceholder")}
+            placeholder={t(builtin ? "settings:service.clientIdBuiltinPlaceholder" : "settings:service.clientIdPlaceholder")}
             onChange={(event) => onChange({ ...config, microsoftClientId: event.target.value.trim() })}
           />
         </label>
+        {builtin ? <p>{t("settings:service.builtinActive")}</p> : null}
         <label>
           {t("settings:service.curseforgeKey")}
           <span className="vx-settings-input-action">

@@ -139,6 +139,11 @@ function setAccounts(accounts: Account[]) {
   mockLauncher.activeAccount = accounts.find((account) => account.isSelected);
 }
 
+function setMicrosoftClient(builtin: boolean, clientId: string) {
+  mockLauncher.config.microsoftClientId = clientId;
+  mockLauncher.data.capabilities.microsoftBuiltinClientId = builtin;
+}
+
 async function render(language: "en-US" | "zh-CN" = "en-US") {
   const i18n = createLauncherI18n(language, language);
   await i18n.initPromise;
@@ -258,6 +263,124 @@ describe("accounts and appearance", () => {
     const panel = container.querySelector('dialog[open] [role="tabpanel"]')!;
     expect(panel.getAttribute("aria-labelledby")).toBe(offline.id);
     expect(offline.id).not.toBe("");
+  });
+
+  it("preserves the required Client ID field and disabled Start in a public build", async () => {
+    setMicrosoftClient(false, "");
+    await render(); await click("Add account");
+    expect(container.querySelector('input[aria-label="Microsoft Client ID for this project"]')).not.toBeNull();
+    expect(button("Start Microsoft login").disabled).toBe(true);
+    expect(container.textContent).toContain("Register your own public client app");
+    expect(container.querySelector("dialog details")).toBeNull();
+  });
+
+  it("starts with the built-in app without exposing or saving a Client ID", async () => {
+    setMicrosoftClient(true, "");
+    await render(); await click("Add account");
+    const details = container.querySelector<HTMLDetailsElement>("dialog details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(container.querySelector('input[aria-label="Microsoft Client ID for this project"]')).toBeNull();
+    expect(details?.querySelector<HTMLInputElement>("input")?.value).toBe("");
+    expect(container.textContent).toContain("Using the built-in Microsoft app.");
+    expect(container.textContent).not.toContain("Register your own public client app");
+    expect(button("Start Microsoft login").disabled).toBe(false);
+    vi.useFakeTimers();
+    await click("Start Microsoft login");
+    expect(commandMock).toHaveBeenCalledWith("begin_microsoft_login");
+    expect(commandMock).not.toHaveBeenCalledWith("save_config", expect.anything());
+    expect(commandMock.mock.calls.find(([name]) => name === "begin_microsoft_login")).toEqual(["begin_microsoft_login"]);
+    expect(container.textContent).toContain("TEST-CODE");
+  });
+
+  it("shows a persisted override and restores the built-in app by saving an empty override", async () => {
+    setMicrosoftClient(true, "22222222-2222-2222-2222-222222222222");
+    await render(); await click("Add account");
+    expect(container.querySelector<HTMLDetailsElement>("dialog details")?.open).toBe(true);
+    expect(container.textContent).toContain("Using your saved custom Microsoft Client ID.");
+    await click("Restore built-in app");
+    expect(commandMock).toHaveBeenCalledWith("save_config", {
+      config: expect.objectContaining({ microsoftClientId: "" }),
+    });
+    expect(mockLauncher.reload).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Restored the built-in Microsoft app.");
+    expect(container.textContent).toContain("Using the built-in Microsoft app.");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Custom Microsoft Client ID (optional)"]')?.value).toBe("");
+  });
+
+  it("keeps restore available for the persisted override after its draft is cleared", async () => {
+    setMicrosoftClient(true, "22222222-2222-2222-2222-222222222222");
+    await render(); await click("Add account");
+    await fill("Custom Microsoft Client ID (optional)", "");
+    expect(container.textContent).toContain("Using your saved custom Microsoft Client ID.");
+    expect(button("Restore built-in app").disabled).toBe(false);
+    vi.useFakeTimers();
+    await click("Start Microsoft login");
+    expect(commandMock.mock.calls.slice(0, 2)).toEqual([
+      ["save_config", { config: expect.objectContaining({ microsoftClientId: "" }) }],
+      ["begin_microsoft_login"],
+    ]);
+  });
+
+  it("saves a custom override before starting built-in-capable Microsoft login", async () => {
+    setMicrosoftClient(true, "");
+    await render(); await click("Add account");
+    const details = container.querySelector<HTMLDetailsElement>("dialog details")!;
+    await act(async () => { details.open = true; });
+    await fill("Custom Microsoft Client ID (optional)", "22222222-2222-2222-2222-222222222222");
+    vi.useFakeTimers();
+    await click("Start Microsoft login");
+    expect(commandMock.mock.calls.slice(0, 2)).toEqual([
+      ["save_config", { config: expect.objectContaining({ microsoftClientId: "22222222-2222-2222-2222-222222222222" }) }],
+      ["begin_microsoft_login"],
+    ]);
+  });
+
+  it("marks a newly saved custom Client ID as the active persisted override", async () => {
+    setMicrosoftClient(true, "");
+    await render(); await click("Add account");
+    const details = container.querySelector<HTMLDetailsElement>("dialog details")!;
+    await act(async () => { details.open = true; });
+    await fill("Custom Microsoft Client ID (optional)", "22222222-2222-2222-2222-222222222222");
+    expect(container.textContent).toContain("Using the built-in Microsoft app.");
+    await click("Save Client ID");
+    expect(container.textContent).toContain("Using your saved custom Microsoft Client ID.");
+    expect(button("Restore built-in app").disabled).toBe(false);
+  });
+
+  it("disables override editing and restore while Microsoft login is starting", async () => {
+    setMicrosoftClient(true, "22222222-2222-2222-2222-222222222222");
+    await render(); await click("Add account");
+    let complete!: (value: typeof device) => void;
+    commandMock.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    vi.useFakeTimers();
+    await click("Start Microsoft login");
+    expect(button("Restore built-in app").disabled).toBe(true);
+    expect(button("Save Client ID").disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Custom Microsoft Client ID (optional)"]')?.disabled).toBe(true);
+    await click("Restore built-in app");
+    expect(commandMock).not.toHaveBeenCalledWith("save_config", expect.anything());
+    await act(async () => complete(device));
+    expect(container.textContent).toContain("TEST-CODE");
+  });
+
+  it.each([
+    ["en-US", "auth.clientRejected", "Enable public client flows and personal Microsoft accounts"],
+    ["en-US", "auth.appNotApproved", "Your Microsoft login succeeded, but this app has not passed Mojang's Minecraft API review"],
+    ["en-US", "auth.rateLimited", "Too many authentication requests"],
+    ["en-US", "auth.minecraftExchangeFailed", "Minecraft could not complete sign-in"],
+    ["en-US", "auth.xboxFailed", "Xbox authentication failed"],
+    ["zh-CN", "auth.clientRejected", "允许公共客户端流"],
+    ["zh-CN", "auth.appNotApproved", "Microsoft 账号已登录成功，但此应用尚未通过 Mojang 的 Minecraft API 审核"],
+    ["zh-CN", "auth.rateLimited", "认证请求过于频繁"],
+    ["zh-CN", "auth.minecraftExchangeFailed", "Minecraft 登录交换失败"],
+    ["zh-CN", "auth.xboxFailed", "Xbox 认证失败"],
+  ] as const)("localizes %s Microsoft login error %s", async (language, code, message) => {
+    await render(language); await click(language === "zh-CN" ? "添加账号" : "Add account");
+    commandMock.mockRejectedValueOnce({ code });
+    await click(language === "zh-CN" ? "开始 Microsoft 登录" : "Start Microsoft login");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain("Something went wrong");
   });
   it("does not cancel a device flow when arrow keys move login-tab focus", async () => {
     await render(); await click("Add account"); vi.useFakeTimers();

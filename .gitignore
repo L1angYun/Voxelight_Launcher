@@ -17,6 +17,8 @@ settings.json
 *.tsbuildinfo
 .env
 .env.*
+/.cargo/config.toml
+/src-tauri/.cargo/config.toml
 .license-tmp-*/
 *.obj
 releases/

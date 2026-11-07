@@ -1,4 +1,5 @@
 use crate::{
+    client_id::builtin_client_id,
     errors::{expected, AppResult},
     minecraft,
     models::*,
@@ -20,13 +21,23 @@ pub fn bootstrap(state: Shared<'_>) -> Result<Value, String> {
     Ok(json!({
         "config": data.config, "accounts": data.accounts, "instances": data.instances,
         "installedVersions": minecraft::scan_versions(&data.config),
-        "capabilities": {
+        "capabilities": bootstrap_capabilities(builtin_client_id()),
+    }))
+}
+
+fn bootstrap_capabilities(builtin: Option<&str>) -> Value {
+    let note = if builtin.is_some() {
+        "离线账号用于离线游戏和支持离线角色的服务器"
+    } else {
+        "Microsoft 设备授权需先配置本项目合法的 Client ID；离线账号用于离线游戏和支持离线角色的服务器"
+    };
+    json!({
             "vanillaInstall": true, "vanillaLaunch": true, "offlineAccounts": true,
             "microsoftLogin": true, "authlibLogin": true, "modLoaders": true,
+            "microsoftBuiltinClientId": builtin.is_some(),
             "bedrock": false,
-            "notes": ["Microsoft 设备授权需先配置本项目合法的 Client ID；离线账号用于离线游戏和支持离线角色的服务器"]
-        }
-    }))
+            "notes": [note],
+    })
 }
 
 #[tauri::command]
@@ -368,13 +379,26 @@ pub async fn start_microsoft_login(
     state: Shared<'_>,
     auth: State<'_, Arc<crate::auth::AuthService>>,
 ) -> Result<crate::auth::DeviceLogin, String> {
-    auth.begin_microsoft(&state.snapshot()?.config.microsoft_client_id)
-        .await
+    let client_id =
+        crate::auth_commands::effective_client_id(&state.snapshot()?.config, builtin_client_id());
+    auth.begin_microsoft(&client_id).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_capabilities_expose_only_builtin_presence() {
+        let builtin = bootstrap_capabilities(Some("11111111-1111-1111-1111-111111111111"));
+        assert_eq!(builtin["microsoftBuiltinClientId"], true);
+        assert!(!serde_json::to_string(&builtin)
+            .unwrap()
+            .contains("11111111-1111-1111-1111-111111111111"));
+        let public = bootstrap_capabilities(None);
+        assert_eq!(public["microsoftBuiltinClientId"], false);
+        assert!(public["notes"][0].as_str().unwrap().contains("需先配置"));
+    }
 
     #[test]
     fn configuration_and_instance_removal_reject_busy_launch_preparation() {

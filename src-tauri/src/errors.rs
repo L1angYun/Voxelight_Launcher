@@ -43,6 +43,12 @@ pub fn expected(detail: impl Into<String>) -> AppError {
         "config.presetInvalid"
     } else {
         match detail.as_str() {
+            crate::auth::CLIENT_MISSING => "auth.clientIdRequired",
+            crate::auth::CLIENT_REJECTED => "auth.clientRejected",
+            crate::auth::APP_NOT_APPROVED => "auth.appNotApproved",
+            crate::auth::MC_RATE_LIMITED => "auth.rateLimited",
+            crate::auth::MC_EXCHANGE_FAILED => "auth.minecraftExchangeFailed",
+            crate::auth::XBOX_FAILED => "auth.xboxFailed",
             "此实例已在运行，请勿重复启动"
             | "此实例的游戏仍在运行。请先正常退出游戏，再备份、克隆、导出或恢复实例。" => {
                 "instance.running"
@@ -140,6 +146,24 @@ pub fn expected(detail: impl Into<String>) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microsoft_auth_constants_map_to_stable_error_codes() {
+        use crate::auth::{
+            APP_NOT_APPROVED, CLIENT_MISSING, CLIENT_REJECTED, MC_EXCHANGE_FAILED, MC_RATE_LIMITED,
+            XBOX_FAILED,
+        };
+        for (detail, code) in [
+            (CLIENT_MISSING, "auth.clientIdRequired"),
+            (CLIENT_REJECTED, "auth.clientRejected"),
+            (APP_NOT_APPROVED, "auth.appNotApproved"),
+            (MC_RATE_LIMITED, "auth.rateLimited"),
+            (MC_EXCHANGE_FAILED, "auth.minecraftExchangeFailed"),
+            (XBOX_FAILED, "auth.xboxFailed"),
+        ] {
+            assert_eq!(expected(detail).code, code);
+        }
+    }
 
     #[test]
     fn app_error_serializes_stable_code_params_and_detail() {
