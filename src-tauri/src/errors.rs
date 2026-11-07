@@ -37,6 +37,18 @@ impl AppError {
 
 pub type AppResult<T> = Result<T, AppError>;
 
+impl From<String> for AppError {
+    fn from(detail: String) -> Self {
+        expected(detail)
+    }
+}
+
+impl From<&str> for AppError {
+    fn from(detail: &str) -> Self {
+        expected(detail)
+    }
+}
+
 pub fn expected(detail: impl Into<String>) -> AppError {
     let detail = detail.into();
     let code = if detail.starts_with("预设 JSON 无效") {
@@ -67,6 +79,8 @@ pub fn expected(detail: impl Into<String>) -> AppError {
                 "auth.serviceKeyMissing"
             }
             "任务不存在" => "download.notFound",
+            "任务已取消，已校验文件保留供下次复用" => "download.cancelled",
+            "此游戏版本没有可安装的加载器版本" => "resource.loaderUnavailable",
             "请回到对应资源、整合包或备份页面重新执行；已校验文件会复用" => {
                 "download.retryUnsupported"
             }
@@ -146,6 +160,14 @@ pub fn expected(detail: impl Into<String>) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_cancellation_has_a_stable_code() {
+        assert_eq!(
+            expected("任务已取消，已校验文件保留供下次复用").code,
+            "download.cancelled"
+        );
+    }
 
     #[test]
     fn microsoft_auth_constants_map_to_stable_error_codes() {

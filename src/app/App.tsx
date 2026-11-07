@@ -111,7 +111,7 @@ function AppShell() {
           >
             {page === "home" ? <HomePage returning={hasLeftHome.current} /> : null}
             {page === "library" ? <LibraryPage navResetTick={navResetTick} /> : null}
-            {page === "discover" ? <DiscoverPage /> : null}
+            {page === "discover" ? <DiscoverPage onDownloads={() => { setDirection(1); setPage("downloads"); }} /> : null}
             {page === "multiplayer" ? <MultiplayerPage /> : null}
             {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
             {page === "accounts" ? <AccountsPage /> : null}

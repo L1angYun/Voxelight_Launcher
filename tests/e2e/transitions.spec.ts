@@ -5,8 +5,9 @@ import { join, resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { MOTION } from "../../src/design/motion";
 import { stopScreencast } from "./helpers/stop-screencast";
+import { evidenceDirectory } from "./helpers/evidence-directory";
 
-const EVIDENCE = resolve(process.env.VOXELIGHT_TRANSITION_EVIDENCE ?? "test-results/transitions");
+const EVIDENCE = evidenceDirectory("transitions");
 const HARDWARE = process.env.VOXELIGHT_TRANSITION_HARDWARE === "1";
 const hardwareLaunchOptions = {
   channel: "chromium",

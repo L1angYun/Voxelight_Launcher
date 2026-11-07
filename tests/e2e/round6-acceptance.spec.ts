@@ -4,8 +4,9 @@ import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { changedPixels, withWorldView } from "./helpers/world-image";
 import { encodePng, probeGlassRefraction } from "./helpers/glass-pixel-probe.mjs";
+import { evidenceDirectory } from "./helpers/evidence-directory";
 
-const evidence = resolve(process.env.VOXELIGHT_E2E_EVIDENCE ?? "test-results/world-regressions", "round6");
+const evidence = evidenceDirectory("round6");
 
 async function capture(page: Page, name: string) {
   await mkdir(evidence, { recursive: true });

@@ -185,9 +185,13 @@ export async function searchResources(
   query: string,
   type: string,
   gameVersion?: string,
+  loader?: string | null,
 ): Promise<ResourceProject[]> {
   const facets = [[`project_type:${type}`]];
   if (gameVersion) facets.push([`versions:${gameVersion}`]);
+  if (type === "mod") facets.push(loader && ["fabric", "neoforge", "forge", "quilt"].includes(loader)
+    ? [`categories:${loader}`]
+    : ["categories:fabric", "categories:forge", "categories:neoforge", "categories:quilt"]);
   const params = new URLSearchParams({
     query,
     limit: "24",

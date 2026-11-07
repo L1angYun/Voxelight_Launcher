@@ -1,5 +1,7 @@
 import type { Page } from "@playwright/test";
 import type { WorldMaterial, WorldSceneId } from "../../src/components/world/types";
+import type { Instance } from "../../src/lib/launcher";
+import type { DownloadTask } from "../../src/features/downloads/useDownloadTasks";
 
 export async function installLauncherFixture(
   page: Page,
@@ -10,6 +12,9 @@ export async function installLauncherFixture(
     noAccount?: boolean;
     noInstances?: boolean;
     instanceCount?: number;
+    instances?: Partial<Instance>[];
+    instanceLoader?: "fabric";
+    resourceCreateDelay?: number;
     firstInstanceName?: string;
     language?: "en-US" | "zh-CN";
     versionDirectoryCount?: number;
@@ -114,7 +119,7 @@ export async function installLauncherFixture(
         javaMajor: 21,
       }),
     );
-    const instances = options.noInstances ? [] : options.stress ? [
+    const originalInstances = options.noInstances ? [] : options.stress ? [
       {
         id: "long-instance",
         name: "Christopher Alexander Montgomery III's Shared Fabric Survival World With An Exceptionally Long But Plausible Name",
@@ -152,6 +157,19 @@ export async function installLauncherFixture(
         totalPlayTime: 0,
       }),
     );
+    const instances: Instance[] = (options.instances ?? originalInstances).map((instance, index) => ({
+      id: index === 0 ? "fixture-world" : `fixture-world-${index + 1}`,
+      name: index === 0 ? "合成测试世界" : `合成测试世界 ${index + 1}`,
+      versionId: "1.21.1", gameDirectory: `C:\\SyntheticFixture\\world-${index + 1}`,
+      createdAt: "2026-01-01T00:00:00Z", category: "", notes: "", totalPlayTime: 0,
+      loader: "", loaderVersion: "", ...instance,
+      ...(options.instanceLoader ? { loader: "fabric", loaderVersion: "0.16.9", versionId: "fabric-loader-0.16.9-1.21.1" } : {}),
+    }));
+    for (const instance of instances) {
+      if (!installedVersions.some(version => version.id === instance.versionId)) {
+        installedVersions.push({ id: instance.versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
+      }
+    }
     const history = Array.from({ length: 198 }, (_, index) => ({
       id: `history-${index}`,
       kind: "install",
@@ -167,7 +185,7 @@ export async function installLauncherFixture(
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
     }));
-    const downloadTasks = options.stress ? [
+    const downloadTasks: DownloadTask[] = options.stress ? [
       {
         id: "task-long",
         kind: "resource",
@@ -204,6 +222,13 @@ export async function installLauncherFixture(
     const calls: { name: string; args?: Record<string, unknown> }[] = [];
     const callbacks = new Map<number, (value: unknown) => void>();
     const listeners = new Map<string, number>();
+    const cancelledResources = new Set<string>();
+    const emit = (event: string, payload: unknown) => callbacks.get(listeners.get(event)!)?.({ event, id: 1, payload: structuredClone(payload) });
+    const resourceContext = (versionId: string, instanceId?: string) => {
+      const instance = instances.find(item => item.id === instanceId);
+      const loader = versionId.startsWith("fabric-loader-") || instance?.loader === "fabric" ? "fabric" : null;
+      return { gameVersion: versionId.startsWith("fabric-loader-") ? versionId.split("-").at(-1)! : versionId, loader };
+    };
     let nextCallback = 0;
     const profile = (id: string) => {
       const account = accounts.find((item) => item.id === id)!;
@@ -254,10 +279,10 @@ export async function installLauncherFixture(
           }
           if (name === "bootstrap")
             return {
-              config,
-              accounts: options.noAccount ? [] : accounts,
-              installedVersions,
-              instances,
+              config: { ...config },
+              accounts: options.noAccount ? [] : structuredClone(accounts),
+              installedVersions: structuredClone(installedVersions),
+              instances: structuredClone(instances),
               capabilities: {},
             };
           if (name === "get_default_skin") {
@@ -302,7 +327,73 @@ export async function installLauncherFixture(
             };
           if (name === "get_service_status")
             return { curseforgeConfigured: false };
-          if (name === "list_download_tasks") return downloadTasks;
+          if (name === "get_resource_context")
+            return resourceContext(String(args?.versionId ?? ""), args?.instanceId as string | undefined);
+          if (name === "list_loader_versions")
+            return [{ id: "0.16.9", stable: true, recommended: true }];
+          if (name === "resolve_resource_targets") {
+            const title = args?.projectId === "P7dR8mSH" ? "Fabric API" : args?.projectId === "sodium" ? "Sodium" : String(args?.projectId);
+            const kind = String(args?.resourceType ?? "mod");
+            const candidates = [
+              ...instances.map(item => ({ kind: "instance", instanceId: item.id, versionId: item.versionId, name: item.name })),
+              ...installedVersions.filter(item => !instances.some(instance => instance.versionId === item.id))
+                .map(item => ({ kind: "version", versionId: item.id, name: item.id, instanceId: undefined })),
+            ];
+            return {
+              projectId: args?.projectId, title, projectType: kind,
+              targets: candidates.map(item => {
+                const context = resourceContext(item.versionId, item.instanceId);
+                const compatible = context.gameVersion === "1.21.1" && (kind !== "mod" || context.loader === "fabric");
+                return { ...item, ...context, compatible, reason: compatible ? undefined : !context.loader && kind === "mod" ? "vanilla" : "gameVersionMismatch",
+                  resourceVersionId: compatible ? "fixture-resource-version" : undefined };
+              }),
+              suggestion: { loader: kind === "resourcepack" ? "vanilla" : "fabric", gameVersion: "1.21.1", name: title,
+                matrix: [{ loader: kind === "resourcepack" ? "vanilla" : "fabric", gameVersions: ["1.21.1"] }] },
+            };
+          }
+          if (name === "install_resource") {
+            const context = resourceContext(String(args?.versionId), args?.instanceId as string | undefined);
+            if (args?.resourceType === "mod" && !context.loader) throw { code: "resource.loaderRequired", params: { versionId: args?.versionId } };
+            if (context.gameVersion !== "1.21.1") throw { code: "resource.noCompatibleVersion", params: context };
+            const target = instances.find(item => item.id === args?.instanceId)?.gameDirectory ?? "C:\\SyntheticFixture";
+            return { name: String(args?.projectId), fileName: "fabric-api-fixture.jar", path: target + "\\mods\\fabric-api-fixture.jar" };
+          }
+          if (name === "create_instance_for_resource") {
+            const task: DownloadTask = { id: `fixture-resource-${downloadTasks.length + 1}`, kind: "resource", target: String(args?.projectId),
+              label: "合成安装资源", status: "running", stage: "loader-libraries", completed: 1, total: 3, bytesCompleted: 0, bytesTotal: 0,
+              message: "合成加载器安装进度", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
+            downloadTasks.unshift(task);
+            emit("launcher://tasks", downloadTasks);
+            emit("launcher://progress", { versionId: "fixture-new", stage: task.stage, completed: 1, total: 3, message: task.message });
+            await new Promise(resolve => setTimeout(resolve, options.resourceCreateDelay ?? 100));
+            if (cancelledResources.has(task.id)) {
+              task.status = "cancelled"; emit("launcher://tasks", downloadTasks);
+              throw { code: "download.cancelled", params: {} };
+            }
+            const loader = String(args?.loader ?? "fabric"), game = String(args?.gameVersion);
+            const versionId = loader === "vanilla" ? game : `${loader}-loader-${String(args?.loaderVersion ?? "0.16.9")}-${game}`;
+            const instance: Instance = { id: "fixture-created-for-resource", name: String(args?.name), versionId, loader,
+              loaderVersion: loader === "vanilla" ? "" : String(args?.loaderVersion ?? "0.16.9"), gameDirectory: "C:\\SyntheticFixture\\instances\\fixture-created-for-resource",
+              createdAt: "2026-01-01T00:00:00Z", category: "normal", notes: "", totalPlayTime: 0 };
+            instances.push(instance);
+            if (!installedVersions.some(item => item.id === versionId)) installedVersions.push({ id: versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
+            task.stage = "resource"; task.completed = 2; task.message = "合成模组安装";
+            emit("launcher://progress", { versionId, stage: task.stage, completed: 2, total: 3, message: task.message });
+            task.stage = "complete"; task.completed = 3; task.status = "completed"; task.message = "合成安装完成";
+            emit("launcher://tasks", downloadTasks);
+            return { instance, install: { name: String(args?.name), fileName: "fabric-api-fixture.jar",
+              path: instance.gameDirectory + "\\mods\\fabric-api-fixture.jar" } };
+          }
+          if (name === "cancel_download_task") {
+            if (typeof args?.taskId === "string") {
+              cancelledResources.add(args.taskId);
+              const task = downloadTasks.find(item => item.id === args.taskId);
+              if (task) task.status = "cancelled";
+              emit("launcher://tasks", downloadTasks);
+            }
+            return null;
+          }
+          if (name === "list_download_tasks") return structuredClone(downloadTasks);
           if (name === "list_servers" && options.stress)
             return [{
               index: 0,

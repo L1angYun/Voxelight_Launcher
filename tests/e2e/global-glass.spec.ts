@@ -4,8 +4,9 @@ import { resolve } from "node:path";
 import { installLauncherFixture } from "./fixtures";
 import { decodePng, probeGlassRefraction } from "./helpers/glass-pixel-probe.mjs";
 import { captureWorld, worldStructure } from "./helpers/world-image";
+import { evidenceDirectory } from "./helpers/evidence-directory";
 
-const evidence = resolve(process.env.VOXELIGHT_E2E_EVIDENCE ?? "test-results/world-regressions", "global-glass");
+const evidence = evidenceDirectory("global-glass");
 const pages = [
   ["home", ".vx-home"], ["library", ".vx-library-page"],
   ["discover", ".vx-discover-page"], ["multiplayer", ".vx-multiplayer-page"],

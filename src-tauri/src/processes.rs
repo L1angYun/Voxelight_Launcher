@@ -31,6 +31,12 @@ pub struct GameRegistry {
     games: Mutex<HashMap<u32, TrackedGame>>,
 }
 impl GameRegistry {
+    pub(crate) fn snapshot(&self) -> Result<Vec<RunningGame>, String> {
+        self.games
+            .lock()
+            .map(|games| games.values().map(|game| game.info.clone()).collect())
+            .map_err(|_| "游戏进程锁异常，为保护实例文件，已拒绝此操作".to_owned())
+    }
     fn list(&self) -> Vec<RunningGame> {
         self.games
             .lock()

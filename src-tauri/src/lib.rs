@@ -16,6 +16,7 @@ mod models;
 mod modpacks;
 mod platform;
 mod processes;
+mod resource_targets;
 mod resources;
 mod secrets;
 mod server_manager;
@@ -214,6 +215,9 @@ pub fn run() {
             commands::open_folder,
             commands::start_microsoft_login,
             resources::install_resource,
+            resources::resolve_resource_targets,
+            resources::create_instance_for_resource,
+            resources::get_resource_context,
             resources::get_modrinth_project_details,
             curseforge::get_curseforge_project_details,
             resources::list_local_resources,
