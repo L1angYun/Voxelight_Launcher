@@ -32,6 +32,25 @@ async function expectWorldAppearance(page: Page, theme: string, scene: string) {
   await expect(page.locator(".world-scene")).toHaveAttribute("data-world-scene", scene);
 }
 
+type AppearanceMedians = Awaited<ReturnType<typeof captureAppearanceSeries>>["medians"];
+type NumericAppearanceCheck = { id: string; value: number; rule: string; pass: boolean };
+
+/** R3-4: the same approved light-horizon gates apply to both acceptance groups. */
+function lightHorizonChecks(measured: AppearanceMedians): NumericAppearanceCheck[] {
+  return [
+    { id: "silhouette-delta-l", value: measured.silhouetteDeltaL, rule: "-14 <= silhouetteDeltaL <= -5",
+      pass: measured.silhouetteDeltaL >= -14 && measured.silhouetteDeltaL <= -5 },
+    { id: "silhouette-tiles", value: measured.silhouetteTiles, rule: "silhouetteTiles >= 0.50",
+      pass: measured.silhouetteTiles >= .5 },
+    { id: "silhouette-far-p05", value: measured.silhouetteFarP05, rule: "silhouetteFarP05 >= 45",
+      pass: measured.silhouetteFarP05 >= 45 },
+    { id: "sky-offset", value: measured.skyOffset, rule: "abs(skyOffset) <= 1",
+      pass: Math.abs(measured.skyOffset) <= 1 },
+    { id: "lower-white", value: measured.lowerWhiteFraction, rule: "normal lower-world white <0.001",
+      pass: measured.lowerWhiteFraction < .001 },
+  ];
+}
+
 /** Test-only terrain clock override; keep every other uniform and animation live. */
 async function pinTerrainTime(page: Page, phase: number) {
   await page.addInitScript(value => {
@@ -114,8 +133,24 @@ appearanceTest.describe("review A appearance budgets", () => {
       const baseline = await appearanceBudget(theme, width);
       // Preserve the approved five-point design increment. S1 adds three
       // standard deviations measured from the independent d5e31ad reference.
+      const silhouetteChecks = theme === "light" ? lightHorizonChecks(sample.medians) : [];
+      const checks: NumericAppearanceCheck[] = [
+        { id: "home-coverage", value: sample.medians.coveragePercent, rule: `coverage <= ${baseline.coverageLimit}`,
+          pass: baseline.coverageLimit !== null && sample.medians.coveragePercent <= baseline.coverageLimit },
+        ...silhouetteChecks,
+      ];
+      // Save failed baseline measurements too; assertion failures must not hide
+      // the normal-frame silhouette values used to diagnose R3-4.
+      await writeFile(info.outputPath("numeric-acceptance.json"), JSON.stringify({
+        scenario: { theme, width, height: 720, scene: "horizon" }, numeric: checks,
+        allAGatesPass: checks.every(check => check.pass), waiting: sample.settlingWait, medians: sample.medians,
+        frames: sample.samples.map(frame => ({ index: frame.index, at: frame.before.at, normalUniforms: frame.normalUniforms,
+          coveragePercent: frame.coveragePercent, silhouette: frame.silhouette, lower: frame.lower })),
+      }, null, 2));
       expect(baseline.coverageLimit).not.toBeNull();
       expect(sample.medians.coveragePercent).toBeLessThanOrEqual(baseline.coverageLimit!);
+      for (const check of silhouetteChecks)
+        expect.soft(check.pass, `${check.id}: ${check.value}; ${check.rule}`).toBe(true);
     });
   }
   appearanceTest("dark 1280: content title bands stay quiet across all content pages", async ({ page }, info) => {
@@ -142,9 +177,12 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
     { theme: "dark", width: 1920, height: 1080, scene: "horizon" },
     { theme: "light", width: 1280, height: 720, scene: "horizon" },
     { theme: "dark", width: 1280, height: 720, scene: "massif" },
+    { theme: "light", width: 1280, height: 720, scene: "massif" },
   ] as const;
   for (const { theme, width, height, scene } of cases) {
-    appearanceTest(`M1/M2 ${theme} ${scene} ${width}: anchored island and its surroundings meet their budgets`, async ({ page }, info) => {
+    const recordOnly = theme === "light" && scene === "massif";
+    const criterion = recordOnly ? "record-only silhouette diagnostics" : "anchored island and its surroundings meet their budgets";
+    appearanceTest(`M1/M2 ${theme} ${scene} ${width}: ${criterion}`, async ({ page }, info) => {
       appearanceTest.setTimeout(90000);
       await page.setViewportSize({ width, height });
       await installLauncherFixture(page, { theme, effects: "full", worldScene: scene, worldMaterial: "lattice" });
@@ -155,7 +193,7 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
       });
       await expectWorldAppearance(page, theme, scene);
       const measured = sampled.medians;
-      const checks: { id: string; value: number; rule: string; pass: boolean }[] = [];
+      const checks: NumericAppearanceCheck[] = [];
       if (scene === "horizon") checks.push(
         { id: "valid-roi", value: Math.min(...sampled.samples.map(sample => sample.island.coverage)),
           rule: "Every sampled ROI covers >=85% non-background pixels before the neutral filter",
@@ -186,20 +224,23 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
       // content of the proportional ROI in the other scenes and themes.
       if (theme === "dark" && scene === "horizon" && width === 1280)
         checks.push({ id: "far-p95", value: measured.farP95, rule: "60 <= p95 <= 90", pass: measured.farP95 >= 60 && measured.farP95 <= 90 });
+      if (theme === "light" && scene === "horizon") checks.push(...lightHorizonChecks(measured));
       const manualScreenshot = scene === "massif" ? info.outputPath("massif-manual.png") : null;
       if (manualScreenshot) await page.screenshot({ path: manualScreenshot, scale: "css" });
       await writeFile(info.outputPath("numeric-acceptance.json"), JSON.stringify({
-        scenario: { theme, width, height, scene }, numeric: checks,
+        scenario: { theme, width, height, scene }, recordOnly, numeric: checks,
         allAGatesPass: checks.every(check => check.pass),
         waiting: sampled.settlingWait, medians: measured,
         frames: sampled.samples.map(sample => ({ index: sample.index, at: sample.hiddenGeometry.at,
-          uniforms: sample.uniforms,
-          island: sample.island, outside: sample.outside, far: sample.far, lower: sample.lower })),
+          uniforms: sample.uniforms, normalUniforms: sample.normalUniforms,
+          island: sample.island, outside: sample.outside, far: sample.far, lower: sample.lower, silhouette: sample.silhouette })),
         diagnostics: { farP95: measured.farP95, outsideMeanAbsDelta: measured.outsideMeanAbsDelta,
-          island: { scope: scene === "massif" ? "record-only" : "see-numeric-checks", meanScope: theme === "dark" ? "record-only; startup mean gate uses fixed uT=9.7" : "relative baseline gate", coverage: measured.islandCoverage,
+          silhouette: { scope: theme === "light" && scene === "horizon" ? "see-numeric-checks" : "record-only",
+            deltaL: measured.silhouetteDeltaL, tiles: measured.silhouetteTiles, farP05: measured.silhouetteFarP05, skyOffset: measured.skyOffset },
+          island: { scope: scene === "massif" ? "record-only" : "see-numeric-checks", meanScope: recordOnly ? "record-only" : theme === "dark" ? "record-only; startup mean gate uses fixed uT=9.7" : "relative baseline gate", coverage: measured.islandCoverage,
             mean: measured.islandMean, p95: measured.islandP95, whiteFraction: measured.islandWhiteFraction } },
         manual: { status: "not-assessed-by-automated-test", checks: manualScreenshot
-          ? [{ id: "massif-island-surface", criterion: "Inspect mountain surface for an overall gray or dark cast", screenshot: manualScreenshot }] : [] },
+          ? [{ id: "massif-island-surface", criterion: recordOnly ? "Record whether the light mountain silhouette is too weak; no numeric gate applies" : "Inspect mountain surface for an overall gray or dark cast", screenshot: manualScreenshot }] : [] },
       }, null, 2));
       for (const check of checks)
         expect.soft(check.pass, `${check.id}: ${check.value}; ${check.rule}${check.id === "valid-roi" ? "; ROI 未覆盖岛面" : ""}`).toBe(true);

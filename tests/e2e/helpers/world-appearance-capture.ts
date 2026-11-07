@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { decodePng } from "./glass-pixel-probe.mjs";
-import { farMetrics, islandMetrics, lowerWorldWhiteMetrics, outsideIslandMetrics, worldAppearanceMetrics } from "./world-appearance.ts";
+import { farMetrics, islandMetrics, lowerWorldWhiteMetrics, outsideIslandMetrics, silhouetteMetrics, worldAppearanceMetrics } from "./world-appearance.ts";
 import { readWorldUniformProbe, type WorldUniformSample } from "./world-uniform-probe.ts";
 
 export const median = (values: number[]) => {
@@ -223,6 +223,7 @@ export async function captureAppearanceSeries(page: Page, directory: string, opt
         island: islandMetrics(hidden, before.feet, options.background),
         outside: outsideIslandMetrics(hidden, before.feet, options.background),
         far: farMetrics(normal), lower: lowerWorldWhiteMetrics(normal),
+        silhouette: silhouetteMetrics(normal, options.background),
         coveragePercent: worldAppearanceMetrics(normal, options.background).home.fraction * 100 });
     } finally {
       await page.locator(characterSelector).evaluate((canvas, previous) => {
@@ -247,6 +248,10 @@ export async function captureAppearanceSeries(page: Page, directory: string, opt
       farP95: median(samples.map(sample => sample.far.p95!)),
       lowerWhiteFraction: median(samples.map(sample => sample.lower.fraction!)),
       coveragePercent: median(samples.map(sample => sample.coveragePercent)),
+      silhouetteDeltaL: median(samples.map(sample => sample.silhouette.deltaL)),
+      silhouetteTiles: median(samples.map(sample => sample.silhouette.tiles)),
+      silhouetteFarP05: median(samples.map(sample => sample.silhouette.farP05)),
+      skyOffset: median(samples.map(sample => sample.silhouette.skyOffset)),
     }, samples };
   await writeFile(join(directory, "measurements.json"), JSON.stringify(result, null, 2));
   return result;

@@ -144,3 +144,127 @@ test("lower-world white counts include normal-frame UI and reject near-white col
   assert.equal(measured.pureWhite, 2);
   assert.equal(measured.fraction, .01);
 });
+
+function silhouette(frame, rgb = [0, 0, 0]) {
+  assert.equal(typeof appearance.silhouetteMetrics, "function", "silhouetteMetrics must measure the real screenshot");
+  return appearance.silhouetteMetrics(frame, rgb);
+}
+
+function near(actual, expected) {
+  assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} differs from ${expected}`);
+}
+
+test("silhouette lightness follows standard sRGB and CIE L* for black, white, gray and primaries", () => {
+  // Literal standard-conversion results distinguish encoded RGB, linear Y and L*.
+  for (const [rgb, lightness] of [
+    [[0, 0, 0], 0],
+    [[255, 255, 255], 100],
+    [[1, 1, 1], .2741748000656514],
+    [[128, 128, 128], 53.585013452169036],
+    [[255, 0, 0], 53.23288178584245],
+    [[0, 255, 0], 87.73703347354422],
+    [[0, 0, 255], 32.302586667249486],
+  ]) {
+    const measured = silhouette(image(1280, 720, rgb), rgb);
+    near(measured.farMeanL, lightness);
+    near(measured.skyMeanL, lightness);
+    near(measured.backgroundL, lightness);
+    near(measured.farP05, lightness);
+    near(measured.deltaL, 0);
+    near(measured.skyOffset, 0);
+    assert.equal(measured.tiles, 0);
+    assert.equal(measured.valid, true);
+  }
+});
+
+test("silhouette averages per-pixel L* and retains colored and transparent RGB samples", () => {
+  const frame = image(1280, 720, [255, 255, 255]);
+  paint(frame, [900, 235, 1050, 400], [0, 0, 0]);
+  const measured = silhouette(frame, [255, 255, 255]);
+  assert.equal(measured.farMeanL, 50); // L*(average RGB) would instead be about53.585.
+  assert.equal(measured.skyMeanL, 100);
+  assert.equal(measured.deltaL, -50);
+  assert.equal(measured.farP05, 0);
+  assert.equal(measured.skyOffset, 0);
+
+  paint(frame, [900, 235, 1200, 400], [255, 0, 0]);
+  for (let y = 235; y < 400; y++) for (let x = 900; x < 1200; x++)
+    frame.pixels[(y * frame.width + x) * 4 + 3] = 0;
+  const colored = silhouette(frame, [255, 255, 255]);
+  near(colored.farMeanL, 53.23288178584245);
+  near(colored.deltaL, -46.76711821415755);
+  assert.equal(colored.farSamples, 49500);
+  assert.equal(colored.strongTiles, 180);
+});
+
+test("silhouette ROIs match historical far bounds and scale the separate sky rectangle", () => {
+  for (const [width, height, farBounds, skyBounds, farSamples, skySamples, tileCount] of [
+    [1280, 720, [900, 235, 1200, 400], [900, 108, 1200, 202], 49500, 28200, 180],
+    [1920, 1080, [1350, 352, 1800, 600], [1350, 162, 1800, 302], 111600, 63000, 420],
+    [1050, 720, [738, 235, 984, 400], [738, 108, 984, 202], 40590, 23124, 150],
+  ]) {
+    const frame = image(width, height, [0, 0, 0]);
+    const measured = silhouette(frame);
+    assert.deepEqual(measured.farBounds, farBounds);
+    assert.deepEqual(measured.farBounds, appearance.farMetrics(frame).bounds);
+    assert.deepEqual(measured.skyBounds, skyBounds);
+    assert.equal(measured.farSamples, farSamples);
+    assert.equal(measured.skySamples, skySamples);
+    assert.equal(measured.tileSize, 16);
+    assert.equal(measured.tileCount, tileCount);
+  }
+});
+
+test("silhouette tiles are anchored to far top-left and exclude incomplete right and bottom edges", () => {
+  const frame = image(1280, 720, [0, 0, 0]);
+  paint(frame, [900, 235, 916, 251], [255, 255, 255]); // Exactly one complete tile.
+  paint(frame, [1188, 235, 1200, 400], [255, 255, 255]); // Twelve-column remainder.
+  paint(frame, [900, 395, 1200, 400], [255, 255, 255]); // Five-row remainder.
+  const measured = silhouette(frame);
+  assert.equal(measured.tileCount, 180);
+  assert.equal(measured.strongTiles, 1);
+  assert.equal(measured.tiles, 1 / 180);
+  // All remainder pixels still count toward the far-region mean and percentile.
+  near(measured.farMeanL, 367600 / 49500);
+  assert.equal(measured.farSamples, 49500);
+  assert.equal(measured.farP05, 0);
+});
+
+test("silhouette tile contrast uses its mean against the whole sky and accepts either contrast direction", () => {
+  const frame = image(1280, 720, [128, 128, 128]);
+  paint(frame, [900, 235, 916, 251], [255, 255, 255]);
+  paint(frame, [916, 235, 932, 251], [0, 0, 0]);
+  const measured = silhouette(frame, [128, 128, 128]);
+  assert.equal(measured.strongTiles, 2);
+  assert.equal(measured.tiles, 2 / 180);
+  near(measured.skyOffset, 0);
+  // A sky-region change affects the reference even though the background does not.
+  paint(frame, [900, 108, 1200, 202], [255, 255, 255]);
+  const changedSky = silhouette(frame, [128, 128, 128]);
+  assert.equal(changedSky.strongTiles, 179);
+  near(changedSky.skyOffset, 46.414986547830964);
+});
+
+test("silhouette far P05 uses nearest rank without rounding or interpolating samples", () => {
+  const frame = image(1280, 720, [100, 100, 100]);
+  for (let sample = 0; sample < 2475; sample++) {
+    const x = 900 + sample % 300, y = 235 + Math.floor(sample / 300);
+    frame.pixels.set([0, 0, 0, 255], (y * frame.width + x) * 4);
+  }
+  assert.equal(silhouette(frame).farP05, 0); // ceil(.05 *49500) is rank2475.
+  frame.pixels.set([100, 100, 100, 255], ((235 + 8) * frame.width + 974) * 4);
+  near(silhouette(frame).farP05, 42.3746032571989);
+});
+
+test("silhouette rejects incomplete images, empty ROIs, tileless regions and malformed background RGB", () => {
+  assert.equal(typeof appearance.silhouetteMetrics, "function");
+  for (const frame of [
+    { width: 0, height: 720, pixels: Buffer.alloc(0) },
+    { width: 1280, height: .5, pixels: Buffer.alloc(0) },
+    { width: 1280, height: 720, pixels: Buffer.alloc(4) },
+    image(1, 1),
+    image(64, 64),
+  ]) assert.throws(() => appearance.silhouetteMetrics(frame, [0, 0, 0]), /image|ROI|tile/i);
+  for (const rgb of [[NaN, 0, 0], [0, -1, 0], [0, 256, 0], [0, 0]])
+    assert.throws(() => appearance.silhouetteMetrics(image(1280, 720), rgb), /background|RGB/i);
+});
