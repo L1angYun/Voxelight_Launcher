@@ -10,6 +10,7 @@ mod curseforge;
 mod downloads;
 mod errors;
 mod instances;
+mod integrity;
 mod loaders;
 mod minecraft;
 mod models;
@@ -100,9 +101,7 @@ pub fn run() {
         .setup(|app| {
             let state = match storage::LauncherState::load() {
                 Ok(state) => state,
-                Err(error) => fail_startup(format!(
-                    "无法加载启动器数据目录。\n\n{error}\n\n请检查磁盘、目录权限和杀毒软件拦截。"
-                )),
+                Err(error) => fail_startup(integrity::data_directory_failure(&error.to_string())),
             };
             let webview_data = state.data_dir.join("webview");
             let auth = match auth::AuthService::new(state.data_dir.clone()) {

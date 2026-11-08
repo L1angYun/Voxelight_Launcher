@@ -26,9 +26,20 @@ public static class VoxelightNativeMethods {
 }
 '@
 $project = Split-Path -Parent $PSScriptRoot
+$targetDir = & node.exe (Join-Path $project 'scripts\build-runtime.mjs') --print-target-dir
+if ($LASTEXITCODE -ne 0 -or -not $targetDir) { throw 'Could not resolve the Windows build output directory.' }
 if (-not $Installer) {
     $config = Get-Content -Raw (Join-Path $project "src-tauri/tauri.conf.json") | ConvertFrom-Json
-    $Installer = Join-Path $project "src-tauri/target/release/bundle/nsis/Voxelight Launcher_$($config.version)_x64-setup.exe"
+    $profileJson = & node.exe (Join-Path $project 'scripts\build-runtime.mjs') --print-artifact-dirs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Cargo artifact profile directories.' }
+    $installerCandidates = @(@($profileJson | ConvertFrom-Json | ForEach-Object { $_ }) | ForEach-Object {
+        $candidate = Join-Path $_ "bundle/nsis/Voxelight Launcher_$($config.version)_x64-setup.exe"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
+    })
+    if ($installerCandidates.Count -ne 1) {
+        throw "Expected one installer below $targetDir; found $($installerCandidates.Count). Supply -Installer with the intended artifact path."
+    }
+    $Installer = $installerCandidates[0]
 }
 $Installer = [IO.Path]::GetFullPath($Installer)
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
@@ -37,7 +48,7 @@ if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
 
 $runId = [Guid]::NewGuid().ToString("N")
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $project "src-tauri/target/installer-ui-$Language-$runId"
+    $OutputDirectory = Join-Path $targetDir "installer-ui-$Language-$runId"
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null

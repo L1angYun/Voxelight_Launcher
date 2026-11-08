@@ -52,14 +52,17 @@ Build the Windows desktop application and NSIS installer with `powershell -File 
 
 `scripts/desktop.ps1` is an optional helper when local PowerShell policy permits unsigned local scripts. Do not change that policy merely to build the app: the npm commands above invoke the same Tauri toolchain.
 
-If the project or build directory has a Windows **Low mandatory label**, its native executables inherit that label and Java may be unable to write ordinary game data. The same label can prevent a setup from replacing files in a normal installation directory; copy the setup to a normal per-user directory before running it. This is a Windows file-integrity issue, not an Authenticode requirement. Do not weaken ACLs, integrity labels or system security settings. For development, select a normal per-user build output before starting Tauri:
+If the checkout has a Windows **Low mandatory label**, newly linked executables inherit it and Windows starts them at Low integrity. They cannot write normal user data. The Windows npm/Tauri entry points repair the executable's own label to Medium before every development launch, including after a Rust rebuild. Successful builds also repair their executable and NSIS setup files. This requires no administrator rights and leaves directory ACLs and integrity labels unchanged. Cargo still runs from `src-tauri`, so its `.cargo/config.toml` remains effective; output directories are not shared between checkouts by these scripts.
+
+For an older build or a setup copied back into a Low-labeled `releases` directory, run:
 
 ```powershell
-$env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\Temp\VoxelightLauncher\build"
-npm run desktop:dev
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/repair-build-integrity.ps1
+# Or repair one explicitly selected executable:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/repair-build-integrity.ps1 -Path 'C:\Downloads\Voxelight-setup.exe'
 ```
 
-The optional helper performs this check for `dev` without changing ACLs or labels. The normal NSIS installation directory is independent of the source directory's inherited label.
+This changes only the selected `.exe` files' mandatory labels; it does not recurse or grant access permissions. `-ExecutionPolicy Bypass` applies only to that PowerShell invocation. Reinstalling or copying the program into a normal directory is another option; a same-volume move can retain the old label. A Low-integrity startup that cannot open either data directory now explains this cause in Chinese or English instead of suggesting elevation. A new file installed by the Medium-integrity setup into a normal directory inherits that destination's security, rather than the build directory's Low label.
 
 `npm run dev` starts a browser preview. It can display the interface, WebGL skins and public resource search, but cannot access local game files or launch games.
 
