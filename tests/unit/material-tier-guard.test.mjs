@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { glassSurfaceOwners } from "../../scripts/glass-surface-owners.mjs";
 const root = process.env.VX_ROOT ?? process.cwd();
 const walk = (dir) => readdirSync(dir).flatMap((name) => {
   const path = join(dir, name);
@@ -23,9 +24,7 @@ const GLASS_OWNERS = new Set([
 const GLASS_TRIGGERS = new Set(["src/features/home/InstancePicker.tsx", "src/features/home/HomeAnimationSelector.tsx"]);
 
 test("GlassSurface is only used by chrome-tier owners", () => {
-  const found = [];
-  for (const { path, rel } of source) for (const match of read(path).matchAll(/<GlassSurface\b[^>]*?className=(?:"([^"]+)"|\{([^}]+)\})/g))
-    found.push(`${rel}:${match[1]?.split(/\s+/)[0] ?? `{${match[2].trim()}}`}`);
+  const found = source.flatMap(({ path, rel }) => glassSurfaceOwners(rel, read(path)));
   assert.deepEqual(found.filter((owner) => !GLASS_OWNERS.has(owner)), []);
 });
 

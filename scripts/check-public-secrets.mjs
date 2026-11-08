@@ -58,7 +58,13 @@ function workingDocument(root, path, privateMode) {
     }
     const stat = lstatSync(target);
     if (!privateMode && !textCandidate(path, stat.size)) return null;
-    if (stat.isSymbolicLink()) return { path, buffer: Buffer.from(readlinkSync(target)) };
+    if (stat.isSymbolicLink()) {
+      if (privateMode && CONFIG_PATHS.has(path)) {
+        diagnostic(path, 1, "VOXELIGHT_MS_CLIENT_ID");
+        return null;
+      }
+      return { path, buffer: Buffer.from(readlinkSync(target)) };
+    }
     if (!stat.isFile()) return null;
     return { path, buffer: readFileSync(target) };
   } catch (error) {
@@ -71,6 +77,10 @@ function workingDocument(root, path, privateMode) {
 function indexDocuments(root, entries, privateMode) {
   const objects = new Map();
   for (const entry of entries) {
+    if (privateMode && CONFIG_PATHS.has(entry.path) && entry.mode === "120000") {
+      diagnostic(entry.path, 1, "VOXELIGHT_MS_CLIENT_ID");
+      continue;
+    }
     if (entry.mode === "160000" || (!privateMode && !textCandidate(entry.path, 0))) continue;
     if (!objects.has(entry.oid)) objects.set(entry.oid, []);
     objects.get(entry.oid).push(entry.path);
@@ -115,6 +125,158 @@ function clientValues(text) {
   return [...text.matchAll(CLIENT_VALUE)].map(match => ({ key: match[1], value: match[2], index: match.index }));
 }
 
+function withoutCargoComment(line) {
+  let quote = null;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote) {
+      if (quote === '"' && char === "\\") index++;
+      else if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "#") return line.slice(0, index).trim();
+  }
+  return line.trim();
+}
+
+function cargoUuid(value) {
+  const direct = new RegExp(`^(["'])(${UUID_SOURCE})\\1$`, "i").exec(value.trim());
+  if (direct) return direct[2];
+  if (!value.startsWith("{") || !value.endsWith("}")) return null;
+  const fields = [];
+  let quote = null, start = 1;
+  for (let index = 1; index < value.length - 1; index++) {
+    const char = value[index];
+    if (quote) {
+      if (quote === '"' && char === "\\") index++;
+      else if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if ("{}[]".includes(char)) return null;
+    else if (char === ",") { fields.push(value.slice(start, index)); start = index + 1; }
+  }
+  if (quote) return null;
+  fields.push(value.slice(start, -1));
+  const assigned = fields.map(field => /^\s*(?:value|"value"|'value')\s*=\s*(.*)$/.exec(field)).filter(Boolean);
+  if (assigned.length !== 1) return null;
+  const match = new RegExp(`^(["'])(${UUID_SOURCE})\\1$`, "i").exec(assigned[0][1].trim());
+  return match?.[2] ?? null;
+}
+
+/** TOML dotted keys are paths; quoted keys may contain standard Unicode escapes. */
+function cargoKeyPath(text) {
+  const keys = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    while (/\s/.test(text[cursor] ?? "")) cursor++;
+    if (cursor >= text.length) return null;
+    let key = "";
+    const quote = text[cursor];
+    if (quote === '"' || quote === "'") {
+      cursor++;
+      let closed = false;
+      while (cursor < text.length) {
+        const char = text[cursor++];
+        if (char === quote) { closed = true; break; }
+        if (quote !== '"' || char !== "\\") { key += char; continue; }
+        const escaped = text[cursor++];
+        if (escaped === "u" || escaped === "U") {
+          const length = escaped === "u" ? 4 : 8;
+          const hex = text.slice(cursor, cursor + length);
+          if (!new RegExp(`^[0-9a-f]{${length}}$`, "i").test(hex)) return null;
+          const point = Number.parseInt(hex, 16);
+          if (point > 0x10ffff || point >= 0xd800 && point <= 0xdfff) return null;
+          key += String.fromCodePoint(point); cursor += length;
+        } else {
+          const escapes = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", '"': '"', "\\": "\\" };
+          if (!Object.hasOwn(escapes, escaped)) return null;
+          key += escapes[escaped];
+        }
+      }
+      if (!closed) return null;
+    } else {
+      const bare = /^[A-Za-z0-9_-]+/.exec(text.slice(cursor));
+      if (!bare) return null;
+      key = bare[0]; cursor += key.length;
+    }
+    keys.push(key);
+    while (/\s/.test(text[cursor] ?? "")) cursor++;
+    if (cursor === text.length) return keys;
+    if (text[cursor++] !== ".") return null;
+  }
+  return null;
+}
+
+function cargoAssignment(code) {
+  let quote = null;
+  for (let index = 0; index < code.length; index++) {
+    const char = code[index];
+    if (quote) {
+      if (quote === '"' && char === "\\") index++;
+      else if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "=") {
+      const keys = cargoKeyPath(code.slice(0, index));
+      return keys ? { keys, value: code.slice(index + 1).trim() } : null;
+    }
+  }
+  return null;
+}
+
+/** Read canonical UUID values without silently dropping unknown target paths. */
+function privateCargoValues(text) {
+  const values = [], invalid = [];
+  const targetKey = "VOXELIGHT_MS_CLIENT_ID";
+  // Windows environment names are case-insensitive. Reject aliases instead of
+  // letting a separately parsed canonical ID hide a possible effective value.
+  const noncanonicalTarget = keys => keys.some(key => key !== targetKey && key.toUpperCase() === targetKey);
+  let section = [], tableLine = 1, tableAssigned = false;
+  const clientTable = () => section.length === 2 && section[0] === "env" && section[1] === targetKey;
+  const finishTable = () => {
+    if (clientTable() && !tableAssigned) invalid.push(tableLine);
+  };
+  for (const [index, raw] of text.split(/\r?\n/).entries()) {
+    const code = withoutCargoComment(raw), line = index + 1;
+    if (!code) continue;
+    // A UUID cannot be a multiline TOML string. Refuse unsupported multiline
+    // syntax rather than interpreting a key embedded inside another string.
+    if (code.includes('"""') || code.includes("'''")) return { values: [], invalid: [line] };
+    if (code.startsWith("[")) {
+      finishTable(); tableAssigned = false; tableLine = line;
+      const parsed = code.endsWith("]") ? cargoKeyPath(code.slice(1, -1)) : null;
+      section = parsed ?? ["<unsupported>"];
+      if (noncanonicalTarget(section)) invalid.push(line);
+      if (section.includes(targetKey) && !clientTable() || !parsed && code.includes(targetKey)) invalid.push(line);
+      continue;
+    }
+    const assignment = cargoAssignment(code);
+    if (!assignment) {
+      if (code.includes(targetKey)) invalid.push(line);
+      continue;
+    }
+    const path = [...section, ...assignment.keys];
+    if (noncanonicalTarget(path)) { invalid.push(line); continue; }
+    // An inline definition of the whole env table is not parsed here; do not
+    // let another valid config hide a potentially different ID in that map.
+    if (path.length === 1 && path[0] === "env") { invalid.push(line); continue; }
+    if (path[0] !== "env" || path[1] !== targetKey) {
+      if (path.includes(targetKey)) invalid.push(line);
+      continue;
+    }
+    if (path.length !== 2 && !(path.length === 3 && path[2] === "value")) {
+      if (path.length !== 3 || !["force", "relative"].includes(path[2]) || !/^(?:true|false)$/.test(assignment.value)) invalid.push(line);
+      continue;
+    }
+    if (clientTable()) {
+      if (tableAssigned) invalid.push(line);
+      tableAssigned = true;
+    }
+    const value = cargoUuid(assignment.value);
+    if (value) values.push({ value, line });
+    else invalid.push(line);
+  }
+  finishTable();
+  return { values, invalid };
+}
+
 function lineAt(text, index) {
   return text.slice(0, index).split("\n").length;
 }
@@ -156,14 +318,20 @@ function inspect(root) {
   }
 
   const documents = [...paths].map(path => workingDocument(root, path, privateMode)).filter(Boolean);
+  const workingConfigs = documents.filter(document => CONFIG_PATHS.has(document.path));
   documents.push(...indexDocuments(root, entries, privateMode));
   const privateIds = new Set();
   if (privateMode) {
+    let workingIdFound = false;
+    if (workingConfigs.length === 0) diagnostic("src-tauri/.cargo/config.toml", 1, "VOXELIGHT_MS_CLIENT_ID");
     for (const document of documents.filter(document => CONFIG_PATHS.has(document.path))) {
-      for (const match of clientValues(document.buffer.toString("utf8"))) {
-        if (match.key === "VOXELIGHT_MS_CLIENT_ID") privateIds.add(match.value.toLowerCase());
-      }
+      const parsed = privateCargoValues(document.buffer.toString("utf8"));
+      for (const line of parsed.invalid) diagnostic(document.path, line, "VOXELIGHT_MS_CLIENT_ID");
+      for (const match of parsed.values) privateIds.add(match.value.toLowerCase());
+      if (workingConfigs.includes(document) && parsed.values.length > 0) workingIdFound = true;
     }
+    if (!workingIdFound || privateIds.size === 0)
+      diagnostic(workingConfigs[0]?.path ?? "src-tauri/.cargo/config.toml", 1, "VOXELIGHT_MS_CLIENT_ID");
   }
   for (const { path, buffer } of documents) {
     if (privateMode && CONFIG_PATHS.has(path)) continue;

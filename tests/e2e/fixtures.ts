@@ -15,6 +15,8 @@ export async function installLauncherFixture(
     instances?: Partial<Instance>[];
     instanceLoader?: "fabric";
     resourceCreateDelay?: number;
+    resourceManifestUnavailable?: boolean;
+    resourceGameVersions?: string[];
     firstInstanceName?: string;
     language?: "en-US" | "zh-CN";
     versionDirectoryCount?: number;
@@ -334,27 +336,35 @@ export async function installLauncherFixture(
           if (name === "resolve_resource_targets") {
             const title = args?.projectId === "P7dR8mSH" ? "Fabric API" : args?.projectId === "sodium" ? "Sodium" : String(args?.projectId);
             const kind = String(args?.resourceType ?? "mod");
+            const supportedGames = options.resourceGameVersions ?? ["1.21.1"];
+            const manifestUnavailable = Boolean(options.resourceManifestUnavailable);
+            const releaseGames = supportedGames.filter(game => game === "1.21.1");
             const candidates = [
               ...instances.map(item => ({ kind: "instance", instanceId: item.id, versionId: item.versionId, name: item.name })),
+              // Planner A2: an instance owns its version directory; it is not a
+              // second bare-version target with a different install directory.
               ...installedVersions.filter(item => !instances.some(instance => instance.versionId === item.id))
                 .map(item => ({ kind: "version", versionId: item.id, name: item.id, instanceId: undefined })),
             ];
+            const targets = candidates.map(item => {
+              const context = resourceContext(item.versionId, item.instanceId);
+              const compatible = supportedGames.includes(context.gameVersion) && (kind !== "mod" || context.loader === "fabric");
+              return { ...item, ...context, compatible, reason: compatible ? undefined : !context.loader && kind === "mod" ? "vanilla" : "gameVersionMismatch",
+                resourceVersionId: compatible ? "fixture-resource-version" : undefined };
+            });
             return {
-              projectId: args?.projectId, title, projectType: kind,
-              targets: candidates.map(item => {
-                const context = resourceContext(item.versionId, item.instanceId);
-                const compatible = context.gameVersion === "1.21.1" && (kind !== "mod" || context.loader === "fabric");
-                return { ...item, ...context, compatible, reason: compatible ? undefined : !context.loader && kind === "mod" ? "vanilla" : "gameVersionMismatch",
-                  resourceVersionId: compatible ? "fixture-resource-version" : undefined };
-              }),
-              suggestion: { loader: kind === "resourcepack" ? "vanilla" : "fabric", gameVersion: "1.21.1", name: title,
-                matrix: [{ loader: kind === "resourcepack" ? "vanilla" : "fabric", gameVersions: ["1.21.1"] }] },
+              projectId: args?.projectId, title, projectType: kind, manifestUnavailable, targets,
+              suggestion: !manifestUnavailable && releaseGames.length ? { loader: kind === "resourcepack" ? "vanilla" : "fabric", gameVersion: releaseGames[0], name: title,
+                matrix: [{ loader: kind === "resourcepack" ? "vanilla" : "fabric", gameVersions: releaseGames }] } : null,
+              unsupportedReason: !targets.some(target => target.compatible)
+                ? manifestUnavailable ? "manifestUnavailable" : !releaseGames.length ? "noReleaseVersions" : undefined
+                : undefined,
             };
           }
           if (name === "install_resource") {
             const context = resourceContext(String(args?.versionId), args?.instanceId as string | undefined);
             if (args?.resourceType === "mod" && !context.loader) throw { code: "resource.loaderRequired", params: { versionId: args?.versionId } };
-            if (context.gameVersion !== "1.21.1") throw { code: "resource.noCompatibleVersion", params: context };
+            if (!(options.resourceGameVersions ?? ["1.21.1"]).includes(context.gameVersion)) throw { code: "resource.noCompatibleVersion", params: context };
             const target = instances.find(item => item.id === args?.instanceId)?.gameDirectory ?? "C:\\SyntheticFixture";
             return { name: String(args?.projectId), fileName: "fabric-api-fixture.jar", path: target + "\\mods\\fabric-api-fixture.jar" };
           }

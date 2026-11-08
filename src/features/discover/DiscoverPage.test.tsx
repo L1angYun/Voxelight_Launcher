@@ -11,17 +11,17 @@ import { DiscoverPage } from "./DiscoverPage";
 import { ToastProvider } from "../../components/ui/ToastProvider";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { MOTION } from "../../design/motion";
-import type { ResourceProjectDetails } from "./types";
+import type { ResourceProjectDetails, ResourceTargetPlan } from "./types";
 
 const commandMock = vi.mocked(command);
 const searchMock = vi.mocked(searchResources);
 let mockLauncher: LauncherContextValue;
 let root: Root;
 let container: HTMLDivElement;
-let resourcePlan: ReturnType<typeof plan>;
+let resourcePlan: ResourceTargetPlan;
 const fabricVersion = "fabric-loader-0.16.9-1.21.1";
-function plan(compatible = true) {
-  return { projectId: "sodium", title: "Sodium", projectType: "mod", targets: [{ kind: "instance", instanceId: "fixture-world", versionId: "1.21.1", name: "合成测试世界", gameVersion: "1.21.1", loader: null as string | null, compatible, reason: compatible ? undefined : "vanilla" }], suggestion: { loader: "fabric", gameVersion: "1.21.1", name: "Sodium", matrix: [{ loader: "fabric", gameVersions: ["1.21.1", "1.20.1"] }, { loader: "neoforge", gameVersions: ["1.21.1"] }] }, unsupportedReason: undefined as string | undefined };
+function plan(compatible = true): ResourceTargetPlan {
+  return { projectId: "sodium", title: "Sodium", projectType: "mod", manifestUnavailable: false, targets: [{ kind: "instance", instanceId: "fixture-world", versionId: "1.21.1", name: "合成测试世界", gameVersion: "1.21.1", loader: null, compatible, reason: compatible ? undefined : "vanilla" }], suggestion: { loader: "fabric", gameVersion: "1.21.1", name: "Sodium", matrix: [{ loader: "fabric", gameVersions: ["1.21.1", "1.20.1"] }, { loader: "neoforge", gameVersions: ["1.21.1"] }] }, unsupportedReason: undefined };
 }
 async function installCard() {
   await act(async () => container.querySelector<HTMLButtonElement>('[data-project-id="sodium"] button[aria-label*="安装"]')!.click());
@@ -414,6 +414,30 @@ describe("resource target installation", () => {
     await render(); await installCard();
     expect(commandMock).toHaveBeenCalledWith("install_resource", expect.objectContaining({ instanceId: "fixture-world" }));
     expect(container.querySelector<HTMLDialogElement>('.vx-install-target')?.open).not.toBe(true);
+  });
+  it("still installs into a compatible selected target when only the Mojang manifest is unavailable", async () => {
+    resourcePlan = { ...plan(), suggestion: null, manifestUnavailable: true };
+    await render(); await installCard();
+    expect(commandMock).toHaveBeenCalledWith("install_resource", expect.objectContaining({ instanceId: "fixture-world" }));
+    expect(commandMock).not.toHaveBeenCalledWith("create_instance_for_resource", expect.anything());
+    expect(container.querySelector<HTMLDialogElement>('.vx-install-target')?.open).not.toBe(true);
+  });
+  it.each([
+    { reason: "noReleaseVersions" as const, manifestUnavailable: false, text: "该项目没有可安装的正式版游戏版本。" },
+    { reason: "manifestUnavailable" as const, manifestUnavailable: true, text: "暂时无法获取游戏版本清单，无法建议新实例。" },
+    { reason: undefined, manifestUnavailable: false, text: "该项目没有可安装的正式版游戏版本。" },
+  ])("explains an empty target plan and offers the project page ($reason)", async ({ reason, manifestUnavailable, text }) => {
+    resourcePlan = { ...plan(false), targets: [], suggestion: null, unsupportedReason: reason, manifestUnavailable };
+    await render(); await installCard();
+    const dialog = container.querySelector<HTMLDialogElement>('.vx-install-target')!;
+    expect(dialog.open).toBe(true);
+    expect(dialog.textContent).toContain(text);
+    expect(dialogButton("创建并安装")).toBeUndefined();
+    const external = dialogButton("打开项目页面");
+    expect(external).toBeDefined();
+    await act(async () => external.click());
+    expect(openUrl).toHaveBeenCalledWith("https://modrinth.com/mod/sodium");
+    expect(commandMock).not.toHaveBeenCalledWith("install_resource", expect.anything());
   });
   it("retains a created instance after resource failure and offers an error toast retry even when run swallows errors", async () => {
     resourcePlan = plan(false);

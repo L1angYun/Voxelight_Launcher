@@ -9,20 +9,21 @@ const project = { project_id: "P7dR8mSH", slug: "fabric-api", title: "Fabric API
   description: "Synthetic required Fabric API install", icon_url: null, downloads: 1200,
   author: "Fixture", project_type: "mod", versions: ["1.21.1"] };
 
-async function remote(page: Page) {
+async function remote(page: Page, gameVersions = ["1.21.1"]) {
   const urls: string[] = [];
+  const responseProject = { ...project, versions: gameVersions };
   await page.route("https://api.modrinth.com/v2/search?**", route => {
     urls.push(route.request().url());
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [project] }) });
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [responseProject] }) });
   });
-  await page.addInitScript(project => {
+  await page.addInitScript(({ project, gameVersions }) => {
     const host = window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: unknown) => Promise<unknown> } };
     const original = host.__TAURI_INTERNALS__.invoke;
     host.__TAURI_INTERNALS__.invoke = (name, args) => name === "get_modrinth_project_details"
       ? Promise.resolve({ project, dependencies: [], versions: [{ id: "fixture-resource-version", name: "Fabric API",
-        versionNumber: "fixture", datePublished: "2026-01-01", gameVersions: ["1.21.1"], loaders: ["fabric"], compatible: false }] })
+        versionNumber: "fixture", datePublished: "2026-01-01", gameVersions, loaders: ["fabric"], compatible: false }] })
       : original(name, args);
-  }, project);
+  }, { project: responseProject, gameVersions });
   return urls;
 }
 
@@ -91,6 +92,8 @@ test("R3-3 compatible Fabric instance is offered while a vanilla instance is sel
   const dialog = targetDialog(page);
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("现有 Fabric 实例", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("radiogroup").getByRole("radio")).toHaveCount(1);
+  await expect(dialog.getByText("fabric-loader-0.16.9-1.21.1", { exact: true })).toHaveCount(0);
   await dialog.getByText(/不兼容/).click();
   await expect(dialog.getByText("原版，无法加载模组", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("existing-targets.png") });
@@ -114,6 +117,31 @@ test("R3-3 a selected Fabric target stays one click and searches with real game 
   await expect(targetDialog(page)).toHaveCount(0);
   expect((await calls(page)).some(call => call.name === "create_instance_for_resource")).toBe(false);
 });
+
+test("R3-3 review: a compatible Fabric target stays one click while the Mojang manifest is unavailable", async ({ page }) => {
+  await installLauncherFixture(page, { instanceLoader: "fabric", resourceManifestUnavailable: true });
+  await remote(page); await open(page); await install(page);
+  await expect.poll(async () => (await calls(page)).filter(call => call.name === "install_resource").length).toBe(1);
+  await expect(targetDialog(page)).toHaveCount(0);
+  expect((await calls(page)).some(call => call.name === "create_instance_for_resource")).toBe(false);
+});
+
+for (const language of ["zh-CN", "en-US"] as const) {
+  test(`R3-3 review ${language}: snapshot-only projects explain the empty plan and retain an external action`, async ({ page }, info) => {
+    await installLauncherFixture(page, { language, resourceGameVersions: ["24w20a"] });
+    await remote(page, ["24w20a"]); await open(page);
+    await page.getByRole("button", { name: language === "en-US" ? /^Install · / : /^安装 · / }).first().click();
+    const dialog = page.locator('.vx-install-target');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveCSS("opacity", "1");
+    await expect(dialog).toContainText(language === "en-US"
+      ? "This project has no installable release game version." : "该项目没有可安装的正式版游戏版本。");
+    await expect(dialog.getByRole("button", { name: language === "en-US" ? "Open project page" : "打开项目页面", exact: true })).toBeEnabled();
+    await expect(dialog.getByRole("button", { name: language === "en-US" ? "Create and install" : "创建并安装", exact: true })).toHaveCount(0);
+    expect((await calls(page)).some(call => ["install_resource", "create_instance_for_resource"].includes(call.name))).toBe(false);
+    await page.screenshot({ path: info.outputPath("no-release-target.png") });
+  });
+}
 
 test("R3-3 cancel during fixture loader stage addresses its own task and registers no instance", async ({ page }, info) => {
   await installLauncherFixture(page, { noInstances: true, resourceCreateDelay: 4000 });

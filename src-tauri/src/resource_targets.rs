@@ -72,6 +72,7 @@ pub(crate) struct ResourceTargetPlan {
     pub suggestion: Option<NewInstanceSuggestion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unsupported_reason: Option<String>,
+    pub manifest_unavailable: bool,
 }
 
 pub(crate) fn build_plan(
@@ -83,6 +84,9 @@ pub(crate) fn build_plan(
     versions: &[VersionLite],
     manifest: &[(String, String)],
 ) -> ResourceTargetPlan {
+    let targets = rows(candidates, versions, kind);
+    let suggestion = suggest(versions, manifest, kind, title);
+    let manifest_unavailable = manifest.is_empty();
     let unsupported_reason = if versions.is_empty() {
         Some("noVersions")
     } else if kind == ResourceKind::Mod
@@ -104,6 +108,12 @@ pub(crate) fn build_plan(
                 "noSupportedLoader"
             },
         )
+    } else if !targets.iter().any(|row| row.compatible) && suggestion.is_none() {
+        Some(if manifest_unavailable {
+            "manifestUnavailable"
+        } else {
+            "noReleaseVersions"
+        })
     } else {
         None
     };
@@ -111,9 +121,10 @@ pub(crate) fn build_plan(
         project_id: project_id.into(),
         title: title.into(),
         project_type: project_type.into(),
-        targets: rows(candidates, versions, kind),
-        suggestion: suggest(versions, manifest, kind, title),
+        targets,
+        suggestion,
         unsupported_reason: unsupported_reason.map(str::to_string),
+        manifest_unavailable,
     }
 }
 
@@ -548,6 +559,43 @@ mod tests {
     }
 
     #[test]
+    fn plan_explains_no_release_games_without_blocking_a_compatible_snapshot_target() {
+        let versions = vec![version("111", &["fabric"], &["26.1-snapshot-1"])];
+        let plan = build_plan(
+            "111",
+            "Snapshot Mod",
+            "mod",
+            ResourceKind::Mod,
+            &[],
+            &versions,
+            &manifest(),
+        );
+        assert!(plan.targets.is_empty());
+        assert!(plan.suggestion.is_none());
+        assert_eq!(
+            plan.unsupported_reason.as_deref(),
+            Some("noReleaseVersions")
+        );
+
+        let compatible = build_plan(
+            "111",
+            "Snapshot Mod",
+            "mod",
+            ResourceKind::Mod,
+            &[candidate(
+                "Existing Snapshot",
+                Some("26.1-snapshot-1"),
+                Some("fabric"),
+            )],
+            &versions,
+            &manifest(),
+        );
+        assert!(compatible.targets[0].compatible);
+        assert!(compatible.suggestion.is_none());
+        assert!(compatible.unsupported_reason.is_none());
+    }
+
+    #[test]
     fn validation_chooses_newest_release_and_falls_back_to_beta() {
         let mut older = version("111", &["fabric"], &["1.21.1"]);
         older.date_published = "2026-10-01T00:00:00Z".into();
@@ -636,6 +684,7 @@ mod tests {
         let value = serde_json::to_value(plan).unwrap();
         assert_eq!(value["projectId"], "111");
         assert_eq!(value["projectType"], "mod");
+        assert_eq!(value["manifestUnavailable"], false);
         assert_eq!(value["targets"][0]["instanceId"], "Fabric");
         assert_eq!(value["targets"][0]["resourceVersionId"], "111");
         assert_eq!(value["suggestion"]["gameVersion"], "1.21.1");

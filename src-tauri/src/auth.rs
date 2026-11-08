@@ -1461,6 +1461,95 @@ mod tests {
             json!({"device_code":"test-device-secret","user_code":"TEST-CODE","verification_uri":"https://microsoft.com/devicelogin","expires_in":900,"interval":5}),
         )
     }
+
+    #[test]
+    fn builtin_device_login_keeps_persisted_and_exported_config_free_of_builtin_id() {
+        run(async {
+            const BUILTIN: &str = "11111111-1111-1111-1111-111111111111";
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/auth-command-tests")
+                .join(uuid::Uuid::new_v4().to_string());
+            let data_dir = root.join("data");
+            let game_dir = root.join("game");
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::fs::create_dir_all(&game_dir).unwrap();
+            let state = crate::storage::LauncherState {
+                data: Mutex::new(crate::models::Persisted {
+                    config: crate::models::Config {
+                        game_directory: game_dir.to_string_lossy().into_owned(),
+                        max_memory_mb: 8192,
+                        language: "en-US".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                data_dir: data_dir.clone(),
+                client: crate::storage::test_client(),
+                operation: tokio::sync::Mutex::new(()),
+                control: Default::default(),
+                games: Default::default(),
+            };
+            state.save().unwrap();
+            let (auth, transport, _) = service(vec![Box::new(|request| {
+                assert_eq!(request.url, DEVICE_URL);
+                let RequestBody::Form(fields) = request.body else {
+                    panic!("device login must submit an OAuth form")
+                };
+                assert!(fields
+                    .iter()
+                    .any(|(key, value)| key == "client_id" && value == BUILTIN));
+                assert!(fields
+                    .iter()
+                    .any(|(key, value)| key == "scope" && value == SCOPE));
+                Ok(AuthResponse {
+                    status: 200,
+                    body: json!({
+                        "device_code": "test-device-secret",
+                        "user_code": "TEST-CODE",
+                        "verification_uri": "https://microsoft.com/devicelogin",
+                        "expires_in": 900,
+                        "interval": 5,
+                    }),
+                })
+            })]);
+
+            let login =
+                crate::auth_commands::begin_microsoft_login_inner(&state, &auth, Some(BUILTIN))
+                    .await
+                    .unwrap();
+            assert_eq!(login.user_code, "TEST-CODE");
+            transport.done();
+
+            // Exercise the same save and export paths used by the commands.
+            // LauncherState's persisted file is state.json, not settings.json.
+            crate::commands::save_config_inner(&state, state.snapshot().unwrap().config).unwrap();
+            let preset_path = root.join("exported-config.json");
+            crate::appearance::export_launcher_config_inner(
+                &state,
+                preset_path.to_string_lossy().into_owned(),
+            )
+            .unwrap();
+            for file in [data_dir.join("state.json"), preset_path] {
+                let bytes = std::fs::read(&file).unwrap();
+                let contents = String::from_utf8(bytes).unwrap();
+                assert!(
+                    !contents.contains(BUILTIN),
+                    "built-in ID reached a config file"
+                );
+                let saved: Value = serde_json::from_str(&contents).unwrap();
+                assert_eq!(saved["config"]["microsoftClientId"], "");
+                assert_eq!(saved["config"]["maxMemoryMb"], 8192);
+                assert_eq!(saved["config"]["language"], "en-US");
+                assert_eq!(
+                    saved["config"]["gameDirectory"],
+                    game_dir.to_string_lossy().as_ref()
+                );
+            }
+            drop(state);
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
     fn token_step() -> Step {
         reply(
             TOKEN_URL,

@@ -50,8 +50,16 @@ pub async fn begin_microsoft_login(
     state: State<'_, Arc<LauncherState>>,
     auth: State<'_, Arc<AuthService>>,
 ) -> AppResult<DeviceLogin> {
+    begin_microsoft_login_inner(state.inner(), auth.inner(), builtin_client_id()).await
+}
+
+pub(crate) async fn begin_microsoft_login_inner(
+    state: &LauncherState,
+    auth: &AuthService,
+    builtin: Option<&str>,
+) -> AppResult<DeviceLogin> {
     let config = state.snapshot().map_err(expected)?.config;
-    let client_id = effective_client_id(&config, builtin_client_id());
+    let client_id = effective_client_id(&config, builtin);
     auth.begin_microsoft(&client_id).await.map_err(expected)
 }
 
@@ -217,27 +225,9 @@ fn service_status(curseforge: bool, config: &Config, builtin: Option<&str>) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Config, Persisted};
+    use crate::models::Config;
     const BUILTIN: &str = "11111111-1111-1111-1111-111111111111";
     const USER: &str = "22222222-2222-2222-2222-222222222222";
-
-    #[test]
-    fn effective_client_id_uses_builtin_without_modifying_config() {
-        let config = Config::default();
-        assert_eq!(effective_client_id(&config, Some(BUILTIN)), BUILTIN);
-        assert_eq!(effective_client_id(&config, None), "");
-        assert!(config.microsoft_client_id.is_empty());
-        let config_json = serde_json::to_value(&config).unwrap();
-        assert_eq!(config_json["microsoftClientId"], "");
-        let preset = serde_json::json!({"formatVersion":1, "config":config});
-        assert_eq!(preset["config"]["microsoftClientId"], "");
-        assert!(!serde_json::to_string(&preset).unwrap().contains(BUILTIN));
-        let settings = Persisted::default();
-        let _ = effective_client_id(&settings.config, Some(BUILTIN));
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(saved["config"]["microsoftClientId"], "");
-        assert!(!serde_json::to_string(&saved).unwrap().contains(BUILTIN));
-    }
 
     #[test]
     fn service_status_exposes_boolean_builtin_and_override_state_only() {

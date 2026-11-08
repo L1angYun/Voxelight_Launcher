@@ -51,7 +51,8 @@ export interface ResourceTargetPlan {
   projectType: string;
   targets: TargetRow[];
   suggestion?: NewInstanceSuggestion | null;
-  unsupportedReason?: "datapack" | "noSupportedLoader" | "noVersions" | null;
+  manifestUnavailable: boolean;
+  unsupportedReason?: "datapack" | "noSupportedLoader" | "noVersions" | "noReleaseVersions" | "manifestUnavailable" | null;
 }
 export interface ResourceCreateRequest { loader: Loader; gameVersion: string; loaderVersion?: string; name: string }
 export interface ResourceInstanceResult { instance: Instance; install: unknown }
