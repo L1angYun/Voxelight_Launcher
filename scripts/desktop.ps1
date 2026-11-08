@@ -32,14 +32,20 @@ function Invoke-SignArtifacts {
     }
     $signTool = Get-SignTool
     $artifacts = @()
-    $binary = Join-Path $taskRoot 'src-tauri\target\release\voxelight-launcher.exe'
-    if (Test-Path -LiteralPath $binary) { $artifacts += $binary }
-    $bundle = Join-Path $taskRoot 'src-tauri\target\release\bundle\nsis'
-    if (Test-Path -LiteralPath $bundle) {
-        $artifacts += Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe' -File |
-            ForEach-Object { $_.FullName }
+    $targetDir = & node.exe (Join-Path $taskRoot 'scripts\build-runtime.mjs') --print-target-dir
+    if ($LASTEXITCODE -ne 0 -or -not $targetDir) { throw 'Could not resolve the Windows build output directory.' }
+    $profileJson = & node.exe (Join-Path $taskRoot 'scripts\build-runtime.mjs') --print-artifact-dirs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Cargo artifact profile directories.' }
+    foreach ($profile in @($profileJson | ConvertFrom-Json | ForEach-Object { $_ })) {
+        $artifacts += Join-Path $profile 'voxelight-launcher.exe'
+        $bundle = Join-Path $profile 'bundle\nsis'
+        if (Test-Path -LiteralPath $bundle) {
+            $artifacts += Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe' -File |
+                ForEach-Object { $_.FullName }
+        }
     }
-    if (-not $artifacts) { throw 'No Release executable or installer found. Run the build action first.' }
+    if (-not $artifacts) { throw "No Release executable or installer found below $targetDir. Run the build action first." }
+    Write-Host 'Signing existing/cached Release candidates; no artifact is assumed to have been rebuilt.'
     $arguments = @('sign', '/fd', 'SHA256', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256')
     if ($CertificatePath) {
         if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) {
@@ -72,23 +78,6 @@ function Invoke-SignArtifacts {
 }
 Push-Location -LiteralPath $taskRoot
 try {
-    if ($Action -eq 'dev' -and -not $env:CARGO_TARGET_DIR) {
-        $buildDirectory = Join-Path $taskRoot 'src-tauri\target'
-        $checkedDirectories = @($taskRoot)
-        if (Test-Path -LiteralPath $buildDirectory) { $checkedDirectories += $buildDirectory }
-        $lowIntegrity = $checkedDirectories | ForEach-Object {
-            & icacls.exe $_
-        } | Select-String -SimpleMatch 'Low Mandatory Level'
-        if ($lowIntegrity) {
-            $env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA 'Temp\VoxelightLauncher\build'
-            New-Item -ItemType Directory -Path $env:CARGO_TARGET_DIR -Force | Out-Null
-            $runtimeIntegrity = & icacls.exe $env:CARGO_TARGET_DIR | Out-String
-            if ($runtimeIntegrity.Contains('Low Mandatory Level')) {
-                throw 'The runtime build directory has a Low mandatory label. Choose a normal writable CARGO_TARGET_DIR; do not weaken ACLs or integrity labels.'
-            }
-            Write-Host "Low integrity labels are inherited by the project build directory. Development output: $env:CARGO_TARGET_DIR (ACLs and integrity labels are unchanged)."
-        }
-    }
     switch ($Action) {
         'dev' { & npm.cmd run desktop:dev }
         'build' { & npm.cmd run desktop:build }

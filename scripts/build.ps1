@@ -62,9 +62,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'src-tauri\tauri.conf.json')))
 # not inherit wherever the caller happened to be.
 Set-Location -LiteralPath $root
 
-$exePath = Join-Path $root 'src-tauri\target\release\voxelight-launcher.exe'
-$bundleDir = Join-Path $root 'src-tauri\target\release\bundle\nsis'
-$logDir = Join-Path $root 'src-tauri\target\build-logs'
+$nodeCmd = (Get-Command node.exe -ErrorAction Stop).Source
+$targetDir = & $nodeCmd (Join-Path $root 'scripts\build-runtime.mjs') --print-target-dir
+if ($LASTEXITCODE -ne 0 -or -not $targetDir) { throw 'Could not resolve the Windows build output directory.' }
+function Get-ArtifactDirectories {
+    $json = & $nodeCmd (Join-Path $root 'scripts\build-runtime.mjs') --print-artifact-dirs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Cargo artifact profile directories.' }
+    return @($json | ConvertFrom-Json | ForEach-Object { $_ })
+}
+$artifactDirectories = @(Get-ArtifactDirectories)
+$exePaths = @($artifactDirectories | ForEach-Object { Join-Path $_ 'voxelight-launcher.exe' })
+$bundleDirectories = @($artifactDirectories | ForEach-Object { Join-Path $_ 'bundle\nsis' })
+$logDir = Join-Path $targetDir 'build-logs'
 $logPath = Join-Path $logDir ('build-{0}.log' -f $started.ToString('yyyyMMdd-HHmmss'))
 
 function Write-Step([string]$Message) {
@@ -104,6 +113,7 @@ function Test-FileLocked([string]$Path) {
 Write-Host ''
 Write-Host 'Voxelight Launcher - release build' -ForegroundColor White
 Write-Detail "root:   $root"
+Write-Detail "target: $targetDir"
 Write-Detail "mode:   $(if ($NoBundle) { 'executable only' } else { 'executable + NSIS installer' })"
 
 $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
@@ -156,7 +166,7 @@ $running = @(Get-Process -Name 'voxelight-launcher' -ErrorAction SilentlyContinu
 if ($running.Count -gt 0) {
     $list = ($running | ForEach-Object { "$($_.ProcessName) (pid $($_.Id))" }) -join ', '
     if (-not $CloseRunning) {
-        Write-Fail "a launcher is running and locks $exePath"
+        Write-Fail "a launcher is running and locks an executable below $targetDir"
         Write-Host "  running: $list" -ForegroundColor Yellow
         Write-Host '  Close it, or re-run with -CloseRunning to close it for you.' -ForegroundColor Yellow
         exit 1
@@ -182,11 +192,13 @@ if ($running.Count -gt 0) {
     }
 }
 
-if (Test-FileLocked $exePath) {
-    Write-Fail "$exePath is still locked by another process"
-    Write-Host '  Usually an editor/antivirus scan or a second copy launched from Explorer.' -ForegroundColor Yellow
-    Write-Host '  Check with: Get-Process | Where-Object { $_.Path -eq ' + "'$exePath' }" -ForegroundColor DarkGray
-    exit 1
+foreach ($exePath in $exePaths) {
+    if (Test-FileLocked $exePath) {
+        Write-Fail "$exePath is still locked by another process"
+        Write-Host '  Usually an editor/antivirus scan or a second copy launched from Explorer.' -ForegroundColor Yellow
+        Write-Host '  Check with: Get-Process | Where-Object { $_.Path -eq ' + "'$exePath' }" -ForegroundColor DarkGray
+        exit 1
+    }
 }
 
 # --------------------------------------------------------------------------
@@ -194,8 +206,15 @@ if (Test-FileLocked $exePath) {
 # --------------------------------------------------------------------------
 if ($Clean) {
     Write-Step 'Cleaning previous output'
-    foreach ($path in @((Join-Path $root 'dist'), $bundleDir)) {
+    $distPath = [IO.Path]::GetFullPath((Join-Path $root 'dist'))
+    $targetPrefix = [IO.Path]::GetFullPath($targetDir).TrimEnd('\') + '\'
+    foreach ($path in @($distPath) + $bundleDirectories) {
+        $resolvedPath = [IO.Path]::GetFullPath($path)
+        if ($resolvedPath -ine $distPath -and -not $resolvedPath.StartsWith($targetPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to clean an output outside the expected build directory: $resolvedPath"
+        }
         if (Test-Path -LiteralPath $path) {
+            if ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing to clean a redirected output: $path" }
             Remove-Item -LiteralPath $path -Recurse -Force
             Write-Detail "removed $path"
         }
@@ -264,12 +283,16 @@ Write-Host ("    time:    {0:mm\:ss}" -f $elapsed) -ForegroundColor DarkGray
 Write-Host ''
 
 $artifacts = @()
-if (Test-Path -LiteralPath $exePath) { $artifacts += Get-Item -LiteralPath $exePath }
-if (-not $NoBundle -and (Test-Path -LiteralPath $bundleDir)) {
-    $artifacts += Get-ChildItem -LiteralPath $bundleDir -Filter '*-setup.exe' -File |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
+$artifactDirectories = @(Get-ArtifactDirectories)
+foreach ($directory in $artifactDirectories) {
+    $artifacts += Get-Item -LiteralPath (Join-Path $directory 'voxelight-launcher.exe')
+    $bundleDir = Join-Path $directory 'bundle\nsis'
+    if (-not $NoBundle -and (Test-Path -LiteralPath $bundleDir)) {
+        $artifacts += Get-ChildItem -LiteralPath $bundleDir -Filter '*-setup.exe' -File
+    }
 }
+if ($artifacts.Count -eq 0) { throw 'No ordinary launcher build artifacts were found.' }
+Write-Detail 'artifacts: repaired existing/cached candidates; the Cargo build log identifies what was rebuilt'
 
 foreach ($item in $artifacts) {
     $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
@@ -280,7 +303,7 @@ foreach ($item in $artifacts) {
 
 if ($NoBundle) {
     Write-Host '  (executable only - any existing installer in bundle\nsis was left untouched)' -ForegroundColor Yellow
-} elseif (-not (Test-Path -LiteralPath $bundleDir)) {
+} elseif (@($artifacts | Where-Object Name -Like '*-setup.exe').Count -eq 0) {
     Write-Host '  (no installer produced - check the log for the bundling step)' -ForegroundColor Yellow
 }
 
