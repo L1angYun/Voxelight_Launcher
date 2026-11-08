@@ -60,7 +60,9 @@
     "unsupported": {
       "datapack": "Datapacks belong in a world's datapacks folder and are not supported yet",
       "noSupportedLoader": "This project has no Fabric, NeoForge, Forge, or Quilt versions",
-      "noVersions": "No downloadable versions"
+      "noVersions": "No downloadable versions",
+      "noReleaseVersions": "This project has no installable release game version.",
+      "manifestUnavailable": "The game version manifest is temporarily unavailable, so a new instance cannot be suggested."
     }
   },
   "notice": {

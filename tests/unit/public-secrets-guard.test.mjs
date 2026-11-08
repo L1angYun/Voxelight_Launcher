@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -218,6 +218,172 @@ test("private mode permits both config locations and their committed history", t
   assert.equal(repo.check().status, 0);
 });
 
+test("private mode fails closed when no Cargo environment config exists", t => {
+  const repo = repository(t, { privateMode: true });
+  rejected(repo.check(), "src-tauri/.cargo/config.toml:1:VOXELIGHT_MS_CLIENT_ID");
+});
+
+for (const [name, config] of [
+  ["missing key", "[env]\nOTHER_ENV = 'fixture'\n"],
+  ["empty value", "[env]\nVOXELIGHT_MS_CLIENT_ID = ''\n"],
+  ["unparseable inline value", "[env]\nVOXELIGHT_MS_CLIENT_ID = { value = 'not-an-id-fixture', force = true }\n"],
+  ["unparseable table value", "[env.VOXELIGHT_MS_CLIENT_ID]\nvalue = 'not-an-id-fixture'\nforce = true\n"],
+  ["UUID prefix with extra content", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}-extra-fixture'\n`],
+  ["commented-out key", `[env]\n# VOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`],
+]) {
+  test(`private mode rejects config with ${name} without printing the value`, t => {
+    const repo = repository(t, { privateMode: true });
+    repo.write("src-tauri/.cargo/config.toml", config);
+    const result = repo.check();
+    rejected(result, "src-tauri/.cargo/config.toml:");
+    assert.equal(result.output.includes("not-an-id-fixture"), false);
+    assert.equal(result.output.includes("extra-fixture"), false);
+  });
+}
+
+test("private mode reads the Cargo env table and rejects exact IDs under unrelated keys", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env.VOXELIGHT_MS_CLIENT_ID]\nvalue = '${fixtureOne}'\nforce = true\n`);
+  assert.equal(repo.check().status, 0, "a valid Cargo table config is permitted");
+  repo.write("src/leak.ts", `// synthetic fixture\nconst app = '${fixtureOne}';\n`);
+  rejected(repo.check(), "src/leak.ts:2:VOXELIGHT_MS_CLIENT_ID");
+  repo.git("add", "src/leak.ts");
+  repo.write("src/leak.ts", "// cleaned working copy\n");
+  rejected(repo.check(), "src/leak.ts:2:VOXELIGHT_MS_CLIENT_ID");
+});
+
+test("private mode does not let another valid config conceal an unparseable ID", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureTwo}'\n`);
+  repo.write("src-tauri/.cargo/config.toml", "[env]\nVOXELIGHT_MS_CLIENT_ID = ''\n");
+  rejected(repo.check(), "src-tauri/.cargo/config.toml:2:VOXELIGHT_MS_CLIENT_ID");
+});
+
+test("private mode rejects an invalid working ID even if the staged config is valid", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+  repo.git("add", "src-tauri/.cargo/config.toml");
+  repo.write("src-tauri/.cargo/config.toml", "[env]\nVOXELIGHT_MS_CLIENT_ID = ''\n");
+  rejected(repo.check(), "src-tauri/.cargo/config.toml:2:VOXELIGHT_MS_CLIENT_ID");
+});
+
+test("private mode rejects a missing working config even if its staged copy has an ID", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+  repo.git("add", "src-tauri/.cargo/config.toml");
+  rmSync(join(repo.root, "src-tauri/.cargo/config.toml"));
+  rejected(repo.check(), "src-tauri/.cargo/config.toml:1:VOXELIGHT_MS_CLIENT_ID");
+});
+
+test("private mode rejects a working config without an ID even if the staged copy is valid", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+  repo.git("add", "src-tauri/.cargo/config.toml");
+  repo.write("src-tauri/.cargo/config.toml", "[env]\nOTHER_ENV = 'fixture'\n");
+  rejected(repo.check(), "src-tauri/.cargo/config.toml:1:VOXELIGHT_MS_CLIENT_ID");
+});
+
+test("private mode permits unrelated Cargo config alongside a valid environment ID", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", "[build]\njobs = 2\n");
+  repo.write("src-tauri/.cargo/config.toml", `[env.VOXELIGHT_MS_CLIENT_ID]\nvalue = '${fixtureTwo}'\n`);
+  assert.equal(repo.check().status, 0);
+});
+
+for (const [name, higherPriority] of [
+  ["env dotted keys", `[env]\nVOXELIGHT_MS_CLIENT_ID.value = '${fixtureTwo}'\nVOXELIGHT_MS_CLIENT_ID.force = true\n`],
+  ["root dotted keys", `env.VOXELIGHT_MS_CLIENT_ID.value = '${fixtureTwo}'\nenv.VOXELIGHT_MS_CLIENT_ID.force = true\n`],
+  ["quoted dotted keys", `["env"]\n"VOXELIGHT_MS_CLIENT_ID"."value" = '${fixtureTwo}'\n"VOXELIGHT_MS_CLIENT_ID"."force" = true\n`],
+  ["escaped quoted key", `[env]\n"\\u0056OXELIGHT_MS_CLIENT_ID".value = '${fixtureTwo}'\n`],
+]) {
+  test(`private mode checks higher-priority ${name} as well as another valid config`, t => {
+    const repo = repository(t, { privateMode: true });
+    repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+    repo.write("src-tauri/.cargo/config.toml", higherPriority);
+    assert.equal(repo.check().status, 0, "valid supported Cargo values remain usable");
+    repo.write("src/leak.ts", `// synthetic fixture\nconst app = '${fixtureTwo}';\n`);
+    rejected(repo.check(), "src/leak.ts:2:VOXELIGHT_MS_CLIENT_ID");
+    repo.git("add", "src/leak.ts");
+    repo.write("src/leak.ts", "// cleaned working copy\n");
+    rejected(repo.check(), "src/leak.ts:2:VOXELIGHT_MS_CLIENT_ID");
+  });
+}
+
+for (const [name, assignment] of [
+  ["empty dotted value", "VOXELIGHT_MS_CLIENT_ID.value = ''"],
+  ["unknown target field", "VOXELIGHT_MS_CLIENT_ID.unsupported = 'fixture'"],
+  ["nested target value", "VOXELIGHT_MS_CLIENT_ID.value.unsupported = 'fixture'"],
+]) {
+  test(`private mode fails closed for ${name} beside a valid lower-priority ID`, t => {
+    const repo = repository(t, { privateMode: true });
+    repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+    repo.write("src-tauri/.cargo/config.toml", `[env]\n${assignment}\n`);
+    rejected(repo.check(), "src-tauri/.cargo/config.toml:2:VOXELIGHT_MS_CLIENT_ID");
+  });
+}
+
+test("private mode refuses a config file symlink beside another valid config without following it", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+  // This synthetic source is outside the candidate-file set, so reading it
+  // would require following the config symlink rather than scanning a file.
+  repo.write(".git/fixture-source.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureTwo}'\n`);
+  mkdirSync(join(repo.root, "src-tauri/.cargo"), { recursive: true });
+  symlinkSync(join(repo.root, ".git/fixture-source.toml"), join(repo.root, "src-tauri/.cargo/config.toml"), "file");
+  repo.write("src/leak.ts", `const app = '${fixtureTwo}';\n`);
+  rejected(repo.check(), "src-tauri/.cargo/config.toml:1:VOXELIGHT_MS_CLIENT_ID");
+});
+
+test("private mode rejects a staged config symlink even when the working config is regular", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+  repo.write(".git/fixture-source.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureTwo}'\n`);
+  repo.write("fixture-link-target.txt", ".git/fixture-source.toml");
+  const object = repo.git("hash-object", "-w", "fixture-link-target.txt");
+  repo.git("update-index", "--add", "--cacheinfo", `120000,${object},src-tauri/.cargo/config.toml`);
+  assert.match(repo.git("ls-files", "--stage", "src-tauri/.cargo/config.toml"), /^120000 /);
+  repo.write("src/leak.ts", `const app = '${fixtureTwo}';\n`);
+  rejected(repo.check(), "src-tauri/.cargo/config.toml:1:VOXELIGHT_MS_CLIENT_ID");
+});
+
+for (const [name, config] of [
+  ["root env inline map", `env = { VOXELIGHT_MS_CLIENT_ID = '${fixtureTwo}' }\n`],
+  ["escaped root env inline map", `"\\u0065nv" = { "\\u0056OXELIGHT_MS_CLIENT_ID" = '${fixtureTwo}' }\n`],
+]) {
+  test(`private mode rejects unsupported ${name} beside another parsed config`, t => {
+    const repo = repository(t, { privateMode: true });
+    repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+    repo.write("src-tauri/.cargo/config.toml", config);
+    rejected(repo.check(), "src-tauri/.cargo/config.toml:1:VOXELIGHT_MS_CLIENT_ID");
+  });
+}
+
+test("private mode ignores unrelated build and net Windows path strings", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+  repo.write("src-tauri/.cargo/config.toml", String.raw`[build]
+target-dir = 'C:\build\cache'
+[net]
+fixture-cache = 'C:\net\cache'
+`);
+  assert.equal(repo.check().status, 0);
+});
+
+for (const [name, config, line] of [
+  ["direct", `[env]\nvoxelight_ms_client_id = { value = '${fixtureTwo}', force = true }\n`, 2],
+  ["dotted", `[env]\nVoXeLiGhT_mS_cLiEnT_iD.value = '${fixtureTwo}'\nVoXeLiGhT_mS_cLiEnT_iD.force = true\n`, 2],
+  ["standard-table", `[env.voxelight_MS_client_ID]\nvalue = '${fixtureTwo}'\nforce = true\n`, 1],
+]) {
+  test(`private mode refuses noncanonical target env casing in ${name} config`, t => {
+    const repo = repository(t, { privateMode: true });
+    repo.write(".cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
+    repo.write("src-tauri/.cargo/config.toml", config);
+    repo.write("src/leak.ts", `const app = '${fixtureTwo}';\n`);
+    rejected(repo.check(), `src-tauri/.cargo/config.toml:${line}:VOXELIGHT_MS_CLIENT_ID`);
+  });
+}
+
 test("private mode detects exact IDs under unrelated keys in tracked and candidate files", t => {
   const repo = repository(t, { privateMode: true });
   repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = { force = true, value = "${mixed}" }\n`);
@@ -245,6 +411,7 @@ test("private exact-value checks also cover binary, lock, and oversized candidat
 
 test("private mode permits only disabled push placeholders", t => {
   const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
   repo.git("remote", "add", "public", "https://example.invalid/public.git");
   repo.git("remote", "set-url", "--push", "public", "DISABLED-private-never-pushes");
   assert.equal(repo.check().status, 0);
@@ -255,6 +422,7 @@ test("private mode permits only disabled push placeholders", t => {
 
 test("private mode rejects effective fetch URL fallback without exposing a push address", t => {
   const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
   const address = "https://example.invalid/private-fixture.git";
   repo.git("remote", "add", "public", address);
   const result = repo.check();
@@ -264,6 +432,7 @@ test("private mode rejects effective fetch URL fallback without exposing a push 
 
 test("private mode checks every configured push URL", t => {
   const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
   repo.git("remote", "add", "public", "https://example.invalid/public.git");
   repo.git("remote", "set-url", "--push", "public", "DISABLED-private-never-pushes");
   repo.git("remote", "set-url", "--push", "--add", "public", "https://example.invalid/second.git");
@@ -272,6 +441,7 @@ test("private mode checks every configured push URL", t => {
 
 test("private mode checks Git URL rewriting instead of trusting a disabled-looking raw value", t => {
   const repo = repository(t, { privateMode: true });
+  repo.write("src-tauri/.cargo/config.toml", `[env]\nVOXELIGHT_MS_CLIENT_ID = '${fixtureOne}'\n`);
   repo.git("remote", "add", "public", "DISABLED-private-never-pushes");
   repo.git("config", "--local", "url.https://example.invalid/rewrite.git.pushInsteadOf", "DISABLED-private-never-pushes");
   rejected(repo.check(), ".git/config:1:remote.pushurl");

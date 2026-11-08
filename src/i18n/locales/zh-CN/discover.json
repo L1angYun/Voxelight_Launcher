@@ -60,7 +60,9 @@
     "unsupported": {
       "datapack": "数据包需安装到存档 datapacks 目录，暂不支持",
       "noSupportedLoader": "该项目没有 Fabric、NeoForge、Forge 或 Quilt 版本",
-      "noVersions": "没有可下载版本"
+      "noVersions": "没有可下载版本",
+      "noReleaseVersions": "该项目没有可安装的正式版游戏版本。",
+      "manifestUnavailable": "暂时无法获取游戏版本清单，无法建议新实例。"
     }
   },
   "notice": {

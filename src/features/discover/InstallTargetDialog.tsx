@@ -105,7 +105,9 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCrea
   }
 
   if (!flow) return null;
-  const unsupported = flow.plan?.unsupportedReason;
+  const unsupported = flow.plan?.unsupportedReason ?? (flow.status === "choose" && flow.plan && !compatible.length && !suggestion
+    ? flow.plan.manifestUnavailable ? "manifestUnavailable" : "noReleaseVersions"
+    : undefined);
   const shaderWarning = flow.resourceType === "shader";
   const ready = flow.status === "choose" && !unsupported;
   const footer = working ? <>

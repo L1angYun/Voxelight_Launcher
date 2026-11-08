@@ -69,8 +69,8 @@ pub fn set_launcher_background(
     set_launcher_background_inner(state, path).map_err(expected)
 }
 
-fn export_launcher_config_inner(
-    state: State<'_, Arc<LauncherState>>,
+pub(crate) fn export_launcher_config_inner(
+    state: &LauncherState,
     path: String,
 ) -> Result<String, String> {
     let target = Path::new(&path);
@@ -100,7 +100,7 @@ pub fn export_launcher_config(
     state: State<'_, Arc<LauncherState>>,
     path: String,
 ) -> AppResult<String> {
-    export_launcher_config_inner(state, path).map_err(expected)
+    export_launcher_config_inner(state.inner(), path).map_err(expected)
 }
 
 fn import_launcher_config_inner(state: &LauncherState, path: String) -> Result<Config, String> {

@@ -1008,7 +1008,15 @@ fn target_candidates(
             running: target_running(&data, &instance.version_id, Some(&instance.id), &running),
         });
     }
+    let instance_versions: HashSet<_> = data
+        .instances
+        .iter()
+        .map(|instance| instance.version_id.as_str())
+        .collect();
     for version in crate::minecraft::scan_versions(&data.config) {
+        if instance_versions.contains(version.id.as_str()) {
+            continue;
+        }
         let context = version_context(root, &version.id).ok();
         candidates.push(crate::resource_targets::TargetCandidate {
             kind: "version".into(),
@@ -1049,16 +1057,32 @@ pub async fn resolve_resource_targets(
         return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
     }
     let versions = all_project_versions(&api, &project.id).await?;
+    resolve_resource_targets_inner(
+        &state,
+        &project,
+        &versions,
+        kind,
+        crate::minecraft::manifest(&state),
+    )
+    .await
+}
+
+async fn resolve_resource_targets_inner(
+    state: &LauncherState,
+    project: &Project,
+    versions: &[Version],
+    kind: ResourceKind,
+    manifest: impl std::future::Future<Output = Result<Value, String>>,
+) -> AppResult<crate::resource_targets::ResourceTargetPlan> {
     let metadata: Vec<_> = versions.iter().map(version_lite).collect();
-    let manifest = crate::minecraft::manifest(&state)
-        .await
-        .map_err(|error| AppError::new("resource.manifestUnavailable").with_detail(error))?;
-    let manifest = manifest["versions"]
-        .as_array()
-        .ok_or_else(|| {
-            AppError::new("resource.manifestUnavailable").with_detail("官方 Minecraft 版本列表为空")
-        })?
-        .iter()
+    // A release manifest is needed to suggest a new profile, not to install
+    // into a target whose local game/loader metadata is already compatible.
+    let manifest = manifest.await.ok();
+    let manifest = manifest
+        .as_ref()
+        .and_then(|manifest| manifest["versions"].as_array())
+        .into_iter()
+        .flatten()
         .filter_map(|version| {
             Some((
                 version["id"].as_str()?.to_owned(),
@@ -1071,7 +1095,7 @@ pub async fn resolve_resource_targets(
         &project.title,
         &project.project_type,
         kind,
-        &target_candidates(&state)?,
+        &target_candidates(state)?,
         &metadata,
         &manifest,
     ))
@@ -1718,14 +1742,128 @@ mod tests {
             .unwrap();
         assert_eq!(candidate.game_version.as_deref(), Some("1.21.1"));
         assert_eq!(candidate.loader.as_deref(), Some("fabric"));
-        assert!(candidates
+        assert!(!candidates
             .iter()
             .any(|candidate| candidate.kind == "version" && candidate.version_id == "fabric-test"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.kind == "version" && candidate.version_id == "1.21.1"));
         let error = resource_target(&state, "not-installed", None, ResourceKind::ResourcePack)
             .err()
             .unwrap();
         assert_eq!(error.code, "resource.versionMissing");
         assert_eq!(error.params["versionId"], "not-installed");
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn planner_keeps_each_instance_but_omits_its_shared_version_directory() {
+        let (root, state) = resource_fixture();
+        for name in ["First", "Second"] {
+            crate::commands::create_instance_inner(&state, name.into(), "fabric-test".into())
+                .unwrap();
+        }
+        let candidates = target_candidates(&state).unwrap();
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|row| row.kind == "instance")
+                .count(),
+            2
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|row| row.kind == "version")
+                .map(|row| row.version_id.as_str())
+                .collect::<Vec<_>>(),
+            ["1.21.1"]
+        );
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn resolve_targets_keeps_compatible_rows_when_the_manifest_fetch_fails() {
+        let (root, state) = resource_fixture();
+        let instance = crate::commands::create_instance_inner(
+            &state,
+            "Existing Fabric".into(),
+            "fabric-test".into(),
+        )
+        .unwrap();
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "id": "fixture-project", "title": "Fixture", "project_type": "mod"
+        }))
+        .unwrap();
+        let versions: Vec<Version> = serde_json::from_value(serde_json::json!([{
+            "id": "fixture-version", "project_id": "fixture-project", "game_versions": ["1.21.1"],
+            "loaders": ["fabric"], "version_type": "release", "files": []
+        }]))
+        .unwrap();
+        for manifest in [
+            Err("offline fixture".to_string()),
+            Ok(serde_json::json!({"versions": "invalid fixture"})),
+        ] {
+            let plan = tauri::async_runtime::block_on(resolve_resource_targets_inner(
+                &state,
+                &project,
+                &versions,
+                ResourceKind::Mod,
+                std::future::ready(manifest),
+            ))
+            .expect("missing official metadata must not block an already compatible target");
+            assert!(plan.suggestion.is_none());
+            assert!(plan.unsupported_reason.is_none());
+            assert_eq!(
+                plan.targets
+                    .iter()
+                    .filter(|row| row.compatible)
+                    .map(|row| (
+                        row.instance_id.as_deref(),
+                        row.resource_version_id.as_deref()
+                    ))
+                    .collect::<Vec<_>>(),
+                [(Some(instance.id.as_str()), Some("fixture-version"))]
+            );
+            assert_eq!(
+                serde_json::to_value(plan).unwrap()["manifestUnavailable"],
+                true
+            );
+        }
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn resolve_targets_explains_a_missing_manifest_without_compatible_rows() {
+        let (root, state) = resource_fixture();
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "id": "fixture-project", "title": "Fixture", "project_type": "mod"
+        }))
+        .unwrap();
+        let versions: Vec<Version> = serde_json::from_value(serde_json::json!([{
+            "id": "snapshot-version", "game_versions": ["26.1-snapshot-1"],
+            "loaders": ["fabric"], "version_type": "release", "files": []
+        }]))
+        .unwrap();
+        let plan = tauri::async_runtime::block_on(resolve_resource_targets_inner(
+            &state,
+            &project,
+            &versions,
+            ResourceKind::Mod,
+            std::future::ready(Err("offline fixture".into())),
+        ))
+        .unwrap();
+        assert!(plan.targets.iter().all(|row| !row.compatible));
+        assert!(plan.suggestion.is_none());
+        assert_eq!(
+            plan.unsupported_reason.as_deref(),
+            Some("manifestUnavailable")
+        );
+        assert_eq!(
+            serde_json::to_value(plan).unwrap()["manifestUnavailable"],
+            true
+        );
         cleanup_fixture(root);
     }
 
@@ -1826,40 +1964,44 @@ mod tests {
 
     #[test]
     fn interrupted_modrinth_downloads_retry_with_a_clean_temporary_file() {
+        run_interrupted_download_case(None);
+    }
+
+    #[test]
+    fn interrupted_modrinth_downloads_have_independent_parallel_fixtures() {
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || run_interrupted_download_case(Some(barrier)))
+            })
+            .collect();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.0)
+                .collect::<HashSet<_>>()
+                .len(),
+            3
+        );
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| &result.1)
+                .collect::<HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    fn run_interrupted_download_case(start: Option<Arc<std::sync::Barrier>>) -> (u16, PathBuf) {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
-        let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut served = 0;
-            while served < 3 {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        stream
-                            .set_read_timeout(Some(Duration::from_secs(3)))
-                            .unwrap();
-                        let mut request = [0; 2048];
-                        let _ = std::io::Read::read(&mut stream, &mut request);
-                        let response = if served < 2 {
-                            "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nab"
-                        } else {
-                            "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabcdef"
-                        };
-                        std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
-                        served += 1;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "download retry timed out after {served} requests"
-                        );
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("local download fixture failed: {error}"),
-                }
-            }
-            served
-        });
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests");
         let root = parent.join(uuid::Uuid::new_v4().to_string());
         let directory = root.join("mods");
@@ -1888,6 +2030,46 @@ mod tests {
         };
         let task = state.control.begin("resource", "example", "下载资源");
         let progress = ResourceProgress::new(None, "1.21.1");
+        if let Some(barrier) = start {
+            barrier.wait();
+        }
+        // Start the unchanged serving deadline after state/client construction;
+        // preparing independent clients under Cargo load is not HTTP work.
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut served = 0;
+            while served < 3 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        configure_download_fixture_stream(&stream).unwrap();
+                        let request = match read_download_fixture_request(&mut stream) {
+                            Ok(request) => request,
+                            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                                continue
+                            }
+                            Err(error) => panic!("local request headers failed: {error}"),
+                        };
+                        assert!(request.starts_with(b"GET /retry.jar HTTP/1.1\r\n"));
+                        let response = if served < 2 {
+                            "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nab"
+                        } else {
+                            "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabcdef"
+                        };
+                        std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
+                        served += 1;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "download retry timed out after {served} complete requests"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("local download fixture failed: {error}"),
+                }
+            }
+            served
+        });
         let downloaded = tauri::async_runtime::block_on(download_verified_progress(
             &state,
             &file,
@@ -1904,8 +2086,91 @@ mod tests {
         assert_eq!(job.stage, "resource-download");
         assert_eq!((job.bytes_completed, job.bytes_total), (6, 6));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
-        assert!(root.starts_with(&parent));
-        fs::remove_dir_all(root).unwrap();
+        cleanup_fixture(root.clone());
+        (address.port(), root)
+    }
+
+    fn configure_download_fixture_stream(stream: &std::net::TcpStream) -> std::io::Result<()> {
+        // Winsock inherits the listener's nonblocking mode. A read timeout
+        // alone does not restore the blocking HTTP-header reads used here.
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))
+    }
+
+    #[test]
+    fn download_fixture_accepted_stream_waits_for_delayed_headers() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        configure_download_fixture_stream(&accepted).unwrap();
+        let (release, start) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            start.recv_timeout(Duration::from_secs(3)).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            std::io::Write::write_all(
+                &mut client,
+                b"GET /retry.jar HTTP/1.1\r\nHost: cdn.modrinth.com\r\n\r\n",
+            )
+            .unwrap();
+        });
+        let begin = std::time::Instant::now();
+        release.send(()).unwrap();
+        let request = read_download_fixture_request(&mut accepted);
+        let elapsed = begin.elapsed();
+        writer.join().unwrap();
+        assert_eq!(
+            request.expect("an accepted stream must wait for a request within its read timeout"),
+            b"GET /retry.jar HTTP/1.1\r\nHost: cdn.modrinth.com\r\n\r\n"
+        );
+        assert!(elapsed >= Duration::from_millis(100));
+    }
+
+    fn read_download_fixture_request(reader: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
+        let mut request = Vec::new();
+        let mut bytes = [0; 2048];
+        loop {
+            let count = reader.read(&mut bytes)?;
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "incomplete HTTP request",
+                ));
+            }
+            if request.len() + count > 8192 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "fixture request headers too large",
+                ));
+            }
+            request.extend_from_slice(&bytes[..count]);
+            if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                return Ok(request);
+            }
+        }
+    }
+
+    #[test]
+    fn download_fixture_request_waits_for_fragmented_http_headers() {
+        let mut request = std::io::Cursor::new(b"GET /retry.jar HTTP/1.1\r\n".as_slice()).chain(
+            std::io::Cursor::new(b"Host: cdn.modrinth.com\r\n\r\n".as_slice()),
+        );
+        assert_eq!(
+            read_download_fixture_request(&mut request).unwrap(),
+            b"GET /retry.jar HTTP/1.1\r\nHost: cdn.modrinth.com\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn download_fixture_request_rejects_eof_before_the_header_terminator() {
+        let mut request =
+            std::io::Cursor::new(b"GET /retry.jar HTTP/1.1\r\nHost: partial".as_slice());
+        assert_eq!(
+            read_download_fixture_request(&mut request)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[test]
