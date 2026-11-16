@@ -748,6 +748,7 @@ async fn install_jar(
         minecraft::download_from(&metadata["downloads"]["server"], dir, Some("server.jar"))?;
     minecraft::progress(
         app,
+        state,
         &definition.version_id,
         "server-jar",
         0,
@@ -854,11 +855,12 @@ pub async fn create_managed_server(
         "eula.txt",
         b"# Accept the Minecraft EULA explicitly in the launcher before starting.\neula=false\n",
     )?;
-    let task = state.control.begin(
+    let task = state.control.begin_with_display(
         "server-install",
         &definition.version_id,
         &format!("安装服务端 {}", definition.name),
-    );
+        &definition.name,
+    )?;
     let result = install_jar(&state, &app, &mut definition, &dir).await;
     state
         .control
@@ -952,11 +954,12 @@ async fn start_managed_server_inner(
         .operation
         .try_lock()
         .map_err(|_| "已有下载或启动准备任务运行")?;
-    let task = state.control.begin(
+    let task = state.control.begin_with_display(
         "server-start",
         &definition.version_id,
         &format!("准备服务端 {}", definition.name),
-    );
+        &definition.name,
+    )?;
     let prepared = async {
         let metadata = install_jar(&state, &app, &mut definition, &dir).await?;
         let config = state.snapshot()?.config;

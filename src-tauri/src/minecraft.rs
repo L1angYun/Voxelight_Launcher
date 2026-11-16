@@ -100,6 +100,7 @@ where
 
 pub fn progress(
     app: &AppHandle,
+    state: &LauncherState,
     version: &str,
     stage: &str,
     completed: usize,
@@ -108,19 +109,20 @@ pub fn progress(
     bytes_total: u64,
     message: impl Into<String>,
 ) {
-    let _ = app.emit(
-        "launcher://progress",
-        ProgressEvent {
-            operation: "install".into(),
-            stage: stage.into(),
-            completed,
-            total,
-            bytes_completed,
-            bytes_total,
-            message: message.into(),
-            version_id: version.into(),
-        },
-    );
+    let event = ProgressEvent {
+        task_id: String::new(),
+        operation: String::new(),
+        stage: stage.into(),
+        completed,
+        total,
+        bytes_completed,
+        bytes_total,
+        message: message.into(),
+        version_id: version.into(),
+    };
+    if let Some(event) = state.control.record_progress(event) {
+        let _ = app.emit("launcher://progress", event);
+    }
 }
 
 const BMCLAPI_HOST: &str = "bmclapi2.bangbang93.com";
@@ -956,6 +958,14 @@ enum DownloadPolicy<'a> {
 }
 
 impl DownloadPolicy<'_> {
+    async fn cancellable<F: std::future::Future>(self, future: F) -> Result<F::Output, String> {
+        let control = match self {
+            Self::Foreground(control) => Some(control),
+            _ => None,
+        };
+        crate::download_io::cancellable(control, future).await
+    }
+
     async fn checkpoint(self) -> Result<(), String> {
         match self {
             Self::Foreground(control) => control.checkpoint().await,
@@ -985,61 +995,57 @@ async fn download_once(
     tokio::fs::create_dir_all(parent)
         .await
         .map_err(|e| e.to_string())?;
-    let temp = parent.join(format!(".launcher-{}.part", uuid::Uuid::new_v4()));
-    let result = async {
-        let response = client
-            .get(request_url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?;
-        if file
-            .size
-            .zip(response.content_length())
-            .is_some_and(|(expected, actual)| expected != actual)
-        {
-            return Err("下载大小与版本元数据不一致".to_owned());
-        }
-        let mut output = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut chunks = response.bytes_stream();
-        let mut hash = Sha1::new();
-        let mut size = 0u64;
-        while let Some(chunk) = chunks.next().await {
-            policy.checkpoint().await?;
-            let chunk = chunk.map_err(|e| e.to_string())?;
-            size += chunk.len() as u64;
-            if size > file.size.unwrap_or(2 * 1024 * 1024 * 1024) {
-                return Err("下载文件超出预期大小".into());
-            }
-            hash.update(&chunk);
-            output.write_all(&chunk).await.map_err(|e| e.to_string())?;
-            policy.throttle(chunk.len()).await?;
-        }
-        output.flush().await.map_err(|e| e.to_string())?;
-        output.sync_all().await.map_err(|e| e.to_string())?;
-        drop(output);
-        if file.size.is_some_and(|expected| expected != size)
-            || format!("{:x}", hash.finalize()) != file.sha1
-        {
-            return Err("SHA-1 或文件大小校验失败".into());
-        }
-        tokio::fs::rename(&temp, &file.path)
-            .await
-            .map_err(|e| format!("保存已校验文件失败：{e}"))?;
-        Ok(())
+    let response = policy
+        .cancellable(client.get(request_url).send())
+        .await?
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    if file
+        .size
+        .zip(response.content_length())
+        .is_some_and(|(expected, actual)| expected != actual)
+    {
+        return Err("下载大小与版本元数据不一致".into());
     }
-    .await;
-    // Only the random temporary file owned by this download is removed.
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temp).await;
+
+    let mut part = crate::download_io::DownloadPart::create(
+        parent.join(format!(".launcher-{}.part", uuid::Uuid::new_v4())),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut chunks = response.bytes_stream();
+    let mut hash = Sha1::new();
+    let mut size = 0u64;
+    while let Some(chunk) = policy.cancellable(chunks.next()).await? {
+        policy.checkpoint().await?;
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        size += chunk.len() as u64;
+        if size > file.size.unwrap_or(2 * 1024 * 1024 * 1024) {
+            return Err("下载文件超出预期大小".into());
+        }
+        hash.update(&chunk);
+        part.file()
+            .write_all(&chunk)
+            .await
+            .map_err(|error| error.to_string())?;
+        policy.throttle(chunk.len()).await?;
     }
-    result
+    part.file()
+        .flush()
+        .await
+        .map_err(|error| error.to_string())?;
+    part.file()
+        .sync_all()
+        .await
+        .map_err(|error| error.to_string())?;
+    if file.size.is_some_and(|expected| expected != size)
+        || format!("{:x}", hash.finalize()) != file.sha1
+    {
+        return Err("SHA-1 或文件大小校验失败".into());
+    }
+    policy.checkpoint().await?;
+    part.publish(&file.path)
+        .map_err(|error| format!("保存已校验文件失败：{error}"))
 }
 
 pub(crate) async fn ensure_download(
@@ -1130,8 +1136,10 @@ async fn ensure_download_with_policy(
                 Ok(()) => return Ok(true),
                 Err(error) => errors.push(format!("{}：{error}", candidate.url)),
             }
+            policy.checkpoint().await?;
             if attempt + 1 < attempts {
-                tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))).await;
+                policy.cancellable(tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))))
+                    .await?;
             }
         }
     }
@@ -1203,9 +1211,10 @@ async fn ensure_json_download_with_source_and_control_resolved(
         control.checkpoint().await?;
     }
     // JSON metadata never uses the dynamic-host mirror file redirect client.
-    let (bytes, value, _) =
-        fetch_bytes_candidates_resolved(client, &file.url, limit as usize, source, resolver, parse)
-            .await?;
+    let (bytes, value, _) = crate::download_io::cancellable(
+        control,
+        fetch_bytes_candidates_resolved(client, &file.url, limit as usize, source, resolver, parse),
+    ).await??;
     if let Some(control) = control {
         control.throttle(bytes.len()).await?;
     }
@@ -1213,12 +1222,15 @@ async fn ensure_json_download_with_source_and_control_resolved(
     tokio::fs::create_dir_all(parent)
         .await
         .map_err(|e| e.to_string())?;
-    let temp = parent.join(format!(".launcher-{}.part", uuid::Uuid::new_v4()));
-    tokio::fs::write(&temp, bytes)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::fs::rename(&temp, &file.path)
-        .await
+    let mut part = crate::download_io::DownloadPart::create(
+        parent.join(format!(".launcher-{}.part", uuid::Uuid::new_v4())),
+    ).map_err(|e| e.to_string())?;
+    part.file().write_all(&bytes).await.map_err(|e| e.to_string())?;
+    part.file().flush().await.map_err(|e| e.to_string())?;
+    if let Some(control) = control {
+        control.checkpoint().await?;
+    }
+    part.publish(&file.path)
         .map_err(|e| format!("保存已校验 JSON 元数据失败：{e}"))?;
     Ok((value, true))
 }
@@ -1684,6 +1696,7 @@ async fn install_with_config(
     state.control.checkpoint().await?;
     progress(
         app,
+        state,
         id,
         "metadata",
         0,
@@ -1782,6 +1795,7 @@ async fn install_with_config(
     let completed_bytes = AtomicU64::new(0);
     progress(
         app,
+        state,
         id,
         "download",
         0,
@@ -1812,6 +1826,7 @@ async fn install_with_config(
             if done == 1 || done % 10 == 0 || done == total {
                 progress(
                     app,
+                    state,
                     id,
                     "download",
                     done,
@@ -1858,6 +1873,7 @@ async fn install_with_config(
     let count = downloaded.load(Ordering::Relaxed);
     progress(
         app,
+        state,
         id,
         "complete",
         total,
@@ -2148,6 +2164,7 @@ async fn install_official_java(
     log(app,state,"info",format!("安装Mojang Windows x64 Java {required} ({vendor_version})，共{total}个文件，逐文件SHA-1校验"));
     progress(
         app,
+        state,
         version_id,
         "java-runtime",
         0,
@@ -2174,6 +2191,7 @@ async fn install_official_java(
             if completed == 1 || completed % 10 == 0 || completed == total {
                 progress(
                     app,
+                    state,
                     version_id,
                     "java-runtime",
                     completed,
@@ -2242,7 +2260,7 @@ pub async fn install_java(
         .map_err(|_| "已有安装或启动准备任务运行")?;
     let task = state
         .control
-        .begin("java", &game_version, "安装Mojang官方Java");
+        .begin("java", &game_version, "安装Mojang官方Java")?;
     let result = async {
         let config = state.snapshot()?.config;
         let metadata =
@@ -2502,6 +2520,7 @@ fn append_direct_connect(
 
 async fn with_launch_preparation<T, F>(
     state: &LauncherState,
+    task_id: &str,
     id: &str,
     instance_id: Option<&str>,
     prepare: impl FnOnce(Persisted) -> F,
@@ -2510,30 +2529,41 @@ where
     F: std::future::Future<Output = Result<T, String>>,
 {
     validate_id(id)?;
-    let _guard = state.operation.lock().await;
-    let snapshot = state.snapshot()?;
-    if let Some(instance_id) = instance_id {
-        let instance = snapshot
-            .instances
-            .iter()
-            .find(|instance| instance.id == instance_id)
-            .ok_or("实例不存在")?;
-        game_directory(&snapshot.config, id, Some(instance))?;
-        state.games.require_instance_launch_stopped(instance_id)?;
-    }
-    let task = state
+    state.control.claim_launch(task_id, id, instance_id)?;
+    let _guard = state
         .control
-        .begin("launch", id, &format!("启动 Minecraft {id}"));
-    let result = prepare(snapshot).await;
+        .wait_for_turn(&state.operation, task_id)
+        .await?;
+    if !state.control.activate(task_id) {
+        return Err(crate::downloads::CANCELLED.into());
+    }
+
+    let result = async {
+        let snapshot = state.snapshot()?;
+        if let Some(instance_id) = instance_id {
+            let instance = snapshot
+                .instances
+                .iter()
+                .find(|instance| instance.id == instance_id)
+                .ok_or("实例不存在")?;
+            game_directory(&snapshot.config, id, Some(instance))?;
+            state.games.require_instance_launch_stopped(instance_id)?;
+        }
+
+        state.control.checkpoint().await?;
+        prepare(snapshot).await
+    }
+    .await;
     state
         .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
+        .finish(task_id, result.as_ref().err().map(String::as_str));
     result
 }
 
 pub async fn launch(
     state: Arc<LauncherState>,
     app: AppHandle,
+    task_id: String,
     id: String,
     instance_id: Option<String>,
     account_id: Option<String>,
@@ -2542,14 +2572,17 @@ pub async fn launch(
     let shared = state.clone();
     let target = id.clone();
     let requested_instance = instance_id.clone();
+    let requested_task = task_id.clone();
     with_launch_preparation(
         &state,
+        &requested_task,
         &target,
         requested_instance.as_deref(),
         move |snapshot| {
             launch_prepared(
                 shared,
                 app,
+                task_id,
                 id,
                 instance_id,
                 account_id,
@@ -2564,6 +2597,7 @@ pub async fn launch(
 async fn launch_prepared(
     state: Arc<LauncherState>,
     app: AppHandle,
+    task_id: String,
     id: String,
     instance_id: Option<String>,
     account_id: Option<String>,
@@ -2834,10 +2868,9 @@ async fn launch_prepared(
         .stderr(Stdio::piped());
     #[cfg(windows)]
     command.creation_flags(0x08000000);
-    state.control.checkpoint().await?;
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("启动 Java 失败：{e}"))?;
+    let mut child = state.control.start_game(&task_id, || {
+        command.spawn().map_err(|e| format!("启动 Java 失败：{e}"))
+    }).await?;
     let pid = child.id().ok_or("Java 进程未提供 PID")?;
     crate::processes::register(&app, pid, &id, instance_id.clone(), &game_dir);
     log(
@@ -2932,6 +2965,171 @@ async fn launch_prepared(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stalled_m04_response(
+        write_headers_and_prefix: bool,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (seen_request, request) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = [0u8; 1024];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            if write_headers_and_prefix {
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\na").unwrap();
+            }
+            seen_request.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        (address, request, release, server)
+    }
+
+    fn m04_part_exists(path: &Path) -> bool {
+        fs::read_dir(path).is_ok_and(|dir| dir.flatten().any(|entry| {
+            entry.path().extension().is_some_and(|extension| extension == "part")
+        }))
+    }
+
+    #[test]
+    fn m04_cancellation_interrupts_stalled_headers_and_body() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut observations = Vec::new();
+            for (label, partial) in [("headers", false), ("body", true)] {
+                let directory = source_test_directory(&format!("m04-{label}"));
+                let (address, request, release, server) = stalled_m04_response(partial);
+                let client = crate::storage::test_client();
+                let fixture = Download {
+                    path: directory.join("fixture.jar"),
+                    url: "https://piston-data.mojang.com/v1/objects/fixture/client.jar".into(),
+                    sha1: format!("{:x}", Sha1::digest(b"abc")),
+                    size: Some(3),
+                };
+                let control = crate::downloads::DownloadControl::default();
+                let task = control.begin("install", "fixture", "Fixture").unwrap();
+                let resolve = |url: &str| TestServer::resolve(&address, url);
+                let download = download_once(&client, &fixture, &fixture.url, DownloadPolicy::Foreground(&control), &resolve);
+                tokio::pin!(download);
+                let cancellation = async {
+                    tokio::time::timeout(Duration::from_secs(2), request).await.unwrap().unwrap();
+                    if partial {
+                        tokio::time::timeout(Duration::from_secs(2), async {
+                            while !m04_part_exists(&directory) {
+                                tokio::time::sleep(Duration::from_millis(5)).await;
+                            }
+                        }).await.unwrap();
+                    }
+                    control.cancel(&task);
+                };
+                use futures_util::future::{select, Either};
+                match select(download.as_mut(), Box::pin(cancellation)).await {
+                    Either::Left((result, _)) => panic!("transfer completed before cancellation: {result:?}"),
+                    Either::Right(((), _)) => {}
+                };
+                let result = tokio::time::timeout(Duration::from_millis(250), &mut download).await;
+                let timed_out = result.is_err();
+                let promptly_cancelled = result.is_ok_and(|result| result.is_err_and(|error| error.contains("任务已取消")));
+                let part_left = m04_part_exists(&directory);
+                eprintln!("M04_STALL {label} promptly_cancelled={promptly_cancelled} part_left={part_left}");
+                release.send(()).unwrap();
+                server.join().unwrap();
+                // Baseline completes when the peer eventually closes; drain it before cleaning.
+                if timed_out {
+                    let _ = download.await;
+                }
+                fs::remove_dir_all(directory).unwrap();
+                observations.push((label, promptly_cancelled, part_left));
+            }
+            assert_eq!(observations, [("headers", true, false), ("body", true, false)]);
+        });
+    }
+
+    #[test]
+    fn m04_cancelling_a_stalled_checked_metadata_fetch_leaves_no_new_profile() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("m04-json");
+            let (address, requested, release, server) = stalled_m04_response(false);
+            let client = crate::storage::test_client();
+            let fixture = Download {
+                path: directory.join("metadata.json"),
+                url: "https://piston-meta.mojang.com/v1/packages/fixture/metadata.json".into(),
+                sha1: format!("{:x}", Sha1::digest(b"{}")),
+                size: Some(2),
+            };
+            let control = crate::downloads::DownloadControl::default();
+            let task = control.begin("install", "fixture", "Fixture").unwrap();
+            let resolve = |url: &str| TestServer::resolve(&address, url);
+            let fetch = ensure_json_download_with_source_and_control_resolved(
+                &client, &fixture, "official", Some(&control), &resolve, |_| Ok(()),
+            );
+            tokio::pin!(fetch);
+            let cancel = async {
+                tokio::time::timeout(Duration::from_secs(2), requested).await.unwrap().unwrap();
+                control.cancel(&task);
+            };
+            use futures_util::future::{select, Either};
+            match select(fetch.as_mut(), Box::pin(cancel)).await {
+                Either::Left((result, _)) => panic!("transfer completed before cancellation: {result:?}"),
+                Either::Right(((), _)) => {}
+            };
+            let result = tokio::time::timeout(Duration::from_millis(500), &mut fetch).await;
+            let timed_out = result.is_err();
+            let promptly_cancelled = result.is_ok_and(|result| result.is_err_and(|error| error.contains("任务已取消")));
+            release.send(()).unwrap();
+            server.join().unwrap();
+            if timed_out {
+                let _ = fetch.await;
+            }
+            let installed = fixture.path.exists();
+            eprintln!("M04_JSON promptly_cancelled={promptly_cancelled} installed={installed}");
+            assert!(promptly_cancelled);
+            assert!(!installed);
+        });
+    }
+
+    #[test]
+    fn m04_fail_fast_drops_its_open_sibling_and_removes_the_part_file() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("m04-sibling");
+            let (address, request, release, server) = stalled_m04_response(true);
+            let client = crate::storage::test_client();
+            let fixture = Download {
+                path: directory.join("fixture.jar"),
+                url: "https://piston-data.mojang.com/v1/objects/fixture/client.jar".into(),
+                sha1: format!("{:x}", Sha1::digest(b"abc")),
+                size: Some(3),
+            };
+            let resolve = |url: &str| TestServer::resolve(&address, url);
+            let in_flight = download_once(&client, &fixture, &fixture.url, DownloadPolicy::Uncapped, &resolve);
+            let sibling = async {
+                tokio::time::timeout(Duration::from_secs(2), request).await.unwrap().unwrap();
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while !m04_part_exists(&directory) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }).await.unwrap();
+                Err::<(), String>("synthetic sibling verification failure".into())
+            };
+            let result = futures_util::future::try_join(in_flight, sibling).await;
+            assert_eq!(result.unwrap_err(), "synthetic sibling verification failure");
+            let part_left = m04_part_exists(&directory);
+            let installed = fixture.path.exists();
+            eprintln!("M04_SIBLING part_left={part_left} installed={installed}");
+            release.send(()).unwrap();
+            server.join().unwrap();
+            fs::remove_dir_all(directory).unwrap();
+            assert!(!part_left);
+            assert!(!installed);
+        });
+    }
 
     struct TestServer {
         address: String,
@@ -3267,12 +3465,13 @@ mod tests {
                 "id": "source-test", "url": "https://piston-meta.mojang.com/v1/packages/source-test.json",
                 "sha1": format!("{:x}", Sha1::digest(&metadata)),
             })]), false).await;
-            let cancelled = state.control.begin("install", "old", "Old");
-            state.control.cancel(Some(&cancelled));
+            let cancelled = state.control.begin("install", "old", "Old").unwrap();
+            state.control.cancel(&cancelled);
             state.control.finish(&cancelled, Some("cancelled"));
             for fail in [false, true, false] {
                 let shared = &state;
-                let result = with_launch_preparation(&state, "source-test", None, |snapshot| async move {
+                let task = state.control.reserve_launch("source-test", None).unwrap();
+                let result = with_launch_preparation(&state, &task, "source-test", None, |snapshot| async move {
                     shared.control.checkpoint().await?;
                     let root = Path::new(&snapshot.config.game_directory);
                     let metadata = resolve_metadata_with_source(shared, "source-test", root, &snapshot.config.download_source).await?;
@@ -3295,6 +3494,94 @@ mod tests {
     }
 
     #[test]
+    fn h02_cancelling_queued_launch_does_not_touch_an_unrelated_install() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("launch-cancel");
+            let state = source_test_state(&directory);
+            let guard = state.operation.lock().await;
+            let install = state
+                .control
+                .begin("install", "source-test", "Fixture install")
+                .unwrap();
+            let launch = state.control.reserve_launch("source-test", None).unwrap();
+            {
+                let request =
+                    with_launch_preparation(&state, &launch, "source-test", None, |_| async {
+                        Err::<(), _>("cancelled launch unexpectedly prepared".into())
+                    });
+                tokio::pin!(request);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(20), &mut request)
+                        .await
+                        .is_err()
+                );
+                state.control.cancel(&launch);
+                let error = tokio::time::timeout(Duration::from_secs(2), &mut request)
+                    .await
+                    .expect("cancel must not wait for the install lock")
+                    .unwrap_err();
+                assert_eq!(error, crate::downloads::CANCELLED);
+            }
+            assert!(state.control.checkpoint().await.is_ok());
+            assert!(state.operation.try_lock().is_err());
+            let jobs = state.control.list();
+            assert_eq!(
+                (&jobs[0].id, jobs[0].status.as_str()),
+                (&install, "running")
+            );
+            assert_eq!(
+                (&jobs[1].id, jobs[1].status.as_str()),
+                (&launch, "cancelled")
+            );
+            state.control.finish(&install, None);
+            drop(guard);
+            assert!(state
+                .control
+                .claim_launch(&launch, "source-test", None)
+                .is_err());
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn launch_reservation_cannot_be_retargeted_or_replayed() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("launch-reservation");
+            let state = source_test_state(&directory);
+            let task = state.control.reserve_launch("source-test", None).unwrap();
+            for (wrong_version, wrong_instance) in [
+                ("other-version", None),
+                ("source-test", Some("other-instance")),
+            ] {
+                let result = with_launch_preparation(
+                    &state,
+                    &task,
+                    wrong_version,
+                    wrong_instance,
+                    |_| async { Ok(()) },
+                )
+                .await;
+                assert_eq!(result.unwrap_err(), "任务不存在");
+            }
+            assert_eq!(state.control.list()[0].status, "queued");
+            assert!(
+                with_launch_preparation(&state, &task, "source-test", None, |_| async { Ok(()) })
+                    .await
+                    .is_ok()
+            );
+            assert!(
+                with_launch_preparation(&state, &task, "source-test", None, |_| async { Ok(()) })
+                    .await
+                    .is_err()
+            );
+            assert_eq!(state.control.list()[0].status, "completed");
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
     fn waiting_launch_uses_latest_snapshot_and_rejects_removed_instances() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let directory = source_test_directory("launch-snapshot");
@@ -3311,8 +3598,9 @@ mod tests {
                 .unwrap();
             {
                 let guard = state.operation.lock().await;
+                let task = state.control.reserve_launch("source-test", None).unwrap();
                 let request =
-                    with_launch_preparation(&state, "source-test", None, |snapshot| async move {
+                    with_launch_preparation(&state, &task, "source-test", None, |snapshot| async move {
                         Ok(snapshot.config.game_directory)
                     });
                 tokio::pin!(request);
@@ -3334,8 +3622,9 @@ mod tests {
 
             {
                 let guard = state.operation.lock().await;
+                let task = state.control.reserve_launch("source-test", Some("instance".into())).unwrap();
                 let request =
-                    with_launch_preparation(&state, "source-test", Some("instance"), |_| async {
+                    with_launch_preparation(&state, &task, "source-test", Some("instance"), |_| async {
                         Ok(())
                     });
                 tokio::pin!(request);
@@ -3353,7 +3642,8 @@ mod tests {
                 drop(guard);
                 assert!(request.await.unwrap_err().contains("实例不存在"));
             }
-            assert_eq!(state.control.list().len(), 1);
+            assert_eq!(state.control.list().len(), 2);
+            assert_eq!(state.control.list()[1].status, "failed");
             assert!(state.operation.try_lock().is_ok());
             drop(state);
             fs::remove_dir_all(directory).unwrap();

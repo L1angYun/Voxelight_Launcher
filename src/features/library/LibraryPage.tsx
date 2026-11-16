@@ -53,7 +53,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
     selectVersion,
     launch,
     progress,
-    busy,
+    preparing,
     selectedRunningGame,
     selectedInstance: activeInstance,
     selectedVersionId,
@@ -195,7 +195,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
 
   const launchStatus = (
     <LibraryLaunchStatus
-      busy={busy}
+      preparing={preparing}
       running={Boolean(selectedRunningGame || gamePid)}
       progress={progress}
       onCancel={cancelPreparation}

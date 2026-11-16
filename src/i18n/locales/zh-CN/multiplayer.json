@@ -124,6 +124,7 @@
     "server": {
       "eulaRequired": "启动前请阅读并明确同意 Minecraft EULA。",
       "notFound": "服务端已不存在，请刷新列表。",
+      "snapshotChanged": "已保存的服务器列表发生变化，没有修改任何收藏。请检查刷新后的列表再试。",
       "busy": "另一个服务端或下载操作仍在执行。",
       "addressInvalid": "请输入有效的主机名或 IP，可附端口。",
       "portInUse": "另一个受管服务端已使用此端口。",

@@ -45,7 +45,7 @@ function fixture(): LauncherContextValue {
     accountAppearance: { profile: null, setProfile: vi.fn(), skinUrl: undefined, model: "auto", capeUrl: undefined,
       hasAccountSkin: false, loading: false, error: "", refresh: vi.fn() },
     selectedInstance: data.instances[0], selectedVersion: data.installedVersions[0], selectedVersionId: "1.21.1",
-    selectedRunningGame: undefined, running: [], progress: null, logs: [], busy: "", notice: null, gamePid: undefined,
+    selectedRunningGame: undefined, running: [], preparing: false, progress: null, resourceProgress: null, logs: [], busy: "", notice: null, gamePid: undefined,
     reload: vi.fn(async () => {}), saveConfig: vi.fn(async () => true), setConfig: vi.fn(), selectInstance: vi.fn(), selectVersion: vi.fn(),
     launch: vi.fn(async () => {}), launchMultiplayer: vi.fn(async () => {}), stop: vi.fn(async () => {}), cancelPreparation: vi.fn(async () => {}),
     run: vi.fn(async (_key, action) => action()), dismissNotice: vi.fn(),

@@ -35,7 +35,9 @@ export interface LauncherContextValue {
   selectedVersionId: string;
   selectedRunningGame?: RunningGame;
   running: RunningGame[];
+  preparing: boolean;
   progress: Progress | null;
+  resourceProgress: Progress | null;
   logs: LogEntry[];
   busy: string;
   notice: LauncherNotice | null;

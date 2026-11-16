@@ -16,6 +16,25 @@ import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { resolveSmokeArtifact } from "./build-runtime.mjs";
 
+const ownedDownloads = new Set();
+
+async function listTasks() {
+  return (await invoke("list_download_tasks")).tasks;
+}
+
+async function queueInstall(args) {
+  const taskId = await invoke("queue_install", args);
+  ownedDownloads.add(taskId);
+  return taskId;
+}
+
+async function launchGame(args) {
+  const { versionId, instanceId } = args;
+  const taskId = await invoke("reserve_launch_task", { versionId, instanceId });
+  ownedDownloads.add(taskId);
+  return invoke("launch_game", { ...args, taskId });
+}
+
 async function verifyLoader(
   loader,
   gameVersion = loader === "neoforge" ? "1.21.1" : baseVersion,
@@ -59,7 +78,7 @@ async function verifyLoader(
   });
   assert.equal(instance.loader, loader);
   assert.equal(instance.loaderVersion, selected.id);
-  const launched = await invoke("launch_game", {
+  const launched = await launchGame({
     versionId: installed.versionId,
     instanceId: instance.id,
   });
@@ -67,7 +86,7 @@ async function verifyLoader(
   assert(gamePid > 0);
   await assert.rejects(
     () =>
-      invoke("launch_game", {
+      launchGame({
         versionId: installed.versionId,
         instanceId: instance.id,
       }),
@@ -149,7 +168,7 @@ async function verifyLoader(
   assert(
     saved.instances.find((value) => value.id === instance.id).totalPlayTime > 0,
   );
-  const restarted = await invoke("launch_game", {
+  const restarted = await launchGame({
     versionId: installed.versionId,
     instanceId: instance.id,
   });
@@ -722,7 +741,7 @@ try {
     },
   );
   await eventually(async () => {
-    const jobs = await invoke("list_download_tasks");
+    const jobs = await listTasks();
     return jobs.every(
       (job) => !["running", "queued", "paused"].includes(job.status),
     );
@@ -1086,7 +1105,7 @@ try {
       try {
         pids.push(
           (
-            await invoke("launch_game", {
+            await launchGame({
               versionId: baseVersion,
               instanceId: first.id,
             })
@@ -1094,7 +1113,7 @@ try {
         );
         pids.push(
           (
-            await invoke("launch_game", {
+            await launchGame({
               versionId: baseVersion,
               instanceId: second.id,
             })
@@ -1349,43 +1368,43 @@ try {
   await check(
     "pause/resume, queued cancellation and active cancellation allow the next job",
     async () => {
-      const first = await invoke("queue_install", { versionId: baseVersion });
+      const first = await queueInstall({ versionId: baseVersion });
       await eventually(async () => {
-        const jobs = await invoke("list_download_tasks");
+        const jobs = await listTasks();
         return jobs.find((job) => job.id === first && job.status === "running");
       });
-      await invoke("set_download_paused", { paused: true });
-      const second = await invoke("queue_install", { versionId: baseVersion });
+      await invoke("set_download_paused", { taskId: first, paused: true });
+      const second = await queueInstall({ versionId: baseVersion });
       const cancelled = await invoke("cancel_download_task", {
         taskId: second,
       });
       assert.equal(
-        cancelled.find((job) => job.id === second).status,
+        cancelled.tasks.find((job) => job.id === second).status,
         "cancelled",
       );
-      await invoke("set_download_paused", { paused: false });
+      await invoke("set_download_paused", { taskId: first, paused: false });
       await eventually(async () => {
-        const job = (await invoke("list_download_tasks")).find(
+        const job = (await listTasks()).find(
           (job) => job.id === first,
         );
         if (job?.status === "failed") throw new Error(job.error);
         return job?.status === "completed";
       }, 90000);
       assert.equal(
-        (await invoke("list_download_tasks")).find((job) => job.id === second)
+        (await listTasks()).find((job) => job.id === second)
           .status,
         "cancelled",
       );
-      const active = await invoke("queue_install", { versionId: "1.21.1" });
+      const active = await queueInstall({ versionId: "1.21.1" });
       await eventually(async () =>
-        (await invoke("list_download_tasks")).find(
+        (await listTasks()).find(
           (job) => job.id === active && job.status === "running",
         ),
       );
       await invoke("cancel_download_task", { taskId: active });
       await eventually(
         async () =>
-          (await invoke("list_download_tasks")).find((job) => job.id === active)
+          (await listTasks()).find((job) => job.id === active)
             ?.status === "cancelled",
       );
       const skinAfterCancellation = await invoke("get_default_skin", {
@@ -1396,22 +1415,22 @@ try {
       assert(
         skinAfterCancellation.dataUrl?.startsWith("data:image/png;base64,"),
       );
-      const cancelBeforeLaunch = await invoke("queue_install", {
+      const cancelBeforeLaunch = await queueInstall({
         versionId: "1.21.1",
       });
       await eventually(async () =>
-        (await invoke("list_download_tasks")).find(
+        (await listTasks()).find(
           (job) => job.id === cancelBeforeLaunch && job.status === "running",
         ),
       );
       await invoke("cancel_download_task", { taskId: cancelBeforeLaunch });
       await eventually(
         async () =>
-          (await invoke("list_download_tasks")).find(
+          (await listTasks()).find(
             (job) => job.id === cancelBeforeLaunch,
           )?.status === "cancelled",
       );
-      const directLaunch = await invoke("launch_game", {
+      const directLaunch = await launchGame({
         versionId: baseVersion,
         instanceId: fixtureInstance.id,
       });
@@ -1424,10 +1443,10 @@ try {
           (game) => game.instanceId !== fixtureInstance.id,
         ),
       );
-      const next = await invoke("queue_install", { versionId: baseVersion });
+      const next = await queueInstall({ versionId: baseVersion });
       await eventually(
         async () =>
-          (await invoke("list_download_tasks")).find((job) => job.id === next)
+          (await listTasks()).find((job) => job.id === next)
             ?.status === "completed",
         90000,
       );
@@ -1499,8 +1518,9 @@ try {
 } finally {
   if (invoke)
     try {
-      await invoke("cancel_download_task", { taskId: null });
-      await invoke("set_download_paused", { paused: false });
+      const pending = (await listTasks()).filter(job => ownedDownloads.has(job.id) &&
+        ["running", "queued", "paused"].includes(job.status));
+      await Promise.allSettled(pending.map(({ id }) => invoke("cancel_download_task", { taskId: id })));
       for (const game of await invoke("list_running_games"))
         await invoke("stop_game", { pid: game.pid });
     } catch {}

@@ -616,7 +616,7 @@ pub async fn backup_world(
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
     let task = state
         .control
-        .begin("world-backup", &world_folder, "备份世界");
+        .begin("world-backup", &world_folder, "备份世界")?;
     let shared = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || {
         backup_world_inner(&shared, &root, &world_folder, Path::new(&output_path))
@@ -797,7 +797,7 @@ pub async fn import_world(
     {
         return Err("请选择 Java 世界 .zip 文件".into());
     }
-    let task = state.control.begin("world-import", &version_id, "导入世界");
+    let task = state.control.begin("world-import", &version_id, "导入世界")?;
     let shared = state.inner().clone();
     let result =
         tokio::task::spawn_blocking(move || import_world_inner(&shared, &root, &path, name))
@@ -895,7 +895,7 @@ pub async fn import_local_resources(
     crate::resources::resource_transactions::require_no_pending(&directory)?;
     let task = state
         .control
-        .begin("local-resource-import", &version_id, "导入本地资源");
+        .begin("local-resource-import", &version_id, "导入本地资源")?;
     let shared = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || {
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
@@ -1331,8 +1331,8 @@ mod tests {
             let cancelled = fixture
                 .state
                 .control
-                .begin("install", "cancelled", "Cancelled");
-            fixture.state.control.cancel(Some(&cancelled));
+                .begin("install", "cancelled", "Cancelled").unwrap();
+            fixture.state.control.cancel(&cancelled);
             assert!(fixture.state.control.checkpoint().await.is_err());
             fixture.state.control.finish(&cancelled, Some("cancelled"));
 
@@ -1358,8 +1358,8 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let fixture = skin_fixture(Some(FIXTURE_PNG), Some(FIXTURE_PNG));
             let guard = fixture.state.operation.lock().await;
-            let active = fixture.state.control.begin("install", "active", "Active");
-            fixture.state.control.cancel(Some(&active));
+            let active = fixture.state.control.begin("install", "active", "Active").unwrap();
+            fixture.state.control.cancel(&active);
             let value = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 load_default_skin(&fixture.state, "steve", Some("1.20.1")),

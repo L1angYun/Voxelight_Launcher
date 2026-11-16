@@ -57,7 +57,7 @@ function fixture(): LauncherContextValue {
     selectedVersionId: "1.21.1",
     selectedRunningGame: undefined,
     running: [],
-    progress: null,
+    preparing: false, progress: null, resourceProgress: null,
     logs: [],
     busy: "",
     notice: null,

@@ -23,8 +23,8 @@ function task(overrides: Partial<DownloadTask> = {}): DownloadTask {
 
 function mockTasks(page: Page, initialTasks: DownloadTask[]) {
   return page.addInitScript((initial) => {
-    let tasks = initial;
-    const snapshot = () => tasks.map((item) => ({ ...item }));
+    let tasks = initial, revision = 0;
+    const snapshot = () => ({ revision, tasks: structuredClone(tasks) });
     const internals = (window as unknown as {
       __TAURI_INTERNALS__: {
         invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -42,9 +42,10 @@ function mockTasks(page: Page, initialTasks: DownloadTask[]) {
       };
       if (name === "list_download_tasks") return record(snapshot());
       if (name === "set_download_paused") {
-        tasks = tasks.map((item) => item.status === "running" || item.status === "paused"
+        tasks = tasks.map((item) => item.id === args?.taskId && (item.status === "running" || item.status === "paused")
           ? { ...item, status: args?.paused ? "paused" : "running" }
           : item);
+        ++revision;
         return record(snapshot());
       }
       if (name === "cancel_download_task") {
@@ -56,6 +57,7 @@ function mockTasks(page: Page, initialTasks: DownloadTask[]) {
           const next = tasks.findIndex((item) => item.status === "queued");
           if (next >= 0) tasks[next] = { ...tasks[next], status: "running", stage: "download" };
         }
+        ++revision;
         return record(snapshot());
       }
       if (name === "retry_download_task") {
@@ -68,6 +70,7 @@ function mockTasks(page: Page, initialTasks: DownloadTask[]) {
           completed: 0,
           total: 0,
         }];
+        ++revision;
         return record("retry-1");
       }
       return original(name, args);

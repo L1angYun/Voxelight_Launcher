@@ -22,7 +22,7 @@ function ConsoleContent({ children, tier }: { children: ReactNode; tier: MotionT
 }
 
 export function LaunchConsole({
-  instance, instances, version, onSelectInstance, pickerOpen, onPickerOpenChange, onLaunch, onStop, onCancel, onOpenFolder, busy, running, progress,
+  instance, instances, version, onSelectInstance, pickerOpen, onPickerOpenChange, onLaunch, onStop, onCancel, onOpenFolder, busy, preparing, running, progress,
 }: {
   instance?: Instance;
   instances: Instance[];
@@ -35,6 +35,7 @@ export function LaunchConsole({
   onCancel: () => Promise<void>;
   onOpenFolder: () => void;
   busy: string;
+  preparing: boolean;
   running: boolean;
   progress: Progress | null;
 }) {
@@ -44,7 +45,6 @@ export function LaunchConsole({
   const staticMotion = reducedMotion || reducedTransparency || highContrast || effects === "lite";
   const selectorJelly = useJellyControl<HTMLDivElement>(staticMotion);
   const launchJelly = useJellyControl<HTMLDivElement>(staticMotion);
-  const preparing = busy === "game.prepare";
   const state = preparing ? "preparing" : running ? "running" : "idle";
   const actionsRef = useRef<HTMLDivElement>(null);
   const ownsFocus = useRef(false);

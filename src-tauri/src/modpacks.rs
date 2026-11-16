@@ -1047,7 +1047,7 @@ pub async fn import_modpack(
         return Err("请选择 .mrpack 或 .zip 文件".into());
     }
     let _operation = state.operation.lock().await;
-    let task = state.control.begin("modpack", &path, "导入整合包");
+    let task = state.control.begin("modpack", &path, "导入整合包")?;
     let result = import_inner(
         &app,
         state.inner(),
@@ -1074,9 +1074,10 @@ pub async fn install_modrinth_modpack(
     identifier(&project_id)?;
     identifier(&modpack_version_id)?;
     let _operation = state.operation.lock().await;
-    let task = state
-        .control
-        .begin("modpack", &project_id, "安装 Modrinth 整合包");
+    let task = match name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => state.control.begin_with_display("modpack", &project_id, "安装 Modrinth 整合包", name)?,
+        None => state.control.begin("modpack", &project_id, "安装 Modrinth 整合包")?,
+    };
     let result = async {
         let api = client(false)?;
         let project: ApiProject =
@@ -1240,11 +1241,11 @@ pub async fn export_modrinth_modpack(
     include_owned_assets: Option<bool>,
 ) -> Result<PackExportResult, String> {
     let _operation = state.operation.lock().await;
+    let instance = instances::instance(&state.snapshot()?, &instance_id)?;
     let task = state
         .control
-        .begin("export", &instance_id, "导出 Modrinth 整合包");
+        .begin_with_display("export", &instance_id, "导出 Modrinth 整合包", &instance.name)?;
     let result=async{
-        let instance=instances::instance(&state.snapshot()?,&instance_id)?;
         let root=checked_absolute(Path::new(&instance.game_directory))?;let output=checked_absolute(Path::new(&output_path))?;
         if output.extension().and_then(|s|s.to_str()).is_none_or(|s|!s.eq_ignore_ascii_case("mrpack")){return Err("整合包导出路径须以 .mrpack 结尾".into());}
         if output.exists()||output.starts_with(&root){return Err("导出目标已存在或位于实例内部，请另选文件名和目录".into());}

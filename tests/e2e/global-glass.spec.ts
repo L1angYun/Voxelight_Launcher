@@ -185,11 +185,11 @@ test("one world canvas serves full and lite modes while real data points remain 
     await current.addInitScript(() => {
       const api = (window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
       const original = api.invoke;
-      api.invoke = async (name, args) => name === "list_download_tasks" ? [{
+      api.invoke = async (name, args) => name === "list_download_tasks" ? { revision: 0, tasks: [{
         id: "point-regression", kind: "install", target: "1.21.1", label: "1.21.1", status: "running", stage: "download",
         completed: 65, total: 130, bytesCompleted: 1024, bytesTotal: 2048, message: "",
         createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:01Z",
-      }] : original(name, args);
+      }] } : original(name, args);
     });
     await current.goto("http://127.0.0.1:1420/");
     await expect(current.locator(".vx-global-scene canvas")).toHaveCount(1);

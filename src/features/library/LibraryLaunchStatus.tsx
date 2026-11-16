@@ -7,12 +7,12 @@ import { LatticeProgress } from "../../visual/lattice/LatticeProgress";
 import type { Progress } from "../../lib/launcher";
 
 export function LibraryLaunchStatus({
-  busy,
+  preparing,
   running,
   progress,
   onCancel,
 }: {
-  busy: string;
+  preparing: boolean;
   running: boolean;
   progress: Progress | null;
   onCancel: () => Promise<void>;
@@ -21,7 +21,6 @@ export function LibraryLaunchStatus({
   const present = useIsPresent();
   const [host, setHost] = useState<Element | null>(null);
   useLayoutEffect(() => { setHost(document.querySelector(".vx-glass-provider")); }, []);
-  const preparing = busy === "game.prepare" || Boolean(progress && progress.total > progress.completed);
   if (!running && !preparing) return null;
   const percent = progress && progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : null;
   const content = (

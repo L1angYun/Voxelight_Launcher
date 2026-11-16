@@ -55,7 +55,7 @@ it("keeps a running launch pill's bare area out of the actual world's press and 
       <WorldScene phase={running ? "running" : "idle"} fraction={null} page="home" scene="horizon" material="lattice" />
       <LaunchConsole instances={[]} pickerOpen={false} onPickerOpenChange={() => {}} onSelectInstance={() => {}}
         onLaunch={async () => {}} onStop={async () => {}} onCancel={async () => {}} onOpenFolder={() => {}}
-        busy="" running={running} progress={null} />
+        busy="" preparing={false} running={running} progress={null} />
       <div data-testid="blank-world" />
     </I18nextProvider>));
   }

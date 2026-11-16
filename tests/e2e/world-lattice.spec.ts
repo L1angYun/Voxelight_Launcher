@@ -366,7 +366,6 @@ test("world intro: plays once on home, keeps first-frame operations usable, and 
 
 test("world intro: the first launch press skips the intro and keeps the real launch action", async ({ page }, testInfo) => {
   await installLauncherFixture(page, { launchDelay: 10_000 });
-  await makeFixtureLaunchCancellable(page);
   await observeWorldIntro(page);
   await page.goto("/", { waitUntil: "commit" });
   await pressDuringIntro(page, "button[data-launch-primary]");
@@ -410,35 +409,6 @@ async function openAppearance(page: Page) {
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置", exact: true }).click();
   await page.locator(".vx-settings-nav").getByRole("button", { name: "外观", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "世界材质", exact: true })).toBeVisible();
-}
-
-async function makeFixtureLaunchCancellable(page: Page) {
-  await page.addInitScript(() => {
-    const api = (window as unknown as {
-      __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> };
-    }).__TAURI_INTERNALS__;
-    const original = api.invoke;
-    let generation = 0;
-    let cancel: (() => void) | null = null;
-    api.invoke = async (name, args) => {
-      if (name === "cancel_download_task") {
-        generation++;
-        cancel?.();
-      }
-      if (name !== "launch_game") return original(name, args);
-      const token = ++generation;
-      const cancelled = new Promise<never>((_, reject) => {
-        cancel = () => reject(new Error("任务已取消，已校验文件保留供下次复用"));
-      });
-      try {
-        const result = await Promise.race([original(name, args), cancelled]);
-        if (token !== generation) throw new Error("任务已取消，已校验文件保留供下次复用");
-        return result;
-      } finally {
-        cancel = null;
-      }
-    };
-  });
 }
 
 test("default lattice renders real animated terrain and continues through pointer movement", async ({ page }, testInfo) => {
@@ -658,7 +628,6 @@ test("launch state: home preparation follows real 37% progress and cancellation 
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await installLauncherFixture(page, { launchDelay: 10_000 });
-  await makeFixtureLaunchCancellable(page);
   await page.goto("/");
   const scene = page.locator(".vx-global-scene");
   await expect(scene).toHaveAttribute("data-world-phase", "idle");

@@ -141,7 +141,7 @@ function fixture(): LauncherContextValue {
     selectedVersionId: "1.21.1",
     selectedRunningGame: undefined,
     running: [],
-    progress: null,
+    preparing: false, progress: null, resourceProgress: null,
     logs: [],
     busy: "",
     notice: null,
@@ -326,7 +326,7 @@ describe("HomePage", () => {
     expect([...list.querySelectorAll('[role="option"]')].map(option => option.getAttribute("data-value"))).toEqual(["idle", "walk", "run"]);
     await act(async () => list.querySelector<HTMLElement>('[data-value="run"]')!.click());
     expect(selector.textContent).toContain("奔跑");
-    mockLauncher.busy = "game.prepare"; await render();
+    mockLauncher.preparing = true; await render();
     expect(selector.disabled).toBe(true); expect(selector.textContent).toContain("行走");
   });
 
@@ -406,10 +406,10 @@ describe("HomePage", () => {
     const region = container.querySelector<HTMLElement>("[data-launch-announcement]");
     expect(region).not.toBeNull(); expect(region?.getAttribute("role")).toBe("status");
     expect(region?.textContent).toBe("");
-    mockLauncher.busy = "game.prepare";
+    mockLauncher.preparing = true;
     let previous = "", changes = 0;
     for (let completed = 1; completed <= 100; completed++) {
-      mockLauncher.progress = { operation: "install", stage: "assets", completed, total: 100,
+      mockLauncher.progress = { taskId: "launch-fixture", operation: "launch", stage: "assets", completed, total: 100,
         bytesCompleted: completed, bytesTotal: 100, message: "fixture", versionId: "1.21.1" };
       await render();
       expect(container.querySelector("[data-launch-announcement]")).toBe(region);
@@ -423,9 +423,9 @@ describe("HomePage", () => {
 
   it("shows a real preparation state and cancels it", async () => {
     vi.useFakeTimers();
-    mockLauncher.busy = "game.prepare";
+    mockLauncher.preparing = true;
     mockLauncher.progress = {
-      operation: "install",
+      taskId: "launch-fixture", operation: "launch",
       stage: "assets",
       completed: 37,
       total: 100,
@@ -453,12 +453,12 @@ describe("HomePage", () => {
 
   it("rearms cancellation availability when another preparation starts before the old guard expires", async () => {
     vi.useFakeTimers();
-    mockLauncher.busy = "game.prepare";
+    mockLauncher.preparing = true;
     await render();
     await act(async () => vi.advanceTimersByTime(100));
-    mockLauncher.busy = ""; await render();
+    mockLauncher.preparing = false; mockLauncher.busy = ""; await render();
     await act(async () => vi.advanceTimersByTime(50));
-    mockLauncher.busy = "game.prepare"; await render();
+    mockLauncher.preparing = true; await render();
     const cancel = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("取消准备"))!;
     await act(async () => vi.advanceTimersByTime(100));
     expect(cancel.getAttribute("aria-disabled")).toBe("true");
@@ -485,7 +485,7 @@ describe("HomePage", () => {
     // delivers its keyboard activation click to the real handler.
     await act(async () => launch.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
     expect(mockLauncher.launch).toHaveBeenCalledOnce();
-    mockLauncher.busy = "game.prepare"; await render();
+    mockLauncher.preparing = true; await render();
     const cancel = currentAction();
     expect(cancel.textContent).toContain("取消准备");
     expect(document.activeElement).toBe(cancel);
@@ -494,7 +494,7 @@ describe("HomePage", () => {
     await act(async () => vi.advanceTimersByTime(249));
     await act(async () => cancel.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
     expect(mockLauncher.cancelPreparation).not.toHaveBeenCalled();
-    mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+    mockLauncher.preparing = false; mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
     const stop = currentAction();
     expect(stop.textContent).toContain("停止");
     expect(document.activeElement).toBe(stop);
@@ -550,12 +550,12 @@ describe("HomePage", () => {
     expect(document.activeElement).toBe(action());
     await act(async () => action().click());
     expect(mockLauncher.launch).not.toHaveBeenCalled();
-    mockLauncher.busy = "game.prepare"; await render();
+    mockLauncher.preparing = true; await render();
     expect(document.activeElement).toBe(action());
     await act(async () => vi.advanceTimersByTime(250));
     await act(async () => action().click());
     expect(mockLauncher.cancelPreparation).toHaveBeenCalledOnce();
-    mockLauncher.busy = ""; await render();
+    mockLauncher.preparing = false; mockLauncher.busy = ""; await render();
     expect(document.activeElement).toBe(action());
     mockLauncher.gamePid = 42; await render();
     mockLauncher.busy = "game.stop"; await render();
@@ -569,11 +569,11 @@ describe("HomePage", () => {
     const outside = document.createElement("button"); document.body.append(outside);
     try {
       await render(); outside.focus();
-      mockLauncher.busy = "game.prepare"; await render();
+      mockLauncher.preparing = true; await render();
       expect(document.activeElement).toBe(outside);
       const cancel = container.querySelector<HTMLButtonElement>('.vx-launch-console__content:not([inert]) button')!;
       cancel.focus(); outside.focus();
-      mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+      mockLauncher.preparing = false; mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
       expect(document.activeElement).toBe(outside);
       mockLauncher.gamePid = undefined; await render();
       expect(document.activeElement).toBe(outside);
@@ -589,12 +589,12 @@ describe("HomePage", () => {
     const content = container.querySelector(".vx-launch-console__launch-wrap")!;
     expect(surface!.contains(content.querySelector("button"))).toBe(false);
     expect(getComputedStyle(surface!).height).toBe("56px");
-    mockLauncher.busy = "game.prepare";
+    mockLauncher.preparing = true;
     await render();
     expect(container.querySelector(".vx-launch-console__launch")).toBe(surface);
     expect(content.textContent).toContain("取消准备");
     expect(surface!.contains(content.querySelector("button"))).toBe(false);
-    mockLauncher.busy = ""; mockLauncher.gamePid = 42;
+    mockLauncher.preparing = false; mockLauncher.busy = ""; mockLauncher.gamePid = 42;
     await render();
     expect(container.querySelector(".vx-launch-console__launch")).toBe(surface);
     expect(content.textContent).toContain("停止");
@@ -604,8 +604,8 @@ describe("HomePage", () => {
   it("rests the character after a real launch and resumes it after the game ends", async () => {
     vi.useFakeTimers();
     await render();
-    mockLauncher.busy = "game.prepare"; await render();
-    mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+    mockLauncher.preparing = true; await render();
+    mockLauncher.preparing = false; mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
     const character = () => container.querySelector('[data-testid="character-canvas"]')!;
     expect(character().getAttribute("data-animation")).toBe("run");
     await act(async () => vi.advanceTimersByTime(1499));
@@ -627,8 +627,8 @@ describe("HomePage", () => {
 
   it("plays optional launch feedback only after preparation becomes running", async () => {
     await render();
-    mockLauncher.busy = "game.prepare"; await render();
-    mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
+    mockLauncher.preparing = true; await render();
+    mockLauncher.preparing = false; mockLauncher.busy = ""; mockLauncher.gamePid = 42; await render();
     expect(overturePlay).toHaveBeenCalledExactlyOnceWith({ id: "game-launched-42", kind: "game-launched" });
     await render();
     expect(overturePlay).toHaveBeenCalledTimes(1);
@@ -656,7 +656,7 @@ describe("HomePage", () => {
 
   it("does not show a completed or unrelated transfer as game preparation", async () => {
     mockLauncher.progress = {
-      operation: "install", stage: "assets", completed: 37, total: 100,
+      taskId: "launch-fixture", operation: "launch", stage: "assets", completed: 37, total: 100,
       bytesCompleted: 37, bytesTotal: 100, message: "old transfer", versionId: "1.20.1",
     };
     await render();

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Activity, Download, History } from "lucide-react";
+import { Activity, Download, History, RefreshCw } from "lucide-react";
 import { EmptyState } from "../../components/ui/Feedback";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
@@ -12,7 +12,7 @@ import "./downloads.css";
 
 export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   const { t, i18n } = useTranslation();
-  const { tasks, active, history, rates, busyTaskId, loading, error, act } = model;
+  const { tasks, active, history, rates, busyTaskId, loading, error, act, refresh } = model;
   const [historyFilter, setHistoryFilter] = useState<"all" | "failed" | "completed">("all");
   const [historyLimit, setHistoryLimit] = useState(30);
   const filteredHistory = historyFilter === "all" ? history : history.filter(task => task.status === historyFilter);
@@ -32,7 +32,9 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
 
   return (
     <PageShell className="vx-downloads-page">
-      <PageHeader title={t("downloads:title")} description={t("downloads:subtitle")} />
+      <PageHeader title={t("downloads:title")} description={t("downloads:subtitle")}
+        actions={<Button variant="secondary" size="sm" icon={<RefreshCw size={16} />}
+          disabled={loading || busyTaskId !== null} onClick={() => void refresh()}>{t("downloads:refresh")}</Button>} />
 
       {errorText ? (
         <p className="vx-downloads-error" role="alert">

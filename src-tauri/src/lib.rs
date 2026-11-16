@@ -7,6 +7,7 @@ mod client_id;
 mod commands;
 mod content;
 mod curseforge;
+mod download_io;
 mod downloads;
 mod errors;
 mod instances;
@@ -25,7 +26,7 @@ mod servers;
 mod storage;
 
 use std::{fs, path::Path};
-use tauri::{Emitter, Listener, Manager};
+use tauri::Manager;
 
 fn show_startup_error(message: &str) {
     eprintln!("[voxelight/fatal] {message}");
@@ -120,14 +121,7 @@ pub fn run() {
                 eprintln!("[voxelight/auth] deferred credential cleanup: {error}");
             }
             let state = std::sync::Arc::new(state);
-            let progress_state = state.clone();
-            let progress_app = app.handle().clone();
-            app.listen("launcher://progress", move |event| {
-                if let Ok(progress) = serde_json::from_str(event.payload()) {
-                    progress_state.control.record(&progress);
-                    let _ = progress_app.emit("launcher://tasks", progress_state.control.list());
-                }
-            });
+            state.control.bind_events(app.handle().clone());
             app.manage(state.games.clone());
             app.manage(std::sync::Arc::new(
                 server_manager::ServerRegistry::default(),
@@ -250,6 +244,7 @@ pub fn run() {
             auth_commands::get_service_status,
             loaders::list_loader_versions,
             loaders::install_loader,
+            downloads::reserve_launch_task,
             downloads::list_download_tasks,
             downloads::set_download_paused,
             downloads::cancel_download_task,
@@ -299,7 +294,14 @@ pub fn run() {
             appearance::import_launcher_config,
             platform::get_system_appearance,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!())
+        .map(|app| app.run(|handle, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(state) = handle.try_state::<std::sync::Arc<storage::LauncherState>>() {
+                    state.control.unbind_events();
+                }
+            }
+        }));
     if let Err(error) = result {
         fail_startup(format!("Voxelight Launcher 启动失败。\n\n{error}"));
     }

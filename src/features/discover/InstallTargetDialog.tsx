@@ -14,7 +14,7 @@ import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { Segmented } from "../../components/ui/Segmented";
 import { Select } from "../../components/ui/Select";
 import type { Loader, LoaderVersion } from "../library/types";
-import type { DownloadTask } from "../downloads/useDownloadTasks";
+import type { DownloadTaskSnapshot } from "../downloads/useDownloadTasks";
 import { errorText } from "../library/utils";
 import type { ResourceCreateRequest, ResourceTargetFlow, TargetRow } from "./types";
 
@@ -30,7 +30,7 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCrea
   onDownloads?: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const { progress, manifest } = useLauncher();
+  const { resourceProgress: progress, manifest } = useLauncher();
   const id = useId();
   const [choice, setChoice] = useState("");
   const [loader, setLoader] = useState<Loader>("fabric");
@@ -96,9 +96,9 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCrea
     if (!flow || cancelling) return;
     setCancelling(true); setActionError("");
     try {
-      const tasks = await command<DownloadTask[]>("list_download_tasks");
-      const task = tasks.find(task => task.kind === "resource" && task.target === flow.project.project_id && ["running", "paused"].includes(task.status));
-      if (task) await command("cancel_download_task", { taskId: task.id });
+      const { tasks } = await command<DownloadTaskSnapshot>("list_download_tasks");
+      const matching = tasks.filter(task => task.kind === "resource" && task.target === flow.project.project_id && ["running", "paused"].includes(task.status));
+      if (matching.length === 1) await command("cancel_download_task", { taskId: matching[0].id });
       else setActionError(t("discover:installTarget.waitForTask"));
     } catch (cause) { setActionError(errorText(normalizeError(cause).code, t)); }
     finally { setCancelling(false); }

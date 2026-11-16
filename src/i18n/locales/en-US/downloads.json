@@ -13,7 +13,21 @@
       "modpack": "Modpack installation",
       "java": "Java runtime",
       "server": "Server installation",
-      "unknown": "Download task"
+      "unknown": "Download task",
+      "launch": "Game preparation",
+      "loader": "Loader installation",
+      "clone": "Instance copy",
+      "backup": "Instance backup",
+      "restore": "Backup restoration",
+      "export": "Modpack export",
+      "world-backup": "World backup",
+      "world-import": "World import",
+      "local-resource-import": "Local content import",
+      "resource-check": "Content update check",
+      "resource-update": "Content update",
+      "server-install": "Server installation",
+      "server-start": "Server preparation",
+      "default-skin": "Character preview"
     },
     "stage": {
       "queued": "Waiting in queue",
@@ -35,7 +49,9 @@
       "failed": "Failed",
       "cancelled": "Cancelled",
       "interrupted": "Interrupted",
-      "unknown": "Unknown stage"
+      "unknown": "Unknown stage",
+      "server-jar": "Verifying the server JAR",
+      "error": "Failed"
     }
   },
   "status": {
@@ -85,5 +101,6 @@
     "completed": "Completed"
   },
   "showMore": "Show more",
-  "historyFiles": "Files: {{count}}"
+  "historyFiles": "Files: {{count}}",
+  "refresh": "Refresh"
 }

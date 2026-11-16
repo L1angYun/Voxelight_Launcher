@@ -200,6 +200,7 @@ pub struct LogEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressEvent {
+    pub task_id: String,
     pub operation: String,
     pub stage: String,
     pub completed: usize,

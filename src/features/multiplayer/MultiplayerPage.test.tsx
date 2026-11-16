@@ -92,7 +92,7 @@ function fixture(): LauncherContextValue {
     selectedVersionId: "1.21.1",
     selectedRunningGame: undefined,
     running: [],
-    progress: null,
+    preparing: false, progress: null, resourceProgress: null,
     logs: [],
     busy: "",
     notice: null,
@@ -142,14 +142,17 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockLauncher = fixture();
-  servers = [{ index: 0, name: "Fixture server", address: "play.example.invalid:25565", hideAddress: false }];
+  servers = [{ index: 0, name: "Fixture server", address: "play.example.invalid:25565", hideAddress: false, snapshot: "fixture-0" }];
   managed = managedFixture();
   listeners.clear();
   commandMock.mockReset();
   commandMock.mockImplementation(async (name, args) => {
     if (name === "list_servers") return servers;
     if (name === "save_server") {
-      servers = [...servers, { index: 1, name: "Added server", address: "added.example.invalid", hideAddress: false }];
+      servers = [
+        ...servers.map((server) => ({ ...server, snapshot: "saved-" + server.index })),
+        { index: 1, name: "Added server", address: "added.example.invalid", hideAddress: false, snapshot: "saved-1" },
+      ];
       return servers;
     }
     if (name === "remove_server") {
@@ -202,6 +205,82 @@ afterEach(async () => {
 });
 
 describe("multiplayer", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((complete) => { resolve = complete; });
+    return { promise, resolve };
+  }
+
+  function environmentRows(id: string): ServerEntry[] {
+    return [{ ...servers[0], name: `Bookmark ${id}`, address: `${id}.example.invalid`, snapshot: "snapshot-" + id }];
+  }
+
+  it("never makes A's row actionable while a new B environment is still loading", async () => {
+    const pendingB = deferred<ServerEntry[]>();
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation((name, args) => name !== "list_servers" ? normal(name, args)
+      : args?.versionId === "B" ? pendingB.promise : Promise.resolve(environmentRows("A")));
+    mockLauncher.selectedVersionId = "A";
+    await render();
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).toBe("Bookmark A");
+
+    mockLauncher.selectedVersionId = "B";
+    await render();
+    const staleRemove = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((candidate) => candidate.textContent?.trim() === "Remove server");
+    if (staleRemove) await act(async () => staleRemove.click());
+    expect(commandMock.mock.calls.filter(([name]) => name === "remove_server")).toEqual([]);
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).not.toBe("Bookmark A");
+    await act(async () => pendingB.resolve(environmentRows("B")));
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).toBe("Bookmark B");
+  });
+
+  it("ignores the delayed B response after C has already displayed its bookmark", async () => {
+    const pendingB = deferred<ServerEntry[]>();
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation((name, args) => name !== "list_servers" ? normal(name, args)
+      : args?.versionId === "B" ? pendingB.promise : Promise.resolve(environmentRows(String(args?.versionId))));
+    for (const environment of ["A", "B", "C"]) {
+      mockLauncher.selectedVersionId = environment;
+      await render();
+    }
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).toBe("Bookmark C");
+    await act(async () => pendingB.resolve(environmentRows("B")));
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).toBe("Bookmark C");
+  });
+
+  it("does not reaccept an old A request after leaving and revisiting the same environment", async () => {
+    const firstA = deferred<ServerEntry[]>();
+    const normal = commandMock.getMockImplementation()!;
+    let aRequests = 0;
+    commandMock.mockImplementation((name, args) => {
+      if (name !== "list_servers") return normal(name, args);
+      if (args?.versionId === "B") return Promise.resolve(environmentRows("B"));
+      return ++aRequests === 1 ? firstA.promise : Promise.resolve(environmentRows("A-new"));
+    });
+    for (const environment of ["A", "B", "A"]) {
+      mockLauncher.selectedVersionId = environment;
+      await render();
+    }
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).toBe("Bookmark A-new");
+    await act(async () => firstA.resolve(environmentRows("A-old")));
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).toBe("Bookmark A-new");
+  });
+
+  it("refreshes on snapshot conflict and leaves the rejection visible for the current environment", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation((name, args) => {
+      if (name !== "remove_server") return normal(name, args);
+      servers = environmentRows("updated");
+      return Promise.reject({ code: "server.snapshotChanged", params: {} });
+    });
+    await render();
+    await click("Remove server");
+    expect(container.querySelector(".vx-server-row__copy h2")?.textContent).toBe("Bookmark updated");
+    expect(container.querySelector("[role=alert]")?.textContent).toContain("No bookmark was modified");
+    expect(commandMock.mock.calls.filter(([name]) => name === "list_servers")).toHaveLength(2);
+  });
+
   it("retains the complete long server name and offers semantic address break opportunities", async () => {
     servers[0].name = "A very long server name that remains available when the visible title is clamped";
     await render();
@@ -259,11 +338,15 @@ describe("multiplayer", () => {
     await click("Save server");
     expect(commandMock).toHaveBeenCalledWith("save_server", {
       versionId: "1.21.1",
-      entry: { index: 0, name: "Added server", address: "added.example.invalid", hideAddress: false },
+      entry: { name: "Added server", address: "added.example.invalid", hideAddress: false },
     });
     await click("Remove server");
     expect(window.confirm).toHaveBeenCalled();
-    expect(commandMock).toHaveBeenCalledWith("remove_server", { versionId: "1.21.1", index: 0 });
+    expect(commandMock).toHaveBeenCalledWith("remove_server", {
+      versionId: "1.21.1",
+      index: 0,
+      expected: { index: 0, snapshot: "saved-0" },
+    });
   });
 
   it("shows an honest empty result after LAN discovery", async () => {

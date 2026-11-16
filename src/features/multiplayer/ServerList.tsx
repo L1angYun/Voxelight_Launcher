@@ -12,12 +12,13 @@ function readableAddress(address: string) {
 
 export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer> }) {
   const { t } = useTranslation();
-  const [formOpen, setFormOpen] = useState(false);
+  const { servers, serverEnvironment, serverLoading, serverReady, status, lan, lanSearched, busy, installedVersions, selectedVersionId, selectVersion, refreshServers, saveServer, removeServer, pingServer, discoverLan, join, joinBookmark } = model;
+  const [formEnvironment, setFormEnvironment] = useState<typeof serverEnvironment | null>(null);
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
-  const [selectedAddress, setSelectedAddress] = useState("");
-  const { servers, status, lan, lanSearched, busy, installedVersions, selectedVersionId, selectVersion, refreshServers, saveServer, removeServer, pingServer, discoverLan, join } = model;
-  const selected = servers.find((server) => server.address === selectedAddress) ?? servers[0];
+  const [selection, setSelection] = useState<{ environment: typeof serverEnvironment; index: number } | null>(null);
+  const formOpen = formEnvironment === serverEnvironment;
+  const selected = (selection?.environment === serverEnvironment && servers.find((server) => server.index === selection.index)) || servers[0];
   const currentStatus = selected ? status[selected.address] : undefined;
   const state = currentStatus ? currentStatus.online ? "online" : "offline" : "unknown";
   const StatusIcon = currentStatus ? currentStatus.online ? Wifi : WifiOff : Search;
@@ -28,7 +29,16 @@ export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer>
 
   async function save() {
     const result = await saveServer(name.trim(), address.trim());
-    if (result !== undefined) { setFormOpen(false); setName(""); setAddress(""); }
+    if (result !== undefined) setFormEnvironment(null);
+  }
+
+  function toggleForm() {
+    if (formOpen) setFormEnvironment(null);
+    else {
+      setName("");
+      setAddress("");
+      setFormEnvironment(serverEnvironment);
+    }
   }
 
   return (
@@ -46,21 +56,21 @@ export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer>
           />
         </label>
         <div className="vx-action-row">
-          <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={Boolean(busy)} onClick={() => void refreshServers()}>{t("multiplayer:refresh")}</Button>
-          <Button variant="primary" icon={<Plus size={15} />} aria-expanded={formOpen} onClick={() => setFormOpen((value) => !value)}>{t("multiplayer:addServer")}</Button>
+          <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={!selectedVersionId || Boolean(busy)} onClick={() => void refreshServers()}>{t("multiplayer:refresh")}</Button>
+          <Button variant="primary" icon={<Plus size={15} />} aria-expanded={formOpen} disabled={!serverReady} onClick={toggleForm}>{t("multiplayer:addServer")}</Button>
         </div>
       </div>
       {!selectedVersionId ? <p className="vx-multiplayer-inline-notice">{t("multiplayer:environmentRequired")}</p> : null}
       {formOpen ? <form className="vx-server-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <label>{t("multiplayer:fields.serverName")}<input aria-label={t("multiplayer:fields.serverName")} required value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label>{t("multiplayer:fields.serverAddress")}<input aria-label={t("multiplayer:fields.serverAddress")} required value={address} onChange={(event) => setAddress(event.target.value)} placeholder="example.org:25565" /></label>
-        <div className="vx-action-row"><Button variant="primary" type="submit" loading={busy === "save-server"} disabled={!selectedVersionId || !name.trim() || !address.trim()}>{t("multiplayer:saveServer")}</Button><Button variant="ghost" onClick={() => setFormOpen(false)}>{t("common:actions.cancel")}</Button></div>
+        <div className="vx-action-row"><Button variant="primary" type="submit" loading={busy === "save-server"} disabled={!serverReady || Boolean(busy) || !name.trim() || !address.trim()}>{t("multiplayer:saveServer")}</Button><Button variant="ghost" onClick={() => setFormEnvironment(null)}>{t("common:actions.cancel")}</Button></div>
       </form> : null}
 
       <div className="vx-server-browser">
         <aside className="vx-server-inventory" aria-label={t("multiplayer:tab.servers")}>
           <h2>{t("multiplayer:tab.servers")}<span>{servers.length}</span></h2>
-          {servers.length ? <div className="vx-server-addresses">{servers.map((server) => <button type="button" key={server.index + ":" + server.address} aria-current={selected?.address === server.address || undefined} onClick={() => setSelectedAddress(server.address)}>
+          {servers.length ? <div className="vx-server-addresses">{servers.map((server) => <button type="button" key={server.index} aria-current={selected?.index === server.index || undefined} onClick={() => setSelection({ environment: serverEnvironment, index: server.index })}>
             <Server size={16} aria-hidden="true" /><span><strong title={server.name}>{server.name}</strong><small>{server.hideAddress ? t("multiplayer:hiddenAddress") : readableAddress(server.address)}</small></span><i className="vx-server-address-state" data-state={status[server.address] ? status[server.address].online ? "online" : "offline" : "unknown"} aria-hidden="true" />
           </button>)}</div> : null}
           <section className="vx-lan-section" aria-labelledby="lan-title">
@@ -69,7 +79,7 @@ export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer>
             {lan.length ? lan.map((world) => <div className="vx-lan-row" key={world.address}><div><strong>{world.motd}</strong><small>{world.address}</small></div><Button variant="secondary" disabled={!selectedVersionId || Boolean(busy)} onClick={() => void join(world.address)}>{t("multiplayer:joinWorld")}</Button></div>) : <p>{t(lanSearched ? "multiplayer:lanEmpty" : "multiplayer:lanHint")}</p>}
           </section>
         </aside>
-        <div className="vx-server-detail">
+        <div className="vx-server-detail" aria-busy={serverLoading || undefined}>
         {selected ? <article className="vx-server-row" data-server-address={selected.address} aria-label={selected.name}>
           <header className="vx-server-row__header">
             <span className="vx-server-row__icon" aria-hidden="true">{selected.icon?.startsWith("data:image/") ? <img src={selected.icon} alt="" /> : <Server size={28} strokeWidth={1.2} />}</span>
@@ -85,11 +95,15 @@ export function ServerList({ model }: { model: ReturnType<typeof useMultiplayer>
             </div> : null}
           </section>
           <div className="vx-server-row__actions">
-            <Button variant="ghost" icon={<Search size={15} />} loading={busy === "ping-" + selected.address} disabled={Boolean(busy)} onClick={() => void pingServer(selected.address)}>{t("multiplayer:checkStatus")}</Button>
-            <Button variant="primary" icon={<Play size={14} />} disabled={!selectedVersionId || Boolean(busy)} onClick={() => void join(selected.address)}>{t("multiplayer:join")}</Button>
+            <Button variant="ghost" icon={<Search size={15} />} loading={busy === "ping-" + selected.address} disabled={Boolean(busy)} onClick={() => void pingServer(selected)}>{t("multiplayer:checkStatus")}</Button>
+            <Button variant="primary" icon={<Play size={14} />} disabled={Boolean(busy)} onClick={() => void joinBookmark(selected)}>{t("multiplayer:join")}</Button>
           </div>
-          <div className="vx-server-row__management"><Button variant="ghost" icon={<Trash2 size={14} />} disabled={Boolean(busy)} onClick={() => { if (window.confirm(t("multiplayer:confirmRemove", { name: selected.name }))) void removeServer(selected.index); }}>{t("multiplayer:removeServer")}</Button></div>
-        </article> : <article className="vx-server-row vx-server-row--empty"><EmptyState icon={<Globe size={28} strokeWidth={1.2} />} title={t("multiplayer:emptyServers.title")} description={t("multiplayer:emptyServers.description")} /></article>}
+          <div className="vx-server-row__management"><Button variant="ghost" icon={<Trash2 size={14} />} disabled={Boolean(busy)} onClick={() => { if (window.confirm(t("multiplayer:confirmRemove", { name: selected.name }))) void removeServer(selected); }}>{t("multiplayer:removeServer")}</Button></div>
+        </article> : <article className="vx-server-row vx-server-row--empty">{serverLoading
+          ? <p role="status">{t("common:status.loading")}</p>
+          : serverReady || !selectedVersionId
+            ? <EmptyState icon={<Globe size={28} strokeWidth={1.2} />} title={t("multiplayer:emptyServers.title")} description={t("multiplayer:emptyServers.description")} />
+            : null}</article>}
         </div>
       </div>
     </div>

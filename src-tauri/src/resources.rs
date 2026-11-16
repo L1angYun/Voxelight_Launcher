@@ -177,15 +177,19 @@ impl ResourceProgress {
         bytes_total: u64,
         message: &str,
     ) {
-        let event = serde_json::json!({
-            "operation": "resource", "versionId": self.version_id, "stage": stage,
-            "completed": completed, "total": total, "bytesCompleted": bytes_completed,
-            "bytesTotal": bytes_total, "message": message,
-        });
-        state.control.record(&event);
-        if let Some(app) = &self.app {
-            let _ = app.emit("launcher://progress", &event);
-            let _ = app.emit("launcher://tasks", state.control.list());
+        let event = crate::models::ProgressEvent {
+            task_id: String::new(),
+            operation: String::new(),
+            version_id: self.version_id.clone(),
+            stage: stage.into(),
+            completed,
+            total,
+            bytes_completed,
+            bytes_total,
+            message: message.into(),
+        };
+        if let (Some(event), Some(app)) = (state.control.record_progress(event), &self.app) {
+            let _ = app.emit("launcher://progress", event);
         }
     }
 
@@ -735,15 +739,11 @@ async fn download_verified_progress(
             &format!(".launcher-resource-{}.part", uuid::Uuid::new_v4()),
         )?;
         let result: Result<PathBuf, DownloadAttemptError> = async {
-            let mut output = tokio::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temp)
-                .await
+            let mut part = crate::download_io::DownloadPart::create(temp)
                 .map_err(|_| "无法创建资源临时文件")?;
-            let response = client.get(url.clone()).send().await.map_err(|_| {
-                DownloadAttemptError::Retry("下载 Modrinth 资源失败，请重试".into())
-            })?;
+            let response = state.control.during_cancellable_io(client.get(url.clone()).send())
+                .await?
+                .map_err(|_| DownloadAttemptError::Retry("下载 Modrinth 资源失败，请重试".into()))?;
             if !response.status().is_success() {
                 let error = format!("资源下载失败（HTTP {}）", response.status().as_u16());
                 return Err(if response.status().is_server_error() {
@@ -764,8 +764,7 @@ async fn download_verified_progress(
             let mut hash = Sha512::new();
             let mut size = 0_u64;
             let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                state.control.checkpoint().await?;
+            while let Some(chunk) = state.control.during_cancellable_io(stream.next()).await? {
                 let chunk = chunk
                     .map_err(|_| DownloadAttemptError::Retry("资源传输中断，请重新安装".into()))?;
                 state.control.throttle(chunk.len()).await?;
@@ -776,7 +775,7 @@ async fn download_verified_progress(
                     ));
                 }
                 hash.update(&chunk);
-                output
+                part.file()
                     .write_all(&chunk)
                     .await
                     .map_err(|_| "资源写入失败，请检查磁盘空间")?;
@@ -792,9 +791,8 @@ async fn download_verified_progress(
                     );
                 }
             }
-            output.flush().await.map_err(|_| "写入资源文件失败")?;
-            output.sync_all().await.map_err(|_| "无法保存资源文件")?;
-            drop(output);
+            part.file().flush().await.map_err(|_| "写入资源文件失败")?;
+            part.file().sync_all().await.map_err(|_| "无法保存资源文件")?;
             if size != file.size || format!("{:x}", hash.finalize()) != expected {
                 return Err(DownloadAttemptError::Retry(
                     "资源 SHA-512 或大小校验失败，未安装该文件".into(),
@@ -808,9 +806,7 @@ async fn download_verified_progress(
                     "下载期间出现同名文件，已保留原文件，请重新检查资源目录".into(),
                 ));
             }
-            tokio::fs::rename(&temp, &checked)
-                .await
-                .map_err(|_| "无法将已校验资源移入目标目录")?;
+            part.publish(&checked).map_err(|_| "无法将已校验资源移入目标目录")?;
             if let Some(progress) = progress {
                 progress.emit(
                     state,
@@ -827,16 +823,14 @@ async fn download_verified_progress(
         .await;
         match result {
             Ok(path) => return Ok(path),
-            Err(DownloadAttemptError::Fatal(error)) => {
-                let _ = tokio::fs::remove_file(&temp).await;
-                return Err(error);
-            }
+            Err(DownloadAttemptError::Fatal(error)) => return Err(error),
             Err(DownloadAttemptError::Retry(error)) => {
-                let _ = tokio::fs::remove_file(&temp).await;
                 state.control.checkpoint().await?;
                 last_error = error;
                 if attempt < 2 {
-                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))).await;
+                    state.control.during_cancellable_io(
+                        tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))),
+                    ).await?;
                 }
             }
         }
@@ -1121,7 +1115,6 @@ fn after_create_error(error: AppError, instance: Option<&Instance>) -> AppError 
 }
 
 fn finish_resource_task(
-    app: Option<&AppHandle>,
     state: &LauncherState,
     task: &str,
     error: Option<&AppError>,
@@ -1130,9 +1123,6 @@ fn finish_resource_task(
         task,
         error.map(|error| error.detail.as_deref().unwrap_or(&error.code)),
     );
-    if let Some(app) = app {
-        let _ = app.emit("launcher://tasks", state.control.list());
-    }
 }
 
 async fn create_resource_instance_then_install<F, Fut>(
@@ -1191,7 +1181,7 @@ pub async fn create_instance_for_resource(
         "resource",
         &project_id,
         &format!("创建 {loader} {game_version} 实例并安装资源"),
-    );
+    )?;
     let progress = ResourceProgress::new(Some(&app), &game_version);
     progress.stage(&state, "resource-preflight", "检查资源及必需前置");
     let result: AppResult<ResourceInstanceResult> = async {
@@ -1277,7 +1267,7 @@ pub async fn create_instance_for_resource(
         .await
     }
     .await;
-    finish_resource_task(Some(&app), &state, &task, result.as_ref().err());
+    finish_resource_task(&state, &task, result.as_ref().err());
     result
 }
 
@@ -1305,7 +1295,7 @@ pub async fn install_resource(
     require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
     let task = state
         .control
-        .begin("resource", &project_id, "安装 Modrinth 资源及必需前置");
+        .begin("resource", &project_id, "安装 Modrinth 资源及必需前置")?;
     let progress = ResourceProgress::new(Some(&app), &version_id);
     progress.stage(&state, "resource-plan", "检查资源安装位置");
     let result: AppResult<ResourceInstall> = async {
@@ -1356,7 +1346,7 @@ pub async fn install_resource(
     if result.is_ok() {
         progress.emit(&state, "complete", 1, 1, 0, 0, "资源安装完成");
     }
-    finish_resource_task(Some(&app), &state, &task, result.as_ref().err());
+    finish_resource_task(&state, &task, result.as_ref().err());
     result
 }
 
@@ -1371,7 +1361,7 @@ pub async fn check_resource_updates(
     let _operation = state.operation.lock().await;
     let task = state
         .control
-        .begin("resource-check", &version_id, "检查 Modrinth 资源更新");
+        .begin("resource-check", &version_id, "检查 Modrinth 资源更新")?;
     let result: AppResult<Vec<resource_transactions::ResourceUpdate>> = async {
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         resource_transactions::updates(
@@ -1409,7 +1399,7 @@ pub async fn update_resource(
     require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
     let task = state
         .control
-        .begin("resource-update", &file_name, "更新资源及必需前置");
+        .begin("resource-update", &file_name, "更新资源及必需前置")?;
     let result: AppResult<ResourceInstall> = async {
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         resource_transactions::update_one(
@@ -1653,8 +1643,8 @@ mod tests {
     #[test]
     fn cancelled_loader_registers_no_instance_and_finishes_cancelled() {
         let (root, state) = resource_fixture();
-        let task = state.control.begin("resource", "project", "创建并安装");
-        state.control.cancel(Some(&task));
+        let task = state.control.begin("resource", "project", "创建并安装").unwrap();
+        state.control.cancel(&task);
         let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
             &state,
             "Example".into(),
@@ -1663,7 +1653,7 @@ mod tests {
         ));
         let error = result.err().unwrap();
         assert_eq!(error.code, "download.cancelled");
-        finish_resource_task(None, &state, &task, Some(&error));
+        finish_resource_task(&state, &task, Some(&error));
         assert!(state.snapshot().unwrap().instances.is_empty());
         assert!(!root.join("instances").exists());
         let jobs = state.control.list();
@@ -1677,7 +1667,7 @@ mod tests {
     #[test]
     fn cancellation_after_creation_keeps_instance_and_finishes_cancelled() {
         let (root, state) = resource_fixture();
-        let task = state.control.begin("resource", "project", "创建并安装");
+        let task = state.control.begin("resource", "project", "创建并安装").unwrap();
         let install_state = state.clone();
         let install_task = task.clone();
         let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
@@ -1685,7 +1675,7 @@ mod tests {
             "Example".into(),
             "fabric-test".into(),
             move |_| async move {
-                install_state.control.cancel(Some(&install_task));
+                install_state.control.cancel(&install_task);
                 install_state.control.checkpoint().await?;
                 panic!("cancelled resource install must stop")
             },
@@ -1699,7 +1689,7 @@ mod tests {
         assert_eq!(error.params["instanceName"], "Example");
         assert_eq!(error.params["versionId"], "fabric-test");
         assert!(Path::new(&instances[0].game_directory).is_dir());
-        finish_resource_task(None, &state, &task, Some(&error));
+        finish_resource_task(&state, &task, Some(&error));
         assert_eq!(state.control.list().len(), 1);
         assert_eq!(state.control.list()[0].status, "cancelled");
         drop(state);
@@ -1709,7 +1699,7 @@ mod tests {
     #[test]
     fn resource_failure_keeps_created_instance_and_retry_identity() {
         let (root, state) = resource_fixture();
-        let task = state.control.begin("resource", "project", "创建并安装");
+        let task = state.control.begin("resource", "project", "创建并安装").unwrap();
         let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
             &state,
             "Example".into(),
@@ -1724,7 +1714,7 @@ mod tests {
             error.params["instanceId"],
             state.snapshot().unwrap().instances[0].id
         );
-        finish_resource_task(None, &state, &task, Some(&error));
+        finish_resource_task(&state, &task, Some(&error));
         assert_eq!(state.control.list()[0].status, "failed");
         drop(state);
         cleanup_fixture(root);
@@ -1733,7 +1723,7 @@ mod tests {
     #[test]
     fn resource_progress_records_stages_and_bytes_in_the_same_task() {
         let (root, state) = resource_fixture();
-        let task = state.control.begin("resource", "project", "创建并安装");
+        let task = state.control.begin("resource", "project", "创建并安装").unwrap();
         let progress = ResourceProgress::new(None, "fabric-test");
         progress.stage(&state, "resource-loader", "安装加载器");
         progress.emit(
@@ -1751,7 +1741,7 @@ mod tests {
         assert_eq!(job.stage, "resource-download");
         assert_eq!((job.bytes_completed, job.bytes_total), (12, 24));
         progress.emit(&state, "complete", 1, 1, 24, 24, "资源安装完成");
-        finish_resource_task(None, &state, &task, None);
+        finish_resource_task(&state, &task, None);
         assert_eq!(state.control.list().len(), 1);
         assert_eq!(state.control.list()[0].status, "completed");
         drop(state);
@@ -2075,6 +2065,73 @@ mod tests {
     }
 
     #[test]
+    fn m04_cancelling_stalled_modrinth_headers_releases_the_owned_part() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/resource-tests")
+                .join(uuid::Uuid::new_v4().to_string());
+            let directory = root.join("mods");
+            let state = LauncherState::test_fixture(
+                root.join("data"),
+                Persisted::default(),
+                crate::storage::test_client(),
+            );
+            let client = reqwest::Client::builder().no_proxy()
+                .resolve("cdn.modrinth.com", address)
+                .timeout(Duration::from_secs(3)).build().unwrap();
+            let file = ResourceFile {
+                filename: "fixture.jar".into(),
+                url: format!("http://cdn.modrinth.com:{}/fixture.jar", address.port()),
+                primary: true,
+                size: 3,
+                hashes: FileHashes { sha512: format!("{:x}", Sha512::digest(b"abc")) },
+            };
+            let (seen, requested) = tokio::sync::oneshot::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                configure_download_fixture_stream(&stream).unwrap();
+                assert!(read_download_fixture_request(&mut stream).unwrap().starts_with(b"GET /fixture.jar"));
+                seen.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+            let task = state.control.begin("resource", "example", "Fixture").unwrap();
+            let mut download = Box::pin(download_verified_progress(
+                &state, &file, &directory, ResourceKind::Mod, client, None,
+            ));
+            let cancel = async {
+                tokio::time::timeout(Duration::from_secs(2), requested).await.unwrap().unwrap();
+                state.control.cancel(&task);
+            };
+            use futures_util::future::{select, Either};
+            match select(download.as_mut(), Box::pin(cancel)).await {
+                Either::Left((result, _)) => panic!("transfer completed before cancellation: {result:?}"),
+                Either::Right(((), _)) => {}
+            };
+            let result = tokio::time::timeout(Duration::from_millis(500), &mut download).await;
+            let timed_out = result.is_err();
+            let promptly_cancelled = result.is_ok_and(|result| result.is_err_and(|error| error.contains("任务已取消")));
+            let part_left = fs::read_dir(&directory).unwrap().flatten().any(|entry| {
+                entry.path().extension().is_some_and(|extension| extension == "part")
+            });
+            release.send(()).unwrap();
+            server.join().unwrap();
+            if timed_out {
+                let _ = download.as_mut().await;
+            }
+            let installed = directory.join(&file.filename).exists();
+            eprintln!("M04_MODRINTH promptly_cancelled={promptly_cancelled} part_left={part_left} installed={installed}");
+            drop(download);
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+            assert!(promptly_cancelled);
+            assert!(!part_left && !installed);
+        });
+    }
+
+    #[test]
     fn interrupted_modrinth_downloads_have_independent_parallel_fixtures() {
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let workers: Vec<_> = (0..3)
@@ -2132,7 +2189,7 @@ mod tests {
                 sha512: format!("{:x}", Sha512::digest(b"abcdef")),
             },
         };
-        let task = state.control.begin("resource", "example", "下载资源");
+        let task = state.control.begin("resource", "example", "下载资源").unwrap();
         let progress = ResourceProgress::new(None, "1.21.1");
         if let Some(barrier) = start {
             barrier.wait();

@@ -5,11 +5,11 @@ import { defaults } from "../../lib/launcher";
 import { deriveWorldState } from "./deriveWorldState";
 
 const progress = (overrides: Partial<Progress> = {}): Progress => ({
-  operation: "game.prepare", stage: "assets", completed: 0, total: 0,
+  taskId: "launch-fixture", operation: "launch", stage: "assets", completed: 0, total: 0,
   bytesCompleted: 0, bytesTotal: 0, message: "", versionId: "1.21.1", ...overrides,
 });
 const derive = (overrides: Partial<Progress> = {}) => deriveWorldState({
-  busy: "game.prepare", progress: progress(overrides), running: [],
+  preparing: true, progress: progress(overrides), running: [],
 });
 
 describe("world status from launcher state", () => {
@@ -19,19 +19,17 @@ describe("world status from launcher state", () => {
 
   it("running wins over preparation without a selected instance", () => {
     const game: RunningGame = { pid: 41, versionId: "another-version", instanceId: "another-instance" };
-    expect(deriveWorldState({ busy: "game.prepare", progress: progress({ completed: 1, total: 2 }), running: [game] }))
+    expect(deriveWorldState({ preparing: true, progress: progress({ completed: 1, total: 2 }), running: [game] }))
       .toEqual({ phase: "running", fraction: null });
-    expect(deriveWorldState({ busy: "", progress: null, running: [], gamePid: 7 }))
+    expect(deriveWorldState({ preparing: false, progress: null, running: [], gamePid: 7 }))
       .toEqual({ phase: "running", fraction: null });
-    expect(deriveWorldState({ busy: "game.prepare", progress: null, running: [game, { ...game, pid: 42 }] }).phase)
+    expect(deriveWorldState({ preparing: true, progress: null, running: [game, { ...game, pid: 42 }] }).phase)
       .toBe("running");
   });
 
-  it("only game.prepare counts as preparing and stale progress stays idle", () => {
-    for (const busy of ["", "game.stop", "settings.save", "instance.install"]) {
-      expect(deriveWorldState({ busy, progress: progress({ completed: 8, total: 10 }), running: [] }))
-        .toEqual({ phase: "idle", fraction: null });
-    }
+  it("does not prepare from progress without an owned launch", () => {
+    expect(deriveWorldState({ preparing: false, progress: progress({ completed: 8, total: 10 }), running: [] }))
+      .toEqual({ phase: "idle", fraction: null });
   });
 
   it("prefers byte totals over item totals", () => {
@@ -42,7 +40,7 @@ describe("world status from launcher state", () => {
   });
 
   it("reports unknown totals honestly rather than inventing progress", () => {
-    expect(deriveWorldState({ busy: "game.prepare", progress: null, running: [] }))
+    expect(deriveWorldState({ preparing: true, progress: null, running: [] }))
       .toEqual({ phase: "preparing", fraction: null });
     expect(derive().fraction).toBeNull();
     for (const invalid of [NaN, Infinity, -Infinity, -1, 0]) {
@@ -66,15 +64,15 @@ describe("world status from launcher state", () => {
 
   it("does not treat invalid process identifiers as a running game", () => {
     for (const gamePid of [0, -1, NaN, Infinity]) {
-      expect(deriveWorldState({ busy: "", progress: null, running: [], gamePid }))
+      expect(deriveWorldState({ preparing: false, progress: null, running: [], gamePid }))
         .toEqual({ phase: "idle", fraction: null });
     }
   });
 
   it("stays pure so a new preparation does not inherit a previous fraction", () => {
-    const input = Object.freeze({ busy: "game.prepare", progress: Object.freeze(progress({ completed: 8, total: 10 })), running: Object.freeze([]) });
+    const input = Object.freeze({ preparing: true, progress: Object.freeze(progress({ completed: 8, total: 10 })), running: Object.freeze([]) });
     expect(deriveWorldState(input).fraction).toBe(.8);
-    expect(deriveWorldState({ busy: "", progress: null, running: [] }).phase).toBe("idle");
+    expect(deriveWorldState({ preparing: false, progress: null, running: [] }).phase).toBe("idle");
     expect(derive({ completed: 1, total: 10 }).fraction).toBe(.1);
     expect(deriveWorldState(input).fraction).toBe(.8);
   });

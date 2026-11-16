@@ -271,7 +271,7 @@ async function installControlledLaunch(page: Page) {
     }
     const host = window as unknown as { __TAURI_INTERNALS__?: FixtureApi };
     const callbacks = new Map<number, (value: unknown) => void>();
-    let progressHandler = 0, finish = () => {};
+    let progressHandler = 0, launchTaskId = "", finish = () => {};
     const completion = new Promise<void>(resolve => { finish = resolve; });
     const wrapped = new WeakSet<FixtureApi>();
     function attach(api: FixtureApi) {
@@ -281,6 +281,7 @@ async function installControlledLaunch(page: Page) {
       api.transformCallback = callback => { const id = transform(callback); callbacks.set(id, callback); return id; };
       api.invoke = async (name, args) => {
         if (name === "plugin:event|listen" && args?.event === "launcher://progress") progressHandler = Number(args.handler);
+        if (name === "launch_game") launchTaskId = String(args?.taskId);
         const result = await invoke(name, args);
         if (name === "launch_game") await completion;
         return result;
@@ -298,7 +299,7 @@ async function installControlledLaunch(page: Page) {
         const completed = Math.round(fraction * 100);
         const callback = callbacks.get(progressHandler);
         if (!callback) throw new Error("Launcher progress listener has not registered");
-        callback({ event: "launcher://progress", id: 1, payload: { versionId: "1.21.1", operation: "install", stage: "assets",
+        callback({ event: "launcher://progress", id: 1, payload: { taskId: launchTaskId, versionId: "1.21.1", operation: "launch", stage: "assets",
           completed, total: 100, bytesCompleted: completed, bytesTotal: 100, message: `Acceptance progress ${completed}%` } });
       },
     };

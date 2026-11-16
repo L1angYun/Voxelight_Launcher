@@ -3,7 +3,7 @@ import type { Progress, RunningGame } from "../../lib/launcher";
 import type { WorldStatus } from "./types";
 
 export interface WorldStateInput {
-  busy: string;
+  preparing: boolean;
   progress: Progress | null;
   running: readonly RunningGame[];
   gamePid?: number;
@@ -15,11 +15,11 @@ function fraction(completed: number, total: number): number | null {
 }
 
 /** Derives current business state; preparation history belongs to the director. */
-export function deriveWorldState({ busy, progress, running, gamePid }: WorldStateInput): WorldStatus {
+export function deriveWorldState({ preparing, progress, running, gamePid }: WorldStateInput): WorldStatus {
   if (running.length > 0 || (Number.isFinite(gamePid) && (gamePid ?? 0) > 0)) {
     return { phase: "running", fraction: null };
   }
-  if (busy !== "game.prepare") return { phase: "idle", fraction: null };
+  if (!preparing) return { phase: "idle", fraction: null };
   return {
     phase: "preparing",
     fraction: progress

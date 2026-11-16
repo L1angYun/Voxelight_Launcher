@@ -20,6 +20,8 @@ const listeners = new Map<string, (value: unknown) => void>();
 let root: Root;
 let container: HTMLDivElement;
 let currentTasks: DownloadTask[];
+let revision: number;
+const snapshot = () => ({ revision, tasks: currentTasks });
 let latestModel: DownloadTasksModel;
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
@@ -80,15 +82,17 @@ function button(scope: ParentNode, label: string): HTMLButtonElement {
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   currentTasks = [];
+  revision = 0;
   listeners.clear();
   commandMock.mockReset();
   commandMock.mockImplementation(async (name, args) => {
-    if (name === "list_download_tasks") return currentTasks;
+    if (name === "list_download_tasks") return snapshot();
     if (name === "set_download_paused") {
-      currentTasks = currentTasks.map((item) => item.status === "running" || item.status === "paused"
+      currentTasks = currentTasks.map((item) => item.id === args?.taskId && (item.status === "running" || item.status === "paused")
         ? { ...item, status: args?.paused ? "paused" : "running" }
         : item);
-      return currentTasks;
+      ++revision;
+      return snapshot();
     }
     if (name === "cancel_download_task") {
       currentTasks = currentTasks.map((item, index) => {
@@ -96,10 +100,12 @@ beforeEach(() => {
         if (index === 1 && item.status === "queued") return { ...item, status: "running" };
         return item;
       });
-      return currentTasks;
+      ++revision;
+      return snapshot();
     }
     if (name === "retry_download_task") {
       currentTasks = [...currentTasks, task({ id: "retry-1", status: "queued", stage: "queued" })];
+      ++revision;
       return "retry-1";
     }
     return null;
@@ -121,6 +127,74 @@ afterEach(async () => {
 });
 
 describe("download task center", () => {
+  it("subscribes before reconciling and never revives a completed task from an old response", async () => {
+    let bind!: () => void;
+    const subscribed = new Promise<void>(resolve => { bind = resolve; });
+    eventsMock.mockImplementation((name, callback) => subscribed.then(() => {
+      listeners.set(name, callback);
+      return () => listeners.delete(name);
+    }));
+    let latest!: (value: unknown) => void;
+    const initial = new Promise(resolve => { latest = resolve; });
+    commandMock.mockImplementation(async name => name === "list_download_tasks" ? initial : null);
+    await render();
+    const requestedTooEarly = commandMock.mock.calls.some(([name]) => name === "list_download_tasks");
+    await act(async () => bind());
+    const completed = [task({ id: "native-finish", status: "completed", stage: "complete" })];
+    const stale = [task({ id: "native-finish", status: "running", stage: "download" })];
+    await act(async () => listeners.get("launcher://tasks")?.({ revision: 14, tasks: completed }));
+    await act(async () => latest({ revision: 13, tasks: stale }));
+    expect(article("native-finish").dataset.status).toBe("completed");
+    expect(requestedTooEarly).toBe(false);
+  });
+
+  it("rejects an old pause result after the same task finishes by event", async () => {
+    currentTasks = [task({ id: "departed" })];
+    await render();
+    const normal = commandMock.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    const paused = new Promise(resolve => { finish = resolve; });
+    commandMock.mockImplementation(async (name, args) => name === "set_download_paused" ? paused : normal(name, args));
+    await act(async () => button(article("departed"), "Pause").click());
+    const terminal = [{ ...currentTasks[0], status: "completed", stage: "complete" }];
+    const obsolete = [{ ...currentTasks[0], status: "paused" }];
+    await act(async () => listeners.get("launcher://tasks")?.({ revision: 9, tasks: terminal }));
+    await act(async () => finish({ revision: 8, tasks: obsolete }));
+    expect(article("departed").dataset.status).toBe("completed");
+  });
+
+  it("provides an explicit refresh with an empty history", async () => {
+    await render();
+    expect(container.textContent).toContain("No download tasks yet");
+    currentTasks = [task({ id: "missed-event", status: "completed", stage: "complete" })];
+    ++revision;
+    await act(async () => button(container, "Refresh").click());
+    expect(article("missed-event").dataset.status).toBe("completed");
+  });
+
+  it("renders native managed-server and historical skin tasks with their known names", async () => {
+    currentTasks = [
+      task({ id: "server-01", kind: "server-install", target: "1.21.1", stage: "server-jar", label: "安装服务端 绿洲" }),
+      task({ id: "skin-01", kind: "default-skin", target: "alex", stage: "queued", status: "completed", label: "读取 Alex 角色纹理" }),
+    ];
+    await render();
+    expect(article("server-01").querySelector("h3")?.textContent).toBe("Server installation · 1.21.1");
+    expect(article("server-01").querySelector(".vx-task-row__stage")?.textContent).toBe("Verifying the server JAR");
+    expect(article("skin-01").querySelector("h3")?.textContent).toBe("Character preview · Alex");
+  });
+
+  it("uses a filename for local imports and does not display an opaque instance ID", async () => {
+    currentTasks = [
+      task({ id: "local-source", kind: "modpack", target: "C:\\SyntheticFixture\\incoming\\Coast pack.mrpack" }),
+      task({ id: "sample-copy", kind: "backup", target: "55349e6e-2571-4a12-bcfc-e337ee5ab6c6", label: "Sky town", status: "completed" }),
+    ];
+    await render();
+    expect(article("local-source").querySelector("h3")?.textContent).toBe("Modpack installation · Coast pack.mrpack");
+    expect(article("local-source").textContent).not.toContain("SyntheticFixture");
+    expect(article("sample-copy").querySelector("h3")?.textContent).toBe("Instance backup");
+    expect(article("sample-copy").textContent).not.toContain("55349e6e");
+  });
+
   it("introduces task content with a page description", async () => {
     await render();
     expect(container.querySelector(".vx-page-header__text p")?.textContent?.trim()).toBeTruthy();
@@ -247,10 +321,10 @@ describe("download task center", () => {
     ];
     await render();
     await act(async () => button(article("active"), "Pause").click());
-    expect(commandMock).toHaveBeenCalledWith("set_download_paused", { paused: true });
+    expect(commandMock).toHaveBeenCalledWith("set_download_paused", { taskId: "active", paused: true });
     expect(article("active").textContent).toContain("Paused");
     await act(async () => button(article("active"), "Resume").click());
-    expect(commandMock).toHaveBeenCalledWith("set_download_paused", { paused: false });
+    expect(commandMock).toHaveBeenCalledWith("set_download_paused", { taskId: "active", paused: false });
     await act(async () => button(article("active"), "Cancel").click());
     expect(commandMock).toHaveBeenCalledWith("cancel_download_task", { taskId: "active" });
     expect(commandMock).not.toHaveBeenCalledWith("cancel_download_task", { taskId: null });
@@ -282,7 +356,7 @@ describe("download task center", () => {
       bytesCompleted: 2048,
       updatedAt: "2026-01-01T00:00:02Z",
     })];
-    await act(async () => listeners.get("launcher://tasks")?.(currentTasks));
+    await act(async () => listeners.get("launcher://tasks")?.({ revision: ++revision, tasks: currentTasks }));
     expect(article("rate").textContent).toContain("512 B/s");
   });
 
@@ -295,7 +369,7 @@ describe("download task center", () => {
   it("shows a localized expected error when a retry target no longer exists", async () => {
     currentTasks = [task({ id: "missing", status: "failed", stage: "failed" })];
     commandMock.mockImplementation(async (name) => {
-      if (name === "list_download_tasks") return currentTasks;
+      if (name === "list_download_tasks") return snapshot();
       if (name === "retry_download_task") throw new LauncherError("download.notFound");
       return null;
     });

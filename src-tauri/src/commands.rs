@@ -451,7 +451,7 @@ pub async fn install_version(
         .map_err(|_| "已有安装或启动准备任务运行，请等待完成")?;
     let task = state
         .control
-        .begin("install", &version_id, &format!("Minecraft {version_id}"));
+        .begin("install", &version_id, &format!("Minecraft {version_id}"))?;
     let result = minecraft::install(&state, &app, &version_id).await;
     state
         .control
@@ -460,8 +460,7 @@ pub async fn install_version(
         Ok((result, _)) => Ok(result),
         Err(error) => {
             minecraft::log(&app, &state, "error", &error);
-            minecraft::progress(&app, &version_id, "error", 0, 0, 0, 0, &error);
-            Err(expected(error))
+                Err(expected(error))
         }
     }
 }
@@ -470,6 +469,7 @@ pub async fn install_version(
 pub async fn launch_game(
     app: AppHandle,
     state: Shared<'_>,
+    task_id: String,
     version_id: String,
     instance_id: Option<String>,
     account_id: Option<String>,
@@ -479,7 +479,8 @@ pub async fn launch_game(
     match minecraft::launch(
         state.clone(),
         app.clone(),
-        version_id.clone(),
+        task_id,
+        version_id,
         instance_id,
         account_id,
         server_address,
@@ -489,8 +490,7 @@ pub async fn launch_game(
         Ok(result) => Ok(result),
         Err(error) => {
             minecraft::log(&app, &state, "error", &error);
-            minecraft::progress(&app, &version_id, "error", 0, 0, 0, 0, &error);
-            Err(expected(error))
+                Err(expected(error))
         }
     }
 }

@@ -57,8 +57,8 @@ function AppShell() {
   const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
-  const { bootstrapped, bootstrapFailed, data, reload, run, activeAccount, accountAppearance, config, busy, progress, running, gamePid } = useLauncher();
-  const world = useMemo(() => deriveWorldState({ busy, progress, running, gamePid }), [busy, progress, running, gamePid]);
+  const { bootstrapped, bootstrapFailed, data, reload, run, activeAccount, accountAppearance, config, preparing, progress, running, gamePid } = useLauncher();
+  const world = useMemo(() => deriveWorldState({ preparing, progress, running, gamePid }), [preparing, progress, running, gamePid]);
   const { effects, reducedMotion, highContrast } = useAppearance();
   return (
     <>

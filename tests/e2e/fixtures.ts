@@ -224,7 +224,12 @@ export async function installLauncherFixture(
     const calls: { name: string; args?: Record<string, unknown> }[] = [];
     const callbacks = new Map<number, (value: unknown) => void>();
     const listeners = new Map<string, number>();
-    const cancelledResources = new Set<string>();
+    const cancelledTasks = new Set<string>();
+    const launchReservations = new Map<string, { versionId: string; instanceId?: string }>();
+    const cancelLaunches = new Map<string, () => void>();
+    let taskRevision = 0, nextLaunchId = 0;
+    const taskSnapshot = () => ({ revision: taskRevision, tasks: structuredClone(downloadTasks) });
+    const publishTasks = () => { ++taskRevision; emit("launcher://tasks", taskSnapshot()); };
     const emit = (event: string, payload: unknown) => callbacks.get(listeners.get(event)!)?.({ event, id: 1, payload: structuredClone(payload) });
     const resourceContext = (versionId: string, instanceId?: string) => {
       const instance = instances.find(item => item.id === instanceId);
@@ -377,11 +382,11 @@ export async function installLauncherFixture(
               label: "合成安装资源", status: "running", stage: "loader-libraries", completed: 1, total: 3, bytesCompleted: 0, bytesTotal: 0,
               message: "合成加载器安装进度", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
             downloadTasks.unshift(task);
-            emit("launcher://tasks", downloadTasks);
-            emit("launcher://progress", { versionId: "fixture-new", stage: task.stage, completed: 1, total: 3, message: task.message });
+            publishTasks();
+            emit("launcher://progress", { taskId: task.id, operation: task.kind, versionId: "fixture-new", stage: task.stage, completed: 1, total: 3, bytesCompleted: 0, bytesTotal: 0, message: task.message });
             await new Promise(resolve => setTimeout(resolve, options.resourceCreateDelay ?? 100));
-            if (cancelledResources.has(task.id)) {
-              task.status = "cancelled"; emit("launcher://tasks", downloadTasks);
+            if (cancelledTasks.has(task.id)) {
+              task.status = "cancelled"; task.stage = "cancelled"; publishTasks();
               throw { code: "download.cancelled", params: {} };
             }
             const loader = String(args?.loader ?? "fabric"), game = String(args?.gameVersion);
@@ -392,28 +397,37 @@ export async function installLauncherFixture(
             instances.push(instance);
             if (!installedVersions.some(item => item.id === versionId)) installedVersions.push({ id: versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
             task.stage = "resource"; task.completed = 2; task.message = "合成模组安装";
-            emit("launcher://progress", { versionId, stage: task.stage, completed: 2, total: 3, message: task.message });
+            emit("launcher://progress", { taskId: task.id, operation: task.kind, versionId, stage: task.stage, completed: 2, total: 3, bytesCompleted: 0, bytesTotal: 0, message: task.message });
             task.stage = "complete"; task.completed = 3; task.status = "completed"; task.message = "合成安装完成";
-            emit("launcher://tasks", downloadTasks);
+            publishTasks();
             return { instance, install: { name: String(args?.name), fileName: "fabric-api-fixture.jar",
               path: instance.gameDirectory + "\\mods\\fabric-api-fixture.jar" } };
           }
-          if (name === "cancel_download_task") {
-            if (typeof args?.taskId === "string") {
-              cancelledResources.add(args.taskId);
-              const task = downloadTasks.find(item => item.id === args.taskId);
-              if (task) task.status = "cancelled";
-              emit("launcher://tasks", downloadTasks);
+          if (name === "cancel_download_task" || name === "set_download_paused") {
+            const taskId = args?.taskId;
+            if (typeof taskId !== "string" || !taskId) throw { code: "download.notFound", params: {} };
+            const task = downloadTasks.find(item => item.id === taskId);
+            if (!task) throw { code: "download.notFound", params: {} };
+            if (name === "cancel_download_task" && ["queued", "running", "paused"].includes(task.status)) {
+              cancelledTasks.add(taskId);
+              task.status = "cancelled";
+              task.stage = "cancelled";
+              cancelLaunches.get(taskId)?.();
+              publishTasks();
+            } else if (name === "set_download_paused" && ["running", "paused"].includes(task.status)) {
+              task.status = args?.paused ? "paused" : "running";
+              publishTasks();
             }
-            return null;
+            return taskSnapshot();
           }
-          if (name === "list_download_tasks") return structuredClone(downloadTasks);
+          if (name === "list_download_tasks") return taskSnapshot();
           if (name === "list_servers" && options.stress)
             return [{
               index: 0,
               name: "Community Survival & Creative Building Server — Europe West With A Very Long But Valid Name",
               address: "ops@sub.department.region.example.co.uk:25565",
               hideAddress: false,
+              snapshot: "stress-server-0",
             }];
           if (name === "list_managed_servers")
             return [
@@ -447,19 +461,39 @@ export async function installLauncherFixture(
             ];
           if (name === "check_resource_updates") return [];
           if (name === "get_crash_diagnosis") return null;
+          if (name === "reserve_launch_task") {
+            const id = `fixture-launch-${++nextLaunchId}`;
+            const versionId = String(args?.versionId), instanceId = args?.instanceId as string | undefined;
+            const time = new Date().toISOString();
+            launchReservations.set(id, { versionId, instanceId });
+            downloadTasks.unshift({ id, kind: "launch", target: versionId,
+              label: "合成启动", status: "queued", stage: "queued", completed: 0, total: 0, bytesCompleted: 0, bytesTotal: 0,
+              message: "", createdAt: time, updatedAt: time });
+            publishTasks();
+            return id;
+          }
           if (name === "launch_game") {
-            callbacks.get(listeners.get("launcher://progress")!)?.({
-              event: "launcher://progress",
-              id: 1,
-              payload: {
-                versionId: "1.21.1",
-                stage: "assets",
-                completed: 37,
-                total: 100,
-                message: "合成进度 37%",
-              },
+            const taskId = String(args?.taskId);
+            const reservation = launchReservations.get(taskId);
+            if (cancelledTasks.has(taskId)) throw { code: "download.cancelled", params: {} };
+            if (!reservation || reservation.versionId !== args?.versionId || reservation.instanceId !== args?.instanceId) {
+              throw { code: "download.notFound", params: {} };
+            }
+            launchReservations.delete(taskId);
+            const task = downloadTasks.find(item => item.id === taskId)!;
+            task.status = "running"; task.stage = "assets"; task.completed = 37; task.total = 100;
+            publishTasks();
+            emit("launcher://progress", { taskId, operation: "launch", versionId: reservation.versionId, stage: task.stage,
+              completed: task.completed, total: task.total, bytesCompleted: 0, bytesTotal: 0, message: task.message });
+            // Retain the original timer even after cancel to ensure its late resolve has no launch effect.
+            const work = new Promise<void>(resolve => setTimeout(resolve, options.launchDelay ?? 1600));
+            const cancellation = new Promise<never>((_resolve, reject) => {
+              cancelLaunches.set(taskId, () => reject({ code: "download.cancelled", params: {} }));
             });
-            await new Promise((resolve) => setTimeout(resolve, options.launchDelay ?? 1600));
+            try { await Promise.race([work, cancellation]); }
+            finally { cancelLaunches.delete(taskId); }
+            task.status = "completed"; task.stage = "complete"; task.completed = task.total;
+            publishTasks();
             return { pid: 12345 };
           }
           if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };

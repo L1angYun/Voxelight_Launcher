@@ -32,7 +32,14 @@ const managedFixture = {
 function mockMultiplayer(page: Page) {
   return page.addInitScript((fixture) => {
     let managed: Omit<typeof fixture, "pid"> & { pid: number | null } = { ...fixture, settings: { ...fixture.settings } };
-    let servers = [{ index: 0, name: "Fixture server", address: "play.example.invalid:25565", hideAddress: false }];
+    const rowsByVersion = new Map([["1.21.1", [{ index: 0, name: "Fixture server", address: "play.example.invalid:25565", hideAddress: false, snapshot: "fixture-0" }]]]);
+    let generation = 0;
+    function saveRows(version: string, rows: NonNullable<ReturnType<typeof rowsByVersion.get>>) {
+      generation++;
+      const next = rows.map((row, index) => ({ ...row, index, snapshot: `${version}-${generation}-${index}` }));
+      rowsByVersion.set(version, next);
+      return next;
+    }
     const internals = (window as unknown as {
       __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> };
     }).__TAURI_INTERNALS__;
@@ -44,14 +51,22 @@ function mockMultiplayer(page: Page) {
         }).__appearanceFixtures.calls.push({ name, args });
         return result;
       };
-      if (name === "list_servers") return record(servers);
+      const version = String(args?.versionId ?? "");
+      const rows = rowsByVersion.get(version) ?? [];
+      if (name === "list_servers") return record(rows);
       if (name === "save_server") {
-        servers = [...servers, { index: 1, name: "Added server", address: "added.example.invalid", hideAddress: false }];
-        return record(servers);
+        const entry = args?.entry as { name: string; address: string; hideAddress: boolean };
+        return record(saveRows(version, [...rows, { ...entry, index: rows.length, snapshot: "" }]));
       }
       if (name === "remove_server") {
-        servers = [];
-        return record(servers);
+        const expected = args?.expected as { index: number; snapshot: string } | undefined;
+        const matches = expected && args?.index === expected.index
+          && rows[expected.index]?.snapshot === expected.snapshot;
+        if (!matches) {
+          record(null);
+          throw { code: "server.snapshotChanged", params: {} };
+        }
+        return record(saveRows(version, rows.filter((row) => row.index !== expected.index)));
       }
       if (name === "ping_server") return record({ online: true, latencyMs: 42, version: "1.21.1", playersOnline: 3, playersMax: 20, description: "Fixture MOTD" });
       if (name === "discover_lan") return record([]);
@@ -108,6 +123,46 @@ test("real status queries and direct join preserve the selected address", async 
   await expect.poll(async () => (await calls(page)).some((call) => call.name === "launch_game" && call.args?.serverAddress === "play.example.invalid:25565")).toBe(true);
 });
 
+test("switching A to B to C prevents a stale bookmark action and late B display", async ({ page }) => {
+  await installLauncherFixture(page, { versionDirectoryCount: 3 });
+  await mockMultiplayer(page);
+  await openMultiplayer(page);
+  await expect(page.locator(".vx-server-row__copy h2")).toHaveText("Fixture server");
+  await page.evaluate(() => {
+    const probe = window as unknown as {
+      __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> };
+      releaseFixtureServerB?: () => void;
+    };
+    const original = probe.__TAURI_INTERNALS__.invoke;
+    probe.__TAURI_INTERNALS__.invoke = async (name, args) => {
+      const result = await original(name, args);
+      const version = args?.versionId;
+      if (name !== "list_servers" || (version !== "fixture-version-002" && version !== "fixture-version-003")) return result;
+      const label = version === "fixture-version-002" ? "B" : "C";
+      if (label === "B") await new Promise<void>((resolve) => { probe.releaseFixtureServerB = resolve; });
+      return [{ index: 0, name: `Bookmark ${label}`, address: `${label}.example.invalid`, hideAddress: false, snapshot: `snapshot-${label}` }];
+    };
+  });
+  async function changeEnvironment(name: string) {
+    await page.getByRole("combobox", { name: "游戏环境" }).click();
+    await page.getByRole("option", { name, exact: true }).click();
+  }
+  await changeEnvironment("fixture-version-002");
+  await expect.poll(async () => (await calls(page)).some((call) => call.name === "list_servers" && call.args?.versionId === "fixture-version-002")).toBe(true);
+  await expect(page.getByRole("button", { name: "移除服务器", exact: true })).toHaveCount(0);
+  await expect(page.locator(".vx-server-row__copy h2")).toHaveCount(0);
+  await changeEnvironment("fixture-version-003");
+  await expect(page.locator(".vx-server-row__copy h2")).toHaveText("Bookmark C");
+  await page.evaluate(async () => {
+    const release = (window as unknown as { releaseFixtureServerB?: () => void }).releaseFixtureServerB;
+    if (!release) throw new Error("B was never deferred");
+    release();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  });
+  await expect(page.locator(".vx-server-row__copy h2")).toHaveText("Bookmark C");
+  expect((await calls(page)).some((call) => call.name === "remove_server")).toBe(false);
+});
+
 test("add, remove and empty LAN discovery keep separate outcomes", async ({ page }) => {
   await installLauncherFixture(page);
   await mockMultiplayer(page);
@@ -122,7 +177,12 @@ test("add, remove and empty LAN discovery keep separate outcomes", async ({ page
   await expect(page.getByText("当前网络中没有发现局域网世界。", { exact: true })).toBeVisible();
   const recorded = await calls(page);
   expect(recorded.some((call) => call.name === "save_server")).toBe(true);
-  expect(recorded.some((call) => call.name === "remove_server" && call.args?.index === 0)).toBe(true);
+  expect(recorded.find((call) => call.name === "remove_server")?.args).toMatchObject({
+    versionId: "1.21.1",
+    index: 0,
+    expected: { index: 0, snapshot: "1.21.1-1-0" },
+  });
+  await expect(page.locator('[data-server-address="added.example.invalid"]')).toBeVisible();
 });
 
 test("managed start remains disabled until the user explicitly accepts EULA", async ({ page }) => {

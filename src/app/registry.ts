@@ -79,6 +79,20 @@ export const downloadKindRegistry = createRegistry([
   { id: "modpack", labelKey: "tasks.kind.modpack" },
   { id: "java", labelKey: "tasks.kind.java" },
   { id: "server", labelKey: "tasks.kind.server" },
+  { id: "launch", labelKey: "tasks.kind.launch" },
+  { id: "loader", labelKey: "tasks.kind.loader" },
+  { id: "clone", labelKey: "tasks.kind.clone" },
+  { id: "backup", labelKey: "tasks.kind.backup" },
+  { id: "restore", labelKey: "tasks.kind.restore" },
+  { id: "export", labelKey: "tasks.kind.export" },
+  { id: "world-backup", labelKey: "tasks.kind.world-backup" },
+  { id: "world-import", labelKey: "tasks.kind.world-import" },
+  { id: "local-resource-import", labelKey: "tasks.kind.local-resource-import" },
+  { id: "resource-check", labelKey: "tasks.kind.resource-check" },
+  { id: "resource-update", labelKey: "tasks.kind.resource-update" },
+  { id: "server-install", labelKey: "tasks.kind.server-install" },
+  { id: "server-start", labelKey: "tasks.kind.server-start" },
+  { id: "default-skin", labelKey: "tasks.kind.default-skin" },
   { id: "unknown", labelKey: "tasks.kind.unknown" },
 ] as const);
 
@@ -102,5 +116,7 @@ export const downloadStageRegistry = createRegistry([
   { id: "failed", labelKey: "tasks.stage.failed" },
   { id: "cancelled", labelKey: "tasks.stage.cancelled" },
   { id: "interrupted", labelKey: "tasks.stage.interrupted" },
+  { id: "server-jar", labelKey: "tasks.stage.server-jar" },
+  { id: "error", labelKey: "tasks.stage.error" },
   { id: "unknown", labelKey: "tasks.stage.unknown" },
 ] as const);

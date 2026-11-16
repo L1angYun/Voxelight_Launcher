@@ -128,6 +128,7 @@ export interface Bootstrap {
   };
 }
 export interface Progress {
+  taskId: string;
   operation: string;
   stage: string;
   completed: number;

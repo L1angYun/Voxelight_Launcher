@@ -124,6 +124,7 @@
     "server": {
       "eulaRequired": "Read and explicitly accept the Minecraft EULA before starting this server.",
       "notFound": "The server no longer exists. Refresh the list.",
+      "snapshotChanged": "The saved server list changed. No bookmark was modified. Review the refreshed list before trying again.",
       "busy": "Another server or download operation is still running.",
       "addressInvalid": "Enter a valid hostname or IP address with an optional port.",
       "portInUse": "Another managed server is already using this port.",

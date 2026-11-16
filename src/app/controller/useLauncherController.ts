@@ -19,6 +19,20 @@ import type { LauncherContextValue, LauncherNotice } from "./types";
 
 const previewFields = [...appearanceFields, "customBackground"] as const;
 
+interface LaunchRequest {
+  reservation: Promise<string>;
+  id?: string;
+  cancelRequested: boolean;
+  cancellation?: Promise<boolean>;
+}
+
+interface LaunchTarget {
+  versionId: string;
+  instanceId?: string;
+  accountId: string;
+  serverAddress?: string;
+}
+
 export function useLauncherController(): LauncherContextValue {
   const [bootstrapped, setBootstrapped] = useState(false);
   const [bootstrapFailed, setBootstrapFailed] = useState(false);
@@ -36,7 +50,10 @@ export function useLauncherController(): LauncherContextValue {
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [selectedInstanceId, setSelectedInstanceId] = useState<string>();
   const [running, setRunningGames] = useState<RunningGame[]>([]);
+  const [preparing, setPreparing] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [resourceProgress, setResourceProgress] = useState<Progress | null>(null);
+  const launchRequest = useRef<LaunchRequest>(undefined);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<LauncherNotice | null>(null);
@@ -119,6 +136,7 @@ export function useLauncherController(): LauncherContextValue {
 
   const run = useCallback(
     async <T,>(labelKey: string, action: () => Promise<T>): Promise<T | undefined> => {
+      if (labelKey === "resource.install") setResourceProgress(null);
       operationCount.current += 1;
       setBusy((current) => current || labelKey);
       try {
@@ -173,6 +191,51 @@ export function useLauncherController(): LauncherContextValue {
     setSelectedInstanceId(undefined);
   }, []);
 
+  const startLaunch = useCallback(async (target: LaunchTarget) => {
+    if (launchRequest.current) return;
+    const { versionId, instanceId } = target;
+    const request: LaunchRequest = {
+      reservation: Promise.resolve().then(() =>
+        command<string>("reserve_launch_task", { versionId, ...(instanceId ? { instanceId } : {}) })),
+      cancelRequested: false,
+    };
+    launchRequest.current = request;
+    setProgress(null);
+    setPreparing(true);
+    const result = await run("game.prepare", async () => {
+      try {
+        request.id = await request.reservation;
+        if (request.cancelRequested) {
+          await request.cancellation;
+          return;
+        }
+        return await command<{ pid: number }>("launch_game", { ...target, taskId: request.id });
+      } catch (error) {
+        const normalized = normalizeError(error);
+        if (normalized.code !== "download.cancelled") {
+          // The backend normally closes its own row. A dispatch failure can
+          // precede admission, so release just this request's reservation.
+          if (request.id && !request.cancelRequested) {
+            void command("cancel_download_task", { taskId: request.id }).catch(() => {});
+          }
+          throw normalized;
+        }
+        if (!request.cancelRequested) showNotice("preparation.cancelRequested");
+      }
+    }).finally(() => {
+      if (launchRequest.current === request) {
+        launchRequest.current = undefined;
+        setProgress(null);
+        setPreparing(false);
+      }
+    });
+    if (result) {
+      setGamePid(result.pid);
+      showNotice("game.launched");
+      await reload();
+    }
+  }, [reload, run, showNotice]);
+
   const launch = useCallback(async (instanceId?: string, versionId?: string) => {
     const launchInstanceId = versionId ? undefined : instanceId ?? selectedInstanceId;
     const launchVersionId = versionId ?? (instanceId
@@ -186,19 +249,8 @@ export function useLauncherController(): LauncherContextValue {
       showNotice("instance.required", "error");
       return;
     }
-    const result = await run("game.prepare", () =>
-      command<{ pid: number }>("launch_game", {
-        versionId: launchVersionId,
-        instanceId: launchInstanceId,
-        accountId: activeAccount.id,
-      }),
-    );
-    if (!result) return;
-    setProgress(null);
-    setGamePid(result.pid);
-    showNotice("game.launched");
-    await reload();
-  }, [activeAccount, data.instances, reload, run, selectedInstanceId, selectedVersionId, showNotice]);
+    await startLaunch({ versionId: launchVersionId, instanceId: launchInstanceId, accountId: activeAccount.id });
+  }, [activeAccount, data.instances, selectedInstanceId, selectedVersionId, showNotice, startLaunch]);
 
   const stop = useCallback(async () => {
     const pid = selectedRunningGame?.pid ?? gamePid;
@@ -230,26 +282,24 @@ export function useLauncherController(): LauncherContextValue {
       showNotice("instance.required", "error");
       return;
     }
-    const result = await run("game.prepare", () =>
-      command<{ pid: number }>("launch_game", {
-        versionId,
-        serverAddress,
-        accountId: activeAccount.id,
-      }),
-    );
-    if (!result) return;
-    setProgress(null);
-    setGamePid(result.pid);
-    showNotice("game.launched");
-    await reload();
-  }, [activeAccount, reload, run, showNotice]);
+    await startLaunch({ versionId, serverAddress, accountId: activeAccount.id });
+  }, [activeAccount, showNotice, startLaunch]);
 
   const cancelPreparation = useCallback(async () => {
-    await run("preparation.cancel", async () => {
-      await command("cancel_download_task", { taskId: null });
-      await command("set_download_paused", { paused: false });
-      showNotice("preparation.cancelRequested");
-    });
+    const request = launchRequest.current;
+    if (!request || request.cancellation) return;
+    request.cancelRequested = true;
+    request.cancellation = run("preparation.cancel", async () => {
+      const taskId = await request.reservation.catch(() => undefined);
+      if (!taskId) return false; // The launch itself owns the reservation error.
+      await command("cancel_download_task", { taskId });
+      if (launchRequest.current === request) showNotice("preparation.cancelRequested");
+      return true;
+    }).then(Boolean);
+    if (!await request.cancellation && launchRequest.current === request) {
+      request.cancelRequested = false;
+      request.cancellation = undefined;
+    }
   }, [run, showNotice]);
 
   useEffect(() => {
@@ -271,7 +321,14 @@ export function useLauncherController(): LauncherContextValue {
       .catch(() => {});
     const disposers = [
       events<RunningGame[]>("launcher://games", setRunningGames),
-      events<Progress>("launcher://progress", setProgress),
+      events<Progress>("launcher://progress", (event) => {
+        if (!active) return;
+        if (event.operation === "resource") setResourceProgress(event);
+        const request = launchRequest.current;
+        if (event.operation === "launch" && request?.id && event.taskId === request.id && !request.cancelRequested) {
+          setProgress(event);
+        }
+      }),
       events<LogEntry>("launcher://log", (item) =>
         setLogs((previous) => [...previous.slice(-399), item]),
       ),
@@ -301,7 +358,9 @@ export function useLauncherController(): LauncherContextValue {
     selectedVersionId,
     selectedRunningGame,
     running,
+    preparing,
     progress,
+    resourceProgress,
     logs,
     busy,
     notice,

@@ -238,7 +238,7 @@ async function installFixture(page, scenario) {
           };
           if (name === "list_versions") return { latestRelease: "1.21.1", latestSnapshot: "", versions: [] };
           if (name === "list_running_games") return [];
-          if (name === "list_download_tasks") return tasks;
+          if (name === "list_download_tasks") return { revision: 0, tasks };
           if (name === "list_managed_servers") return empty ? [] : [managed];
           if (name === "read_managed_server_logs") return [{ serverId: managed.id, timestamp: "2026-01-01T00:00:00Z", stream: "stdout", message: "Synthetic server log" }];
           if (name === "list_servers") return empty ? [] : [{ index: 0, name: managed.name, address: "play.example.invalid:25565", hideAddress: false }];

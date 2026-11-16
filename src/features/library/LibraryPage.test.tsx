@@ -84,7 +84,7 @@ function fixture(): LauncherContextValue {
     selectedVersionId: "1.21.1",
     selectedRunningGame: undefined,
     running: [],
-    progress: null,
+    preparing: false, progress: null, resourceProgress: null,
     logs: [],
     busy: "",
     notice: null,
@@ -138,6 +138,14 @@ afterEach(() => {
 });
 
 describe("library and instance details", () => {
+  it("does not give a background install the Library launch preparation controls", async () => {
+    mockLauncher.busy = "instance.install";
+    mockLauncher.progress = { taskId: "separate-install", operation: "install", stage: "assets", completed: 3, total: 10, bytesCompleted: 0, bytesTotal: 0, versionId: "1.21.1", message: "fixture" };
+    await render(createElement(LibraryPage));
+    expect(container.querySelector(".vx-launch-status")).toBeNull();
+    expect(container.textContent).not.toContain("取消准备");
+  });
+
   it("keeps the final directory segment separately visible with an accessible directory prefix", async () => {
     const directoryInstance = { ...mockLauncher.data.instances[0],
       gameDirectory: "C:\\Long parent directory\\Another long component\\Final-world", lastPlayed: undefined };

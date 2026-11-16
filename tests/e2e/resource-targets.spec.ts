@@ -171,8 +171,8 @@ test("R3-3 Downloads navigation does not cancel the combined install or lose the
   await page.screenshot({ path: info.outputPath("resource-in-downloads.png") });
   await expect.poll(async () => {
     const tasks = await page.evaluate(() => (window as unknown as { __TAURI_INTERNALS__: {
-      invoke: (name: string) => Promise<{ kind: string; status: string }[]> } }).__TAURI_INTERNALS__.invoke("list_download_tasks"));
-    return tasks.some(task => task.kind === "resource" && task.status === "completed");
+      invoke: (name: string) => Promise<{ revision: number; tasks: { kind: string; status: string }[] }> } }).__TAURI_INTERNALS__.invoke("list_download_tasks"));
+    return tasks.tasks.some(task => task.kind === "resource" && task.status === "completed");
   }).toBe(true);
   expect((await calls(page)).some(call => call.name === "cancel_download_task")).toBe(false);
   await page.locator('button[data-page="discover"]').click();

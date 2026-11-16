@@ -250,6 +250,7 @@ async fn prepare_profile(
         }
         minecraft::progress(
             app,
+            state,
             &id,
             "loader-libraries",
             index + 1,
@@ -610,6 +611,7 @@ async fn heavyweight_loader(
     );
     minecraft::progress(
         app,
+        state,
         expected_id,
         "loader-installer",
         0,
@@ -680,6 +682,7 @@ pub async fn install_loader_inner(
     );
     minecraft::progress(
         app,
+        state,
         &id,
         "complete",
         1,
@@ -709,14 +712,13 @@ pub async fn install_loader(
         .map_err(|_| "已有安装或启动准备任务运行")?;
     let task = state
         .control
-        .begin("loader", &game_version, &format!("安装 {loader}"));
+        .begin("loader", &game_version, &format!("安装 {loader}"))?;
     let result = install_loader_inner(&state, &app, &loader, &game_version, &loader_version).await;
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
     if let Err(error) = &result {
         minecraft::log(&app, &state, "error", error);
-        minecraft::progress(&app, &game_version, "error", 0, 0, 0, 0, error);
     }
     result
 }

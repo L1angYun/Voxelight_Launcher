@@ -861,7 +861,7 @@ pub async fn install_curseforge_resource(
     crate::resources::require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
     let task = state
         .control
-        .begin("resource", &project_id, "安装 CurseForge 资源");
+        .begin("resource", &project_id, "安装 CurseForge 资源")?;
     let result: AppResult<ResourceInstall> = async {
         state.control.checkpoint().await?;
         let target =

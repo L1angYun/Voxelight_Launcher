@@ -1,14 +1,15 @@
 use crate::{
-    errors::{expected, AppResult},
+    errors::{AppError, AppResult},
     minecraft,
     storage::{safe_join, LauncherState},
 };
 use fastnbt::Value as Nbt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::{Ipv4Addr, SocketAddrV4, TcpStream, ToSocketAddrs, UdpSocket},
     path::PathBuf,
     sync::Arc,
@@ -16,7 +17,7 @@ use std::{
 };
 use tauri::State;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerEntry {
     pub index: usize,
@@ -24,12 +25,85 @@ pub struct ServerEntry {
     pub address: String,
     pub icon: Option<String>,
     pub hide_address: bool,
+    pub snapshot: String,
 }
-fn target(
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInput {
+    name: String,
+    address: String,
+    hide_address: bool,
+}
+
+#[derive(Deserialize)]
+pub struct ServerExpected {
+    index: usize,
+    snapshot: String,
+}
+
+struct ServerTarget<'a> {
+    path: PathBuf,
+    version_id: &'a str,
+    instance_id: Option<&'a str>,
+}
+
+impl ServerTarget<'_> {
+    fn snapshot(&self, bytes: Option<&[u8]>) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        for field in [
+            self.path.as_os_str().as_encoded_bytes(),
+            self.version_id.as_bytes(),
+            self.instance_id.unwrap_or_default().as_bytes(),
+        ] {
+            hash.update((field.len() as u64).to_be_bytes());
+            hash.update(field);
+        }
+        hash.update([
+            u8::from(self.instance_id.is_some()),
+            u8::from(bytes.is_some()),
+        ]);
+        hash.update(bytes.unwrap_or_default());
+        hash.finalize().into()
+    }
+}
+
+struct ServerFile {
+    root: HashMap<String, Nbt>,
+    gzip: bool,
+    snapshot: [u8; 32],
+}
+
+fn row_snapshot(snapshot: &[u8; 32], index: usize) -> String {
+    let mut hash = Sha256::new();
+    hash.update(snapshot);
+    hash.update((index as u64).to_be_bytes());
+    format!("{:x}", hash.finalize())
+}
+
+fn snapshot_changed() -> AppError {
+    AppError::new("server.snapshotChanged")
+}
+
+fn require_expected(
+    file: &ServerFile,
+    index: usize,
+    expected: Option<&ServerExpected>,
+) -> AppResult<()> {
+    if matches!(expected, Some(value) if value.index == index && value.snapshot == row_snapshot(&file.snapshot, index))
+        && matches!(file.root.get("servers"), Some(Nbt::List(rows)) if matches!(rows.get(index), Some(Nbt::Compound(_))))
+    {
+        Ok(())
+    } else {
+        Err(snapshot_changed())
+    }
+}
+
+fn target<'a>(
     state: &LauncherState,
-    version: &str,
-    instance_id: Option<&str>,
-) -> Result<PathBuf, String> {
+    version: &'a str,
+    instance_id: Option<&'a str>,
+) -> Result<ServerTarget<'a>, String> {
     let data = state.snapshot()?;
     let instance = instance_id
         .map(|id| {
@@ -40,17 +114,30 @@ fn target(
         })
         .transpose()?;
     let root = minecraft::game_directory(&data.config, version, instance)?;
-    safe_join(&root, "servers.dat")
+    Ok(ServerTarget {
+        path: safe_join(&root, "servers.dat")?,
+        version_id: version,
+        instance_id,
+    })
 }
-fn read_servers(path: &std::path::Path) -> Result<(HashMap<String, Nbt>, bool), String> {
-    if !path.exists() {
-        return Ok((HashMap::new(), false));
-    }
-    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+
+fn read_servers(target: &ServerTarget<'_>) -> Result<ServerFile, String> {
+    let bytes = match fs::read(&target.path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(ServerFile {
+                root: HashMap::new(),
+                gzip: false,
+                snapshot: target.snapshot(None),
+            });
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     if bytes.len() > 16 * 1024 * 1024 {
         return Err("服务器列表文件过大".into());
     }
     let gzip = bytes.starts_with(&[31, 139]);
+    let snapshot = target.snapshot(Some(&bytes));
     let data = if gzip {
         let mut out = Vec::new();
         flate2::read::GzDecoder::new(&bytes[..])
@@ -64,13 +151,14 @@ fn read_servers(path: &std::path::Path) -> Result<(HashMap<String, Nbt>, bool), 
     } else {
         bytes
     };
-    Ok((
-        fastnbt::from_bytes(&data)
+    Ok(ServerFile {
+        root: fastnbt::from_bytes(&data)
             .map_err(|e| format!("servers.dat 格式错误，未覆盖原文件：{e}"))?,
         gzip,
-    ))
+        snapshot,
+    })
 }
-fn entries(root: &HashMap<String, Nbt>) -> Vec<ServerEntry> {
+fn entries(root: &HashMap<String, Nbt>, snapshot: &[u8; 32]) -> Vec<ServerEntry> {
     let Some(Nbt::List(list)) = root.get("servers") else {
         return Vec::new();
     };
@@ -96,17 +184,15 @@ fn entries(root: &HashMap<String, Nbt>) -> Vec<ServerEntry> {
                     }
                 }),
                 hide_address: matches!(row.get("hideAddress"), Some(Nbt::Byte(1))),
+                snapshot: row_snapshot(snapshot, index),
             })
         })
         .collect()
 }
-fn write_servers(
-    path: &std::path::Path,
-    root: &HashMap<String, Nbt>,
-    gzip: bool,
-) -> Result<(), String> {
-    let data = fastnbt::to_bytes(root).map_err(|e| e.to_string())?;
-    let bytes = if gzip {
+fn write_servers(target: &ServerTarget<'_>, file: &ServerFile) -> Result<[u8; 32], String> {
+    let path = &target.path;
+    let data = fastnbt::to_bytes(&file.root).map_err(|e| e.to_string())?;
+    let bytes = if file.gzip {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(&data).map_err(|e| e.to_string())?;
         encoder.finish().map_err(|e| e.to_string())?
@@ -123,8 +209,9 @@ fn write_servers(
         .map_err(|e| e.to_string())?;
     }
     let temp = directory.join(format!("servers-{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-    fs::rename(temp, path).map_err(|e| e.to_string())
+    fs::write(&temp, &bytes).map_err(|e| e.to_string())?;
+    fs::rename(temp, path).map_err(|e| e.to_string())?;
+    Ok(target.snapshot(Some(&bytes)))
 }
 #[tauri::command]
 pub fn list_servers(
@@ -132,18 +219,16 @@ pub fn list_servers(
     version_id: String,
     instance_id: Option<String>,
 ) -> Result<Vec<ServerEntry>, String> {
-    let (path, _) = (target(&state, &version_id, instance_id.as_deref())?, ());
-    let (root, _) = read_servers(&path)?;
-    Ok(entries(&root))
+    let target = target(&state, &version_id, instance_id.as_deref())?;
+    let file = read_servers(&target)?;
+    Ok(entries(&file.root, &file.snapshot))
 }
-async fn save_server_inner(
-    state: State<'_, Arc<LauncherState>>,
-    version_id: String,
-    instance_id: Option<String>,
-    entry: ServerEntry,
+fn save_server_inner(
+    target: &ServerTarget<'_>,
+    entry: ServerInput,
     index: Option<usize>,
-) -> Result<Vec<ServerEntry>, String> {
-    let _guard = state.operation.lock().await;
+    expected: Option<&ServerExpected>,
+) -> AppResult<Vec<ServerEntry>> {
     split_address(&entry.address)?;
     if entry.name.trim().is_empty()
         || entry.name.len() > 256
@@ -151,22 +236,24 @@ async fn save_server_inner(
     {
         return Err("服务器名称需要为可显示文字".into());
     }
-    let path = target(&state, &version_id, instance_id.as_deref())?;
-    let (mut root, gzip) = read_servers(&path)?;
-    let list = root
+    let mut file = read_servers(target)?;
+    if let Some(index) = index {
+        require_expected(&file, index, expected)?;
+    } else if expected.is_some() {
+        return Err(snapshot_changed());
+    }
+    let list = file
+        .root
         .entry("servers".into())
         .or_insert_with(|| Nbt::List(Vec::new()));
     let Nbt::List(list) = list else {
         return Err("服务器列表结构无效，原文件已保留".into());
     };
     let mut row = if let Some(i) = index {
-        if i >= list.len() {
-            return Err("服务器不存在".into());
-        }
-        if let Nbt::Compound(row) = &list[i] {
+        if let Some(Nbt::Compound(row)) = list.get(i) {
             row.clone()
         } else {
-            HashMap::new()
+            return Err(snapshot_changed());
         }
     } else {
         HashMap::new()
@@ -182,8 +269,8 @@ async fn save_server_inner(
     } else {
         list.push(Nbt::Compound(row));
     }
-    write_servers(&path, &root, gzip)?;
-    Ok(entries(&root))
+    let snapshot = write_servers(target, &file)?;
+    Ok(entries(&file.root, &snapshot))
 }
 
 #[tauri::command]
@@ -191,32 +278,28 @@ pub async fn save_server(
     state: State<'_, Arc<LauncherState>>,
     version_id: String,
     instance_id: Option<String>,
-    entry: ServerEntry,
+    entry: ServerInput,
     index: Option<usize>,
+    expected: Option<ServerExpected>,
 ) -> AppResult<Vec<ServerEntry>> {
-    save_server_inner(state, version_id, instance_id, entry, index)
-        .await
-        .map_err(expected)
+    let _guard = state.operation.lock().await;
+    let target = target(&state, &version_id, instance_id.as_deref())?;
+    save_server_inner(&target, entry, index, expected.as_ref())
 }
 
-async fn remove_server_inner(
-    state: State<'_, Arc<LauncherState>>,
-    version_id: String,
-    instance_id: Option<String>,
+fn remove_server_inner(
+    target: &ServerTarget<'_>,
     index: usize,
-) -> Result<Vec<ServerEntry>, String> {
-    let _guard = state.operation.lock().await;
-    let path = target(&state, &version_id, instance_id.as_deref())?;
-    let (mut root, gzip) = read_servers(&path)?;
-    let Some(Nbt::List(list)) = root.get_mut("servers") else {
-        return Err("服务器列表为空".into());
+    expected: Option<&ServerExpected>,
+) -> AppResult<Vec<ServerEntry>> {
+    let mut file = read_servers(target)?;
+    require_expected(&file, index, expected)?;
+    let Some(Nbt::List(list)) = file.root.get_mut("servers") else {
+        return Err(snapshot_changed());
     };
-    if index >= list.len() {
-        return Err("服务器不存在".into());
-    }
     list.remove(index);
-    write_servers(&path, &root, gzip)?;
-    Ok(entries(&root))
+    let snapshot = write_servers(target, &file)?;
+    Ok(entries(&file.root, &snapshot))
 }
 
 #[tauri::command]
@@ -225,10 +308,11 @@ pub async fn remove_server(
     version_id: String,
     instance_id: Option<String>,
     index: usize,
+    expected: Option<ServerExpected>,
 ) -> AppResult<Vec<ServerEntry>> {
-    remove_server_inner(state, version_id, instance_id, index)
-        .await
-        .map_err(expected)
+    let _guard = state.operation.lock().await;
+    let target = target(&state, &version_id, instance_id.as_deref())?;
+    remove_server_inner(&target, index, expected.as_ref())
 }
 
 pub fn split_address(address: &str) -> Result<(String, u16), String> {
@@ -486,9 +570,155 @@ mod tests {
         let root = HashMap::from([("servers".into(), Nbt::List(vec![Nbt::Compound(row)]))]);
         let bytes = fastnbt::to_bytes(&root).unwrap();
         let decoded = fastnbt::from_bytes(&bytes).unwrap();
-        assert_eq!(entries(&decoded)[0].address, "localhost:25565");
+        assert_eq!(entries(&decoded, &[0; 32])[0].address, "localhost:25565");
         assert_eq!(root, decoded);
     }
+
+    fn fixture_bytes(marker: i8) -> Vec<u8> {
+        let row = Nbt::Compound(HashMap::from([
+            ("name".into(), Nbt::String("Fixture bookmark".into())),
+            ("ip".into(), Nbt::String("bookmark.example.invalid".into())),
+            ("acceptTextures".into(), Nbt::Byte(marker)),
+        ]));
+        fastnbt::to_bytes(&HashMap::from([(
+            "servers".to_string(),
+            Nbt::List(vec![row.clone(), row]),
+        )]))
+        .unwrap()
+    }
+
+    fn bookmark(target: &ServerTarget<'_>, index: usize) -> ServerExpected {
+        let file = read_servers(target).unwrap();
+        let row = &entries(&file.root, &file.snapshot)[index];
+        ServerExpected {
+            index: row.index,
+            snapshot: row.snapshot.clone(),
+        }
+    }
+
+    #[test]
+    fn snapshots_reject_cross_environment_and_cross_row_without_writes() {
+        let directory =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/server-bookmark-tests").join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = fixture_bytes(1);
+        let a = ServerTarget {
+            path: directory.join("servers-a.dat"),
+            version_id: "A",
+            instance_id: None,
+        };
+        let b = ServerTarget {
+            path: directory.join("servers-b.dat"),
+            version_id: "B",
+            instance_id: None,
+        };
+        fs::write(&a.path, &bytes).unwrap();
+        fs::write(&b.path, &bytes).unwrap();
+
+        let expected = bookmark(&a, 0);
+        assert_eq!(
+            remove_server_inner(&b, 0, Some(&expected))
+                .unwrap_err()
+                .code,
+            "server.snapshotChanged"
+        );
+        let forged_index = ServerExpected {
+            index: 1,
+            snapshot: expected.snapshot.clone(),
+        };
+        assert_eq!(
+            remove_server_inner(&a, 1, Some(&forged_index))
+                .unwrap_err()
+                .code,
+            "server.snapshotChanged"
+        );
+        // Shared game directories use the same bytes and path for different version requests.
+        let shared_b = ServerTarget {
+            path: a.path.clone(),
+            version_id: "B",
+            instance_id: None,
+        };
+        assert_eq!(
+            remove_server_inner(&shared_b, 0, Some(&expected))
+                .unwrap_err()
+                .code,
+            "server.snapshotChanged"
+        );
+        assert_eq!(fs::read(&a.path).unwrap(), bytes);
+        assert_eq!(fs::read(&b.path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn changed_file_rejects_stale_edits_and_fresh_edit_and_delete_keep_unknown_nbt() {
+        let directory =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/server-bookmark-tests").join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        let target = ServerTarget {
+            path: directory.join("servers.dat"),
+            version_id: "A",
+            instance_id: None,
+        };
+        fs::write(&target.path, fixture_bytes(1)).unwrap();
+        let stale = bookmark(&target, 0);
+        // A field not represented by ServerEntry changed externally.
+        let changed = fixture_bytes(0);
+        fs::write(&target.path, &changed).unwrap();
+        let input = || ServerInput {
+            name: "Edited bookmark".into(),
+            address: "edited.example.invalid".into(),
+            hide_address: true,
+        };
+
+        assert_eq!(
+            remove_server_inner(&target, 0, Some(&stale))
+                .unwrap_err()
+                .code,
+            "server.snapshotChanged"
+        );
+        assert_eq!(
+            save_server_inner(&target, input(), Some(0), None)
+                .unwrap_err()
+                .code,
+            "server.snapshotChanged"
+        );
+        assert_eq!(
+            save_server_inner(&target, input(), Some(0), Some(&stale))
+                .unwrap_err()
+                .code,
+            "server.snapshotChanged"
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        assert_eq!(fs::read(&target.path).unwrap(), changed);
+
+        let edited =
+            save_server_inner(&target, input(), Some(0), Some(&bookmark(&target, 0))).unwrap();
+        assert_eq!(edited.len(), 2);
+        assert_eq!(edited[0].address, "edited.example.invalid");
+        assert!(edited[0].hide_address);
+        assert_eq!(edited[0].snapshot, bookmark(&target, 0).snapshot);
+        let remaining = remove_server_inner(&target, 1, Some(&bookmark(&target, 1))).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].address, "edited.example.invalid");
+        let file = read_servers(&target).unwrap();
+        let Nbt::List(rows) = &file.root["servers"] else {
+            panic!("server rows changed type")
+        };
+        let Nbt::Compound(row) = &rows[0] else {
+            panic!("server row changed type")
+        };
+        assert_eq!(row["acceptTextures"], Nbt::Byte(0));
+        assert_eq!(
+            save_server_inner(&target, input(), None, None)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 4);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn varint_round_trips_status_handshake_values() {
         for value in [0, 47, 255, 65535, u32::MAX] {

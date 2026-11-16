@@ -59,6 +59,17 @@ const actionIcons = {
   retry: RotateCcw,
 };
 
+function safeTargetLabel(task: DownloadTask): string {
+  if (task.kind === "default-skin") {
+    return task.target.toLowerCase() === "alex" ? "Alex" : task.target.toLowerCase() === "steve" ? "Steve" : "";
+  }
+  // Prefer a native display name; old journals only carry an opaque target or file path.
+  const target = (task.displayTarget || task.target).trim().replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, "");
+  const leaf = target.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+  if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(leaf) || /^[0-9a-f]{32}$/i.test(leaf)) return "";
+  return leaf === "." || leaf === ".." || /^[a-z]:$/i.test(leaf) ? "" : leaf;
+}
+
 function TaskRow({
   task,
   rate,
@@ -79,9 +90,8 @@ function TaskRow({
   const kind = t(registeredLabel(downloadKindRegistry, task.kind), {
     ns: "downloads",
   });
-  const title = task.target
-    ? t("downloads:taskTitle", { kind, target: task.target })
-    : kind;
+  const target = safeTargetLabel(task);
+  const title = target ? t("downloads:taskTitle", { kind, target }) : kind;
   const stage = t(registeredLabel(downloadStageRegistry, task.stage), {
     ns: "downloads",
   });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { command, events } from "../../lib/launcher";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { useLauncher } from "../../app/controller/LauncherProvider";
@@ -9,6 +9,30 @@ export interface ServerEntry {
   address: string;
   icon?: string;
   hideAddress: boolean;
+  snapshot: string;
+}
+
+interface ServerEnvironment {
+  versionId: string;
+  gameDirectory: string;
+  versionIsolation: boolean;
+}
+
+interface ServerView {
+  environment: ServerEnvironment;
+  rows: ServerEntry[] | null;
+  loading: boolean;
+}
+
+interface ServerFeedback {
+  environment: ServerEnvironment;
+  error: LauncherError | null;
+  notice: string;
+}
+
+interface ServerActivity {
+  environment: ServerEnvironment;
+  key: string;
 }
 
 export interface ServerStatus {
@@ -98,10 +122,20 @@ export function useMultiplayer() {
     dismissNotice,
   } = useLauncher();
   const [tab, setTab] = useState<"servers" | "managed">("servers");
-  const [servers, setServers] = useState<ServerEntry[]>([]);
-  const [status, setStatus] = useState<Record<string, ServerStatus>>({});
-  const [lan, setLan] = useState<LanWorld[]>([]);
-  const [lanSearched, setLanSearched] = useState(false);
+  const environment = useMemo<ServerEnvironment>(() => ({
+    versionId: selectedVersionId,
+    gameDirectory: data.config.gameDirectory,
+    versionIsolation: data.config.versionIsolation,
+  }), [selectedVersionId, data.config.gameDirectory, data.config.versionIsolation]);
+  const environmentRef = useRef(environment);
+  const serverGeneration = useRef(0);
+  const currentView = useRef<ServerView | null>(null);
+  const currentActivity = useRef<ServerActivity | null>(null);
+  const [serverView, setServerView] = useState<ServerView | null>(null);
+  const [serverActivity, setServerActivity] = useState<ServerActivity | null>(null);
+  const [serverFeedback, setServerFeedback] = useState<ServerFeedback | null>(null);
+  const [serverStatus, setServerStatus] = useState<{ environment: ServerEnvironment; results: Record<string, ServerStatus> } | null>(null);
+  const [serverLan, setServerLan] = useState<{ environment: ServerEnvironment; results: LanWorld[] } | null>(null);
   const [managedServers, setManagedServers] = useState<ManagedServer[]>([]);
   const [selectedManagedId, setSelectedManagedId] = useState("");
   const [logs, setLogs] = useState<ServerLog[]>([]);
@@ -113,6 +147,21 @@ export function useMultiplayer() {
   const logGeneration = useRef(0);
   selectedRef.current = selectedManagedId;
   const currentManaged = managedServers.find((server) => server.id === selectedManagedId);
+  const visibleView = serverView?.environment === environment ? serverView : null;
+  const visibleFeedback = serverFeedback?.environment === environment ? serverFeedback : null;
+  const visibleActivity = serverActivity?.environment === environment ? serverActivity : null;
+  const relevantStatus = serverStatus?.environment === environment ? serverStatus.results : {};
+  const relevantLan = serverLan?.environment === environment ? serverLan.results : null;
+
+  useLayoutEffect(() => {
+    environmentRef.current = environment;
+  }, [environment]);
+
+  const acceptsEnvironment = useCallback(() => mounted.current && environmentRef.current === environment, [environment]);
+  const publishView = useCallback((view: ServerView) => {
+    currentView.current = view;
+    setServerView(view);
+  }, []);
   const report = useCallback((cause: unknown) => {
     if (mounted.current) setError(normalizeError(cause));
   }, []);
@@ -137,18 +186,22 @@ export function useMultiplayer() {
     }
   }, []);
 
-  const refreshServers = useCallback(async () => {
-    if (!selectedVersionId) {
-      setServers([]);
-      return;
-    }
+  const refreshServers = useCallback(async (preserveFeedback = false) => {
+    if (!environment.versionId || !acceptsEnvironment()) return;
+    const generation = ++serverGeneration.current;
+    const accepts = () => acceptsEnvironment() && serverGeneration.current === generation;
+    publishView({ environment, rows: null, loading: true });
+    if (!preserveFeedback) setServerFeedback(null);
     try {
-      const result = await command<ServerEntry[]>("list_servers", { versionId: selectedVersionId });
-      if (mounted.current) setServers(result);
+      const rows = await command<ServerEntry[]>("list_servers", { versionId: environment.versionId });
+      if (accepts()) publishView({ environment, rows, loading: false });
     } catch (cause) {
-      if (mounted.current) setError(normalizeError(cause));
+      if (accepts()) {
+        publishView({ environment, rows: null, loading: false });
+        if (!preserveFeedback) setServerFeedback({ environment, error: normalizeError(cause), notice: "" });
+      }
     }
-  }, [selectedVersionId]);
+  }, [acceptsEnvironment, environment, publishView]);
 
   const refreshManaged = useCallback(async () => {
     try {
@@ -180,10 +233,8 @@ export function useMultiplayer() {
   }, [refreshManaged]);
 
   useEffect(() => {
-    setStatus({});
-    setLan([]);
-    setLanSearched(false);
     void refreshServers();
+    return () => { serverGeneration.current++; };
   }, [refreshServers]);
 
   useEffect(() => {
@@ -209,45 +260,85 @@ export function useMultiplayer() {
     return result;
   }, [perform, refreshManaged]);
 
-  const saveServer = useCallback((name: string, address: string) => perform(
-    "save-server",
-    async () => {
-      const result = await command<ServerEntry[]>("save_server", {
-        versionId: selectedVersionId,
-        entry: { index: 0, name, address, hideAddress: false },
-      });
-      setServers(result);
+  const runServerAction = useCallback(async <T,>(
+    key: string,
+    action: () => Promise<T>,
+    publishResult: (result: T) => void,
+    successNotice = "",
+  ): Promise<T | undefined> => {
+    if (!acceptsEnvironment() || currentActivity.current?.environment === environment) return;
+    const activity = { environment, key };
+    currentActivity.current = activity;
+    setServerActivity(activity);
+    setServerFeedback(null);
+    const accepts = () => acceptsEnvironment() && currentActivity.current === activity;
+    try {
+      const result = await action();
+      if (!accepts()) return;
+      publishResult(result);
+      if (successNotice) setServerFeedback({ environment, error: null, notice: successNotice });
       return result;
-    },
-    "serverSaved",
-  ), [perform, selectedVersionId]);
-
-  const removeServer = useCallback((index: number) => perform(
-    "remove-server",
-    async () => {
-      const result = await command<ServerEntry[]>("remove_server", { versionId: selectedVersionId, index });
-      setServers(result);
-      return result;
-    },
-    "serverRemoved",
-  ), [perform, selectedVersionId]);
-
-  const pingServer = useCallback((address: string) => perform(
-    `ping-${address}`,
-    async () => {
-      const result = await command<ServerStatus>("ping_server", { address });
-      setStatus((previous) => ({ ...previous, [address]: result }));
-      return result;
-    },
-  ), [perform]);
-
-  const discoverLan = useCallback(async () => {
-    const result = await perform("lan", () => command<LanWorld[]>("discover_lan"));
-    if (result !== undefined) {
-      setLan(result);
-      setLanSearched(true);
+    } catch (cause) {
+      if (accepts()) {
+        const failure = normalizeError(cause);
+        setServerFeedback({ environment, error: failure, notice: "" });
+        if (failure.code === "server.snapshotChanged") await refreshServers(true);
+      }
+      return undefined;
+    } finally {
+      if (currentActivity.current === activity) {
+        currentActivity.current = null;
+        if (mounted.current) setServerActivity(null);
+      }
     }
-  }, [perform]);
+  }, [acceptsEnvironment, environment, refreshServers]);
+
+  const currentRows = () => {
+    const view = currentView.current;
+    return view?.environment === environment ? view.rows : null;
+  };
+  const hasBookmark = (bookmark: ServerEntry) => currentRows()
+    ?.some((row) => row.index === bookmark.index && row.snapshot === bookmark.snapshot);
+  const publishUpdatedList = (rows: ServerEntry[]) => {
+    serverGeneration.current++;
+    publishView({ environment, rows, loading: false });
+  };
+
+  const saveServer = (name: string, address: string) => currentRows() !== null ? runServerAction(
+    "save-server",
+    () => command<ServerEntry[]>("save_server", {
+      versionId: environment.versionId,
+      entry: { name, address, hideAddress: false },
+    }),
+    publishUpdatedList,
+    "serverSaved",
+  ) : Promise.resolve(undefined);
+
+  const removeServer = (bookmark: ServerEntry) => hasBookmark(bookmark) ? runServerAction(
+    "remove-server",
+    () => command<ServerEntry[]>("remove_server", {
+      versionId: environment.versionId,
+      index: bookmark.index,
+      expected: { index: bookmark.index, snapshot: bookmark.snapshot },
+    }),
+    publishUpdatedList,
+    "serverRemoved",
+  ) : Promise.resolve(undefined);
+
+  const pingServer = (bookmark: ServerEntry) => hasBookmark(bookmark) ? runServerAction(
+    `ping-${bookmark.address}`,
+    () => command<ServerStatus>("ping_server", { address: bookmark.address }),
+    (result) => setServerStatus((previous) => ({
+      environment,
+      results: { ...(previous?.environment === environment ? previous.results : {}), [bookmark.address]: result },
+    })),
+  ) : Promise.resolve(undefined);
+
+  const discoverLan = () => runServerAction(
+    "lan",
+    () => command<LanWorld[]>("discover_lan"),
+    (results) => setServerLan({ environment, results }),
+  );
 
   const createManaged = useCallback((name: string, versionId: string) => managedRun(
     "create-managed",
@@ -292,18 +383,21 @@ export function useMultiplayer() {
   return {
     tab,
     setTab,
-    servers,
-    status,
-    lan,
-    lanSearched,
+    servers: visibleView?.rows ?? [],
+    serverEnvironment: environment,
+    serverLoading: Boolean(environment.versionId) && (visibleView === null || visibleView.loading),
+    serverReady: visibleView?.rows != null,
+    status: relevantStatus,
+    lan: relevantLan ?? [],
+    lanSearched: relevantLan !== null,
     managedServers,
     selectedManagedId,
     setSelectedManagedId,
     currentManaged,
     logs,
-    busy,
-    error,
-    notice,
+    busy: tab === "servers" ? visibleActivity?.key ?? "" : busy,
+    error: tab === "servers" ? visibleFeedback?.error ?? null : error,
+    notice: tab === "servers" ? visibleFeedback?.notice ?? "" : notice,
     launchNotice,
     dismissNotice,
     report,
@@ -311,13 +405,16 @@ export function useMultiplayer() {
     installedVersions: data.installedVersions,
     selectedVersionId,
     selectVersion,
-    refreshServers,
+    refreshServers: () => currentActivity.current?.environment === environment ? undefined : refreshServers(),
     refreshManaged,
     saveServer,
     removeServer,
     pingServer,
     discoverLan,
-    join: (address: string) => launchMultiplayer(selectedVersionId, address),
+    join: (address: string) => acceptsEnvironment() && environment.versionId
+      ? launchMultiplayer(environment.versionId, address) : undefined,
+    joinBookmark: (bookmark: ServerEntry) => hasBookmark(bookmark) && acceptsEnvironment()
+      ? launchMultiplayer(environment.versionId, bookmark.address) : undefined,
     createManaged,
     updateManaged,
     setEula,

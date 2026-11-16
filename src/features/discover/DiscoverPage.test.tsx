@@ -102,7 +102,7 @@ function fixture(): LauncherContextValue {
     selectedVersionId: "1.21.1",
     selectedRunningGame: undefined,
     running: [],
-    progress: null,
+    preparing: false, progress: null, resourceProgress: null,
     logs: [],
     busy: "",
     notice: null,
@@ -152,7 +152,7 @@ beforeEach(() => {
     if (name === "get_resource_context") return { gameVersion: "1.21.1", loader: mockLauncher.selectedInstance?.loader === "fabric" ? "fabric" : null };
     if (name === "resolve_resource_targets") return resourcePlan;
     if (name === "list_loader_versions") return [{ id: "0.16.9", stable: true, recommended: true }];
-    if (name === "list_download_tasks") return [];
+    if (name === "list_download_tasks") return { revision: 0, tasks: [] };
     if (name === "create_instance_for_resource") return { instance: { ...mockLauncher.data.instances[0], id: "new", versionId: fabricVersion, name: "Sodium" }, install: {} };
     if (name === "search_curseforge") return { hits: [project] };
     if (name === "install_resource" || name === "install_curseforge_resource") return { name: "Sodium", fileName: "sodium.jar", path: "fixture/sodium.jar" };
@@ -324,7 +324,7 @@ describe("resource target installation", () => {
     ["zh-CN", "loader-libraries", "校验加载器依赖", "5 / 8 个文件"],
   ])("localizes %s creation progress from %s and preserves actual counts", async (language, stage, label, count) => {
     resourcePlan = plan(false);
-    mockLauncher.progress = { operation: stage.startsWith("resource-") ? "resource" : "install", stage,
+    mockLauncher.resourceProgress = { taskId: "resource-task", operation: stage.startsWith("resource-") ? "resource" : "install", stage,
       completed: 5, total: 8, bytesCompleted: 0, bytesTotal: 0, message: "后端中文诊断，不应直接显示", versionId: fabricVersion };
     const dispatch = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => name === "create_instance_for_resource" ? await new Promise(() => {}) : dispatch(name, args));
@@ -345,7 +345,7 @@ describe("resource target installation", () => {
     ["future-resource-stage", "Creating the instance and installing the resource…"],
   ])("uses localized zero-total progress for %s without leaking diagnostic messages", async (stage, label) => {
     resourcePlan = plan(false);
-    mockLauncher.progress = { operation: "resource", stage, completed: 0, total: 0, bytesCompleted: 0, bytesTotal: 0,
+    mockLauncher.resourceProgress = { taskId: "resource-task", operation: "resource", stage, completed: 0, total: 0, bytesCompleted: 0, bytesTotal: 0,
       message: "检查资源及必需前置", versionId: fabricVersion };
     const dispatch = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => name === "create_instance_for_resource" ? await new Promise(() => {}) : dispatch(name, args));
@@ -366,7 +366,7 @@ describe("resource target installation", () => {
     { completed: Number.NaN, expected: "0 / 8 files" },
   ])("clamps invalid creation progress $completed to $expected", async ({ completed, expected }) => {
     resourcePlan = plan(false);
-    mockLauncher.progress = { operation: "resource", stage: "resource-download", completed, total: 8,
+    mockLauncher.resourceProgress = { taskId: "resource-task", operation: "resource", stage: "resource-download", completed, total: 8,
       bytesCompleted: 0, bytesTotal: 0, message: "资源下载诊断", versionId: fabricVersion };
     const dispatch = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => name === "create_instance_for_resource" ? await new Promise(() => {}) : dispatch(name, args));
@@ -505,7 +505,7 @@ describe("resource target installation", () => {
     const dispatch = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => {
       if (name === "create_instance_for_resource") return await new Promise(() => {});
-      if (name === "list_download_tasks") return [{ id: "unrelated", kind: "install", target: "1.21.1", status: "running" }, { id: "matched", kind: "resource", target: "sodium", status: "paused" }];
+      if (name === "list_download_tasks") return { revision: 2, tasks: [{ id: "unrelated", kind: "install", target: "1.21.1", status: "running" }, { id: "matched", kind: "resource", target: "sodium", status: "paused" }] };
       return dispatch(name, args);
     });
     await render(); await installCard();

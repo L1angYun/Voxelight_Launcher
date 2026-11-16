@@ -13,7 +13,21 @@
       "modpack": "整合包安装",
       "java": "Java 运行时",
       "server": "服务端安装",
-      "unknown": "下载任务"
+      "unknown": "下载任务",
+      "launch": "游戏准备",
+      "loader": "加载器安装",
+      "clone": "复制实例",
+      "backup": "实例备份",
+      "restore": "还原备份",
+      "export": "导出整合包",
+      "world-backup": "世界备份",
+      "world-import": "导入世界",
+      "local-resource-import": "导入本地内容",
+      "resource-check": "检查内容更新",
+      "resource-update": "内容更新",
+      "server-install": "服务端安装",
+      "server-start": "准备服务端",
+      "default-skin": "角色预览"
     },
     "stage": {
       "queued": "等待队列",
@@ -35,7 +49,9 @@
       "failed": "失败",
       "cancelled": "已取消",
       "interrupted": "已中断",
-      "unknown": "未知阶段"
+      "unknown": "未知阶段",
+      "server-jar": "校验服务端 JAR",
+      "error": "失败"
     }
   },
   "status": {
@@ -85,5 +101,6 @@
     "completed": "已完成"
   },
   "showMore": "显示更多",
-  "historyFiles": "文件：{{count}}"
+  "historyFiles": "文件：{{count}}",
+  "refresh": "刷新"
 }

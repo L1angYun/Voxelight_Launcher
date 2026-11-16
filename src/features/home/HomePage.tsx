@@ -30,6 +30,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     selectedRunningGame,
     running: runningGames,
     progress,
+    preparing,
     busy,
     gamePid,
     selectInstance,
@@ -53,7 +54,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   const [headPointer, setHeadPointer] = useState<{ x: number; y: number } | null>(null);
   const characterAreaRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<HTMLDivElement>(null);
-  const preparing = busy === "game.prepare";
   const running = Boolean(selectedRunningGame || gamePid);
   const selectedLaunchPhase = preparing ? "preparing" : running ? "running" : "idle";
   const anyRunning = running || runningGames.length > 0;
@@ -254,6 +254,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
                 onCancel={cancelPreparation}
                 onOpenFolder={() => void run("folder.open", () => command("open_folder", { kind: "game" }))}
                 busy={busy}
+                preparing={preparing}
                 running={running}
                 progress={currentProgress}
               />

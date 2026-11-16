@@ -540,7 +540,7 @@ pub async fn clone_instance(
 ) -> Result<Instance, String> {
     validate_name(&name)?;
     let _operation = state.operation.lock().await;
-    let task = state.control.begin("clone", &instance_id, &name);
+    let task = state.control.begin_with_display("clone", &instance_id, &name, &name)?;
     let arc = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || clone_inner(&arc, &instance_id, &name))
         .await
@@ -750,7 +750,7 @@ pub async fn backup_instance(
 ) -> Result<InstanceBackup, String> {
     let _operation = state.operation.lock().await;
     let value = instance(&state.snapshot()?, &instance_id)?;
-    let task = state.control.begin("backup", &instance_id, &value.name);
+    let task = state.control.begin_with_display("backup", &instance_id, &value.name, &value.name)?;
     let arc = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || backup_inner(&arc, &value))
         .await
@@ -1140,7 +1140,8 @@ pub async fn restore_instance_backup(
     backup_id: String,
 ) -> AppResult<RestoreResult> {
     let _operation = state.operation.lock().await;
-    let task = state.control.begin("restore", &instance_id, "恢复实例备份");
+    let label = instance(&state.snapshot()?, &instance_id)?.name;
+    let task = state.control.begin_with_display("restore", &instance_id, "恢复实例备份", &label)?;
     let arc = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || restore_inner(&arc, &instance_id, &backup_id))
         .await
@@ -1161,9 +1162,10 @@ pub async fn recover_instance_restore(
     instance_id: String,
 ) -> AppResult<RecoverRestoreResult> {
     let _operation = state.operation.lock().await;
+    let label = instance(&state.snapshot()?, &instance_id)?.name;
     let task = state
         .control
-        .begin("restore", &instance_id, "恢复中断的实例备份");
+        .begin_with_display("restore", &instance_id, "恢复中断的实例备份", &label)?;
     let arc = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || {
         let current = instance(&arc.snapshot()?, &instance_id)?;
@@ -1417,9 +1419,10 @@ pub async fn export_instance_zip(
     output_path: String,
 ) -> Result<String, String> {
     let _operation = state.operation.lock().await;
+    let label = instance(&state.snapshot()?, &instance_id)?.name;
     let task = state
         .control
-        .begin("backup", &instance_id, "导出个人实例备份");
+        .begin_with_display("backup", &instance_id, "导出个人实例备份", &label)?;
     let arc = state.inner().clone();
     let result =
         tokio::task::spawn_blocking(move || export_zip_inner(&arc, &instance_id, &output_path))

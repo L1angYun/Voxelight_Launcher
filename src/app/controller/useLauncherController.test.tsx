@@ -121,9 +121,10 @@ beforeEach(() => {
     if (name === "list_versions")
       return { latestRelease: "1.21.1", latestSnapshot: "", versions: [] };
     if (name === "list_running_games") return [];
+    if (name === "reserve_launch_task") return "reserved-fixture-task";
     if (name === "launch_game") return { pid: 12345 };
     if (name === "save_config") return args?.config as Config;
-    if (name === "cancel_download_task" || name === "set_download_paused") return [];
+    if (name === "cancel_download_task" || name === "set_download_paused") return { revision: 0, tasks: [] };
     return null;
   });
   eventsMock.mockImplementation((name, callback) => {
@@ -265,20 +266,106 @@ describe("launcher controller", () => {
     expect(current.notice?.code).toBe("desktop.required");
   });
 
-  it("launches the selected instance and cancels preparation with existing IPC arguments", async () => {
+  it("cancels the exact launch reservation before a delayed reservation can start anything", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    let reserve!: (id: string) => void;
+    const reservation = new Promise<string>(resolve => { reserve = resolve; });
+    commandMock.mockImplementation(async (name, args) => name === "reserve_launch_task" ? reservation : normal(name, args));
+    await render();
+    act(() => current.selectInstance("fixture-world"));
+    let launching!: Promise<void>;
+    let cancelling!: Promise<void>;
+    await act(async () => { launching = current.launch(); });
+    await act(async () => { cancelling = current.cancelPreparation(); });
+    await act(async () => { reserve("reserved-world-29"); await Promise.all([launching, cancelling]); });
+    expect(commandMock).toHaveBeenCalledWith("cancel_download_task", { taskId: "reserved-world-29" });
+    expect(commandMock).not.toHaveBeenCalledWith("cancel_download_task", { taskId: null });
+    expect(commandMock.mock.calls.some(([name]) => name === "launch_game" || name === "set_download_paused")).toBe(false);
+  });
+
+  it("owns launch preparation and exact cancellation while another install owns the busy message", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    let finishInstall!: () => void;
+    const installResult = new Promise<void>(resolve => { finishInstall = resolve; });
+    let finishLaunch!: (reason: LauncherError) => void;
+    const launchResult = new Promise<never>((_resolve, reject) => { finishLaunch = reject; });
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "reserve_launch_task") return "launch-while-installing";
+      if (name === "launch_game") return launchResult;
+      return normal(name, args);
+    });
+    await render();
+    let installing!: Promise<unknown>;
+    let launching!: Promise<void>;
+    await act(async () => { installing = current.run("instance.install", () => installResult); });
+    await act(async () => { launching = current.launch(); });
+    const wasPreparing = current.preparing;
+    const competingBusy = current.busy;
+    await act(async () => current.cancelPreparation());
+    const didCancelLaunch = commandMock.mock.calls.some(([name, args]) => name === "cancel_download_task" && args?.taskId === "launch-while-installing");
+    await act(async () => { finishLaunch(new LauncherError("download.cancelled")); await launching; });
+    expect(wasPreparing).toBe(true);
+    expect(competingBusy).toBe("instance.install");
+    expect(didCancelLaunch).toBe(true);
+    expect(current.preparing).toBe(false);
+    expect(current.notice?.kind).not.toBe("error");
+    await act(async () => { finishInstall(); await installing; });
+  });
+
+  it("ignores another operation's progress even when it targets the same version", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    let finish!: (pid: { pid: number }) => void;
+    const launchResult = new Promise<{ pid: number }>(resolve => { finish = resolve; });
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "reserve_launch_task") return "owned-launch-33";
+      if (name === "launch_game") return launchResult;
+      return normal(name, args);
+    });
+    await render();
+    let launching!: Promise<void>;
+    await act(async () => { launching = current.launch(); });
+    const delivered = { versionId: "1.21.1", stage: "assets", total: 100, bytesCompleted: 0, bytesTotal: 0, message: "fixture progress" };
+    await act(async () => listeners.get("launcher://progress")?.({ ...delivered, taskId: "owned-launch-33", operation: "launch", completed: 37 }));
+    expect(current.progress?.completed).toBe(37);
+    await act(async () => listeners.get("launcher://progress")?.({ ...delivered, taskId: "separate-install-51", operation: "install", completed: 82 }));
+    expect(current.progress?.completed).toBe(37);
+    await act(async () => { finish({ pid: 12345 }); await launching; });
+    await act(async () => listeners.get("launcher://progress")?.({ ...delivered, taskId: "owned-launch-33", operation: "launch", completed: 100 }));
+    expect(current.progress).toBeNull();
+  });
+
+  it("launches the selected instance using its reservation and ignores cancellation after it starts", async () => {
     await render();
     act(() => current.selectInstance("fixture-world"));
     expect(current.selectedInstance?.id).toBe("fixture-world");
     await act(async () => current.launch());
+    expect(commandMock).toHaveBeenCalledWith("reserve_launch_task", { versionId: "1.21.1", instanceId: "fixture-world" });
     expect(commandMock).toHaveBeenCalledWith("launch_game", {
       versionId: "1.21.1",
       instanceId: "fixture-world",
       accountId: "fixture-classic",
+      taskId: "reserved-fixture-task",
     });
     await act(async () => current.cancelPreparation());
-    expect(commandMock).toHaveBeenCalledWith("cancel_download_task", { taskId: null });
-    expect(commandMock).toHaveBeenCalledWith("set_download_paused", { paused: false });
+    expect(commandMock.mock.calls.some(([name]) => name === "cancel_download_task" || name === "set_download_paused")).toBe(false);
     expect(current.busy).toBe("");
+  });
+
+  it("releases only its queued reservation if launch IPC fails before entering the handler", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "reserve_launch_task") return "aborted-launch-fixture";
+      if (name === "launch_game") throw new LauncherError("desktop.required");
+      if (name === "cancel_download_task") throw new LauncherError("download.notFound");
+      return normal(name, args);
+    });
+    await render();
+    await act(async () => current.launch());
+    expect(commandMock.mock.calls.filter(([name]) => name === "cancel_download_task")).toEqual([
+      ["cancel_download_task", { taskId: "aborted-launch-fixture" }],
+    ]);
+    expect(current.notice?.code).toBe("desktop.required");
+    expect(current.preparing).toBe(false);
   });
 
   it("passes a direct multiplayer address to the native launch boundary", async () => {
@@ -288,24 +375,8 @@ describe("launcher controller", () => {
       versionId: "1.21.1",
       accountId: "fixture-classic",
       serverAddress: "play.example.invalid:25565",
+      taskId: "reserved-fixture-task",
     });
-  });
-
-  it("clears preparation progress after the game process starts", async () => {
-    await render();
-    act(() => listeners.get("launcher://progress")?.({
-      operation: "launch",
-      stage: "assets",
-      completed: 37,
-      total: 100,
-      bytesCompleted: 37,
-      bytesTotal: 100,
-      message: "fixture progress",
-      versionId: "1.21.1",
-    }));
-    expect(current.progress?.completed).toBe(37);
-    await act(async () => current.launch());
-    expect(current.progress).toBeNull();
   });
 
   it("reports whether an explicit settings save succeeded", async () => {
@@ -336,6 +407,7 @@ describe("launcher controller", () => {
     act(() => listeners.get("launcher://games")?.([running]));
     expect(current.running).toEqual([running]);
     commandMock.mockImplementation(async (name) => {
+      if (name === "reserve_launch_task") return "reserved-busy-fixture";
       if (name === "launch_game") throw new LauncherError("instance.running", {}, "实例正在运行");
       if (name === "bootstrap") return bootstrap;
       if (name === "list_versions") return { latestRelease: "1.21.1", versions: [] };
