@@ -451,7 +451,7 @@ async fn run_installer(
             }
             if Instant::now() > deadline {
                 let _ = child.kill().await;
-                return Err("加载器安装器运行超过 15 分钟，已终止；独立暂存目录保留日志".into());
+                return Err("加载器安装器运行超过 15 分钟，已终止；详见启动器日志".into());
             }
             if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
                 return if status.success() {
@@ -569,12 +569,13 @@ async fn heavyweight_loader(
     let expected_id = expected_profile["id"]
         .as_str()
         .ok_or("官方安装器缺少版本 ID")?;
-    let stage = safe_join(
+    let stage = crate::instances::StagingDirectory::create(safe_join(
         &state.data_dir,
         &format!("installers/staging/{loader}-{}", uuid::Uuid::new_v4()),
-    )?;
+    )?)?;
+    let stage = stage.path();
     let base_json = safe_join(
-        &stage,
+        stage,
         &format!("versions/{game_version}/{game_version}.json"),
     )?;
     fs::create_dir_all(base_json.parent().ok_or("暂存路径无效")?).map_err(|e| e.to_string())?;
@@ -589,7 +590,7 @@ async fn heavyweight_loader(
     fs::copy(
         safe_join(root, &format!("versions/{game_version}/{game_version}.jar"))?,
         safe_join(
-            &stage,
+            stage,
             &format!("versions/{game_version}/{game_version}.jar"),
         )?,
     )
@@ -617,9 +618,9 @@ async fn heavyweight_loader(
         0,
         "运行官方安装器及其客户端后处理",
     );
-    run_installer(state, app, Path::new(&java.path), &jar, &stage, loader).await?;
+    run_installer(state, app, Path::new(&java.path), &jar, stage, loader).await?;
     let output = safe_join(
-        &stage,
+        stage,
         &format!("versions/{expected_id}/{expected_id}.json"),
     )?;
     let mut profile = minecraft::parse_json(
@@ -629,11 +630,11 @@ async fn heavyweight_loader(
     if profile["id"].as_str() != Some(expected_id) {
         return Err("安装器生成了非预期版本 ID".into());
     }
-    commit_staged_libraries(&stage, root)?;
+    commit_staged_libraries(stage, root)?;
     // This also verifies the generated patched/client jars with the checksums
     // carried by the publisher's version.json. A zero exit code alone is insufficient.
     prepare_profile(state, app, &mut profile, root).await?;
-    profile["launcherMetadata"] = json!({"loader":loader,"loaderVersion":version,"officialVanillaBase":game_version,"installer":jar.file_name().unwrap_or_default().to_string_lossy(),"stagingDirectory":stage.to_string_lossy()});
+    profile["launcherMetadata"] = json!({"loader":loader,"loaderVersion":version,"officialVanillaBase":game_version,"installer":jar.file_name().unwrap_or_default().to_string_lossy()});
     write_profile(root, &profile)
 }
 

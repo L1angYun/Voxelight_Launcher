@@ -458,6 +458,7 @@ export async function installLauncherFixture(
             await new Promise((resolve) => setTimeout(resolve, options.launchDelay ?? 1600));
             return { pid: 12345 };
           }
+          if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
           if (name.startsWith("list_") || name === "read_managed_server_logs")
             return [];
           return null;

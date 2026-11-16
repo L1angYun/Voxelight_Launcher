@@ -66,7 +66,13 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
         history === null ? (showEmpty ? <EmptyState title={t("library:historyNotLoaded")} /> : null) : history.length ? <div className="vx-resource-list">{history.map((entry) => (
           <div className="vx-resource-row" key={entry.updateId}>
             <div><strong>{entry.name}</strong><small>{formatDate(entry.createdAt, i18n.language)} · {t(`library:historyStatus.${entry.status}`)}</small></div>
-            {entry.status === "committed" ? <Button variant="ghost" onClick={() => void manager.rollback(entry, t("library:rollbackConfirm", { name: entry.name }))}>{t("library:rollback")}</Button> : null}
+            {entry.canRecover ? (
+              <Button variant="secondary" disabled={Boolean(busy)}
+                onClick={() => void manager.recover(entry, t("library:recoverTransactionConfirm", { name: entry.name }))}>
+                {t("library:recoverTransaction")}
+              </Button>
+            ) : entry.status === "committed" ? <Button variant="ghost" onClick={() => void manager.rollback(entry, t("library:rollbackConfirm", { name: entry.name }))}>{t("library:rollback")}</Button> : null}
+
           </div>
         ))}</div> : showEmpty ? <EmptyState title={t("library:noHistory")} /> : null
       ) : null}

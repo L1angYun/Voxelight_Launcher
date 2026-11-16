@@ -1,5 +1,6 @@
 //! Reversible instance metadata changes, cloning, personal backups and restoration.
 use crate::{
+    errors::{AppError, AppResult},
     models::{Instance, Persisted},
     storage::{safe_join, validate_id, LauncherState},
 };
@@ -14,6 +15,7 @@ use std::{
     sync::Arc,
 };
 use tauri::State;
+use uuid::Uuid;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const MAX_TREE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
@@ -79,6 +81,136 @@ pub(crate) fn checked_absolute(path: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(path.to_owned())
+}
+
+// Planned insertion in instances.rs, after checked_absolute.
+// Use only with verified absolute siblings, within an operation lock.
+#[cfg(windows)]
+pub(crate) fn rename_owned_directory(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileW(source: *const u16, target: *const u16) -> i32;
+    }
+    // Windows extended-length paths preserve the existing long-path behavior.
+    fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
+        let path_wire = path.as_os_str().encode_wide();
+        let mut path = match path.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Verbatim(_) | Prefix::VerbatimUNC(..) | Prefix::VerbatimDisk(_) => {
+                    path_wire.collect::<Vec<_>>()
+                }
+                Prefix::UNC(..) => r"\\?\UNC\"
+                    .encode_utf16()
+                    .chain(path_wire.skip(2))
+                    .collect(),
+                Prefix::Disk(_) => r"\\?\".encode_utf16().chain(path_wire).collect(),
+                _ => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+            },
+            _ => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+        };
+        if path.contains(&0) {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        path.push(0);
+        Ok(path)
+    }
+    // Canonicalizing the already verified parent also converts slash spelling
+    // consistently and handles UNC before accessing its leaf.
+    fn native(path: &Path) -> std::io::Result<Vec<u16>> {
+        let invalid = std::io::ErrorKind::InvalidInput;
+        let parent = path.parent().ok_or(invalid)?;
+        let name = path.file_name().ok_or(invalid)?;
+        wide(&parent.canonicalize()?.join(name))
+    }
+    let (source, target) = (native(source)?, native(target)?);
+    // Both arguments are live, terminated UTF-16 strings; MoveFileW neither
+    // changes them nor replaces an occupied directory.
+    if unsafe { MoveFileW(source.as_ptr(), target.as_ptr()) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn rename_owned_directory(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::{
+        ffi::{c_char, c_int, c_uint, CString},
+        os::unix::ffi::OsStrExt,
+    };
+    #[cfg(target_os = "linux")]
+    unsafe extern "C" {
+        fn renameat2(
+            from_fd: c_int,
+            from: *const c_char,
+            to_fd: c_int,
+            to: *const c_char,
+            flags: c_uint,
+        ) -> c_int;
+    }
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        fn renamex_np(from: *const c_char, to: *const c_char, flags: c_uint) -> c_int;
+    }
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    // Absolute, checked strings; the platform primitive refuses an already
+    // occupied target. No replace-based fallback on unsupported filesystems.
+    #[cfg(target_os = "linux")]
+    let result = unsafe { renameat2(-100, source.as_ptr(), -100, target.as_ptr(), 1) };
+    #[cfg(target_os = "macos")]
+    let result = unsafe { renamex_np(source.as_ptr(), target.as_ptr(), 4) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+pub(crate) fn rename_owned_directory(_source: &Path, _target: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
+// Own only a directory we created exclusively. Recursive removal on Drop skips
+// a replaced root link and never guesses ownership of old leftover directories.
+pub(crate) struct StagingDirectory(PathBuf, bool);
+
+impl StagingDirectory {
+    pub(crate) fn create(path: PathBuf) -> Result<Self, String> {
+        checked_absolute(&path)?;
+        let parent = path.parent().ok_or("暂存目录无效")?;
+        fs::create_dir_all(parent).map_err(|e| format!("无法创建暂存父目录：{e}"))?;
+        fs::create_dir(&path).map_err(|e| format!("无法创建独立暂存目录：{e}"))?;
+        Ok(Self(path, true))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+
+    pub(crate) fn preserve(&mut self) {
+        self.1 = false;
+    }
+
+    /// Publishing does not imply that this guard still owns the old name. If
+    /// the final move fails, preserve the finished recovery copy at that name.
+    pub(crate) fn publish(&mut self, target: &Path) -> std::io::Result<()> {
+        self.preserve();
+        rename_owned_directory(self.path(), target)
+    }
+}
+
+impl Drop for StagingDirectory {
+    fn drop(&mut self) {
+        if self.1 && checked_absolute(&self.0).is_ok() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 }
 
 pub(crate) fn instance(data: &Persisted, id: &str) -> Result<Instance, String> {
@@ -195,6 +327,15 @@ fn copy_snapshot_controlled(
         return Err("暂存目录已经存在，已停止以保护现有文件".into());
     }
     fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    copy_into_snapshot(source, destination, files, control)
+}
+
+fn copy_into_snapshot(
+    source: &Path,
+    destination: &Path,
+    files: &[FileRecord],
+    control: Option<&LauncherState>,
+) -> Result<(), String> {
     for record in files {
         if let Some(state) = control {
             sync_checkpoint(state)?;
@@ -424,12 +565,15 @@ fn clone_inner(state: &LauncherState, instance_id: &str, name: &str) -> Result<I
         );
     }
     let files = collect_files_controlled(&source, Some(state))?;
-    copy_snapshot_controlled(&source, &staging, &files, Some(state))?;
+    let mut staging = StagingDirectory::create(staging)?;
+    copy_into_snapshot(&source, staging.path(), &files, Some(state))?;
     sync_checkpoint(state)?;
-    if destination.exists() {
-        return Err("克隆目标已存在，原实例和暂存副本均已保留".into());
+    if let Err(error) = staging.publish(&destination) {
+        return Err(format!(
+            "提交克隆失败，完整暂存副本保留在 {}：{error}",
+            staging.path().display()
+        ));
     }
-    fs::rename(&staging, &destination).map_err(|e| format!("提交克隆失败，暂存副本已保留：{e}"))?;
     let mut value = old;
     replace_metadata(
         &mut value,
@@ -442,7 +586,12 @@ fn clone_inner(state: &LauncherState, instance_id: &str, name: &str) -> Result<I
             ("totalPlayTime".into(), json!(0)),
         ],
     )?;
-    register(&state, value)
+    register(&state, value).map_err(|error| {
+        format!(
+            "克隆文件已完整保留在 {}，登记失败：{error}",
+            destination.display()
+        )
+    })
 }
 
 pub(crate) fn write_archive(
@@ -453,6 +602,18 @@ pub(crate) fn write_archive(
     manifest: &[u8],
 ) -> Result<(), String> {
     write_archive_controlled(source, output, files, manifest_name, manifest, None)
+}
+
+fn backup_file_options(size: u64) -> SimpleFileOptions {
+    let large = size >= 4_000_000_000;
+    SimpleFileOptions::default()
+        .compression_method(if large {
+            CompressionMethod::Stored
+        } else {
+            CompressionMethod::Deflated
+        })
+        .large_file(large)
+        .unix_permissions(0o644)
 }
 
 fn write_archive_controlled(
@@ -481,10 +642,7 @@ fn write_archive_controlled(
             .open(&temp)
             .map_err(|e| e.to_string())?;
         let mut zip = ZipWriter::new(file);
-        let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .unix_permissions(0o644);
-        zip.start_file(manifest_name, options)
+        zip.start_file(manifest_name, backup_file_options(manifest.len() as u64))
             .map_err(|e| e.to_string())?;
         zip.write_all(manifest).map_err(|e| e.to_string())?;
         for record in files {
@@ -495,7 +653,7 @@ fn write_archive_controlled(
                 return Err("实例包含与备份清单冲突的文件名，无法导出".into());
             }
             let path = safe_join(source, &record.relative)?;
-            zip.start_file(&record.relative, options)
+            zip.start_file(&record.relative, backup_file_options(record.size))
                 .map_err(|e| e.to_string())?;
             let mut source_file = fs::File::open(path).map_err(|e| e.to_string())?;
             std::io::copy(&mut source_file, &mut zip).map_err(|e| e.to_string())?;
@@ -603,46 +761,360 @@ pub async fn backup_instance(
     result
 }
 
+// Planned replacement for instance backup listing / restoration in instances.rs.
+// Application calls remain local to this module and only explicit restore /
+// recover commands acquire the write lock; listing does not perform recovery.
+#[derive(Clone, Copy, Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum BackupWarningReason {
+    Invalid,
+    WrongInstance,
+    Unreadable,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupWarning {
+    file_name: String,
+    reason: BackupWarningReason,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupHistory {
+    backups: Vec<InstanceBackup>,
+    warnings: Vec<BackupWarning>,
+    recovery: Option<RecoveryPaths>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryPaths {
+    current_directory: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restored_directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_backup_id: Option<String>,
+}
+
+impl RecoveryPaths {
+    fn current(current: &Path) -> Self {
+        Self {
+            current_directory: current.to_string_lossy().into_owned(),
+            previous_directory: None,
+            restored_directory: None,
+            previous_backup_id: None,
+        }
+    }
+
+    fn error(self, code: &str, detail: impl Into<String>) -> AppError {
+        let mut error = AppError::new(code)
+            .with_param("currentDirectory", self.current_directory)
+            .with_detail(detail);
+        if let Some(path) = self.previous_directory {
+            error = error.with_param("previousDirectory", path);
+        }
+        if let Some(path) = self.restored_directory {
+            error = error.with_param("restoredDirectory", path);
+        }
+        if let Some(id) = self.previous_backup_id {
+            error = error.with_param("previousBackupId", id);
+        }
+        error
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreIntent {
+    token: Uuid,
+    before: Instance,
+    after: Instance,
+    original: Option<RestoreIdentity>,
+    selected: RestoreIdentity,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreIdentity {
+    id: Uuid,
+    manifest_sha256: String,
+}
+
+const RESTORE_INTENT: &str = "restore-in-progress.json";
+const MAX_RESTORE_INTENT_BYTES: u64 = 2 * 1024 * 1024;
+
+struct RestorePaths {
+    live: PathBuf,
+    stage: PathBuf,
+    previous: PathBuf,
+}
+
+impl RestorePaths {
+    fn new(live: &Path, token: Uuid) -> Result<Self, String> {
+        checked_absolute(live)?;
+        let parent = live.parent().ok_or("实例目录无效")?;
+        Ok(Self {
+            live: live.to_owned(),
+            stage: safe_join(parent, &format!(".restore-{token}"))?,
+            previous: safe_join(parent, &format!(".before-restore-{token}"))?,
+        })
+    }
+
+    fn locations(&self, intent: &RestoreIntent) -> RecoveryPaths {
+        let mut locations = RecoveryPaths::current(&self.live);
+        locations.restored_directory = self
+            .stage
+            .is_dir()
+            .then(|| self.stage.to_string_lossy().into_owned());
+        locations.previous_directory = self
+            .previous
+            .is_dir()
+            .then(|| self.previous.to_string_lossy().into_owned());
+        locations.previous_backup_id = intent.original.as_ref().map(|backup| backup.id.to_string());
+        locations
+    }
+}
+
+fn directory_present(path: &Path) -> Result<bool, String> {
+    checked_absolute(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(stat) if stat.is_dir() => Ok(true),
+        Ok(_) => Err("恢复路径不是普通目录".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("无法检查恢复路径：{error}")),
+    }
+}
+
+fn backup_folder(state: &LauncherState, instance_id: &str) -> Result<PathBuf, String> {
+    validate_id(instance_id)?;
+    let root = checked_absolute(&state.data_dir.join("instance-backups"))?;
+    safe_join(&root, instance_id)
+}
+
+fn backup_history(folder: &Path, instance_id: &str) -> Result<BackupHistory, String> {
+    let mut history = BackupHistory {
+        backups: Vec::new(),
+        warnings: Vec::new(),
+        recovery: None,
+    };
+    if !directory_present(folder)? {
+        return Ok(history);
+    }
+    for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if path.extension().and_then(|s| s.to_str()) != Some("zip") || Uuid::parse_str(id).is_err()
+        {
+            continue;
+        }
+        let (archive, length) = match checked_absolute(&path)
+            .and_then(|_| fs::metadata(&path).map_err(|e| e.to_string()))
+        {
+            Ok(stat) if stat.is_file() => match read_backup(&path) {
+                Ok(archive) => (archive, stat.len()),
+                Err(_) => {
+                    history.warnings.push(BackupWarning {
+                        file_name: entry.file_name().to_string_lossy().into_owned(),
+                        reason: BackupWarningReason::Invalid,
+                    });
+                    continue;
+                }
+            },
+            _ => {
+                history.warnings.push(BackupWarning {
+                    file_name: entry.file_name().to_string_lossy().into_owned(),
+                    reason: BackupWarningReason::Unreadable,
+                });
+                continue;
+            }
+        };
+        if archive.instance.id != instance_id {
+            history.warnings.push(BackupWarning {
+                file_name: entry.file_name().to_string_lossy().into_owned(),
+                reason: BackupWarningReason::WrongInstance,
+            });
+            continue;
+        }
+        history
+            .backups
+            .push(backup_entry(&path, id, length, &archive));
+    }
+    history.backups.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    history
+        .warnings
+        .sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    Ok(history)
+}
+
+fn backup_entry(path: &Path, id: &str, length: u64, archive: &BackupManifest) -> InstanceBackup {
+    InstanceBackup {
+        id: id.into(),
+        instance_id: archive.instance.id.clone(),
+        version_id: archive.instance.version_id.clone(),
+        created_at: archive.created_at.clone(),
+        path: path.to_string_lossy().into_owned(),
+        size: length,
+    }
+}
+
 #[tauri::command]
 pub fn list_instance_backups(
     state: State<'_, Arc<LauncherState>>,
     instance_id: String,
-) -> Result<Vec<InstanceBackup>, String> {
-    instance(&state.snapshot()?, &instance_id)?;
-    validate_id(&instance_id)?;
-    let root = checked_absolute(&state.data_dir.join("instance-backups"))?;
-    let folder = safe_join(&root, &instance_id)?;
-    if !folder.exists() {
-        return Ok(Vec::new());
+) -> AppResult<BackupHistory> {
+    let current = instance(&state.snapshot()?, &instance_id)?;
+    let folder = backup_folder(&state, &instance_id)?;
+    let mut history = backup_history(&folder, &instance_id)?;
+    let live = Path::new(&current.game_directory);
+    history.recovery = match read_intent(&folder) {
+        Ok(Some(intent)) => Some(intent_paths(&intent, &current).map_or_else(
+            |_| RecoveryPaths::current(live),
+            |paths| paths.locations(&intent),
+        )),
+        Err(_) => Some(RecoveryPaths::current(live)),
+        Ok(None) => None,
+    };
+    Ok(history)
+}
+
+fn intent_paths(intent: &RestoreIntent, current: &Instance) -> Result<RestorePaths, String> {
+    if intent.before.game_directory != current.game_directory
+        || intent.after.game_directory != current.game_directory
+        || intent.before.id != current.id
+        || intent.after.id != current.id
+        || intent
+            .original
+            .as_ref()
+            .is_some_and(|before| before.id == intent.selected.id)
+    {
+        return Err("恢复记录与当前实例不一致".into());
     }
-    let mut result = Vec::new();
-    for item in fs::read_dir(&folder).map_err(|e| e.to_string())? {
-        let path = item.map_err(|e| e.to_string())?.path();
-        checked_absolute(&path)?;
-        if path.extension().and_then(|s| s.to_str()) != Some("zip") || !path.is_file() {
-            continue;
-        }
-        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if uuid::Uuid::parse_str(id).is_err() {
-            continue;
-        }
-        let metadata = read_backup(&path)?;
-        if metadata.instance.id != instance_id {
-            return Err("备份归属校验失败".into());
-        }
-        result.push(InstanceBackup {
-            id: id.into(),
-            instance_id: instance_id.clone(),
-            version_id: metadata.instance.version_id,
-            created_at: metadata.created_at,
-            size: fs::metadata(&path).map_err(|e| e.to_string())?.len(),
-            path: path.to_string_lossy().into_owned(),
-        });
+    RestorePaths::new(Path::new(&current.game_directory), intent.token)
+}
+
+fn read_intent(folder: &Path) -> Result<Option<RestoreIntent>, String> {
+    let path = safe_join(folder, RESTORE_INTENT)?;
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("无法读取恢复记录：{error}")),
+    };
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("恢复记录路径无效".into());
     }
-    result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Ok(result)
+    let mut bytes = vec![];
+    (&mut file)
+        .take(MAX_RESTORE_INTENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_RESTORE_INTENT_BYTES {
+        return Err("恢复记录过大".into());
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| format!("恢复记录无效：{e}"))
+}
+
+fn write_intent(folder: &Path, intent: &RestoreIntent) -> Result<(), String> {
+    let output = safe_join(folder, RESTORE_INTENT)?;
+    let temporary = safe_join(folder, &format!(".restore-intent-{}.part", Uuid::new_v4()))?;
+    let bytes = serde_json::to_vec_pretty(intent).map_err(|e| e.to_string())?;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|e| e.to_string())?;
+    let written = file.write_all(&bytes).and_then(|_| file.sync_all());
+    drop(file);
+    // Same-volume rename which fails on existing target, also when another
+    // process was active before the future profile lock. The helper supports
+    // regular files in the same parent as well as directory moves.
+    let result = written.and_then(|()| rename_owned_directory(&temporary, &output));
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result.map_err(|e| format!("无法保存恢复记录：{e}"))
+}
+
+fn selected_archive(folder: &Path, id: Uuid) -> Result<(PathBuf, BackupManifest), String> {
+    let path = safe_join(folder, &format!("{id}.zip"))?;
+    let archive = read_backup(&path)?;
+    Ok((path, archive))
+}
+
+fn identify_archive(id: Uuid, archive: &BackupManifest) -> Result<RestoreIdentity, String> {
+    let bytes = serde_json::to_vec(archive).map_err(|e| e.to_string())?;
+    Ok(RestoreIdentity {
+        id,
+        manifest_sha256: format!("{:x}", Sha256::digest(bytes)),
+    })
+}
+
+fn verify_archive(
+    folder: &Path,
+    saved: &RestoreIdentity,
+    expected_id: &str,
+) -> Result<(PathBuf, BackupManifest), String> {
+    let (path, archive) = selected_archive(folder, saved.id)?;
+    if archive.instance.id != expected_id
+        || saved.manifest_sha256 != identify_archive(saved.id, &archive)?.manifest_sha256
+    {
+        return Err("恢复记录对应的备份已改变".into());
+    }
+    Ok((path, archive))
+}
+
+fn same_instance(a: &Instance, b: &Instance) -> Result<bool, String> {
+    Ok(serde_json::to_value(a).map_err(|e| e.to_string())?
+        == serde_json::to_value(b).map_err(|e| e.to_string())?)
+}
+
+fn replace_registered_instance(
+    state: &LauncherState,
+    expected: &Instance,
+    replacement: &Instance,
+) -> Result<(), String> {
+    state.update(|data| {
+        let value = data
+            .instances
+            .iter_mut()
+            .find(|entry| entry.id == expected.id)
+            .ok_or("实例已被移除")?;
+        if !same_instance(value, expected)? {
+            return Err("当前实例信息已改变".into());
+        }
+        *value = replacement.clone();
+        Ok(())
+    })
+}
+
+fn restore_target(state: &LauncherState, current: &Instance) -> AppResult<PathBuf> {
+    crate::resources::require_resource_stopped(state, &current.version_id, Some(&current.id))?;
+    let directory = checked_absolute(Path::new(&current.game_directory))?;
+    let configured = PathBuf::from(state.snapshot()?.config.game_directory);
+    let normalized = directory
+        .canonicalize()
+        .unwrap_or_else(|_| directory.clone());
+    // Named archive metadata may reference another folder. The only target is
+    // the currently registered independent instance, not a shared game root.
+    if directory == configured
+        || normalized == configured.canonicalize().unwrap_or(configured)
+        || state.data_dir.starts_with(&directory)
+        || Path::new(env!("CARGO_MANIFEST_DIR")).starts_with(&directory)
+    {
+        return Err("共享游戏根目录或启动器目录不能原地恢复。请将备份导入为新的独立实例。".into());
+    }
+    Ok(directory)
 }
 
 #[derive(Serialize)]
@@ -653,113 +1125,288 @@ pub struct RestoreResult {
     pub previous_directory: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverRestoreResult {
+    pub instance: Instance,
+    pub previous_backup: Option<InstanceBackup>,
+    pub preserved_directory: Option<String>,
+}
+
 #[tauri::command]
 pub async fn restore_instance_backup(
     state: State<'_, Arc<LauncherState>>,
     instance_id: String,
     backup_id: String,
-) -> Result<RestoreResult, String> {
+) -> AppResult<RestoreResult> {
     let _operation = state.operation.lock().await;
     let task = state.control.begin("restore", &instance_id, "恢复实例备份");
     let arc = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || restore_inner(&arc, &instance_id, &backup_id))
         .await
-        .unwrap_or_else(|e| Err(format!("恢复任务异常：{e}")));
+        .unwrap_or_else(|e| Err(AppError::internal(format!("恢复任务异常：{e}"))));
     state
         .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
+        .finish(&task, result.as_ref().err().map(backup_task_error));
     result
+}
+
+fn backup_task_error(error: &AppError) -> &str {
+    error.detail.as_deref().unwrap_or(&error.code)
+}
+
+#[tauri::command]
+pub async fn recover_instance_restore(
+    state: State<'_, Arc<LauncherState>>,
+    instance_id: String,
+) -> AppResult<RecoverRestoreResult> {
+    let _operation = state.operation.lock().await;
+    let task = state
+        .control
+        .begin("restore", &instance_id, "恢复中断的实例备份");
+    let arc = state.inner().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let current = instance(&arc.snapshot()?, &instance_id)?;
+        let directory = restore_target(&arc, &current)?;
+        let folder = backup_folder(&arc, &instance_id)?;
+        let intent = read_intent(&folder)
+            .map_err(|err| {
+                RecoveryPaths::current(&directory).error("backup.restoreRecoveryRequired", err)
+            })?
+            .ok_or_else(|| AppError::new("backup.restoreRecoveryMissing"))?;
+        let paths = intent_paths(&intent, &current).map_err(|err| {
+            RecoveryPaths::current(&directory).error("backup.restoreRecoveryRequired", err)
+        })?;
+        recover_with_state(&arc, &folder, &intent, &paths, &current).map_err(|err| {
+            paths
+                .locations(&intent)
+                .error("backup.restoreRecoveryRequired", err)
+        })
+    })
+    .await
+    .unwrap_or_else(|e| Err(AppError::internal(format!("恢复任务异常：{e}"))));
+    state
+        .control
+        .finish(&task, result.as_ref().err().map(backup_task_error));
+    result
+}
+
+fn recover_with_state(
+    state: &LauncherState,
+    folder: &Path,
+    intent: &RestoreIntent,
+    paths: &RestorePaths,
+    current: &Instance,
+) -> Result<RecoverRestoreResult, String> {
+    let already_before = same_instance(current, &intent.before)?;
+    if !already_before && !same_instance(current, &intent.after)? {
+        return Err("实例已改变，已保留恢复副本".into());
+    }
+
+    // A pending recovery should validate against the pinned archive inventory
+    // without selecting another user's game or accepting an unrelated snapshot.
+    let original = intent
+        .original
+        .as_ref()
+        .map(|backup| verify_archive(folder, backup, &current.id))
+        .transpose()?;
+    let (_, selected) = verify_archive(folder, &intent.selected, &current.id)?;
+    recover_layout(
+        paths,
+        original.as_ref().map(|(_, backup)| backup.files.as_slice()),
+        &selected.files,
+    )?;
+    if !already_before {
+        replace_registered_instance(state, current, &intent.before)?;
+    }
+    let previous_backup = original
+        .map(|(path, archive)| {
+            fs::metadata(&path).map(|stat| {
+                backup_entry(
+                    &path,
+                    &intent.original.as_ref().unwrap().id.to_string(),
+                    stat.len(),
+                    &archive,
+                )
+            })
+        })
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    clear_intent(folder)?;
+    Ok(RecoverRestoreResult {
+        instance: intent.before.clone(),
+        previous_backup,
+        preserved_directory: paths
+            .stage
+            .is_dir()
+            .then(|| paths.stage.to_string_lossy().into_owned()),
+    })
+}
+
+fn clear_intent(folder: &Path) -> Result<(), String> {
+    fs::remove_file(safe_join(folder, RESTORE_INTENT)?)
+        .map_err(|e| format!("无法清除恢复记录：{e}"))
+}
+
+/// Recover only known layouts and never replace an unrelated or modified live
+/// directory. Compare both stage presence and file inventories; old and new
+/// may be byte-identical and an empty folder is not equivalent to no folder.
+fn recover_layout(
+    paths: &RestorePaths,
+    original: Option<&[FileRecord]>,
+    selected: &[FileRecord],
+) -> Result<(), String> {
+    let (has_live, has_previous, has_stage) = (
+        directory_present(&paths.live)?,
+        directory_present(&paths.previous)?,
+        directory_present(&paths.stage)?,
+    );
+    if has_stage && collect_files(&paths.stage)? != selected {
+        return Err("暂存恢复目录已改变，已保留所有文件".into());
+    }
+    if has_previous {
+        let original = original.ok_or("恢复前没有活动目录，发现非预期副本")?;
+        if collect_files(&paths.previous)? != original {
+            return Err("恢复前目录校验失败，已保留所有文件".into());
+        }
+        if has_live {
+            if has_stage || collect_files(&paths.live)? != selected {
+                return Err("活动目录不符合本次恢复记录，未覆盖".into());
+            }
+            rename_owned_directory(&paths.live, &paths.stage)
+                .map_err(|e| format!("无法保留已发布的备份副本：{e}"))?;
+        }
+        // If interrupted after parking the selected live, a later recover sees
+        // active missing with a verified previous and can resume just this move.
+        return rename_owned_directory(&paths.previous, &paths.live)
+            .map_err(|e| format!("无法复位恢复前目录：{e}"));
+    }
+    if let Some(original) = original {
+        if !has_live || collect_files(&paths.live)? != original {
+            return Err("恢复前目录不存在或与备份不符，未覆盖活动目录".into());
+        }
+    } else if has_live {
+        if has_stage || collect_files(&paths.live)? != selected {
+            return Err("活动目录不符合本次恢复记录，未覆盖".into());
+        }
+        rename_owned_directory(&paths.live, &paths.stage)
+            .map_err(|e| format!("无法保留已发布的备份副本：{e}"))?;
+    }
+    Ok(())
 }
 
 fn restore_inner(
     state: &LauncherState,
     instance_id: &str,
     backup_id: &str,
-) -> Result<RestoreResult, String> {
-    state.games.require_instance_stopped(instance_id)?;
-    let current = instance(&state.snapshot()?, &instance_id)?;
-    uuid::Uuid::parse_str(&backup_id).map_err(|_| "备份标识无效")?;
-    validate_id(&instance_id)?;
-    let archive = safe_join(
-        &state.data_dir.join("instance-backups"),
-        &format!("{instance_id}/{backup_id}.zip"),
-    )?;
-    let metadata = read_backup(&archive)?;
+) -> AppResult<RestoreResult> {
+    let current = instance(&state.snapshot()?, instance_id)?;
+    let directory = restore_target(state, &current)?;
+    let folder = backup_folder(state, instance_id)?;
+    match read_intent(&folder) {
+        Ok(None) => (),
+        Ok(Some(pending)) => {
+            let locations = intent_paths(&pending, &current).map_or_else(
+                |_| RecoveryPaths::current(&directory),
+                |paths| paths.locations(&pending),
+            );
+            return Err(locations.error(
+                "backup.restoreRecoveryRequired",
+                "此实例有未完成的恢复，请先显式恢复",
+            ));
+        }
+        Err(error) => {
+            return Err(
+                RecoveryPaths::current(&directory).error("backup.restoreRecoveryRequired", error)
+            )
+        }
+    }
+
+    let selected_id = Uuid::parse_str(backup_id).map_err(|_| AppError::new("backup.notFound"))?;
+    if selected_id.to_string() != backup_id {
+        return Err(AppError::new("backup.notFound"));
+    }
+    let (archive, metadata) = selected_archive(&folder, selected_id)
+        .map_err(|e| AppError::new("backup.invalid").with_detail(e))?;
     if metadata.instance.id != instance_id {
-        return Err("所选备份不属于此实例".into());
+        return Err(AppError::new("backup.notFound"));
     }
-    let directory = checked_absolute(Path::new(&current.game_directory))?;
-    let configured = PathBuf::from(state.snapshot()?.config.game_directory);
-    if directory == configured
-        || state.data_dir.starts_with(&directory)
-        || Path::new(env!("CARGO_MANIFEST_DIR")).starts_with(&directory)
-    {
-        return Err("共享游戏根目录或启动器目录不能原地恢复。请将备份导入为新的独立实例。".into());
+    let mut restored = metadata.instance.clone();
+    validate_id(&restored.version_id)?;
+    restored.game_directory = current.game_directory.clone();
+    let token = Uuid::new_v4();
+    let paths = RestorePaths::new(&directory, token)?;
+    let mut staging = StagingDirectory::create(paths.stage.clone())?;
+    if directory_present(&paths.previous)? {
+        return Err("恢复副本目录已存在".into());
     }
-    let parent = directory.parent().ok_or("实例目录无效")?;
-    let token = uuid::Uuid::new_v4().to_string();
-    let staging = safe_join(parent, &format!(".restore-{token}"))?;
-    let previous = safe_join(parent, &format!(".before-restore-{token}"))?;
-    if staging.exists() || previous.exists() {
-        return Err("恢复暂存目录已存在".into());
-    }
-    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     crate::modpacks::extract_zip_controlled(
         &archive,
-        &staging,
+        staging.path(),
         "",
         &["launcher-backup.json"],
         Some(state),
     )?;
-    if collect_files_controlled(&staging, Some(state))? != metadata.files {
-        return Err("备份内容与 SHA-256 清单不一致，当前实例未改变".into());
+    if collect_files_controlled(staging.path(), Some(state))? != metadata.files {
+        return Err(AppError::new("backup.invalid"));
     }
-    let previous_backup = if directory.exists() {
-        Some(backup_inner(&state, &current)?)
+
+    let (previous_backup, original) = if directory_present(&paths.live)? {
+        let backup = backup_inner(state, &current)?;
+        let id = Uuid::parse_str(&backup.id).map_err(|_| "恢复前备份标识无效")?;
+        let original = identify_archive(id, &read_backup(Path::new(&backup.path))?)?;
+        (Some(backup), Some(original))
     } else {
-        None
+        fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        (None, None)
     };
     sync_checkpoint(state)?;
-    validate_id(&metadata.instance.version_id)?;
-    if directory.exists() {
-        fs::rename(&directory, &previous)
-            .map_err(|e| format!("无法保留恢复前目录，请关闭游戏后重试：{e}"))?;
-    }
-    if let Err(error) = fs::rename(&staging, &directory) {
-        if previous.exists() {
-            let _ = fs::rename(&previous, &directory);
+    let intent = RestoreIntent {
+        token,
+        before: current.clone(),
+        after: restored.clone(),
+        original,
+        selected: identify_archive(selected_id, &metadata)?,
+    };
+    write_intent(&folder, &intent)?;
+    staging.preserve(); // durable material now belongs to the recovery intent
+
+    let publish = (|| -> Result<(), String> {
+        if intent.original.is_some() {
+            rename_owned_directory(&paths.live, &paths.previous).map_err(|e| e.to_string())?;
         }
-        return Err(format!("提交恢复失败，原目录和暂存副本已保留：{error}"));
-    }
-    let mut restored = metadata.instance;
-    replace_metadata(
-        &mut restored,
-        &[("gameDirectory".into(), json!(directory.to_string_lossy()))],
-    )?;
-    if let Err(error) = state.update(|data| {
-        let value = data
-            .instances
-            .iter_mut()
-            .find(|v| v.id == instance_id)
-            .ok_or("实例已被移除")?;
-        *value = restored.clone();
-        Ok(())
-    }) {
-        let failed = safe_join(parent, &format!(".restored-unregistered-{token}"))?;
-        let _ = fs::rename(&directory, &failed);
-        if previous.exists() {
-            let _ = fs::rename(&previous, &directory);
+        rename_owned_directory(&paths.stage, &paths.live).map_err(|e| e.to_string())?;
+        replace_registered_instance(state, &current, &restored)
+    })();
+    if let Err(error) = publish {
+        let on_disk = state
+            .snapshot()
+            .and_then(|data| instance(&data, instance_id));
+        match on_disk
+            .and_then(|on_disk| recover_with_state(state, &folder, &intent, &paths, &on_disk))
+        {
+            Ok(_) => {
+                return Err(paths
+                    .locations(&intent)
+                    .error("backup.restoreRolledBack", error))
+            }
+            Err(recovery) => {
+                return Err(paths.locations(&intent).error(
+                    "backup.restoreRecoveryRequired",
+                    format!("{error}; {recovery}"),
+                ))
+            }
         }
-        return Err(format!(
-            "恢复登记失败，原目录已尝试回滚，副本均保留：{error}"
-        ));
+    }
+    if let Err(error) = clear_intent(&folder) {
+        return Err(paths
+            .locations(&intent)
+            .error("backup.restoreRecoveryRequired", error));
     }
     Ok(RestoreResult {
         instance: restored,
         previous_backup,
-        previous_directory: previous
-            .exists()
-            .then(|| previous.to_string_lossy().into_owned()),
+        previous_directory: paths.locations(&intent).previous_directory,
     })
 }
 
@@ -866,5 +1513,390 @@ mod tests {
                 && root.file_name().unwrap().to_string_lossy().len() == 36
         );
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod backup_recovery_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn fixture_folder(prefix: &str) -> StagingDirectory {
+        StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/instance-tests")
+                .join(format!("{prefix}-{}", Uuid::new_v4())),
+        )
+        .unwrap()
+    }
+
+    fn backup_manifest(id: &str, path: &Path, records: Vec<FileRecord>) -> BackupManifest {
+        BackupManifest {
+            format_version: 1,
+            instance: Instance {
+                id: id.into(),
+                game_directory: path.to_string_lossy().into_owned(),
+                version_id: "1.20.1".into(),
+                ..Instance::default()
+            },
+            created_at: "2026-11-16T12:01:00Z".into(),
+            files: records,
+            dependencies: BTreeMap::new(),
+        }
+    }
+
+    fn write_backup_manifest(folder: &Path, id: Uuid, manifest: &BackupManifest) {
+        let file = fs::File::create(folder.join(format!("{id}.zip"))).unwrap();
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("launcher-backup.json", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&serde_json::to_vec(manifest).unwrap())
+            .unwrap();
+        zip.finish().unwrap();
+    }
+
+    fn fixture_state(root: &Path, instance: &Instance) -> LauncherState {
+        let data_dir = root.join("launcher-data");
+        fs::create_dir_all(&data_dir).unwrap();
+        LauncherState {
+            data_dir,
+            data: std::sync::Mutex::new(Persisted {
+                config: crate::models::Config {
+                    game_directory: root.join("game").to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                instances: vec![instance.clone()],
+                ..Default::default()
+            }),
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            operation: tokio::sync::Mutex::new(()),
+            control: Default::default(),
+            games: Default::default(),
+        }
+    }
+
+    #[test]
+    fn malformed_and_misattributed_backups_keep_the_valid_history_accessible() {
+        let folder = fixture_folder("history");
+        let good = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let broken = Uuid::new_v4();
+        write_backup_manifest(
+            folder.path(),
+            good,
+            &backup_manifest("test", folder.path(), vec![]),
+        );
+        write_backup_manifest(
+            folder.path(),
+            other,
+            &backup_manifest("other", folder.path(), vec![]),
+        );
+        let broken_path = folder.path().join(format!("{broken}.zip"));
+        fs::write(&broken_path, b"owned malformed archive").unwrap();
+        let history = backup_history(folder.path(), "test").unwrap();
+        assert_eq!(
+            history
+                .backups
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>(),
+            [good.to_string()]
+        );
+        let warnings: BTreeMap<_, _> = history
+            .warnings
+            .into_iter()
+            .map(|warning| (warning.file_name, warning.reason))
+            .collect();
+        assert_eq!(
+            warnings.get(&format!("{broken}.zip")),
+            Some(&BackupWarningReason::Invalid)
+        );
+        assert_eq!(
+            warnings.get(&format!("{other}.zip")),
+            Some(&BackupWarningReason::WrongInstance)
+        );
+        assert_eq!(fs::read(&broken_path).unwrap(), b"owned malformed archive");
+    }
+
+    #[test]
+    fn staging_owns_only_its_exclusive_directory_and_can_preserve_verified_copies() {
+        let root = fixture_folder("staging");
+        let existing = root.path().join("existing");
+        fs::create_dir(&existing).unwrap();
+        fs::write(existing.join("data"), b"independent").unwrap();
+        assert!(StagingDirectory::create(existing.clone()).is_err());
+        assert_eq!(fs::read(existing.join("data")).unwrap(), b"independent");
+        let failed = root.path().join("failed");
+        {
+            let stage = StagingDirectory::create(failed.clone()).unwrap();
+            fs::write(stage.path().join("data"), b"partial").unwrap();
+        }
+        assert!(!failed.exists());
+        let recovery_copy = root.path().join("complete");
+        {
+            let mut stage = StagingDirectory::create(recovery_copy.clone()).unwrap();
+            fs::write(stage.path().join("data"), b"complete").unwrap();
+            stage.preserve();
+        }
+        assert_eq!(fs::read(recovery_copy.join("data")).unwrap(), b"complete");
+        let published_from = root.path().join("old-stage-name");
+        let published_to = root.path().join("published");
+        {
+            let mut stage = StagingDirectory::create(published_from.clone()).unwrap();
+            fs::write(stage.path().join("data"), b"published").unwrap();
+            stage.publish(&published_to).unwrap();
+            fs::create_dir(&published_from).unwrap();
+            fs::write(published_from.join("data"), b"new owner").unwrap();
+        }
+        assert_eq!(fs::read(published_from.join("data")).unwrap(), b"new owner");
+        assert_eq!(fs::read(published_to.join("data")).unwrap(), b"published");
+    }
+
+    #[test]
+    fn recovery_move_never_replaces_even_an_empty_occupied_target() {
+        let root = fixture_folder("publish");
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(source.join("fixture"), b"source").unwrap();
+        assert!(rename_owned_directory(&source, &target).is_err());
+        assert!(target.is_dir() && fs::read_dir(&target).unwrap().next().is_none());
+        assert!(source.join("fixture").is_file());
+        fs::remove_dir(&target).unwrap();
+        rename_owned_directory(&source, &target).unwrap();
+        assert!(!source.exists() && target.join("fixture").is_file());
+    }
+
+    #[test]
+    fn backed_up_large_entries_emit_zip64_local_headers_with_readable_stored_data() {
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("large", backup_file_options(4 * 1024 * 1024 * 1024))
+            .unwrap();
+        zip.write_all(b"finite stand-in for large payload").unwrap();
+        zip.start_file("small", backup_file_options(32)).unwrap();
+        zip.write_all(b"small payload").unwrap();
+        let cursor = zip.finish().unwrap();
+        let header = cursor.get_ref();
+        assert_eq!(&header[0..4], b"PK\x03\x04");
+        assert_eq!(&header[18..26], &[0xff; 8]);
+        let mut zip = ZipArchive::new(cursor).unwrap();
+        let mut entry = zip.by_name("large").unwrap();
+        assert_eq!(entry.compression(), CompressionMethod::Stored);
+        let mut actual = String::new();
+        entry.read_to_string(&mut actual).unwrap();
+        assert_eq!(actual, "finite stand-in for large payload");
+        drop(entry);
+        assert_eq!(
+            zip.by_name("small").unwrap().compression(),
+            CompressionMethod::Deflated
+        );
+    }
+
+    fn place(path: &Path, data: &[u8]) -> Vec<FileRecord> {
+        fs::create_dir(path).unwrap();
+        fs::write(path.join("fixture"), data).unwrap();
+        collect_files(path).unwrap()
+    }
+
+    #[test]
+    fn interrupted_restores_continue_from_each_known_directory_layout() {
+        let old = b"prior instance files";
+        let new = b"selected archive files";
+        for step in [
+            "beforeMove",
+            "oldMoved",
+            "newPublished",
+            "newParked",
+            "oldReapplied",
+        ] {
+            let root = fixture_folder("restore");
+            let paths = RestorePaths::new(&root.path().join("live"), Uuid::new_v4()).unwrap();
+            let old_files = place(
+                if matches!(step, "beforeMove" | "oldReapplied") {
+                    &paths.live
+                } else {
+                    &paths.previous
+                },
+                old,
+            );
+            let new_files = place(
+                if step == "newPublished" {
+                    &paths.live
+                } else {
+                    &paths.stage
+                },
+                new,
+            );
+            recover_layout(&paths, Some(&old_files), &new_files).unwrap();
+            recover_layout(&paths, Some(&old_files), &new_files).unwrap();
+            assert_eq!(fs::read(paths.live.join("fixture")).unwrap(), old);
+            assert_eq!(fs::read(paths.stage.join("fixture")).unwrap(), new);
+            assert!(!paths.previous.exists());
+        }
+    }
+
+    #[test]
+    fn interrupted_restore_refuses_changed_live_or_mismatched_previous_before_moving() {
+        let root = fixture_folder("restore-conflict");
+        let paths = RestorePaths::new(&root.path().join("live"), Uuid::new_v4()).unwrap();
+        let old_files = place(&paths.previous, b"original");
+        let new_files = place(&paths.stage, b"restored");
+        let external_files = place(&paths.live, b"independently created");
+        assert!(recover_layout(&paths, Some(&old_files), &new_files).is_err());
+        assert_eq!(collect_files(&paths.live).unwrap(), external_files);
+        assert_eq!(collect_files(&paths.previous).unwrap(), old_files);
+        rename_owned_directory(&paths.live, &root.path().join("outside-the-restore")).unwrap();
+        rename_owned_directory(&paths.stage, &paths.live).unwrap();
+        fs::write(paths.previous.join("fixture"), b"changed original").unwrap();
+        assert!(recover_layout(&paths, Some(&old_files), &new_files).is_err());
+        assert_eq!(collect_files(&paths.live).unwrap(), new_files);
+        assert_eq!(
+            fs::read(paths.previous.join("fixture")).unwrap(),
+            b"changed original"
+        );
+        assert!(!paths.stage.exists());
+    }
+
+    #[test]
+    fn interrupted_restore_of_a_missing_instance_preserves_true_absence() {
+        let root = fixture_folder("restore-absence");
+        let paths = RestorePaths::new(&root.path().join("live"), Uuid::new_v4()).unwrap();
+        let selected = place(&paths.live, b"just published");
+        recover_layout(&paths, None, &selected).unwrap();
+        recover_layout(&paths, None, &selected).unwrap();
+        assert!(!paths.live.exists());
+        assert_eq!(collect_files(&paths.stage).unwrap(), selected);
+        fs::create_dir(&paths.live).unwrap();
+        assert!(recover_layout(&paths, None, &selected).is_err());
+        assert!(paths.live.is_dir());
+    }
+
+    #[test]
+    fn interrupted_restore_intent_is_not_overwritten_and_keeps_recovery_paths() {
+        let root = fixture_folder("restore-marker");
+        let live = root.path().join("live");
+        let token = Uuid::new_v4();
+        let paths = RestorePaths::new(&live, token).unwrap();
+        let original = place(&paths.previous, b"prior");
+        let selected = place(&paths.stage, b"selected");
+        let before = backup_manifest("test", &live, original);
+        let after = backup_manifest("test", &live, selected);
+        let first = RestoreIntent {
+            token,
+            before: before.instance.clone(),
+            after: after.instance.clone(),
+            original: Some(identify_archive(Uuid::new_v4(), &before).unwrap()),
+            selected: identify_archive(Uuid::new_v4(), &after).unwrap(),
+        };
+        write_intent(root.path(), &first).unwrap();
+        let reopened = read_intent(root.path()).unwrap().unwrap();
+        let second = RestoreIntent {
+            token: Uuid::new_v4(),
+            ..reopened
+        };
+        assert!(write_intent(root.path(), &second).is_err());
+        let reopened = read_intent(root.path()).unwrap().unwrap();
+        assert_eq!(reopened.token, token);
+        let paths = intent_paths(&reopened, &first.before).unwrap();
+        let error = paths.locations(&reopened).error(
+            "backup.restoreRecoveryRequired",
+            "detail goes to diagnostics",
+        );
+        assert_eq!(
+            error.params["currentDirectory"],
+            live.to_string_lossy().into_owned()
+        );
+        assert_eq!(
+            error.params["previousDirectory"],
+            paths.previous.to_string_lossy().into_owned()
+        );
+        assert_eq!(
+            error.params["restoredDirectory"],
+            paths.stage.to_string_lossy().into_owned()
+        );
+        assert_eq!(
+            error.params["previousBackupId"],
+            first.original.unwrap().id.to_string()
+        );
+    }
+
+    #[test]
+    fn full_restore_has_previous_backup_and_original_directory() {
+        let root = fixture_folder("verified-restore");
+        let live = root.path().join("game").join("instances").join("test");
+        fs::create_dir_all(live.parent().unwrap()).unwrap();
+        let before = place(&live, b"prior bytes");
+        let before = backup_manifest("test", &live, before);
+        let state = fixture_state(root.path(), &before.instance);
+        fs::write(live.join("fixture"), b"remaining current bytes").unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let (result, state) = runtime.block_on(async {
+            tokio::task::spawn_blocking(move || {
+                let backup = backup_inner(&state, &before.instance).unwrap();
+                fs::write(live.join("fixture"), b"user edits after backup").unwrap();
+                let result = restore_inner(&state, &before.instance.id, &backup.id).unwrap();
+                assert_eq!(
+                    fs::read(live.join("fixture")).unwrap(),
+                    b"remaining current bytes"
+                );
+                (result, state)
+            })
+            .await
+            .unwrap()
+        });
+        let preserve = PathBuf::from(result.previous_directory.unwrap());
+        assert_eq!(
+            fs::read(preserve.join("fixture")).unwrap(),
+            b"user edits after backup"
+        );
+        assert!(Path::new(&result.previous_backup.unwrap().path).is_file());
+        assert!(read_intent(&backup_folder(&state, "test").unwrap())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn explicit_recovery_after_published_restore_recovers_registration_and_preserves_selected_copy()
+    {
+        let root = fixture_folder("explicit-recovery");
+        let live = root.path().join("game").join("instances").join("test");
+        fs::create_dir_all(live.parent().unwrap()).unwrap();
+        let token = Uuid::new_v4();
+        let paths = RestorePaths::new(&live, token).unwrap();
+        let before = backup_manifest("test", &live, place(&paths.previous, b"original files"));
+        let mut after = backup_manifest(
+            "test",
+            &live,
+            place(&paths.live, b"selected restored files"),
+        );
+        after.instance.name = "selected archive title".into();
+        let state = fixture_state(root.path(), &after.instance);
+        let folder = backup_folder(&state, "test").unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        let original = Uuid::new_v4();
+        let selected = Uuid::new_v4();
+        write_backup_manifest(&folder, original, &before);
+        write_backup_manifest(&folder, selected, &after);
+        let intent = RestoreIntent {
+            token,
+            before: before.instance.clone(),
+            after: after.instance.clone(),
+            original: Some(identify_archive(original, &before).unwrap()),
+            selected: identify_archive(selected, &after).unwrap(),
+        };
+        write_intent(&folder, &intent).unwrap();
+        let read_only_history = backup_history(&folder, "test").unwrap();
+        assert_eq!(read_only_history.backups.len(), 2);
+        assert_eq!(collect_files(&paths.live).unwrap(), after.files);
+        let intent = read_intent(&folder).unwrap().unwrap();
+        let result = recover_with_state(&state, &folder, &intent, &paths, &after.instance).unwrap();
+        assert!(same_instance(&result.instance, &before.instance).unwrap());
+        assert!(same_instance(&state.snapshot().unwrap().instances[0], &before.instance).unwrap());
+        assert_eq!(result.previous_backup.unwrap().id, original.to_string());
+        assert_eq!(result.preserved_directory.as_deref(), paths.stage.to_str());
+        assert_eq!(collect_files(&paths.live).unwrap(), before.files);
+        assert_eq!(collect_files(&paths.stage).unwrap(), after.files);
+        assert!(read_intent(&folder).unwrap().is_none());
     }
 }

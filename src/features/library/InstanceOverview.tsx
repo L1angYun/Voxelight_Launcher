@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { save } from "@tauri-apps/plugin-dialog";
 import { command, type Instance } from "../../lib/launcher";
+import { normalizeError } from "../../lib/errors";
+import type { BackupRecoveryPaths, InstanceBackup, RecoverInstanceRestoreResult, RestoreInstanceBackupResult } from "./types";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
@@ -20,12 +22,17 @@ export function InstanceOverview({
   const { t, i18n } = useTranslation();
   const { run } = useLauncher();
   const {
-    backups,
+    backups, warnings, recovery,
     busy: backupsBusy,
     error: backupsError,
     refresh,
   } = useInstanceBackups(instance.id);
   const [selectedBackup, setSelectedBackup] = useState("");
+  const [restoreFeedback, setRestoreFeedback] = useState<{
+    failed?: boolean; text: string; paths?: BackupRecoveryPaths;
+    previousBackup?: InstanceBackup | null; preservedDirectory?: string | null;
+  } | null>(null);
+  const chosenBackup = backups.find((item) => item.id === selectedBackup);
   const [notice, setNotice] = useState("");
   const [includeConfigs, setIncludeConfigs] = useState(true);
   const [includeResourcePacks, setIncludeResourcePacks] = useState(false);
@@ -51,17 +58,66 @@ export function InstanceOverview({
       setNotice("instanceCloned");
       await onChanged();
     });
+  const reportRestoreFailure = (error: unknown) => {
+    const fault = normalizeError(error);
+    const path = (key: string) => typeof fault.params[key] === "string" ? fault.params[key] as string : undefined;
+    setRestoreFeedback({
+      failed: true, text: errorText(fault.code, t),
+      paths: fault.code === "backup.restoreRecoveryRequired" || fault.code === "backup.restoreRolledBack"
+        ? { currentDirectory: path("currentDirectory") ?? instance.gameDirectory,
+            previousDirectory: path("previousDirectory"), restoredDirectory: path("restoredDirectory"),
+            previousBackupId: path("previousBackupId") }
+        : undefined,
+    });
+  };
   const restore = () => {
-    if (!selectedBackup) return;
+    if (!chosenBackup || recovery || !window.confirm(t("library:backupRestoreConfirm", {
+      name: instance.name, date: formatDate(chosenBackup.createdAt, i18n.language),
+    }))) return;
     void run("instance.restore", async () => {
-      await command("restore_instance_backup", {
-        instanceId: instance.id,
-        backupId: selectedBackup,
-      });
-      setNotice("backupRestored");
+      setRestoreFeedback(null);
+      setNotice("");
+      try {
+        const result = await command<RestoreInstanceBackupResult>("restore_instance_backup", {
+          instanceId: instance.id, backupId: chosenBackup.id,
+        });
+        setRestoreFeedback({ text: t("library:notice.backupRestored"), previousBackup: result.previousBackup,
+          preservedDirectory: result.previousDirectory });
+      } catch (error) {
+        reportRestoreFailure(error);
+        await refresh();
+        return;
+      }
+      await refresh();
       await onChanged();
     });
   };
+  const recover = () => {
+    if (!recovery || !window.confirm(t("library:backupRecoverConfirm", { name: instance.name }))) return;
+    void run("instance.restore", async () => {
+      setRestoreFeedback(null);
+      setNotice("");
+      try {
+        const result = await command<RecoverInstanceRestoreResult>("recover_instance_restore", { instanceId: instance.id });
+        setRestoreFeedback({ text: t("library:backupRecovered"), previousBackup: result.previousBackup,
+          preservedDirectory: result.preservedDirectory });
+      } catch (error) {
+        reportRestoreFailure(error);
+        await refresh();
+        return;
+      }
+      await refresh();
+      await onChanged();
+    });
+  };
+  const renderRecoveryPaths = (paths: BackupRecoveryPaths) => (
+    <ul>
+      <li>{t("library:backupTargetPath", { path: paths.currentDirectory })}</li>
+      {paths.previousDirectory ? <li>{t("library:backupOriginalPath", { path: paths.previousDirectory })}</li> : null}
+      {paths.restoredDirectory ? <li>{t("library:backupStagedPath", { path: paths.restoredDirectory })}</li> : null}
+      {paths.previousBackupId ? <li>{t("library:backupPreviousId", { id: paths.previousBackupId })}</li> : null}
+    </ul>
+  );
   const exportZip = () =>
     void run("instance.exportZip", async () => {
       const outputPath = await save({
@@ -155,6 +211,35 @@ export function InstanceOverview({
           {backupsError ? (
             <p role="alert">{errorText(backupsError, t)}</p>
           ) : null}
+          {warnings.length ? (
+            <div role="status">
+              <p>{t("library:backupWarnings")}</p>
+              <ul>{warnings.map((warning) => (
+                <li key={warning.fileName}>{t(`library:backupWarning.${warning.reason}`, { file: warning.fileName })}</li>
+              ))}</ul>
+            </div>
+          ) : null}
+          {recovery ? (
+            <div role="status">
+              <p>{t("library:backupInterrupted")}</p>
+              {renderRecoveryPaths(recovery)}
+              <Button variant="secondary" onClick={recover} disabled={backupsBusy}>
+                {t("library:backupRecover")}
+              </Button>
+            </div>
+          ) : null}
+          {restoreFeedback ? (
+            <div role={restoreFeedback.failed ? "alert" : "status"}>
+              <p>{restoreFeedback.text}</p>
+              {restoreFeedback.paths ? renderRecoveryPaths(restoreFeedback.paths) : null}
+              {restoreFeedback.preservedDirectory ? (
+                <p className="vx-path">{t("library:backupPreservedPath", { path: restoreFeedback.preservedDirectory })}</p>
+              ) : null}
+              {restoreFeedback.previousBackup ? (
+                <p>{t("library:backupPreviousDate", { date: formatDate(restoreFeedback.previousBackup.createdAt, i18n.language) })}</p>
+              ) : null}
+            </div>
+          ) : null}
           <div className="vx-action-row">
             <Select
               aria-label={t("library:backupToRestore")}
@@ -165,7 +250,7 @@ export function InstanceOverview({
                   label: `${formatDate(backup.createdAt, i18n.language)} · ${sizeText(backup.size, i18n.language)}` }))]} />
             <Button
               variant="secondary"
-              disabled={!selectedBackup || backupsBusy}
+              disabled={!chosenBackup || backupsBusy || Boolean(recovery)}
               onClick={restore}
             >
               {t("library:restoreBackup")}

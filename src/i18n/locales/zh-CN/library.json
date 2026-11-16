@@ -97,7 +97,10 @@
     "rolledBack": "已回滚",
     "rollingBack": "正在回滚",
     "staged": "待提交",
-    "failed": "未成功"
+    "failed": "未成功",
+    "committing": "提交中断",
+    "recoveryRequired": "需要恢复",
+    "recovered": "已恢复"
   },
   "worlds": "世界",
   "worldName": "世界名称",
@@ -163,7 +166,8 @@
     "noDiagnosis": "没有发现需要处理的启动错误。",
     "diagnosticsExported": "诊断报告已保存。",
     "settingsSaved": "实例设置已保存。",
-    "runtimeReset": "已恢复全局启动环境。"
+    "runtimeReset": "已恢复全局启动环境。",
+    "resourceRecovered": "已恢复中断的资源事务。"
   },
   "instance": {
     "tab": {
@@ -177,5 +181,24 @@
   "searchVersions": "搜索版本目录",
   "searchVersionsPlaceholder": "按名称、游戏版本或加载器搜索",
   "versionRuntimeSummary": "{{channel}} · {{java}}",
-  "minecraft": "Minecraft"
+  "minecraft": "Minecraft",
+  "recoverTransaction": "恢复中断事务",
+  "recoverTransactionConfirm": "恢复“{{name}}”？启动器会先校验资源副本；无法安全判断时会保留所有副本。",
+  "backupRestoreConfirm": "把“{{name}}”恢复到 {{date}} 的备份？启动器会先备份当前内容。",
+  "backupRecover": "恢复中断的备份操作",
+  "backupRecoverConfirm": "结束“{{name}}”中断的恢复，并在副本校验通过后复原恢复前的目录？",
+  "backupRecovered": "已结束中断的备份恢复。",
+  "backupWarnings": "以下备份无法读取；其余备份仍可使用。",
+  "backupWarning": {
+    "invalid": "{{file}}：备份清单无效。",
+    "wrongInstance": "{{file}}：备份不属于此实例。",
+    "unreadable": "{{file}}：无法读取此备份。"
+  },
+  "backupInterrupted": "上次备份恢复中断。请先恢复此次操作，再选择新的备份。",
+  "backupTargetPath": "游戏目录：{{path}}",
+  "backupOriginalPath": "恢复前原目录：{{path}}",
+  "backupStagedPath": "保留的恢复副本：{{path}}",
+  "backupPreviousId": "恢复前备份编号：{{id}}",
+  "backupPreservedPath": "保留的目录：{{path}}",
+  "backupPreviousDate": "恢复前备份：{{date}}，可从上面的备份列表重新选择。"
 }

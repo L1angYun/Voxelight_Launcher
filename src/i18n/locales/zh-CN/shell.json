@@ -34,6 +34,8 @@
     "resource.installAfterCreate": "实例已创建，但资源安装失败。可以重试安装资源。",
     "resource.sourceUnsupported": "此来源暂不支持自动选择安装位置，请先创建兼容的实例。",
     "resource.loaderUnavailable": "此游戏版本没有可安装的加载器版本，请选择其他游戏版本。",
+    "version.loaderReinstall": "{{id}} 的版本配置已损坏。请在启动器中重新安装相同的游戏版本和加载器；原有世界和模组不会被替换。",
+    "version.profileConflict": "无法确认 {{id}} 现有版本配置的来源，已保留原文件。请先备份 versions 目录中的对应 JSON，再将该 JSON 移开后重新安装原版或原来的加载器。",
     "resource.manifestUnavailable": "无法获取 Minecraft 版本列表，请检查网络后重试。",
     "download.cancelled": "安装已取消。",
     "instance.running": "此实例已在运行，请勿重复启动。",
@@ -51,6 +53,14 @@
     "desktop.required": "请使用桌面版执行此操作。",
     "renderer.unavailable": "无法启用 3D 预览，请检查显卡驱动和硬件加速。",
     "skin.loadFailed": "皮肤加载失败，请重试。",
-    "cape.loadFailed": "披风加载失败，请重试。"
+    "cape.loadFailed": "披风加载失败，请重试。",
+    "resource.recoveryRequired": "检测到中断的资源事务。请打开更新历史，先恢复该事务。",
+    "resource.recoveryConflict": "资源副本未能通过校验，启动器未覆盖文件。请保留现有资源副本，再检查事务历史。",
+    "resource.recoveryRunning": "请先退出正在使用这个游戏目录的游戏，再恢复资源事务。",
+    "resource.recoveryIncomplete": "恢复未完成，资源可能已移到事务备份目录。请关闭占用资源的程序，然后从更新历史重试。",
+    "resource.recoveryNotNeeded": "该记录无需恢复，请刷新更新历史。",
+    "backup.restoreRecoveryRequired": "备份恢复未完成。请保留列出的目录，并使用恢复入口重新核对副本。",
+    "backup.restoreRolledBack": "无法完成备份恢复；已保留并复原原目录。",
+    "backup.restoreRecoveryMissing": "没有待恢复的备份操作。请刷新备份列表。"
   }
 }

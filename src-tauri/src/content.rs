@@ -829,7 +829,7 @@ pub async fn import_local_resources(
     instance_id: Option<String>,
     paths: Vec<String>,
     resource_type: String,
-) -> Result<Vec<ImportedResource>, String> {
+) -> AppResult<Vec<ImportedResource>> {
     let (folder, extension) = match resource_type.as_str() {
         "mod" => ("mods", "jar"),
         "resourcepack" => ("resourcepacks", "zip"),
@@ -841,12 +841,13 @@ pub async fn import_local_resources(
     }
     let _guard = state.operation.lock().await;
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
+    let directory = safe_join(&root, folder)?;
+    crate::resources::resource_transactions::require_no_pending(&directory)?;
     let task = state
         .control
         .begin("local-resource-import", &version_id, "导入本地资源");
     let shared = state.inner().clone();
     let result = tokio::task::spawn_blocking(move || {
-        let directory = safe_join(&root, folder)?;
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         let mut plan = Vec::new();
         let mut names = HashSet::new();
@@ -922,7 +923,7 @@ pub async fn import_local_resources(
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
-    result
+    result.map_err(expected)
 }
 
 #[cfg(test)]

@@ -97,7 +97,10 @@
     "rolledBack": "Rolled back",
     "rollingBack": "Rolling back",
     "staged": "Staged",
-    "failed": "Failed"
+    "failed": "Failed",
+    "committing": "Interrupted while committing",
+    "recoveryRequired": "Recovery required",
+    "recovered": "Recovered"
   },
   "worlds": "Worlds",
   "worldName": "World name",
@@ -163,7 +166,8 @@
     "noDiagnosis": "No launch errors need attention.",
     "diagnosticsExported": "Diagnostics saved.",
     "settingsSaved": "Instance settings saved.",
-    "runtimeReset": "Global runtime restored."
+    "runtimeReset": "Global runtime restored.",
+    "resourceRecovered": "The interrupted resource transaction was recovered."
   },
   "instance": {
     "tab": {
@@ -177,5 +181,24 @@
   "searchVersions": "Search version directories",
   "searchVersionsPlaceholder": "Search by name, game version, or loader",
   "versionRuntimeSummary": "{{channel}} · {{java}}",
-  "minecraft": "Minecraft"
+  "minecraft": "Minecraft",
+  "recoverTransaction": "Recover interrupted transaction",
+  "recoverTransactionConfirm": "Recover \"{{name}}\"? The launcher will verify the resource copies first and leave them in place if recovery would be unsafe.",
+  "backupRestoreConfirm": "Restore \"{{name}}\" from the {{date}} backup? The launcher will back up its current data first.",
+  "backupRecover": "Recover interrupted backup restore",
+  "backupRecoverConfirm": "Finish the interrupted restore of \"{{name}}\" and reinstate its original directory once the copies are verified?",
+  "backupRecovered": "The interrupted backup restore has been resolved.",
+  "backupWarnings": "These backups could not be read. Other backups are still available.",
+  "backupWarning": {
+    "invalid": "{{file}}: invalid backup manifest.",
+    "wrongInstance": "{{file}}: the backup belongs to a different instance.",
+    "unreadable": "{{file}}: could not read this backup."
+  },
+  "backupInterrupted": "The previous backup restore was interrupted. Recover it before selecting a different backup.",
+  "backupTargetPath": "Game directory: {{path}}",
+  "backupOriginalPath": "Original directory: {{path}}",
+  "backupStagedPath": "Preserved restore copy: {{path}}",
+  "backupPreviousId": "Pre-restore backup ID: {{id}}",
+  "backupPreservedPath": "Preserved directory: {{path}}",
+  "backupPreviousDate": "Pre-restore backup: {{date}}. You can select it in the backup list above."
 }

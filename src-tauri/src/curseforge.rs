@@ -866,6 +866,7 @@ pub async fn install_curseforge_resource(
         state.control.checkpoint().await?;
         let target =
             crate::resources::resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
+        crate::resources::resource_transactions::require_no_pending(&target.directory)?;
         let key = service_key(&state)?;
         let client = api_client()?;
         let directory = target.directory;

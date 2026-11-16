@@ -4,7 +4,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { command, desktop } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import type {
-  InstanceBackup,
+  InstanceBackupList,
   LocalResource,
   Preview,
   ResourceHistory,
@@ -141,7 +141,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   }, [busy, refresh, report, selectionArgs]);
 
   const rollback = useCallback(async (entry: ResourceHistory, confirmation = entry.name) => {
-    if (!desktop || busy || entry.status !== "committed" || !window.confirm(confirmation)) return;
+    if (!desktop || busy || entry.canRecover || entry.status !== "committed" || !window.confirm(confirmation)) return;
     const request = ++generation.current;
     setBusy(`rollback:${entry.updateId}`);
     setError("");
@@ -159,6 +159,34 @@ export function useResourceManager(versionId: string, instanceId?: string) {
       if (request === generation.current) setBusy("");
     }
   }, [busy, refresh, report, selectionArgs]);
+
+  const recover = useCallback(async (entry: ResourceHistory, confirmation: string) => {
+    if (!desktop || busy || !entry.canRecover || !window.confirm(confirmation)) return;
+    const request = ++generation.current;
+    const target = selectionArgs();
+    setBusy(`recover:${entry.updateId}`);
+    setError("");
+    setNotice("");
+    try {
+      const result = await command<RollbackResult>("recover_resource_update", { ...target, updateId: entry.updateId });
+      if (request !== generation.current) return;
+      setHistory((previous) => previous?.map((item) => item.updateId === result.updateId
+        ? { ...item, status: result.status, canRecover: false } : item) ?? previous);
+      setUpdates(null);
+      setNotice("resourceRecovered");
+      const [newHistory, newFiles] = await Promise.all([
+        command<ResourceHistory[]>("list_resource_update_history", target),
+        command<LocalResource[]>("list_local_resources", target),
+      ]);
+      if (request !== generation.current) return;
+      setHistory(newHistory);
+      setFiles(newFiles);
+    } catch (cause) {
+      report(request, cause);
+    } finally {
+      if (request === generation.current) setBusy("");
+    }
+  }, [busy, report, selectionArgs]);
 
   const importFiles = useCallback(async () => {
     if (!desktop || busy) return;
@@ -183,7 +211,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     }
   }, [busy, kind, refresh, report, selectionArgs, t]);
 
-  return { kind, setKind, view, setView, files, updates, history, busy, error, notice, refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, importFiles };
+  return { kind, setKind, view, setView, files, updates, history, busy, error, notice, refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles };
 }
 
 export function useWorlds(versionId: string, instanceId?: string) {
@@ -292,23 +320,28 @@ export function useWorlds(versionId: string, instanceId?: string) {
 }
 
 export function useInstanceBackups(instanceId: string) {
-  const [backups, setBackups] = useState<InstanceBackup[]>([]);
+  const [snapshot, setSnapshot] = useState<InstanceBackupList>({ backups: [], warnings: [], recovery: null });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const generation = useRef(0);
   const refresh = useCallback(async () => {
     if (!desktop) return;
+    const request = ++generation.current;
     setBusy(true);
     setError("");
     try {
-      setBackups(await command<InstanceBackup[]>("list_instance_backups", { instanceId }));
+      const next = await command<InstanceBackupList>("list_instance_backups", { instanceId });
+      if (request === generation.current) setSnapshot(next);
     } catch (cause) {
-      setError(normalizeError(cause).code);
+      if (request === generation.current) setError(normalizeError(cause).code);
     } finally {
-      setBusy(false);
+      if (request === generation.current) setBusy(false);
     }
   }, [instanceId]);
   useEffect(() => {
+    setSnapshot({ backups: [], warnings: [], recovery: null });
     void refresh();
+    return () => { generation.current++; };
   }, [refresh]);
-  return { backups, busy, error, refresh };
+  return { ...snapshot, busy, error, refresh };
 }

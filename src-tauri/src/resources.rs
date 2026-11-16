@@ -1455,14 +1455,50 @@ pub async fn rollback_resource_update(
     instance_id: Option<String>,
     resource_type: String,
     update_id: String,
-) -> Result<resource_transactions::RollbackResult, String> {
+) -> AppResult<resource_transactions::RollbackResult> {
     let kind = ResourceKind::parse(&resource_type)?;
     let _operation = state.operation.lock().await;
-    if let Some(id) = instance_id.as_deref() {
-        state.games.require_instance_stopped(id)?;
-    }
+    require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
     let directory = history_target(&state, &version_id, instance_id.as_deref(), kind)?;
-    resource_transactions::rollback(&directory, &update_id)
+    resource_transactions::rollback(&directory, &update_id).map_err(expected)
+}
+
+fn recover_resource_update_inner(
+    state: &LauncherState,
+    version_id: &str,
+    instance_id: Option<&str>,
+    kind: ResourceKind,
+    update_id: &str,
+    running: &[crate::processes::RunningGame],
+) -> AppResult<resource_transactions::RollbackResult> {
+    let data = state.snapshot()?;
+    let directory = resource_directory(&data, version_id, instance_id, kind)?;
+    if target_running(&data, version_id, instance_id, running) {
+        return Err(AppError::new(crate::errors::RESOURCE_RECOVERY_RUNNING)
+            .with_detail("此目标的游戏仍在运行，请先退出游戏再恢复资源。"));
+    }
+    resource_transactions::recover_one(&directory, update_id)
+}
+
+#[tauri::command]
+pub async fn recover_resource_update(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+    resource_type: String,
+    update_id: String,
+) -> AppResult<resource_transactions::RollbackResult> {
+    let kind = ResourceKind::parse(&resource_type)?;
+    let _operation = state.operation.lock().await;
+    let running = state.games.snapshot()?;
+    recover_resource_update_inner(
+        &state,
+        &version_id,
+        instance_id.as_deref(),
+        kind,
+        &update_id,
+        &running,
+    )
 }
 
 fn local_resource(path: PathBuf, kind: ResourceKind) -> Result<Option<LocalResource>, String> {
@@ -1543,7 +1579,7 @@ pub async fn toggle_resource(
     instance_id: Option<String>,
     resource_type: String,
     file_name: String,
-) -> Result<LocalResource, String> {
+) -> AppResult<LocalResource> {
     let kind = ResourceKind::parse(&resource_type)?;
     validate_id(&file_name)?;
     let _operation = state.operation.lock().await;
@@ -1553,6 +1589,7 @@ pub async fn toggle_resource(
         instance_id.as_deref(),
         kind,
     )?;
+    resource_transactions::require_no_pending(&directory)?;
     reject_links(&directory)?;
     let source = safe_join(&directory, &file_name)?;
     let resource = local_resource(source.clone(), kind)?.ok_or("请选择有效的资源文件")?;
@@ -1567,7 +1604,7 @@ pub async fn toggle_resource(
         return Err("目标文件名已存在，已保留两个文件。请先手动处理重名文件。".into());
     }
     fs::rename(&source, &target).map_err(|_| "切换资源状态失败，请检查文件是否被游戏占用")?;
-    local_resource(target, kind)?.ok_or_else(|| "资源状态无法读取".into())
+    local_resource(target, kind)?.ok_or_else(|| expected("资源状态无法读取"))
 }
 
 #[cfg(test)]
@@ -1864,6 +1901,70 @@ mod tests {
             serde_json::to_value(plan).unwrap()["manifestUnavailable"],
             true
         );
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn explicit_recovery_refuses_a_running_version_directory_without_moving_files() {
+        let (root, state) = resource_fixture();
+        let data = state.snapshot().unwrap();
+        let game_directory =
+            crate::minecraft::game_directory(&data.config, "fabric-test", None).unwrap();
+        let directory = resource_directory(&data, "fabric-test", None, ResourceKind::Mod).unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("mod.jar"), b"original").unwrap();
+        let before = crate::instances::collect_files(&directory).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let transaction = game_directory
+            .join(".launcher-resource-history")
+            .join("mods")
+            .join(&id);
+        fs::create_dir_all(&transaction).unwrap();
+        fs::rename(&directory, transaction.join("before")).unwrap();
+        fs::create_dir_all(transaction.join("next")).unwrap();
+        fs::write(transaction.join("next/mod.jar"), b"new").unwrap();
+        let after = crate::instances::collect_files(&transaction.join("next")).unwrap();
+        fs::write(
+            transaction.join("journal.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": id, "name": "Recovery fixture", "createdAt": "2026-11-16T00:00:00Z",
+                "directory": directory, "projects": [], "status": "committing",
+                "beforeExists": true, "before": before, "after": after,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let games = [crate::processes::RunningGame {
+            pid: 7,
+            version_id: "another-view".into(),
+            instance_id: None,
+            game_directory: game_directory.to_string_lossy().into_owned(),
+            started_at: "now".into(),
+        }];
+        let error = recover_resource_update_inner(
+            &state,
+            "fabric-test",
+            None,
+            ResourceKind::Mod,
+            &id,
+            &games,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code, "resource.recoveryRunning");
+        assert!(!directory.exists());
+        assert_eq!(
+            fs::read(transaction.join("before/mod.jar")).unwrap(),
+            b"original"
+        );
+        assert_eq!(fs::read(transaction.join("next/mod.jar")).unwrap(), b"new");
+
+        let result =
+            recover_resource_update_inner(&state, "fabric-test", None, ResourceKind::Mod, &id, &[])
+                .unwrap();
+        assert_eq!(result.status, "recovered");
+        assert_eq!(fs::read(directory.join("mod.jar")).unwrap(), b"original");
+        assert_eq!(fs::read(transaction.join("next/mod.jar")).unwrap(), b"new");
         cleanup_fixture(root);
     }
 

@@ -38,6 +38,8 @@ describe("Tauri IPC registration contract", () => {
       "check_resource_updates",
       "update_resource",
       "list_resource_update_history",
+      "recover_resource_update",
+      "recover_instance_restore",
       "rollback_resource_update",
       "list_managed_servers",
       "create_managed_server",

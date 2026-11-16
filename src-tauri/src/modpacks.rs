@@ -871,22 +871,23 @@ async fn import_inner(
     }
     let root = instances::instance_root(state)?;
     let token = uuid::Uuid::new_v4().to_string();
-    let stage = safe_join(&root, &format!(".pack-staging-{token}"))?;
+    let stage_name = safe_join(&root, &format!(".pack-staging-{token}"))?;
     let final_dir = safe_join(&root, &token)?;
-    if stage.exists() || final_dir.exists() {
-        return Err("整合包暂存目标已存在".into());
+    if final_dir.exists() {
+        return Err("整合包目标已存在".into());
     }
-    fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    let mut owned_stage = instances::StagingDirectory::create(stage_name)?;
+    let stage = owned_stage.path();
     let (index, downloaded, skipped, warnings) = if has_entry(archive, "modrinth.index.json")? {
-        mrpack_into(state, archive, &stage, optional).await?
+        mrpack_into(state, archive, stage, optional).await?
     } else if has_entry(archive, "manifest.json")? {
-        curse_into(state, archive, &stage, key, optional).await?
+        curse_into(state, archive, stage, key, optional).await?
     } else if has_entry(archive, "launcher-backup.json")? {
-        return import_personal_backup(app, state, archive, &stage, &final_dir, name).await;
+        return import_personal_backup(app, state, archive, &mut owned_stage, &final_dir, name).await;
     } else {
         return Err("无法识别整合包。支持 .mrpack、CurseForge manifest.zip 和本启动器带清单的个人备份 ZIP；普通未知 ZIP 不会盲目覆盖游戏目录。".into());
     };
-    if instances::collect_files(&stage)?
+    if instances::collect_files(stage)?
         .iter()
         .map(|f| f.size)
         .sum::<u64>()
@@ -898,7 +899,7 @@ async fn import_inner(
         install_dependencies(state, app, &index.dependencies).await?;
     state.control.checkpoint().await?;
     fs::write(
-        safe_join(&stage, ".launcher-pack.json")?,
+        safe_join(stage, ".launcher-pack.json")?,
         serde_json::to_vec_pretty(
             &json!({"formatVersion":1,"name":index.name,"dependencies":index.dependencies}),
         )
@@ -912,10 +913,12 @@ async fn import_inner(
         &loader,
         &loader_version,
     )?;
-    if final_dir.exists() {
-        return Err("新实例目录已存在，导入数据仍保留在暂存目录".into());
+    if let Err(error) = owned_stage.publish(&final_dir) {
+        return Err(format!(
+            "无法提交整合包，完整暂存目录保留在 {}：{error}",
+            owned_stage.path().display()
+        ));
     }
-    fs::rename(&stage, &final_dir).map_err(|e| format!("无法提交整合包，暂存目录保留：{e}"))?;
     let instance = instances::register(state, instance).map_err(|e| {
         format!(
             "整合包文件已完整保留在 {}，登记失败：{e}",
@@ -933,10 +936,11 @@ async fn import_personal_backup(
     app: &AppHandle,
     state: &Arc<LauncherState>,
     archive: &Path,
-    stage: &Path,
+    owned_stage: &mut instances::StagingDirectory,
     final_dir: &Path,
     name: Option<String>,
 ) -> Result<PackImportResult, String> {
+    let stage = owned_stage.path();
     let metadata: Value = zip_json(archive, "launcher-backup.json")?;
     if metadata["formatVersion"] != 1 {
         return Err("不支持此个人备份格式".into());
@@ -977,8 +981,15 @@ async fn import_personal_backup(
         &loader_version,
     )?;
     state.control.checkpoint().await?;
-    fs::rename(stage, final_dir).map_err(|e| e.to_string())?;
-    let instance = instances::register(state, instance)?;
+    if let Err(error) = owned_stage.publish(final_dir) {
+        return Err(format!(
+            "无法提交个人备份，完整暂存目录保留在 {}：{error}",
+            owned_stage.path().display()
+        ));
+    }
+    let instance = instances::register(state, instance).map_err(|error| {
+        format!("个人备份已完整保留在 {}，登记失败：{error}", final_dir.display())
+    })?;
     Ok(PackImportResult {
         instance,
         downloaded: 0,

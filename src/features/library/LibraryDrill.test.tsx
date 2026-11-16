@@ -77,7 +77,8 @@ beforeEach(() => {
   fullMotion = false;
   commandMock.mockReset();
   commandMock.mockImplementation(async (name) => {
-    if (["list_local_resources", "list_worlds", "list_screenshots", "list_instance_backups"].includes(name)) return [];
+    if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
+    if (["list_local_resources", "list_worlds", "list_screenshots"].includes(name)) return [];
     if (name === "list_versions") return { latestRelease: "1.21.1", latestSnapshot: "", versions: [] };
     if (name === "install_version") return { versionId: "1.21.1", downloaded: 0, reused: 1 };
     if (name === "create_instance") return created;

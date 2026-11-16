@@ -1,8 +1,9 @@
 //! A resource transaction stages a complete directory and preserves its previous contents.
 use super::*;
-use crate::instances::{checked_absolute, collect_files, FileRecord};
+use crate::instances::{checked_absolute, collect_files, rename_owned_directory, FileRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Write;
 
 #[derive(Clone)]
 struct LocalEntry {
@@ -59,6 +60,7 @@ pub struct ResourceHistory {
     pub created_at: String,
     pub status: String,
     pub projects: Vec<String>,
+    pub can_recover: bool,
 }
 
 #[derive(Serialize)]
@@ -398,12 +400,19 @@ fn save_journal(path: &Path, journal: &Journal) -> Result<(), String> {
     let parent = path.parent().ok_or("事务日志目录无效")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let temp = safe_join(parent, &format!(".journal-{}.tmp", uuid::Uuid::new_v4()))?;
-    fs::write(
-        &temp,
-        serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    fs::rename(temp, path).map_err(|e| e.to_string())
+    let bytes = serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|e| e.to_string())?;
+    let written = file.write_all(&bytes).and_then(|_| file.sync_all());
+    drop(file);
+    let result = written.and_then(|_| fs::rename(&temp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result.map_err(|e| e.to_string())
 }
 fn read_journal(path: &Path, directory: &Path) -> Result<Journal, String> {
     checked_absolute(path)?;
@@ -412,7 +421,13 @@ fn read_journal(path: &Path, directory: &Path) -> Result<Journal, String> {
     }
     let journal: Journal = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|_| "资源事务日志无效")?;
-    if Path::new(&journal.directory) != directory {
+    if Path::new(&journal.directory) != directory
+        || path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some(journal.id.as_str())
+    {
         return Err("资源事务目标目录校验失败".into());
     }
     Ok(journal)
@@ -437,19 +452,20 @@ fn commit_using(
     checked_absolute(transaction)?;
     let next = safe_join(transaction, "next")?;
     let before = safe_join(transaction, "before")?;
-    if inventory(directory)? != journal.before || directory.exists() != journal.before_exists {
+    let expected_before = journal.before_exists.then_some(&journal.before);
+    if snapshot(directory)?.as_ref() != expected_before {
         return Err("下载期间原资源目录发生变化，已停止提交".into());
     }
-    if inventory(&next)? != journal.after {
+    if snapshot(&next)?.as_ref() != Some(&journal.after) {
         return Err("暂存目录校验失败，原资源未改变".into());
     }
-    if before.exists() {
+    if present(&before)? {
         return Err("事务备份目录已存在，原资源未改变".into());
     }
     journal.status = "committing".into();
     save_journal(path, journal)?;
     if journal.before_exists {
-        if let Err(error) = fs::rename(directory, &before) {
+        if let Err(error) = rename_to_vacant(directory, &before) {
             journal.status = "failed".into();
             let _ = save_journal(path, journal);
             return Err(format!(
@@ -457,9 +473,14 @@ fn commit_using(
             ));
         }
     }
-    if let Err(error) = publish(&next, directory) {
+    if let Err(error) = (|| {
+        if present(directory)? {
+            return Err("发布期间出现新的资源目录，已保留原有文件".into());
+        }
+        publish(&next, directory).map_err(|error| error.to_string())
+    })() {
         let rollback = if journal.before_exists {
-            fs::rename(&before, directory)
+            rename_to_vacant(&before, directory)
         } else {
             Ok(())
         };
@@ -482,9 +503,9 @@ fn commit_using(
     journal.status = "committed".into();
     if let Err(error) = save_journal(path, journal) {
         let failed = safe_join(transaction, "uncommitted")?;
-        let move_new = fs::rename(directory, &failed);
-        let restored =
-            move_new.is_ok() && (!journal.before_exists || fs::rename(&before, directory).is_ok());
+        let move_new = rename_to_vacant(directory, &failed);
+        let restored = move_new.is_ok()
+            && (!journal.before_exists || rename_to_vacant(&before, directory).is_ok());
         return Err(format!(
             "资源事务日志写入失败，{}：{error}",
             if restored {
@@ -497,44 +518,272 @@ fn commit_using(
     Ok(())
 }
 
-pub(super) fn recover(directory: &Path) -> Result<(), String> {
-    let root = history_root(directory)?;
-    if !root.exists() {
-        return Ok(());
+#[derive(Copy, Clone)]
+enum Recovery {
+    Commit,
+    Rollback,
+}
+
+fn snapshot(directory: &Path) -> Result<Option<Vec<FileRecord>>, String> {
+    checked_absolute(directory)?;
+    let metadata = match fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_dir() || linked(&metadata) {
+        return Err("事务副本不是普通目录，已保留所有文件".into());
     }
-    for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
-        let folder = entry.map_err(|e| e.to_string())?.path();
-        checked_absolute(&folder)?;
-        let path = folder.join("journal.json");
-        if !path.is_file() {
-            continue;
+    collect_files(directory).map(Some)
+}
+
+fn present(path: &Path) -> Result<bool, String> {
+    checked_absolute(path)?;
+    path.try_exists().map_err(|error| error.to_string())
+}
+
+fn recovery_kind(journal: &Journal, transaction: &Path) -> Result<Option<Recovery>, String> {
+    match journal.status.as_str() {
+        "staged" | "committing" | "recoveryRequired" => Ok(Some(Recovery::Commit)),
+        "rollingBack" => Ok(Some(Recovery::Rollback)),
+        // A pre-existing launcher could save "committed" even when it failed to put
+        // rolled-forward back. Its nonterminal filesystem marker survives that write.
+        "committed" if present(&safe_join(transaction, "rolled-forward")?)? => {
+            Ok(Some(Recovery::Rollback))
         }
-        let mut journal = read_journal(&path, directory)?;
-        if !["committing", "recoveryRequired"].contains(&journal.status.as_str()) {
-            continue;
+        "committed" | "failed" | "recovered" | "rolledBack" => Ok(None),
+        _ => Err("未知的资源事务状态，已保留所有目录".into()),
+    }
+}
+
+struct RecoveryPlan {
+    preserve_live: Option<PathBuf>,
+    restore_before: Option<PathBuf>,
+    create_empty: bool,
+}
+
+impl RecoveryPlan {
+    fn new() -> Self {
+        Self {
+            preserve_live: None,
+            restore_before: None,
+            create_empty: false,
         }
-        let before = safe_join(&folder, "before")?;
-        if directory.exists() {
-            if inventory(directory)? != journal.after {
-                return Err(format!(
-                    "检测到未完成事务 {}，当前资源已变化；已保留 before 备份，请先手动恢复",
-                    journal.id
-                ));
-            }
-            let interrupted = safe_join(&folder, "interrupted")?;
-            if interrupted.exists() {
-                return Err("中断事务的恢复副本已存在，请手动检查".into());
-            }
-            fs::rename(directory, interrupted).map_err(|e| format!("无法保留中断后的目录：{e}"))?;
+    }
+
+    fn execute(
+        self,
+        live: &Path,
+        mut move_directory: impl FnMut(&Path, &Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if let Some(destination) = self.preserve_live {
+            move_directory(live, &destination)
+                .map_err(|error| format!("无法保留中断后的资源目录：{error}"))?;
         }
-        if journal.before_exists {
-            if !before.exists() || inventory(&before)? != journal.before {
-                return Err("中断事务的原始备份校验失败，停止恢复".into());
-            }
-            fs::rename(&before, directory).map_err(|e| format!("无法恢复中断前目录：{e}"))?;
+        if let Some(source) = self.restore_before {
+            move_directory(&source, live)
+                .map_err(|error| format!("无法恢复中断前资源目录：{error}"))?;
         }
-        journal.status = "recovered".into();
-        save_journal(&path, &journal)?;
+        if self.create_empty {
+            fs::create_dir(live).map_err(|error| format!("无法恢复空资源目录：{error}"))?;
+        }
+        Ok(())
+    }
+}
+
+fn rename_to_vacant(from: &Path, to: &Path) -> Result<(), String> {
+    if present(to)? {
+        return Err("目标目录已存在，未覆盖任何文件".into());
+    }
+    rename_owned_directory(from, to).map_err(|error| error.to_string())
+}
+
+fn plan_commit_recovery(
+    live: &Path,
+    transaction: &Path,
+    journal: &Journal,
+) -> Result<RecoveryPlan, String> {
+    let mut plan = RecoveryPlan::new();
+    let before = safe_join(transaction, "before")?;
+    let next = safe_join(transaction, "next")?;
+    let interrupted = safe_join(transaction, "interrupted")?;
+    let uncommitted = safe_join(transaction, "uncommitted")?;
+    let forward = safe_join(transaction, "rolled-forward")?;
+    if present(&forward)? {
+        return Err("提交和回滚副本同时存在，已保留所有文件".into());
+    }
+    if journal.status == "staged" {
+        // A staged journal is persisted before any change to live. Abandon the
+        // staging without treating an unrelated later edit as part of this update.
+        if [&before, &interrupted, &uncommitted]
+            .into_iter()
+            .try_fold(false, |found, path| {
+                present(path).map(|exists| found || exists)
+            })?
+        {
+            return Err("待提交事务的副本状态异常，已保留所有文件".into());
+        }
+        return Ok(plan);
+    }
+
+    let original = snapshot(&before)?;
+    let active = snapshot(live)?;
+    let saved = snapshot(&interrupted)?;
+    let legacy_saved = snapshot(&uncommitted)?;
+    if saved.is_some() && legacy_saved.is_some()
+        || saved
+            .iter()
+            .chain(legacy_saved.iter())
+            .any(|copy| copy != &journal.after)
+    {
+        return Err("中断事务的新资源副本校验失败，已保留所有文件".into());
+    }
+
+    if journal.before_exists {
+        // Before the first rename or after the original was already put back.
+        if original.is_none() && active.as_ref() == Some(&journal.before) {
+            return Ok(plan);
+        }
+        if original.as_ref() != Some(&journal.before) {
+            return Err("中断事务的原始备份校验失败，停止恢复".into());
+        }
+        plan.restore_before = Some(before);
+    } else if original.is_some() || !journal.before.is_empty() {
+        return Err("中断事务的原目录存在状态不符合记录，已保留所有文件".into());
+    }
+
+    if let Some(active) = active {
+        if active != journal.after || present(&next)? || saved.is_some() || legacy_saved.is_some() {
+            return Err("当前资源目录与中断提交的记录不相符，已保留所有文件".into());
+        }
+        // Only displace verified new files after verifying the old backup above.
+        plan.preserve_live = Some(interrupted);
+    }
+    Ok(plan)
+}
+
+fn plan_rollback(
+    live: &Path,
+    transaction: &Path,
+    journal: &Journal,
+) -> Result<RecoveryPlan, String> {
+    let mut plan = RecoveryPlan::new();
+    let before = safe_join(transaction, "before")?;
+    let forward = safe_join(transaction, "rolled-forward")?;
+    let active = snapshot(live)?;
+    let original = snapshot(&before)?;
+    let displaced = snapshot(&forward)?;
+    if let Some(displaced) = displaced {
+        if displaced != journal.after {
+            return Err("回滚前的资源副本校验失败，已保留所有目录".into());
+        }
+        if original.is_none()
+            && (journal.before_exists && active.as_ref() == Some(&journal.before)
+                || !journal.before_exists
+                    && journal.before.is_empty()
+                    && active.as_ref().is_some_and(Vec::is_empty))
+        {
+            // The last data move succeeded, but the terminal journal write did not.
+            return Ok(plan);
+        }
+        if active.is_some() {
+            return Err("当前资源目录在回滚期间发生变化，已保留所有文件".into());
+        }
+    } else if active.as_ref() == Some(&journal.after) {
+        plan.preserve_live = Some(forward);
+    } else {
+        return Err("资源目录在该操作后发生变化。为保留后来添加或修改的文件，拒绝自动回滚；旧目录仍完整保存在历史记录的 before 中。".into());
+    }
+
+    if journal.before_exists {
+        if original.as_ref() != Some(&journal.before) {
+            return Err("原始资源备份校验失败，未改变当前目录".into());
+        }
+        plan.restore_before = Some(before);
+    } else if original.is_none() && journal.before.is_empty() {
+        plan.create_empty = true;
+    } else {
+        return Err("回滚原目录存在状态不符合记录，已保留所有文件".into());
+    }
+    Ok(plan)
+}
+
+fn result(journal: Journal) -> RollbackResult {
+    RollbackResult {
+        update_id: journal.id,
+        restored_files: journal.before.len(),
+        status: journal.status,
+    }
+}
+
+fn recovery_conflict(error: impl Into<String>) -> AppError {
+    AppError::new(crate::errors::RESOURCE_RECOVERY_CONFLICT).with_detail(error)
+}
+
+fn recovery_incomplete(error: impl Into<String>) -> AppError {
+    AppError::new(crate::errors::RESOURCE_RECOVERY_INCOMPLETE).with_detail(error)
+}
+
+pub(super) fn recover_one(live: &Path, id: &str) -> AppResult<RollbackResult> {
+    recover_one_using(live, id, rename_to_vacant, save_journal)
+}
+
+fn recover_one_using(
+    live: &Path,
+    id: &str,
+    move_directory: impl FnMut(&Path, &Path) -> Result<(), String>,
+    mut save: impl FnMut(&Path, &Journal) -> Result<(), String>,
+) -> AppResult<RollbackResult> {
+    let path = journal_path(&history_root(live).map_err(recovery_conflict)?, id)
+        .map_err(recovery_conflict)?;
+    let transaction = path
+        .parent()
+        .ok_or_else(|| recovery_conflict("事务目录无效"))?;
+    let mut journal = read_journal(&path, live).map_err(recovery_conflict)?;
+    let Some(kind) = recovery_kind(&journal, transaction).map_err(recovery_conflict)? else {
+        // Retrying a completed recovery is idempotent, but an ordinary commit
+        // or failure should never be reported to the user as recovered.
+        return if ["recovered", "rolledBack"].contains(&journal.status.as_str()) {
+            Ok(result(journal))
+        } else {
+            Err(AppError::new(crate::errors::RESOURCE_RECOVERY_NOT_NEEDED))
+        };
+    };
+    let plan = match kind {
+        Recovery::Commit => plan_commit_recovery(live, transaction, &journal),
+        Recovery::Rollback => plan_rollback(live, transaction, &journal),
+    }
+    .map_err(recovery_conflict)?;
+    if matches!(kind, Recovery::Rollback) && journal.status == "committed" {
+        // Convert the legacy marker before a recovery move could change its topology.
+        journal.status = "rollingBack".into();
+        save(&path, &journal).map_err(recovery_incomplete)?;
+    }
+    plan.execute(live, move_directory)
+        .map_err(recovery_incomplete)?;
+    journal.status = match kind {
+        Recovery::Commit => "recovered",
+        Recovery::Rollback => "rolledBack",
+    }
+    .into();
+    save(&path, &journal).map_err(recovery_incomplete)?;
+    Ok(result(journal))
+}
+
+pub(crate) fn require_no_pending(directory: &Path) -> Result<(), String> {
+    if history(directory)?.iter().any(|entry| entry.can_recover) {
+        return Err(crate::errors::RESOURCE_RECOVERY_REQUIRED.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn recover(directory: &Path) -> Result<(), String> {
+    for row in history(directory)? {
+        if row.can_recover {
+            recover_one(directory, &row.update_id)
+                .map_err(|error| error.detail.unwrap_or(error.code))?;
+        }
     }
     Ok(())
 }
@@ -565,7 +814,7 @@ pub(super) async fn install(
     if let Some(progress) = progress {
         progress.stage(state, "resource-plan", "检查资源及必需前置");
     }
-    recover(directory)?;
+    require_no_pending(directory)?;
     let api = client(false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let root_project = selected.project_id.clone();
@@ -678,9 +927,13 @@ pub(super) async fn install(
     if let Some(progress) = progress {
         progress.stage(state, "resource-commit", "提交已校验资源及必需前置");
     }
-    commit_using(directory, &transaction, &path, &mut journal, |from, to| {
-        fs::rename(from, to)
-    })?;
+    commit_using(
+        directory,
+        &transaction,
+        &path,
+        &mut journal,
+        rename_owned_directory,
+    )?;
     let dependency_count = plan.len().saturating_sub(1);
     let mut notices = Vec::new();
     if dependency_count > 0 {
@@ -707,7 +960,7 @@ pub(super) async fn updates(
     loader: Option<&str>,
     kind: ResourceKind,
 ) -> Result<Vec<ResourceUpdate>, String> {
-    recover(directory)?;
+    require_no_pending(directory)?;
     let api = client(false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let mut results = Vec::new();
@@ -770,7 +1023,7 @@ pub(super) async fn update_one(
 ) -> Result<ResourceInstall, String> {
     validate_id(file_name)?;
     identifier(new_id)?;
-    recover(directory)?;
+    require_no_pending(directory)?;
     let api = client(false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let current = locals
@@ -805,7 +1058,6 @@ pub(super) async fn update_one(
 }
 
 pub(super) fn history(directory: &Path) -> Result<Vec<ResourceHistory>, String> {
-    recover(directory)?;
     let root = history_root(directory)?;
     if !root.exists() {
         return Ok(Vec::new());
@@ -819,7 +1071,9 @@ pub(super) fn history(directory: &Path) -> Result<Vec<ResourceHistory>, String> 
             continue;
         }
         let journal = read_journal(&path, directory)?;
+        let can_recover = recovery_kind(&journal, &folder)?.is_some();
         output.push(ResourceHistory {
+            can_recover,
             update_id: journal.id,
             name: journal.name,
             created_at: journal.created_at,
@@ -832,49 +1086,26 @@ pub(super) fn history(directory: &Path) -> Result<Vec<ResourceHistory>, String> 
 }
 
 pub(super) fn rollback(directory: &Path, id: &str) -> Result<RollbackResult, String> {
-    recover(directory)?;
-    let root = history_root(directory)?;
-    let path = journal_path(&root, id)?;
+    let path = journal_path(&history_root(directory)?, id)?;
+    let transaction = path.parent().ok_or("事务目录无效")?;
     let mut journal = read_journal(&path, directory)?;
+    if matches!(
+        recovery_kind(&journal, transaction)?,
+        Some(Recovery::Rollback)
+    ) {
+        return recover_one(directory, id).map_err(|error| error.detail.unwrap_or(error.code));
+    }
     if journal.status != "committed" {
         return Err("此资源事务已经回滚或未成功提交".into());
     }
-    if inventory(directory)? != journal.after {
-        return Err("资源目录在该操作后发生变化。为保留后来添加或修改的文件，拒绝自动回滚；旧目录仍完整保存在历史记录的 before 中。".into());
-    }
-    let transaction = path.parent().ok_or("事务目录无效")?;
-    let before = safe_join(transaction, "before")?;
-    if journal.before_exists && inventory(&before)? != journal.before {
-        return Err("原始资源备份校验失败，未改变当前目录".into());
-    }
-    let forward = safe_join(transaction, "rolled-forward")?;
-    if forward.exists() {
-        return Err("回滚副本已存在，未覆盖当前目录".into());
-    }
+    require_no_pending(directory)?;
+    let plan = plan_rollback(directory, transaction, &journal)?;
     journal.status = "rollingBack".into();
     save_journal(&path, &journal)?;
-    if let Err(error) = fs::rename(directory, &forward) {
-        journal.status = "committed".into();
-        save_journal(&path, &journal)?;
-        return Err(format!("无法保留回滚前资源，请关闭游戏后重试：{error}"));
-    }
-    if journal.before_exists {
-        if let Err(error) = fs::rename(&before, directory) {
-            let _ = fs::rename(&forward, directory);
-            journal.status = "committed".into();
-            let _ = save_journal(&path, &journal);
-            return Err(format!("无法恢复原始资源，已尝试退回当前版本：{error}"));
-        }
-    } else {
-        fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    }
+    plan.execute(directory, rename_to_vacant)?;
     journal.status = "rolledBack".into();
     save_journal(&path, &journal)?;
-    Ok(RollbackResult {
-        update_id: id.into(),
-        restored_files: journal.before.len(),
-        status: journal.status,
-    })
+    Ok(result(journal))
 }
 
 #[cfg(test)]
@@ -1000,6 +1231,336 @@ mod tests {
         assert!(directory.join("old.jar").is_file());
         cleanup(&root);
     }
+    #[test]
+    fn interrupted_commit_recovers_at_each_persisted_boundary() {
+        for (marker, point) in [
+            ("staged", 0),
+            ("committing", 0),
+            ("committing", 1),
+            ("committing", 2),
+            ("committing", 3),
+            ("committing", 4),
+            ("recoveryRequired", 1),
+            ("recoveryRequired", 5),
+        ] {
+            let (root, live, transaction, path, mut journal) = setup();
+            if point >= 1 {
+                fs::rename(&live, transaction.join("before")).unwrap();
+            }
+            if (2..=5).contains(&point) {
+                fs::rename(transaction.join("next"), &live).unwrap();
+            }
+            if (3..=5).contains(&point) {
+                let saved_after = if point == 5 {
+                    "uncommitted"
+                } else {
+                    "interrupted"
+                };
+                fs::rename(&live, transaction.join(saved_after)).unwrap();
+            }
+            if point == 4 {
+                fs::rename(transaction.join("before"), &live).unwrap();
+            }
+            journal.status = marker.into();
+            save_journal(&path, &journal).unwrap();
+            recover(&live).unwrap_or_else(|error| panic!("{marker}/{point}: {error}"));
+            assert_eq!(
+                inventory(&live).unwrap(),
+                journal.before,
+                "{marker}/{point}"
+            );
+            assert_eq!(
+                read_journal(&path, &live).unwrap().status,
+                "recovered",
+                "{marker}/{point}"
+            );
+            let preserved = match point {
+                0 | 1 => transaction.join("next"),
+                2..=4 => transaction.join("interrupted"),
+                _ => transaction.join("uncommitted"),
+            };
+            assert_eq!(
+                inventory(&preserved).unwrap(),
+                journal.after,
+                "{marker}/{point}"
+            );
+            recover(&live).unwrap();
+            assert_eq!(inventory(&live).unwrap(), journal.before);
+            assert_eq!(inventory(&preserved).unwrap(), journal.after);
+            cleanup(&root);
+        }
+    }
+
+    #[test]
+    fn interrupted_rollback_completes_without_losing_either_copy() {
+        for (point, marker) in [
+            (0, "rollingBack"),
+            (1, "rollingBack"),
+            (2, "rollingBack"),
+            (1, "committed"), // Legacy: the attempt to return rolled-forward also failed.
+        ] {
+            let (root, live, transaction, path, mut journal) = setup();
+            commit_using(&live, &transaction, &path, &mut journal, fs_rename).unwrap();
+            if point >= 1 {
+                fs::rename(&live, transaction.join("rolled-forward")).unwrap();
+            }
+            if point >= 2 {
+                fs::rename(transaction.join("before"), &live).unwrap();
+            }
+            journal.status = marker.into();
+            save_journal(&path, &journal).unwrap();
+            for _ in 0..2 {
+                recover(&live).unwrap_or_else(|error| panic!("rollback {marker}/{point}: {error}"));
+                assert_eq!(read_journal(&path, &live).unwrap().status, "rolledBack");
+                assert_eq!(inventory(&live).unwrap(), journal.before);
+                assert_eq!(
+                    inventory(&transaction.join("rolled-forward")).unwrap(),
+                    journal.after
+                );
+            }
+            cleanup(&root);
+        }
+    }
+
+    #[test]
+    fn empty_before_is_not_treated_as_a_missing_backup() {
+        let (root, live, transaction, path, mut journal) = setup();
+        fs::remove_file(live.join("old.jar")).unwrap();
+        fs::remove_file(live.join("unknown-user.jar")).unwrap();
+        journal.before.clear();
+        commit_using(&live, &transaction, &path, &mut journal, fs_rename).unwrap();
+        fs::remove_dir(transaction.join("before")).unwrap();
+        journal.status = "rollingBack".into();
+        save_journal(&path, &journal).unwrap();
+
+        assert!(recover(&live).is_err());
+        assert_eq!(inventory(&live).unwrap(), journal.after);
+        assert!(!transaction.join("rolled-forward").exists());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn interrupted_initial_install_preserves_absence_but_initial_rollback_creates_empty_live() {
+        for (marker, point) in [
+            ("committing", 0),
+            ("committing", 1),
+            ("rollingBack", 1),
+            ("rollingBack", 2),
+        ] {
+            let (root, live, transaction, path, mut journal) = setup();
+            fs::remove_file(live.join("old.jar")).unwrap();
+            fs::remove_file(live.join("unknown-user.jar")).unwrap();
+            fs::remove_dir(&live).unwrap();
+            journal.before_exists = false;
+            journal.before.clear();
+            journal.status = marker.into();
+            if point >= 1 {
+                fs::rename(transaction.join("next"), &live).unwrap();
+            }
+            if marker == "rollingBack" {
+                fs::rename(&live, transaction.join("rolled-forward")).unwrap();
+                if point == 2 {
+                    fs::create_dir(&live).unwrap();
+                }
+            }
+            save_journal(&path, &journal).unwrap();
+            let rollback = marker == "rollingBack";
+            for _ in 0..2 {
+                recover(&live).unwrap();
+                assert_eq!(live.is_dir(), rollback);
+                assert_eq!(
+                    read_journal(&path, &live).unwrap().status,
+                    if rollback { "rolledBack" } else { "recovered" }
+                );
+                let preserved = if rollback {
+                    "rolled-forward"
+                } else if point == 0 {
+                    "next"
+                } else {
+                    "interrupted"
+                };
+                assert_eq!(
+                    inventory(&transaction.join(preserved)).unwrap(),
+                    journal.after
+                );
+            }
+            cleanup(&root);
+        }
+    }
+
+    #[test]
+    fn recovery_checks_backup_before_moving_live_and_queries_never_restore() {
+        let (root, live, transaction, path, mut journal) = setup();
+        commit_using(&live, &transaction, &path, &mut journal, fs_rename).unwrap();
+        journal.status = "committing".into();
+        save_journal(&path, &journal).unwrap();
+        let rows = history(&live).unwrap();
+        assert_eq!(rows[0].status, "committing");
+        assert_eq!(inventory(&live).unwrap(), journal.after);
+        assert_eq!(
+            inventory(&transaction.join("before")).unwrap(),
+            journal.before
+        );
+
+        fs::write(transaction.join("before/old.jar"), b"changed").unwrap();
+        assert!(recover(&live).is_err());
+        assert_eq!(inventory(&live).unwrap(), journal.after);
+        assert_eq!(
+            fs::read(transaction.join("before/old.jar")).unwrap(),
+            b"changed"
+        );
+        assert!(!transaction.join("interrupted").exists());
+        assert_eq!(read_journal(&path, &live).unwrap().status, "committing");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn recovery_never_replaces_current_files_when_snapshots_disagree() {
+        for point in [
+            "occupied-interrupted",
+            "changed-live",
+            "corrupt-forward",
+            "bad-state",
+        ] {
+            let (root, live, transaction, path, mut journal) = setup();
+            commit_using(&live, &transaction, &path, &mut journal, fs_rename).unwrap();
+            journal.status = match point {
+                "corrupt-forward" => "rollingBack",
+                "bad-state" => "unrecognized",
+                _ => "committing",
+            }
+            .into();
+            match point {
+                "occupied-interrupted" => {
+                    fs::create_dir(transaction.join("interrupted")).unwrap();
+                    fs::write(transaction.join("interrupted/other.jar"), b"unrelated").unwrap();
+                }
+                "changed-live" => fs::write(live.join("later.jar"), b"independent").unwrap(),
+                "corrupt-forward" => {
+                    fs::create_dir(transaction.join("rolled-forward")).unwrap();
+                    fs::write(transaction.join("rolled-forward/new.jar"), b"corrupt").unwrap();
+                }
+                _ => {}
+            }
+            save_journal(&path, &journal).unwrap();
+            let active = inventory(&live).unwrap();
+            let backups = inventory(&transaction.join("before")).unwrap();
+            assert!(recover(&live).is_err(), "{point}");
+            assert_eq!(inventory(&live).unwrap(), active, "{point}");
+            assert_eq!(
+                inventory(&transaction.join("before")).unwrap(),
+                backups,
+                "{point}"
+            );
+            assert_eq!(
+                read_journal(&path, &live).unwrap().status,
+                journal.status,
+                "{point}"
+            );
+            cleanup(&root);
+        }
+    }
+
+    #[test]
+    fn direct_writers_guard_recovery_before_creating_or_downloading_resources() {
+        let local = include_str!("content.rs")
+            .split_once("pub async fn import_local_resources(")
+            .unwrap()
+            .1
+            .split_once("#[cfg(test)]")
+            .unwrap()
+            .0;
+        let curseforge = include_str!("curseforge.rs")
+            .split_once("pub async fn install_curseforge_resource(")
+            .unwrap()
+            .1
+            .split_once("#[cfg(test)]")
+            .unwrap()
+            .0;
+        for (command, body, target, side_effect) in [
+            (
+                "local",
+                local,
+                "let directory = safe_join(&root, folder)?",
+                "fs::create_dir_all(&directory)",
+            ),
+            (
+                "CurseForge",
+                curseforge,
+                "crate::resources::resource_target(&state",
+                "let key = service_key(&state)?",
+            ),
+        ] {
+            let guarded = body.find("require_no_pending").expect(command);
+            assert!(
+                body.find("state.operation.lock().await").unwrap() < guarded,
+                "{command}"
+            );
+            assert!(body.find(target).unwrap() < guarded, "{command}");
+            assert!(guarded < body.find(side_effect).unwrap(), "{command}");
+        }
+    }
+
+    #[test]
+    fn interrupted_io_after_displacing_live_is_retryable_and_not_reported_as_conflict() {
+        for commit_marker_failure in [false, true] {
+            let (root, live, transaction, path, mut journal) = setup();
+            commit_using(&live, &transaction, &path, &mut journal, fs_rename).unwrap();
+            journal.status = "committing".into();
+            save_journal(&path, &journal).unwrap();
+
+            let error = recover_one_using(
+                &live,
+                &journal.id,
+                |from, to| {
+                    if !commit_marker_failure && to == live {
+                        return Err("injected interruption before second rename".into());
+                    }
+                    rename_to_vacant(from, to)
+                },
+                |_, _| Err("injected interruption before terminal journal marker".into()),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.code, "resource.recoveryIncomplete");
+            assert_eq!(read_journal(&path, &live).unwrap().status, "committing");
+            let original_location = if commit_marker_failure {
+                live.clone()
+            } else {
+                assert!(!live.exists());
+                transaction.join("before")
+            };
+            assert_eq!(inventory(&original_location).unwrap(), journal.before);
+            let preserved = transaction.join("interrupted");
+            assert_eq!(inventory(&preserved).unwrap(), journal.after);
+
+            for _ in 0..2 {
+                assert_eq!(recover_one(&live, &journal.id).unwrap().status, "recovered");
+                assert_eq!(inventory(&live).unwrap(), journal.before);
+                assert_eq!(inventory(&preserved).unwrap(), journal.after);
+            }
+            cleanup(&root);
+        }
+    }
+
+    #[test]
+    fn explicit_recovery_of_an_ordinary_committed_row_is_not_a_false_success() {
+        let (root, live, transaction, path, mut journal) = setup();
+        commit_using(&live, &transaction, &path, &mut journal, fs_rename).unwrap();
+        let error = recover_one(&live, &journal.id).err().unwrap();
+        assert_eq!(error.code, "resource.recoveryNotNeeded");
+        assert_eq!(inventory(&live).unwrap(), journal.after);
+        assert_eq!(
+            inventory(&transaction.join("before")).unwrap(),
+            journal.before
+        );
+        cleanup(&root);
+    }
+
+    fn fs_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+        fs::rename(from, to)
+    }
+
     #[test]
     fn circular_required_dependencies_are_rejected() {
         let graph = HashMap::from([

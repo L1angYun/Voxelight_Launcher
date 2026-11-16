@@ -356,6 +356,23 @@ fn manifest_cache_file(mirror: bool) -> &'static str {
     }
 }
 
+async fn read_manifest_cache(state: &LauncherState, file: &str) -> Option<Value> {
+    let bytes = tokio::fs::read(state.data_dir.join(file)).await.ok()?;
+    let value = parse_json(&bytes).ok()?;
+    validate_manifest(&value).ok()?;
+    Some(value)
+}
+
+async fn profile_ownership_manifests(state: &LauncherState) -> Vec<Value> {
+    let mut manifests = Vec::new();
+    for file in [manifest_cache_file(false), manifest_cache_file(true)] {
+        if let Some(manifest) = read_manifest_cache(state, file).await {
+            manifests.push(manifest);
+        }
+    }
+    manifests
+}
+
 async fn cache_manifest(state: &LauncherState, bytes: &[u8], mirror: bool) {
     let cache = state.data_dir.join(manifest_cache_file(mirror));
     let temp = state
@@ -379,13 +396,7 @@ async fn read_cached_manifests(state: &LauncherState, source: &str) -> Result<Ve
     }
     let mut manifests = Vec::new();
     for file in files {
-        let Ok(bytes) = tokio::fs::read(state.data_dir.join(file)).await else {
-            continue;
-        };
-        let Ok(value) = parse_json(&bytes) else {
-            continue;
-        };
-        if validate_manifest(&value).is_ok() {
+        if let Some(value) = read_manifest_cache(state, file).await {
             manifests.push(value);
         }
     }
@@ -657,6 +668,16 @@ async fn resolve_metadata_with_source(
     root: &Path,
     source: &str,
 ) -> Result<Value, String> {
+    resolve_metadata_resolved(state, id, root, source, &identity_url).await
+}
+
+async fn resolve_metadata_resolved(
+    state: &LauncherState,
+    id: &str,
+    root: &Path,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<Value, String> {
     let mut chain = Vec::new();
     let mut visited = HashSet::new();
     let mut current = id.to_owned();
@@ -666,11 +687,16 @@ async fn resolve_metadata_with_source(
             return Err("版本继承循环或超过 16 层".into());
         }
         let path = safe_join(root, &format!("versions/{current}/{current}.json"))?;
-        let local = tokio::fs::read(&path)
-            .await
-            .ok()
-            .map(|bytes| parse_json(&bytes))
-            .transpose()?;
+        let bytes = read_version_profile(&path).await?;
+        let local = match bytes.as_deref().map(parse_json) {
+            Some(Ok(metadata)) => Some(metadata),
+            Some(Err(_)) if known_loader_profile(state, &current)? => {
+                return Err(format!("{}{current}", crate::errors::LOADER_REINSTALL_PREFIX));
+            }
+            // A corrupt vanilla profile is classified only against the verified
+            // metadata at the terminal owner, and must not be replaced by name alone.
+            Some(Err(_)) | None => None,
+        };
         let parent = local
             .as_ref()
             .and_then(|metadata| {
@@ -691,11 +717,28 @@ async fn resolve_metadata_with_source(
         } else {
             // A mod loader's JSON is custom metadata; only this terminal parent is
             // fetched/checked against the vanilla manifest and its entry SHA-1.
-            chain.push(official_metadata_with_source(state, &current, root, source).await?);
+            chain.push(official_metadata_with_resolver(state, &current, root, source, resolver).await?);
             break;
         }
     }
     merge_chain(chain)
+}
+
+fn known_loader_profile(state: &LauncherState, id: &str) -> Result<bool, String> {
+    if state.snapshot()?.instances.iter().any(|instance| {
+        instance.version_id == id
+            && (!instance.loader_version.is_empty()
+                || matches!(instance.loader.as_str(), "fabric" | "quilt" | "forge" | "neoforge"))
+    }) {
+        return Ok(true);
+    }
+    let id = id.to_ascii_lowercase();
+    Ok(id.starts_with("fabric-loader-")
+        || id.starts_with("quilt-loader-")
+        || id.contains("-forge-")
+        || id.contains("-neoforge-")
+        || id.starts_with("forge-")
+        || id.starts_with("neoforge-"))
 }
 
 pub fn rules_allow(rules: Option<&Value>) -> bool {
@@ -1241,7 +1284,7 @@ async fn official_metadata_with_resolver(
     let local_path = safe_join(root, &format!("versions/{id}/{id}.json"))?;
     // Offline checksums must come from a manifest origin allowed by the current source.
     let cached_manifests = read_cached_manifests(state, source).await?;
-    if let Ok(local_bytes) = tokio::fs::read(&local_path).await {
+    if let Some(local_bytes) = read_version_profile(&local_path).await? {
         for cached in cached_manifests {
             if let Ok(version) = manifest_version(&cached, id) {
                 if let Ok(metadata) = parse_official_metadata(
@@ -1255,7 +1298,11 @@ async fn official_metadata_with_resolver(
         }
     }
     let candidates = download_url_candidates(MANIFEST_URL, source)?;
+    // Refreshing a manifest may replace the only record of an older verified
+    // profile. Preserve that evidence before changing the cache.
+    let ownership_manifests = profile_ownership_manifests(state).await;
     let mut errors = Vec::new();
+    let mut profile_conflict = None;
     for candidate in candidates {
         let manifest_bytes =
             match fetch_bytes_once(&state.client, &candidate.url, 16 * 1024 * 1024, resolver).await
@@ -1292,7 +1339,7 @@ async fn official_metadata_with_resolver(
             .as_str()
             .ok_or("官方版本清单缺少 SHA-1")?
             .to_owned();
-        if let Ok(local_bytes) = tokio::fs::read(&local_path).await {
+        if let Some(local_bytes) = read_version_profile(&local_path).await? {
             if let Ok(metadata) = parse_official_metadata(&local_bytes, id, &expected) {
                 return Ok(metadata);
             }
@@ -1311,31 +1358,174 @@ async fn official_metadata_with_resolver(
                 tokio::fs::create_dir_all(local_path.parent().ok_or("版本目录无效")?)
                     .await
                     .map_err(|e| e.to_string())?;
-                // Never replace an existing third-party manifest under an official version name.
-                if let Ok(existing) = tokio::fs::read(&local_path).await {
-                    if existing != bytes {
-                        let backup = local_path.with_extension(format!(
-                            "json.backup-{}",
-                            chrono::Utc::now().timestamp_millis()
-                        ));
-                        tokio::fs::copy(&local_path, backup)
-                            .await
-                            .map_err(|e| format!("备份已有版本元数据失败：{e}"))?;
+                match publish_official_profile(id, &local_path, &bytes, &ownership_manifests).await {
+                    Ok(()) => {}
+                    // A mirror can return a separately trusted revision whose
+                    // bytes do not match a truncated official-origin profile.
+                    // Try the next permitted chain instead of stopping there.
+                    Err(error) if error == format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX) => {
+                        profile_conflict = Some(error);
+                        continue;
                     }
+                    Err(error) => return Err(error),
                 }
-                let temp = local_path.with_extension(format!("json-{}.tmp", uuid::Uuid::new_v4()));
-                tokio::fs::write(&temp, bytes)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                tokio::fs::rename(temp, &local_path)
-                    .await
-                    .map_err(|e| e.to_string())?;
                 return Ok(metadata);
             }
             Err(error) => errors.push(format!("{} 的版本链：{error}", candidate.url)),
         }
     }
-    Err(format!("原版元数据候选均失败：{}", errors.join("；")))
+    Err(profile_conflict.unwrap_or_else(|| format!("原版元数据候选均失败：{}", errors.join("；"))))
+}
+
+async fn read_version_profile(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("读取版本元数据失败：{error}")),
+    }
+}
+
+fn previously_verified_profile(manifests: &[Value], id: &str, previous: &[u8]) -> bool {
+    // This identifies a cache that we may safely quarantine on a source switch.
+    // It never authenticates new data: the caller has already checked the new
+    // bytes against the manifest from the currently allowed source.
+    manifests.iter().any(|manifest| {
+        manifest_version(manifest, id).is_ok_and(|entry| {
+            parse_official_metadata(previous, id, entry["sha1"].as_str().unwrap_or("")).is_ok()
+        })
+    })
+}
+
+fn looks_like_truncated_official_profile(id: &str, previous: &[u8], verified: &[u8]) -> bool {
+    // A name or a short JSON fragment does not establish origin. Requiring a
+    // meaningful prefix of the trusted response saves interrupted downloads,
+    // while ambiguous or edited files stay at their original path.
+    previous.len() >= 96
+        && verified.len() > previous.len()
+        && verified.starts_with(previous)
+        && parse_json(previous).is_err()
+        && parse_json(verified).is_ok_and(|metadata| metadata["id"].as_str() == Some(id))
+}
+
+async fn publish_official_profile(
+    id: &str,
+    path: &Path,
+    verified: &[u8],
+    ownership_manifests: &[Value],
+) -> Result<(), String> {
+    let previous = read_version_profile(path).await?;
+    if previous.as_deref() == Some(verified) {
+        return Ok(());
+    }
+    if let Some(previous) = previous.as_deref() {
+        if !looks_like_truncated_official_profile(id, previous, verified)
+            && !previously_verified_profile(ownership_manifests, id, previous)
+        {
+            return Err(format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX));
+        }
+    }
+
+    // Reserve our staging/quarantine name exclusively on the same volume.
+    // Nothing from the old profile is removed until the replacement is ready.
+    let tag = if previous.as_deref().is_some_and(|bytes| parse_json(bytes).is_err()) {
+        "corrupt"
+    } else {
+        "previous"
+    };
+    let transaction = path.with_extension(format!("json.{tag}-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir(&transaction)
+        .await
+        .map_err(|error| format!("无法创建版本元数据隔离目录：{error}"))?;
+    let staged = transaction.join("verified.json");
+    let original = transaction.join("original.json");
+    let mut has_original = false;
+    let outcome = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)
+            .await
+            .map_err(|error| error.to_string())?;
+        file.write_all(verified).await.map_err(|error| error.to_string())?;
+        file.sync_all().await.map_err(|error| error.to_string())?;
+        drop(file);
+        if let Some(previous) = previous.as_deref() {
+            let current = read_version_profile(path).await?;
+            if current.as_deref() == Some(verified) {
+                return Ok(()); // a concurrent resolver already published it
+            }
+            if current.as_deref().is_some_and(|bytes| bytes != previous) {
+                return Err(format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX));
+            }
+            if current.is_some() {
+                // The destination lives in a freshly reserved private directory.
+                tokio::fs::rename(path, &original).await.map_err(|error| error.to_string())?;
+                has_original = true;
+                if read_version_profile(&original).await?.as_deref() != Some(previous) {
+                    return Err(format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX));
+                }
+            }
+        }
+        if let Err(error) = move_profile_to_vacant_path(&staged, path).await {
+            if read_version_profile(path).await?.as_deref() != Some(verified) {
+                return Err(format!("发布版本元数据失败（不会覆盖已存在文件）：{error}"));
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let _ = tokio::fs::remove_file(&staged).await;
+    if outcome.is_err() && has_original && move_profile_to_vacant_path(&original, path).await.is_ok() {
+        has_original = false;
+    }
+    if !has_original {
+        let _ = tokio::fs::remove_dir(&transaction).await;
+    }
+    outcome.map_err(|error| {
+        if has_original {
+            if error.starts_with(crate::errors::PROFILE_CONFLICT_PREFIX) {
+                format!("{error}\n原有版本元数据保存在 {}", original.display())
+            } else {
+                format!("{error}；原有版本元数据保存在 {}", original.display())
+            }
+        } else {
+            error
+        }
+    })
+}
+
+#[cfg(windows)]
+async fn move_profile_to_vacant_path(from: &Path, to: &Path) -> std::io::Result<()> {
+    let from = from.to_path_buf();
+    let to = to.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileW(existing: *const u16, new: *const u16) -> i32;
+        }
+        let to_parent = to.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+        let to_filename = to.file_name().ok_or(std::io::ErrorKind::InvalidInput)?;
+        let from = fs::canonicalize(from)?;
+        let to = fs::canonicalize(to_parent)?.join(to_filename);
+        let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Both owned buffers are nul terminated and valid throughout the call.
+        // MoveFileW without replacement support also works on Windows volumes
+        // that do not support hard links (for example a removable drive).
+        if unsafe { MoveFileW(from.as_ptr(), to.as_ptr()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+#[cfg(not(windows))]
+async fn move_profile_to_vacant_path(from: &Path, to: &Path) -> std::io::Result<()> {
+    tokio::fs::hard_link(from, to).await?;
+    tokio::fs::remove_file(from).await
 }
 
 pub async fn install(
@@ -2756,6 +2946,158 @@ mod tests {
         }))
         .unwrap()
     }
+
+    #[test]
+    fn damaged_official_profile_is_quarantined_and_refetched_through_its_inheriting_loader() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("damaged-vanilla-profile");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let canonical = br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","type":"release","libraries":[],"arguments":{"game":["--demo"]}}"#;
+            let damaged = &canonical[..canonical.len() - 6];
+            let vanilla = root.join("versions/source-test/source-test.json");
+            fs::create_dir_all(vanilla.parent().unwrap()).unwrap();
+            fs::write(&vanilla, damaged).unwrap();
+            let loader = root.join("versions/loader-test/loader-test.json");
+            fs::create_dir_all(loader.parent().unwrap()).unwrap();
+            let loader_bytes = br#"{"id":"loader-test","inheritsFrom":"source-test","mainClass":"net.fabricmc.loader.Main","libraries":[]}"#;
+            fs::write(&loader, loader_bytes).unwrap();
+            let manifest = manifest_fixture(vec![json!({
+                "id": "source-test",
+                "url": "https://piston-meta.mojang.com/v1/packages/source-test.json",
+                "sha1": format!("{:x}", Sha1::digest(canonical)),
+            })]);
+            let server = TestServer::new(&[
+                ("/piston-meta.mojang.com/mc/game/version_manifest_v2.json", 200, &manifest),
+                ("/piston-meta.mojang.com/v1/packages/source-test.json", 200, canonical),
+            ]);
+            let resolver = server.resolver();
+            let result = resolve_metadata_resolved(&state, "loader-test", &root, "official", &resolver).await.unwrap();
+            assert_eq!(result["id"], "loader-test");
+            assert_eq!(result["_launcherClientId"], "source-test");
+            assert_eq!(fs::read(&loader).unwrap(), loader_bytes);
+            assert_eq!(fs::read(&vanilla).unwrap(), canonical);
+            for _ in 0..2 {
+                let backups: Vec<_> = fs::read_dir(vanilla.parent().unwrap()).unwrap().map(|entry| entry.unwrap().path())
+                    .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("source-test.json.corrupt-"))
+                    .collect();
+                assert_eq!(backups.len(), 1);
+                assert_eq!(fs::read(backups[0].join("original.json")).unwrap(), damaged);
+                assert!(resolve_metadata_resolved(&state, "loader-test", &root, "official", &resolver).await.is_ok());
+            }
+            assert_eq!(server.requests().len(), 2, "subsequent repairs use verified local bytes");
+            drop(resolver);
+            drop(server);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn official_lookup_never_replaces_unknown_broken_or_valid_custom_profiles_at_official_id() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("preserve-custom-profile");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let canonical = br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","type":"release","libraries":[],"arguments":{"game":["--demo"]}}"#;
+            let manifest = manifest_fixture(vec![json!({
+                "id": "source-test",
+                "url": "https://piston-meta.mojang.com/v1/packages/source-test.json",
+                "sha1": format!("{:x}", Sha1::digest(canonical)),
+            })]);
+            let server = TestServer::new(&[
+                ("/piston-meta.mojang.com/mc/game/version_manifest_v2.json", 200, &manifest),
+                ("/piston-meta.mojang.com/v1/packages/source-test.json", 200, canonical),
+            ]);
+            let resolver = server.resolver();
+            let path = root.join("versions/source-test/source-test.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            for custom in [&br#"{"id":"#[..], &br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","libraries":[],"arguments":{"game":["--custom"]}}"#[..]] {
+                fs::write(&path, custom).unwrap();
+                let error = official_metadata_with_resolver(&state, "source-test", &root, "official", &resolver).await.unwrap_err();
+                let localized = crate::errors::expected(error);
+                assert_eq!(localized.code, "version.profileConflict");
+                assert_eq!(localized.params["id"], "source-test");
+                assert_eq!(fs::read(&path).unwrap(), custom);
+                assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+            }
+            drop(resolver);
+            drop(server);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn malformed_loader_gets_reinstall_guidance_without_fetching_metadata() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("damaged-loader-profile");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let path = root.join("versions/fabric-loader-0.7-source-test/fabric-loader-0.7-source-test.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let damaged = br#"{"id":"fabric-loader-0.7-source-test","inheritsFrom":"#;
+            fs::write(&path, damaged).unwrap();
+            let server = TestServer::new(&[]);
+            let resolver = server.resolver();
+            let error = resolve_metadata_resolved(&state, "fabric-loader-0.7-source-test", &root, "official", &resolver).await.unwrap_err();
+            let localized = crate::errors::expected(error);
+            assert_eq!(localized.code, "version.loaderReinstall");
+            assert_eq!(localized.params["id"], "fabric-loader-0.7-source-test");
+            assert_eq!(fs::read(&path).unwrap(), damaged);
+            assert!(server.requests().is_empty());
+            drop(resolver);
+            drop(server);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn damaged_official_profile_keeps_original_when_the_response_fails_sha1() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("invalid-official-profile-fetch");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let canonical = br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","type":"release","libraries":[],"arguments":{"game":["--demo"]}}"#;
+            let damaged = &canonical[..canonical.len() - 6];
+            let path = root.join("versions/source-test/source-test.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, damaged).unwrap();
+            let manifest = manifest_fixture(vec![json!({
+                "id": "source-test",
+                "url": "https://piston-meta.mojang.com/v1/packages/source-test.json",
+                "sha1": format!("{:x}", Sha1::digest(canonical)),
+            })]);
+            let server = TestServer::new(&[
+                ("/piston-meta.mojang.com/mc/game/version_manifest_v2.json", 200, &manifest),
+                ("/piston-meta.mojang.com/v1/packages/source-test.json", 200, br#"{"id":"wrong"}"#),
+            ]);
+            let resolver = server.resolver();
+            let outcome = resolve_metadata_resolved(&state, "source-test", &root, "official", &resolver).await;
+            assert!(outcome.unwrap_err().contains("SHA-1"));
+            assert_eq!(fs::read(&path).unwrap(), damaged);
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+            assert_eq!(server.requests().len(), 2);
+            drop(resolver);
+            drop(server);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn official_profile_publication_will_not_replace_a_new_destination() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("no-clobber-vanilla-profile");
+            fs::create_dir_all(&directory).unwrap();
+            let staged = directory.join("verified.json");
+            let target = directory.join("version.json");
+            fs::write(&staged, b"verified staged metadata").unwrap();
+            fs::write(&target, b"user profile created before publication").unwrap();
+            assert!(move_profile_to_vacant_path(&staged, &target).await.is_err());
+            assert_eq!(fs::read(&target).unwrap(), b"user profile created before publication");
+            assert_eq!(fs::read(&staged).unwrap(), b"verified staged metadata");
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
 
     #[test]
     fn launch_preparation_restarts_after_cancellation_and_finishes_failures() {

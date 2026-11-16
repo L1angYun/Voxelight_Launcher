@@ -27,6 +27,7 @@ export interface ResourceHistory {
   createdAt: string;
   status: string;
   projects: string[];
+  canRecover: boolean;
 }
 export interface RollbackResult {
   updateId: string;
@@ -62,6 +63,27 @@ export interface InstanceBackup {
   createdAt: string;
   path: string;
   size: number;
+}
+export interface BackupRecoveryPaths {
+  currentDirectory: string;
+  previousDirectory?: string | null;
+  restoredDirectory?: string | null;
+  previousBackupId?: string | null;
+}
+export interface InstanceBackupList {
+  backups: InstanceBackup[];
+  warnings: { fileName: string; reason: "invalid" | "wrongInstance" | "unreadable" }[];
+  recovery: BackupRecoveryPaths | null;
+}
+export interface RestoreInstanceBackupResult {
+  instance: Instance;
+  previousBackup: InstanceBackup | null;
+  previousDirectory: string | null;
+}
+export interface RecoverInstanceRestoreResult {
+  instance: Instance;
+  preservedDirectory: string | null;
+  previousBackup: InstanceBackup | null;
 }
 export interface Diagnosis {
   title: string;

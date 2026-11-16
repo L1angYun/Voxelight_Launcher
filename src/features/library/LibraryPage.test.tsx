@@ -10,8 +10,16 @@ import type { LauncherContextValue } from "../../app/controller/types";
 import { instanceTabRegistry } from "../../app/registry";
 import { LibraryPage } from "./LibraryPage";
 import { InstanceDetailPage } from "./InstanceDetailPage";
+import { InstanceOverview } from "./InstanceOverview";
 import { InstanceContent } from "./InstanceContent";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
+
+function giveBackupSelectBounds(button: HTMLElement) {
+  vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
+    x: 100, y: 100, width: 240, height: 40, top: 100, bottom: 140, left: 100, right: 340,
+    toJSON: () => ({}),
+  });
+}
 
 const commandMock = vi.mocked(command);
 let mockLauncher: LauncherContextValue;
@@ -108,7 +116,8 @@ beforeEach(() => {
   mockLauncher = fixture();
   commandMock.mockReset();
   commandMock.mockImplementation(async (name, args) => {
-    if (name === "list_local_resources" || name === "list_worlds" || name === "list_screenshots" || name === "list_instance_backups") return [];
+    if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
+    if (name === "list_local_resources" || name === "list_worlds" || name === "list_screenshots") return [];
     if (name === "list_loader_versions") return [{ id: "0.16.9", stable: true, recommended: true }];
     if (name === "install_loader") return { versionId: "fabric-loader-0.16.9-1.21.1", loader: "fabric", loaderVersion: "0.16.9" };
     if (name === "create_instance") return { ...instance, id: "created-instance", name: args?.name as string };
@@ -184,6 +193,171 @@ describe("library and instance details", () => {
     await act(async () => request());
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector(".vx-empty h2")?.textContent).toBe(emptyTitle);
+  });
+
+  it("only recovers an interrupted resource transaction after confirmation", async () => {
+    const args = { versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack" };
+    const pending = { updateId: "fixture-interrupted", name: "资源更新", createdAt: "2026-11-16", status: "rollingBack", canRecover: true, projects: [] };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+    let completed = false;
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_resource_update_history") return [completed ? { ...pending, status: "rolledBack", canRecover: false } : pending];
+      if (name === "recover_resource_update") {
+        completed = true;
+        return { updateId: pending.updateId, restoredFiles: 1, status: "rolledBack" };
+      }
+      return [];
+    });
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label);
+    try {
+      await render(createElement(InstanceContent, { versionId: args.versionId, instanceId: args.instanceId }));
+      await act(async () => find("更新历史")!.click());
+      expect(commandMock).toHaveBeenCalledWith("list_resource_update_history", args);
+      expect(commandMock.mock.calls.some(([name]) => name === "recover_resource_update")).toBe(false);
+      expect(find("回滚")).toBeUndefined();
+      const restore = find("恢复中断事务");
+      expect(restore).toBeDefined();
+      await act(async () => restore!.click());
+      expect(commandMock.mock.calls.some(([name]) => name === "recover_resource_update")).toBe(false);
+      await act(async () => restore!.click());
+      expect(commandMock).toHaveBeenCalledWith("recover_resource_update", { ...args, updateId: pending.updateId });
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_resource_update_history")).toHaveLength(2);
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(2);
+      expect(container.textContent).toContain("已恢复中断的资源事务");
+      expect(container.textContent).toContain("已回滚");
+      expect(find("恢复中断事务")).toBeUndefined();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("offers recovery instead of rollback for a legacy journal and keeps the action after an unsafe recovery is refused", async () => {
+    const pending = { updateId: "fixture-legacy", name: "旧记录", createdAt: "2026-11-16", status: "committed", canRecover: true, projects: [] };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_resource_update_history") return [pending];
+      if (name === "recover_resource_update") throw { code: "resource.recoveryConflict", params: {} };
+      return [];
+    });
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label);
+    try {
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => find("更新历史")!.click());
+      expect(find("回滚")).toBeUndefined();
+      expect(find("恢复中断事务")).toBeDefined();
+      await act(async () => find("恢复中断事务")!.click());
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("请保留现有资源副本");
+      expect(find("恢复中断事务")?.disabled).toBe(false);
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(1);
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("keeps valid backups visible, confirms restore, and exposes the recovery copy", async () => {
+    const stable = { id: "fixture-backup", instanceId: instance.id, versionId: instance.versionId,
+      createdAt: "2026-10-25T08:00:00Z", path: "C:/SyntheticFixture/backup.zip", size: 8000 };
+    const retained = { ...stable, id: "fixture-before-restore", createdAt: "2026-11-16T11:00:00Z" };
+    const previous = "C:\\SyntheticFixture\\before-restore";
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+    let restored = false;
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_instance_backups") return {
+        backups: restored ? [retained, stable] : [stable], warnings: [{ fileName: "broken.zip", reason: "invalid" }],
+      };
+      if (name === "restore_instance_backup") {
+        restored = true;
+        return { instance, previousBackup: retained, previousDirectory: previous };
+      }
+      return [];
+    });
+    const clickText = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === label)!;
+    try {
+      await render(createElement(InstanceOverview, { instance, onChanged: vi.fn(async () => {}) }));
+      expect(container.textContent).toContain("broken.zip");
+      const backup = container.querySelector<HTMLButtonElement>('button[aria-label="选择要恢复的备份"]');
+      expect(backup).not.toBeNull();
+      giveBackupSelectBounds(backup!);
+      await act(async () => backup!.click());
+      const option = document.querySelector<HTMLElement>('[role="option"][data-value="fixture-backup"]');
+      expect(option).not.toBeNull();
+      await act(async () => option!.click());
+      const restore = clickText("恢复备份");
+      expect(restore).toBeDefined();
+      expect(restore.disabled).toBe(false);
+      await act(async () => restore.click());
+      expect(commandMock.mock.calls.some(([name]) => name === "restore_instance_backup")).toBe(false);
+      await act(async () => restore.click());
+      expect(commandMock).toHaveBeenCalledWith("restore_instance_backup", { instanceId: instance.id, backupId: stable.id });
+      expect(container.textContent).toContain(previous);
+      expect(container.textContent).toContain("恢复前备份");
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_instance_backups")).toHaveLength(2);
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("shows the preserved directories from a failed restore instead of losing them in a generic toast", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const old = "C:\\SyntheticFixture\\original-copy", restoredDirectory = "C:\\SyntheticFixture\\verified-new-copy";
+    const stable = { id: "fixture-backup", instanceId: instance.id, versionId: instance.versionId,
+      createdAt: "2026-10-25T08:00:00Z", path: "C:/SyntheticFixture/backup.zip", size: 8000 };
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_instance_backups") return { backups: [stable], warnings: [] };
+      if (name === "restore_instance_backup") throw {
+        code: "backup.restoreRecoveryRequired", params: { currentDirectory: instance.gameDirectory, previousDirectory: old, restoredDirectory }, detail: "sensitive synthetic diagnostics",
+      };
+      return [];
+    });
+    try {
+      await render(createElement(InstanceOverview, { instance, onChanged: vi.fn(async () => {}) }));
+      const backup = container.querySelector<HTMLButtonElement>('button[aria-label="选择要恢复的备份"]')!;
+      giveBackupSelectBounds(backup);
+      await act(async () => backup.click());
+      await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="fixture-backup"]')!.click());
+      const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "恢复备份");
+      await act(async () => button!.click());
+      const text = container.querySelector('[role="alert"]')?.textContent;
+      expect(text).toContain(old);
+      expect(text).toContain(restoredDirectory);
+      expect(text).not.toContain("sensitive synthetic diagnostics");
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+
+  it("recovers an interrupted instance restore explicitly without requiring a backup selection", async () => {
+    const currentDirectory = instance.gameDirectory;
+    const previousDirectory = "C:\\SyntheticFixture\\original-copy";
+    const preservedDirectory = "C:\\SyntheticFixture\\verified-new-copy";
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    let recovered = false;
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_instance_backups") return {
+        backups: [], warnings: [], recovery: recovered ? null : { currentDirectory, previousDirectory },
+      };
+      if (name === "recover_instance_restore") {
+        recovered = true;
+        return { instance, preservedDirectory, previousBackup: null };
+      }
+      return [];
+    });
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === label);
+    try {
+      await render(createElement(InstanceOverview, { instance, onChanged: vi.fn(async () => {}) }));
+      expect(commandMock.mock.calls.some(([name]) => name === "recover_instance_restore")).toBe(false);
+      expect(find("恢复备份")?.disabled).toBe(true);
+      expect(container.textContent).toContain(previousDirectory);
+      const recover = find("恢复中断的备份操作");
+      expect(recover).toBeDefined();
+      await act(async () => recover!.click());
+      expect(commandMock).toHaveBeenCalledWith("recover_instance_restore", { instanceId: instance.id });
+      expect(container.textContent).toContain(preservedDirectory);
+      expect(find("恢复中断的备份操作")).toBeUndefined();
+    } finally {
+      confirm.mockRestore();
+    }
   });
 
   const pack = (id: string): ResourceProject => ({ project_id: id, slug: id, title: `Pack ${id}`, description: "", icon_url: null, downloads: 0, author: "Fixture", project_type: "modpack", versions: ["1.21.1"] });

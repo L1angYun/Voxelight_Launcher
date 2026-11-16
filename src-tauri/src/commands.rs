@@ -310,7 +310,7 @@ pub async fn install_version(
     app: AppHandle,
     state: Shared<'_>,
     version_id: String,
-) -> Result<InstallResult, String> {
+) -> AppResult<InstallResult> {
     let _guard = state
         .operation
         .try_lock()
@@ -327,7 +327,7 @@ pub async fn install_version(
         Err(error) => {
             minecraft::log(&app, &state, "error", &error);
             minecraft::progress(&app, &version_id, "error", 0, 0, 0, 0, &error);
-            Err(error)
+            Err(expected(error))
         }
     }
 }

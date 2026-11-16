@@ -35,6 +35,8 @@
     "resource.sourceUnsupported": "Automatic target selection is not supported for this source yet. Create a compatible instance first.",
     "resource.loaderUnavailable": "No loader versions are available for this game version. Choose another game version.",
     "resource.manifestUnavailable": "Unable to load the Minecraft version list. Check your connection and try again.",
+    "version.loaderReinstall": "The version profile for {{id}} is damaged. Reinstall the same game version and loader in the Launcher. Your worlds and mods are not replaced.",
+    "version.profileConflict": "Voxelight kept the existing profile for {{id}} because it could not verify its source. Back up its JSON under versions first, then move that JSON aside before reinstalling the original version or loader.",
     "download.cancelled": "Installation cancelled.",
     "instance.running": "This instance is already running. Do not launch it twice.",
     "instance.notFound": "The instance no longer exists. Refresh the library.",
@@ -51,6 +53,14 @@
     "desktop.required": "Use the desktop app for this action.",
     "renderer.unavailable": "3D preview is unavailable. Check your graphics driver and hardware acceleration.",
     "skin.loadFailed": "The skin could not be loaded. Try again.",
-    "cape.loadFailed": "The cape could not be loaded. Try again."
+    "cape.loadFailed": "The cape could not be loaded. Try again.",
+    "resource.recoveryRequired": "A resource transaction was interrupted. Open update history to recover it before continuing.",
+    "resource.recoveryConflict": "The resource copies could not be verified. No files were overwritten. Keep the existing copies and check the transaction history.",
+    "resource.recoveryRunning": "Stop the game using this directory before recovering the resource transaction.",
+    "resource.recoveryIncomplete": "Recovery did not finish. Resources may have been moved to the transaction backup. Close programs using them and retry from history.",
+    "resource.recoveryNotNeeded": "This transaction does not need recovery. Refresh the update history.",
+    "backup.restoreRecoveryRequired": "The backup restore did not finish. Keep the listed directories and use the recovery action to verify the copies again.",
+    "backup.restoreRolledBack": "The backup restore could not finish. The original directory was restored.",
+    "backup.restoreRecoveryMissing": "No backup restore needs recovery. Refresh the backup list."
   }
 }
