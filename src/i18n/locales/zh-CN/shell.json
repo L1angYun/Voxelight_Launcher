@@ -28,6 +28,7 @@
     "folder.open": "正在打开目录"
   },
   "errors": {
+    "auth.sessionChanged": "此账号已被移除或重新登录。请重新选择账号后再试。",
     "resource.loaderRequired": "此目标需要模组加载器。请选择兼容的实例，或新建实例。",
     "resource.noCompatibleVersion": "此项目没有适用于该游戏版本和加载器的资源版本。请选择其他实例。",
     "resource.versionMissing": "请先安装 Minecraft 或创建兼容的实例。",
@@ -61,6 +62,20 @@
     "resource.recoveryNotNeeded": "该记录无需恢复，请刷新更新历史。",
     "backup.restoreRecoveryRequired": "备份恢复未完成。请保留列出的目录，并使用恢复入口重新核对副本。",
     "backup.restoreRolledBack": "无法完成备份恢复；已保留并复原原目录。",
-    "backup.restoreRecoveryMissing": "没有待恢复的备份操作。请刷新备份列表。"
+    "backup.restoreRecoveryMissing": "没有待恢复的备份操作。请刷新备份列表。",
+    "storage.stateChanged": "数据档已被其他程序修改。请关闭应用并重新打开后再保存。"
+  },
+  "storage": {
+    "fallbackTitle": "当前使用备用数据档",
+    "reason": {
+      "unavailable": "主数据档无法访问。",
+      "corrupt": "主数据档无法读取或数据已损坏。",
+      "newerSchema": "主数据档由更新版本的 Voxelight 创建。"
+    },
+    "activeDirectory": "正在使用：{{path}}",
+    "primaryRetained": "原状态文件仍保留在：{{path}}",
+    "primaryState": "主状态文件位置：{{path}}",
+    "primaryDirectory": "主数据目录：{{path}}",
+    "recoveryHelp": "此窗口的更改会写入备用档。修复主数据目录或升级启动器后，关闭并重新打开应用。"
   }
 }

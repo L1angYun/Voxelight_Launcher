@@ -1,5 +1,6 @@
 import type {
   Account,
+  AppearancePatch,
   Bootstrap,
   Config,
   InstalledVersion,
@@ -40,7 +41,7 @@ export interface LauncherContextValue {
   notice: LauncherNotice | null;
   gamePid?: number;
   reload(): Promise<void>;
-  saveConfig(next: Config): Promise<boolean>;
+  saveConfig(next: Config, appearancePatch?: AppearancePatch): Promise<boolean>;
   setConfig(next: Config): void;
   selectInstance(id?: string): void;
   selectVersion(id: string): void;

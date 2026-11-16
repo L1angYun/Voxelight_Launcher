@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  appearanceFields,
   command,
+  configChanges,
+  type AppearancePatch,
   defaults,
   events,
   type Bootstrap,
@@ -14,6 +17,8 @@ import { normalizeError } from "../../lib/errors";
 import { useAccountSkin } from "../../lib/accountSkin";
 import type { LauncherContextValue, LauncherNotice } from "./types";
 
+const previewFields = [...appearanceFields, "customBackground"] as const;
+
 export function useLauncherController(): LauncherContextValue {
   const [bootstrapped, setBootstrapped] = useState(false);
   const [bootstrapFailed, setBootstrapFailed] = useState(false);
@@ -24,7 +29,9 @@ export function useLauncherController(): LauncherContextValue {
     installedVersions: [],
     capabilities: {},
   });
-  const [config, setConfig] = useState<Config>(defaults);
+  const [config, setConfigValue] = useState<Config>(defaults);
+  const canonicalConfig = useRef<Config>(defaults);
+  const bootstrapGeneration = useRef(0);
   const [manifest, setManifest] = useState<VersionManifest | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [selectedInstanceId, setSelectedInstanceId] = useState<string>();
@@ -69,10 +76,33 @@ export function useLauncherController(): LauncherContextValue {
     setNotice(null);
   }, []);
 
+  const publishConfig = useCallback((saved: Config) => {
+    const previous = canonicalConfig.current;
+    canonicalConfig.current = saved;
+    setConfigValue((current) => ({ ...saved, ...configChanges(previous, current) }));
+  }, []);
+
+  const setConfig = useCallback((next: Config) => {
+    const current = canonicalConfig.current;
+    // Preview and reset affect the visual layer. Do not reintroduce stale gameplay fields.
+    const visual = Object.fromEntries(
+      previewFields.filter((key) => !Object.is(current[key], next[key])).map((key) => [key, next[key]]),
+    );
+    setConfigValue({ ...current, ...visual });
+  }, []);
+
   const reload = useCallback(async () => {
-    const result = await command<Bootstrap>("bootstrap");
+    const request = ++bootstrapGeneration.current;
+    let result: Bootstrap;
+    try {
+      result = await command<Bootstrap>("bootstrap");
+    } catch (error) {
+      if (request === bootstrapGeneration.current) throw error;
+      return;
+    }
+    if (request !== bootstrapGeneration.current) return;
     setData(result);
-    setConfig(result.config);
+    publishConfig(result.config);
     setBootstrapped(true);
     setBootstrapFailed(false);
     setSelectedVersionId((previous) =>
@@ -85,7 +115,7 @@ export function useLauncherController(): LauncherContextValue {
         ? previous
         : undefined,
     );
-  }, []);
+  }, [publishConfig]);
 
   const run = useCallback(
     async <T,>(labelKey: string, action: () => Promise<T>): Promise<T | undefined> => {
@@ -106,13 +136,23 @@ export function useLauncherController(): LauncherContextValue {
   );
 
   const saveConfig = useCallback(
-    async (next: Config) => {
+    async (next: Config, appearancePatch?: AppearancePatch) => {
       const saved = await run("settings.save", async () => {
-        const saved = await command<Config>("save_config", { config: next });
-        setConfig(saved);
-        setData((previous) => ({ ...previous, config: saved }));
+        const value = appearancePatch
+          ? await command<Config>("save_appearance_config", { patch: appearancePatch })
+          : await command<Config>("save_config", { config: next });
+        // A read initiated before this durable save cannot publish a stale snapshot.
+        ++bootstrapGeneration.current;
+        const previous = canonicalConfig.current;
+        canonicalConfig.current = value;
+        setData((current) => ({ ...current, config: value }));
+        setConfigValue((current) => {
+          const preview = configChanges(previous, current);
+          const remaining = configChanges(next, { ...next, ...preview });
+          return { ...value, ...remaining };
+        });
         showNotice("settings.saved");
-        return saved;
+        return value;
       });
       return saved !== undefined;
     },
@@ -242,6 +282,7 @@ export function useLauncherController(): LauncherContextValue {
     ];
     return () => {
       active = false;
+      ++bootstrapGeneration.current;
       for (const promise of disposers) void promise.then((dispose) => dispose());
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
     };

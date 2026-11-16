@@ -9,8 +9,9 @@ use crate::{
 };
 use std::{path::Path, sync::Arc};
 use tauri::State;
-fn remember(state: &LauncherState, value: &AuthenticatedAccount) -> Result<(), String> {
+pub(crate) fn remember(state: &LauncherState, value: &AuthenticatedAccount) -> Result<(), String> {
     state.update(|data| {
+        data.pending_credential_removals.remove(&value.id);
         let previous = data.accounts.iter().position(|account| {
             account.id == value.id
                 || account.uuid == value.uuid
@@ -45,6 +46,26 @@ fn remember(state: &LauncherState, value: &AuthenticatedAccount) -> Result<(), S
         Ok(())
     })
 }
+
+fn remember_existing(state: &LauncherState, value: &AuthenticatedAccount) -> Result<(), String> {
+    state.update(|data| {
+        let account = data
+            .accounts
+            .iter_mut()
+            .find(|account| {
+                account.id == value.id
+                    && account.uuid == value.uuid
+                    && account.account_type == value.account_type
+                    && account.authlib_server == value.authlib_server
+            })
+            .ok_or(crate::errors::ACCOUNT_SESSION_CHANGED)?;
+        account.username = value.username.clone();
+        account.expires_at = value.expires_at;
+        account.skin_model.clone_from(&value.skin_model);
+        account.skin_url.clone_from(&value.skin_url);
+        Ok(())
+    })
+}
 #[tauri::command]
 pub async fn begin_microsoft_login(
     state: State<'_, Arc<LauncherState>>,
@@ -74,11 +95,18 @@ pub async fn poll_microsoft_login(
     auth: State<'_, Arc<AuthService>>,
     session_id: String,
 ) -> AppResult<DevicePoll> {
-    let result = auth.poll_microsoft(&session_id).await.map_err(expected)?;
-    if let Some(account) = &result.account {
-        remember(&state, account).map_err(expected)?;
-    }
-    Ok(result)
+    poll_microsoft_login_inner(&state, &auth, &session_id)
+        .await
+        .map_err(expected)
+}
+
+pub(crate) async fn poll_microsoft_login_inner(
+    state: &LauncherState,
+    auth: &AuthService,
+    session_id: &str,
+) -> Result<DevicePoll, String> {
+    auth.poll_microsoft_with_commit(session_id, |account| remember(state, account))
+        .await
 }
 #[tauri::command]
 pub fn cancel_auth_login(auth: State<'_, Arc<AuthService>>, session_id: String) -> AppResult<()> {
@@ -93,14 +121,15 @@ pub async fn login_authlib(
     password: String,
     profile_id: Option<String>,
 ) -> AppResult<AuthlibLogin> {
-    let result = auth
-        .login_authlib(&server, &username, &password, profile_id.as_deref())
-        .await
-        .map_err(expected)?;
-    if let Some(account) = &result.account {
-        remember(&state, account).map_err(expected)?;
-    }
-    Ok(result)
+    auth.login_authlib_with_commit(
+        &server,
+        &username,
+        &password,
+        profile_id.as_deref(),
+        |account| remember(&state, account),
+    )
+    .await
+    .map_err(expected)
 }
 #[tauri::command]
 pub async fn select_authlib_profile(
@@ -109,12 +138,11 @@ pub async fn select_authlib_profile(
     session_id: String,
     profile_id: String,
 ) -> AppResult<AuthenticatedAccount> {
-    let result = auth
-        .select_authlib_profile(&session_id, &profile_id)
-        .await
-        .map_err(expected)?;
-    remember(&state, &result).map_err(expected)?;
-    Ok(result)
+    auth.select_authlib_profile_with_commit(&session_id, &profile_id, |account| {
+        remember(&state, account)
+    })
+    .await
+    .map_err(expected)
 }
 #[tauri::command]
 pub async fn refresh_account(
@@ -122,8 +150,23 @@ pub async fn refresh_account(
     auth: State<'_, Arc<AuthService>>,
     account_id: String,
 ) -> AppResult<AuthenticatedAccount> {
-    let account = auth.refresh_account(&account_id).await.map_err(expected)?;
-    remember(&state, &account).map_err(expected)?;
+    refresh_account_inner(&state, &auth, &account_id)
+        .await
+        .map_err(expected)
+}
+
+pub(crate) async fn refresh_account_inner(
+    state: &LauncherState,
+    auth: &AuthService,
+    account_id: &str,
+) -> Result<AuthenticatedAccount, String> {
+    let generation = auth.account_generation(account_id)?;
+    let account = auth
+        .refresh_account_with_generation(account_id, Some(&generation))
+        .await?;
+    auth.update_current_account(account_id, &generation, || {
+        remember_existing(state, &account)
+    })?;
     Ok(account)
 }
 #[tauri::command]
@@ -154,12 +197,16 @@ pub async fn upload_account_skin(
         return Err(expected("皮肤文件须为不超过 1 MB 的 PNG"));
     }
     let bytes = std::fs::read(path).map_err(|e| expected(e.to_string()))?;
+    let generation = auth.account_generation(&account_id).map_err(expected)?;
     let result = auth
         .upload_skin(&account_id, &bytes, &model)
         .await
         .map_err(expected)?;
     let account = auth.account_info(&account_id).await.map_err(expected)?;
-    remember(&state, &account).map_err(expected)?;
+    auth.update_current_account(&account_id, &generation, || {
+        remember_existing(&state, &account)
+    })
+    .map_err(expected)?;
     Ok(result)
 }
 #[tauri::command]
@@ -168,9 +215,13 @@ pub async fn reset_account_skin(
     auth: State<'_, Arc<AuthService>>,
     account_id: String,
 ) -> AppResult<PlayerProfile> {
+    let generation = auth.account_generation(&account_id).map_err(expected)?;
     let result = auth.reset_skin(&account_id).await.map_err(expected)?;
     let account = auth.account_info(&account_id).await.map_err(expected)?;
-    remember(&state, &account).map_err(expected)?;
+    auth.update_current_account(&account_id, &generation, || {
+        remember_existing(&state, &account)
+    })
+    .map_err(expected)?;
     Ok(result)
 }
 #[tauri::command]

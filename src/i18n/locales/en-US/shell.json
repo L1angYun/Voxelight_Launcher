@@ -28,6 +28,7 @@
     "folder.open": "Opening folder"
   },
   "errors": {
+    "auth.sessionChanged": "This account was removed or signed in again. Select the current account and retry.",
     "resource.loaderRequired": "This target needs a mod loader. Choose a compatible instance or create one.",
     "resource.noCompatibleVersion": "This project has no resource version for that game version and loader. Choose another instance.",
     "resource.versionMissing": "Install Minecraft or create a compatible instance first.",
@@ -61,6 +62,20 @@
     "resource.recoveryNotNeeded": "This transaction does not need recovery. Refresh the update history.",
     "backup.restoreRecoveryRequired": "The backup restore did not finish. Keep the listed directories and use the recovery action to verify the copies again.",
     "backup.restoreRolledBack": "The backup restore could not finish. The original directory was restored.",
-    "backup.restoreRecoveryMissing": "No backup restore needs recovery. Refresh the backup list."
+    "backup.restoreRecoveryMissing": "No backup restore needs recovery. Refresh the backup list.",
+    "storage.stateChanged": "Another program changed this profile. Close and reopen the launcher before saving again."
+  },
+  "storage": {
+    "fallbackTitle": "Using a fallback data profile",
+    "reason": {
+      "unavailable": "The primary profile could not be accessed.",
+      "corrupt": "The primary profile could not be read or is damaged.",
+      "newerSchema": "The primary profile comes from a newer version of Voxelight."
+    },
+    "activeDirectory": "Active directory: {{path}}",
+    "primaryRetained": "The primary state file is still at: {{path}}",
+    "primaryState": "Primary state file: {{path}}",
+    "primaryDirectory": "Primary data directory: {{path}}",
+    "recoveryHelp": "Changes in this window are saved to the fallback profile. Fix the primary directory or upgrade the launcher, then close and reopen it."
   }
 }

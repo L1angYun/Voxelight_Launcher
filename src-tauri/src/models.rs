@@ -109,6 +109,8 @@ pub struct Persisted {
     pub schema_version: u32,
     pub config: Config,
     pub accounts: Vec<Account>,
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub pending_credential_removals: std::collections::BTreeSet<String>,
     pub instances: Vec<Instance>,
 }
 
@@ -118,6 +120,7 @@ impl Default for Persisted {
             schema_version: CURRENT_SCHEMA_VERSION,
             config: Config::default(),
             accounts: Vec::new(),
+            pending_credential_removals: Default::default(),
             instances: Vec::new(),
         }
     }

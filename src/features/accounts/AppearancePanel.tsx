@@ -189,7 +189,7 @@ export function AppearancePanel({
     setError("");
     setNotice("");
     try {
-      await command<Config>("save_config", { config: { ...config, defaultSkin: id } });
+      await command<Config>("save_appearance_config", { patch: { defaultSkin: id } });
       clearLocal();
       await onChanged();
       setNotice(t("accounts:notice.defaultSaved"));

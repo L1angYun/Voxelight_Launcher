@@ -179,8 +179,7 @@ const ALEX_SKIN_PATHS: &[&str] = &[
     "assets/minecraft/textures/entity/alex.png",
 ];
 
-fn read_client_skin(path: &Path, entry_paths: &[&str], name: &str) -> Result<Vec<u8>, String> {
-    let file = fs::File::open(path).map_err(|e| format!("打开官方客户端失败：{e}"))?;
+fn read_client_skin(file: fs::File, entry_paths: &[&str], name: &str) -> Result<Vec<u8>, String> {
     let mut archive = ZipArchive::new(file).map_err(|e| format!("官方客户端 JAR 无法读取：{e}"))?;
     for candidate in entry_paths {
         let mut entry = match archive.by_name(candidate) {
@@ -219,6 +218,81 @@ fn read_client_skin(path: &Path, entry_paths: &[&str], name: &str) -> Result<Vec
     Err(format!("官方客户端缺少 {name} 角色纹理"))
 }
 
+/// Cache fills for one data profile can share work, even if two tabs ask for
+/// different skins in the same JAR. Keep this lock independent of operations;
+/// weak entries disappear once the last waiting/running preview completes.
+fn preview_profile_lock(data_dir: &Path) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock, Weak};
+    type PreviewLock = Weak<tokio::sync::Mutex<()>>;
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, PreviewLock>>> = OnceLock::new();
+    let key = data_dir
+        .canonicalize()
+        .map_err(|e| format!("无法定位角色预览缓存：{e}"))?;
+    let mut locks = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "角色预览缓存状态异常")?;
+    locks.retain(|_, lock| lock.strong_count() != 0);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    Ok(lock)
+}
+
+fn open_verified_client(download: &minecraft::Download) -> Result<Option<fs::File>, String> {
+    use std::io::Seek;
+    instances::checked_absolute(&download.path)?;
+    let mut file = match fs::File::open(&download.path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("打开角色预览客户端失败：{error}")),
+    };
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() || download.size != Some(metadata.len()) {
+        return Ok(None);
+    }
+    let mut hash = sha1::Sha1::new();
+    let mut remaining = (&mut file).take(metadata.len().saturating_add(1));
+    let copied = std::io::copy(&mut remaining, &mut hash).map_err(|e| e.to_string())?;
+    if download.size != Some(copied) || format!("{:x}", hash.finalize()) != download.sha1 {
+        return Ok(None);
+    }
+    file.rewind().map_err(|e| e.to_string())?;
+    // Keep the validated file handle through extraction: a concurrent install
+    // may replace the path after the digest, without changing this descriptor.
+    Ok(Some(file))
+}
+
+async fn verify_client(file: &minecraft::Download) -> Result<Option<fs::File>, String> {
+    let file = file.clone();
+    tokio::task::spawn_blocking(move || open_verified_client(&file))
+        .await
+        .map_err(|error| format!("校验角色预览失败：{error}"))?
+}
+
+async fn preview_client_file(
+    state: &LauncherState,
+    installed: &minecraft::Download,
+    cached: &minecraft::Download,
+    fetch: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<fs::File, String> {
+    if let Some(file) = verify_client(installed).await? {
+        return Ok(file);
+    }
+    let lock = preview_profile_lock(&state.data_dir)?;
+    let _guard = lock.lock().await;
+    if let Some(file) = verify_client(cached).await? {
+        return Ok(file);
+    }
+    fetch.await?;
+    verify_client(cached)
+        .await?
+        .ok_or_else(|| "下载的角色预览客户端未通过 SHA-1 或文件大小校验".into())
+}
+
 async fn load_default_skin(
     state: &LauncherState,
     skin: &str,
@@ -229,74 +303,50 @@ async fn load_default_skin(
         "alex" => ("Alex", "slim", ALEX_SKIN_PATHS),
         _ => return Err("默认角色仅支持 steve 或 alex".into()),
     };
-    let _guard = state.operation.lock().await;
-    let task = state
-        .control
-        .begin("default-skin", skin, &format!("读取 {name} 角色纹理"));
-    let result: Result<DefaultSkin, String> = async {
-        let config = state.snapshot()?.config;
-        let root = PathBuf::from(config.game_directory);
-        if !root.is_absolute() {
-            return Err("游戏目录必须是绝对路径，无法定位官方客户端".into());
-        }
-        let selected_version = match version_id.map(str::trim).filter(|id| !id.is_empty()) {
-            Some(id) => id.to_owned(),
-            None => {
-                let manifest = minecraft::manifest(state)
-                    .await
-                    .map_err(|e| format!("获取官方版本清单失败：{e}"))?;
-                manifest["latest"]["release"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                    .ok_or("官方版本清单缺少 latest.release")?
-                    .to_owned()
-            }
-        };
-        let metadata = minecraft::resolve_metadata(state, &selected_version, &root)
+    let config = state.snapshot()?.config;
+    let root = instances::checked_absolute(Path::new(&config.game_directory))?;
+    let preview = instances::checked_absolute(&state.data_dir.join("preview-cache"))?;
+    let source = config.download_source.as_str();
+    let (source_version, metadata) =
+        minecraft::resolve_preview_metadata(state, version_id, &root, &preview, source)
             .await
-            .map_err(|e| format!("解析角色来源版本 {selected_version} 失败：{e}"))?;
-        let base_id = metadata["_launcherBaseId"]
-            .as_str()
-            .or_else(|| metadata["_launcherClientId"].as_str())
-            .unwrap_or(&selected_version);
-        let client_id = metadata["_launcherClientId"].as_str().unwrap_or(base_id);
-        validate_id(base_id)?;
-        validate_id(client_id)?;
-        let source_version = base_id.to_owned();
-        let client = minecraft::download_from(
-            &metadata["downloads"]["client"],
-            &root,
-            Some(&format!("versions/{client_id}/{client_id}.jar")),
-        )
-        .map_err(|e| format!("官方客户端下载信息无效：{e}"))?;
-        if client.url.is_empty() || client.size.unwrap_or(0) == 0 {
-            return Err("官方客户端下载必须提供 URL 和有效文件大小".into());
-        }
-        minecraft::ensure_download_with_control(&state.client, &client, Some(&state.control))
-            .await
-            .map_err(|e| format!("获取并校验官方客户端失败：{e}"))?;
-        let source_url = client.url.clone();
-        let client_path = client.path.clone();
-        let bytes =
-            tokio::task::spawn_blocking(move || read_client_skin(&client_path, entry_paths, name))
-                .await
-                .map_err(|e| format!("读取官方客户端任务失败：{e}"))??;
-        Ok(DefaultSkin {
-            id: skin.into(),
-            name: name.into(),
-            data_url: Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes))),
-            model: model.into(),
-            source_version: Some(source_version),
-            source_url: Some(source_url),
-            description: "仅在主动选择后，从 SHA-1 和大小已校验的官方客户端中读取。".into(),
-            local_path: None,
-        })
+            .map_err(|e| format!("解析角色来源版本失败：{e}"))?;
+    let installed = minecraft::download_from(
+        &metadata["downloads"]["client"],
+        &root,
+        Some(&format!("versions/{source_version}/{source_version}.jar")),
+    )
+    .map_err(|e| format!("官方客户端下载信息无效：{e}"))?;
+    if installed.url.is_empty() || installed.size.unwrap_or(0) == 0 {
+        return Err("官方客户端下载必须提供 URL 和有效文件大小".into());
     }
-    .await;
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
-    result
+    let cache_name = format!("clients/{}.jar", installed.sha1);
+    let cached = minecraft::Download {
+        path: safe_join(&preview, &cache_name)?,
+        ..installed.clone()
+    };
+    // Passive preview does not add an active download task, toggle foreground
+    // pause/cancel, or write game files. It uses the same bandwidth quota.
+    let file = preview_client_file(state, &installed, &cached, async {
+        minecraft::ensure_preview_download(&state.client, &cached, &state.control)
+            .await
+            .map(|_| ())
+    })
+    .await
+    .map_err(|e| format!("获取并校验官方客户端失败：{e}"))?;
+    let bytes = tokio::task::spawn_blocking(move || read_client_skin(file, entry_paths, name))
+        .await
+        .map_err(|e| format!("读取官方客户端任务失败：{e}"))??;
+    Ok(DefaultSkin {
+        id: skin.into(),
+        name: name.into(),
+        data_url: Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes))),
+        model: model.into(),
+        source_version: Some(source_version),
+        source_url: Some(installed.url),
+        description: "从 SHA-1 和大小已校验的官方客户端中读取。".into(),
+        local_path: None,
+    })
 }
 
 #[tauri::command]
@@ -1019,14 +1069,11 @@ mod tests {
             .unwrap();
             fs::write(world.join("level.dat"), &nbt).unwrap();
             fs::write(world.join("fixture.txt"), b"world bytes").unwrap();
-            let state = Arc::new(LauncherState {
-                data: std::sync::Mutex::new(crate::models::Persisted::default()),
-                data_dir: data,
-                client: crate::storage::test_client(),
-                operation: tokio::sync::Mutex::new(()),
-                control: Default::default(),
-                games: Default::default(),
-            });
+            let state = Arc::new(LauncherState::test_fixture(
+                data,
+                crate::models::Persisted::default(),
+                crate::storage::test_client(),
+            ));
             let copy = state.clone();
             let game_copy = game.clone();
             let output = root.join("world.zip");
@@ -1138,25 +1185,22 @@ mod tests {
         )
         .unwrap();
 
-        let state = Arc::new(LauncherState {
-            data: std::sync::Mutex::new(crate::models::Persisted {
+        let state = Arc::new(LauncherState::test_fixture(
+            data,
+            crate::models::Persisted {
                 config: crate::models::Config {
                     game_directory: game.to_string_lossy().into_owned(),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            data_dir: data,
-            client: reqwest::Client::builder()
+            },
+            reqwest::Client::builder()
                 .no_proxy()
                 .proxy(reqwest::Proxy::all("http://127.0.0.1:9").unwrap())
                 .timeout(std::time::Duration::from_millis(250))
                 .build()
                 .unwrap(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        });
+        ));
         SkinFixture {
             state,
             client_url,
@@ -1236,7 +1280,10 @@ mod tests {
                 .unwrap();
             jar.write_all(FIXTURE_PNG).unwrap();
             jar.finish().unwrap();
-            assert_eq!(read_client_skin(&path, paths, name).unwrap(), FIXTURE_PNG);
+            assert_eq!(
+                read_client_skin(fs::File::open(&path).unwrap(), paths, name).unwrap(),
+                FIXTURE_PNG
+            );
         }
     }
 
@@ -1278,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_client_skins_run_after_cancellation_and_finish_each_request() {
+    fn cached_client_skins_do_not_change_previous_task_history() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let fixture = skin_fixture(Some(FIXTURE_PNG), Some(FIXTURE_PNG));
             let cancelled = fixture
@@ -1300,35 +1347,119 @@ mod tests {
                 .unwrap_err();
             assert!(error.contains("无效"), "{error}");
             let jobs = fixture.state.control.list();
-            assert_eq!(jobs.len(), 5);
+            assert_eq!(jobs.len(), 1);
             assert_eq!(jobs[0].status, "cancelled");
-            assert!(jobs[1..4].iter().all(|job| job.status == "completed"));
-            assert_eq!(jobs[4].status, "failed");
             assert!(fixture.state.operation.try_lock().is_ok());
         });
     }
 
     #[test]
-    fn client_skin_waits_for_operation_without_clearing_active_cancellation() {
+    fn default_skin_resolves_from_verified_cache_while_foreground_cancel_is_set() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let fixture = skin_fixture(Some(FIXTURE_PNG), Some(FIXTURE_PNG));
             let guard = fixture.state.operation.lock().await;
             let active = fixture.state.control.begin("install", "active", "Active");
             fixture.state.control.cancel(Some(&active));
-            let request = load_default_skin(&fixture.state, "steve", Some("1.20.1"));
-            tokio::pin!(request);
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(30), &mut request)
-                    .await
-                    .is_err()
-            );
+            let value = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                load_default_skin(&fixture.state, "steve", Some("1.20.1")),
+            )
+            .await
+            .expect("cached passive preview should not wait for foreground operation lock")
+            .unwrap();
+            assert_64x64_data_url(value.data_url.as_deref().unwrap());
             assert!(fixture.state.control.checkpoint().await.is_err());
             assert_eq!(fixture.state.control.list().len(), 1);
-            fixture.state.control.finish(&active, Some("cancelled"));
             drop(guard);
-            request.await.unwrap();
-            assert_eq!(fixture.state.control.list()[1].status, "completed");
+            fixture.state.control.finish(&active, Some("cancelled"));
         });
+    }
+
+    #[test]
+    fn concurrent_default_skin_requests_do_not_enroll_background_work_in_foreground_queue() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let fixture = skin_fixture(Some(FIXTURE_PNG), Some(FIXTURE_PNG));
+            let (steve, alex) = futures_util::future::join(
+                load_default_skin(&fixture.state, "steve", Some("1.20.1")),
+                load_default_skin(&fixture.state, "alex", Some("1.20.1")),
+            )
+            .await;
+            assert_64x64_data_url(steve.unwrap().data_url.as_deref().unwrap());
+            assert_64x64_data_url(alex.unwrap().data_url.as_deref().unwrap());
+            assert_eq!(
+                fixture.state.control.list().len(),
+                0,
+                "passive preview cannot create or replace a cancellable foreground download"
+            );
+        });
+    }
+
+    #[test]
+    fn concurrent_preview_misses_fill_once_and_keep_game_cache_untouched() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let fixture = skin_fixture(Some(FIXTURE_PNG), Some(FIXTURE_PNG));
+            let bytes = fixture.jar_bytes;
+            fs::remove_file(&fixture.jar_path).unwrap();
+            let digest = format!("{:x}", sha1::Sha1::digest(&bytes));
+            let installed = minecraft::Download {
+                path: fixture.jar_path,
+                url: fixture.client_url,
+                sha1: digest.clone(),
+                size: Some(bytes.len() as u64),
+            };
+            let preview = fixture.state.data_dir.join("preview-cache/clients");
+            fs::create_dir_all(&preview).unwrap();
+            let cached = minecraft::Download {
+                path: preview.join(format!("{digest}.jar")),
+                ..installed.clone()
+            };
+            let requests = AtomicUsize::new(0);
+            let fill = || async {
+                requests.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                tokio::fs::write(&cached.path, &bytes).await.unwrap();
+                Ok(())
+            };
+            let (first, second) = futures_util::future::join(
+                preview_client_file(&fixture.state, &installed, &cached, fill()),
+                preview_client_file(&fixture.state, &installed, &cached, fill()),
+            )
+            .await;
+            assert_eq!(requests.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                read_client_skin(first.unwrap(), STEVE_SKIN_PATHS, "Steve").unwrap(),
+                FIXTURE_PNG
+            );
+            assert_eq!(
+                read_client_skin(second.unwrap(), ALEX_SKIN_PATHS, "Alex").unwrap(),
+                FIXTURE_PNG
+            );
+            assert!(!installed.path.exists());
+            assert_eq!(fs::read(&cached.path).unwrap(), bytes);
+        });
+    }
+
+    #[test]
+    fn preview_extracts_verified_bytes_even_if_installed_path_is_replaced() {
+        let fixture = skin_fixture(Some(FIXTURE_PNG), Some(FIXTURE_PNG));
+        let mut same_length_corrupt = fixture.jar_bytes.clone();
+        same_length_corrupt[0] ^= 1;
+        let installed = minecraft::Download {
+            path: fixture.jar_path,
+            url: fixture.client_url,
+            sha1: format!("{:x}", sha1::Sha1::digest(&fixture.jar_bytes)),
+            size: Some(fixture.jar_bytes.len() as u64),
+        };
+        let verified = open_verified_client(&installed).unwrap().unwrap();
+        let replacement = installed.path.with_extension("backup-preview-fixture");
+        fs::rename(&installed.path, &replacement).unwrap();
+        fs::write(&installed.path, &same_length_corrupt).unwrap();
+        assert!(open_verified_client(&installed).unwrap().is_none());
+        assert_eq!(
+            read_client_skin(verified, STEVE_SKIN_PATHS, "Steve").unwrap(),
+            FIXTURE_PNG
+        );
     }
 
     #[test]

@@ -147,14 +147,8 @@ mod tests {
         let game = root.join("game");
         fs::create_dir_all(&data).unwrap();
         fs::create_dir_all(&game).unwrap();
-        let state = LauncherState {
-            data: std::sync::Mutex::new(Persisted::default()),
-            data_dir: data,
-            client: crate::storage::test_client(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        };
+        let state =
+            LauncherState::test_fixture(data, Persisted::default(), crate::storage::test_client());
         let mut config = serde_json::to_value(Config {
             game_directory: game.to_string_lossy().into_owned(),
             max_memory_mb: 8192,
@@ -180,6 +174,7 @@ mod tests {
         assert_eq!(imported.max_memory_mb, 8192);
         assert_eq!(imported.effects, "lite");
         assert_eq!(imported.game_directory, game.to_string_lossy());
+        drop(state);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -147,6 +147,9 @@
       "urlInvalid": "请输入完整的 http:// 或 https:// PNG 皮肤网址。"
     },
     "auth": {
+      "sessionChanged": "此账号已被移除或重新登录。请重新选择账号后再试。",
+      "credentialCleanupPending": "账号已移除，但未能清除保存的登录凭据。启动器将在下次打开时重试。",
+      "credentialRecoveryFailed": "无法恢复已保存的账号凭据。请重新登录。",
       "profileUnavailable": "暂时无法读取此账号的外观，请检查会话后重试。",
       "deviceExpired": "设备代码已过期，请重新开始 Microsoft 登录。",
       "invalidResponse": "认证服务返回的信息不完整，未添加账号，请重试。",

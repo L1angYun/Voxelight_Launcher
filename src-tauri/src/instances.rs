@@ -1558,21 +1558,18 @@ mod backup_recovery_tests {
     fn fixture_state(root: &Path, instance: &Instance) -> LauncherState {
         let data_dir = root.join("launcher-data");
         fs::create_dir_all(&data_dir).unwrap();
-        LauncherState {
+        LauncherState::test_fixture(
             data_dir,
-            data: std::sync::Mutex::new(Persisted {
+            Persisted {
                 config: crate::models::Config {
                     game_directory: root.join("game").to_string_lossy().into_owned(),
                     ..Default::default()
                 },
                 instances: vec![instance.clone()],
                 ..Default::default()
-            }),
-            client: reqwest::Client::builder().no_proxy().build().unwrap(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        }
+            },
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+        )
     }
 
     #[test]

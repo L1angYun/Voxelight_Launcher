@@ -6,7 +6,7 @@ use crate::secrets::{SecretBackend, SecretStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     path::PathBuf,
     pin::Pin,
@@ -193,7 +193,33 @@ pub struct AuthService {
     devices: Mutex<HashMap<String, DeviceSession>>,
     authlib_sessions: Mutex<HashMap<String, AuthlibSession>>,
     refresh_lock: tokio::sync::Mutex<()>,
-    secret_mutation_lock: Mutex<()>,
+    secret_mutation_lock: Mutex<CredentialState>,
+}
+
+/// Internal ticket preventing work started by a previous login from updating a
+/// replacement session that happens to have the same public account ID.
+#[derive(Clone)]
+pub(crate) struct AccountGeneration(Arc<()>);
+
+#[derive(Default)]
+struct CredentialState {
+    generations: HashMap<String, AccountGeneration>,
+    pending_removals: HashSet<String>,
+}
+
+impl CredentialState {
+    fn generation(&mut self, account_id: &str) -> AccountGeneration {
+        self.generations
+            .entry(account_id.to_owned())
+            .or_insert_with(|| AccountGeneration(Arc::new(())))
+            .clone()
+    }
+
+    fn has_generation(&self, account_id: &str, generation: &AccountGeneration) -> bool {
+        self.generations
+            .get(account_id)
+            .is_some_and(|current| Arc::ptr_eq(&current.0, &generation.0))
+    }
 }
 
 impl AuthService {
@@ -222,7 +248,7 @@ impl AuthService {
             devices: Mutex::new(HashMap::new()),
             authlib_sessions: Mutex::new(HashMap::new()),
             refresh_lock: tokio::sync::Mutex::new(()),
-            secret_mutation_lock: Mutex::new(()),
+            secret_mutation_lock: Mutex::new(CredentialState::default()),
         }
     }
 
@@ -317,7 +343,17 @@ impl AuthService {
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn poll_microsoft(&self, session_id: &str) -> Result<DevicePoll, String> {
+        self.poll_microsoft_with_commit(session_id, |_| Ok(()))
+            .await
+    }
+
+    pub(crate) async fn poll_microsoft_with_commit(
+        &self,
+        session_id: &str,
+        commit: impl FnOnce(&AuthenticatedAccount) -> Result<(), String> + Send,
+    ) -> Result<DevicePoll, String> {
         let session = {
             let mut sessions = self.devices.lock().map_err(|_| "认证会话锁异常")?;
             let session = sessions
@@ -347,7 +383,7 @@ impl AuthService {
             session.next_poll = now + Duration::from_secs(session.interval);
             session.clone()
         };
-        let result = self.poll_device_inner(session_id, &session).await;
+        let result = self.poll_device_inner(session_id, &session, commit).await;
         if let Ok(mut sessions) = self.devices.lock() {
             if let Some(pending) = sessions.get_mut(session_id) {
                 pending.in_flight = false;
@@ -360,6 +396,7 @@ impl AuthService {
         &self,
         session_id: &str,
         session: &DeviceSession,
+        commit: impl FnOnce(&AuthenticatedAccount) -> Result<(), String> + Send,
     ) -> Result<DevicePoll, String> {
         let token = if let Some(token) = &session.token {
             token.clone()
@@ -422,12 +459,12 @@ impl AuthService {
         if session.cancelled.load(Ordering::SeqCst) || !sessions.contains_key(session_id) {
             return Err("登录已取消，请重试".into());
         }
-        self.save_record(&record)?;
+        let account = self.commit_login(&record, &profile, commit)?;
         sessions.remove(session_id);
         Ok(DevicePoll {
             status: "complete".into(),
             retry_after_seconds: 0,
-            account: Some(account_dto(&record, &profile)),
+            account: Some(account),
         })
     }
 
@@ -537,12 +574,25 @@ impl AuthService {
         Ok(profile)
     }
 
+    #[cfg(test)]
     pub async fn login_authlib(
         &self,
         server: &str,
         username: &str,
         password: &str,
         profile_id: Option<&str>,
+    ) -> Result<AuthlibLogin, String> {
+        self.login_authlib_with_commit(server, username, password, profile_id, |_| Ok(()))
+            .await
+    }
+
+    pub(crate) async fn login_authlib_with_commit(
+        &self,
+        server: &str,
+        username: &str,
+        password: &str,
+        profile_id: Option<&str>,
+        commit: impl FnOnce(&AuthenticatedAccount) -> Result<(), String> + Send,
     ) -> Result<AuthlibLogin, String> {
         let server = normalize_authlib_server(server)?;
         if username.trim().is_empty() || password.is_empty() {
@@ -580,9 +630,10 @@ impl AuthService {
             {
                 return Err("服务已绑定另一角色，请重新登录并选择正确的角色".into());
             }
-            let account = self
-                .finish_authlib(&server, access_token, client_token, selected)
+            let (record, profile) = self
+                .authlib_record(&server, access_token, client_token, selected)
                 .await?;
+            let account = self.commit_login(&record, &profile, commit)?;
             return Ok(AuthlibLogin {
                 status: "complete".into(),
                 session_id: None,
@@ -608,9 +659,10 @@ impl AuthService {
             None
         };
         if let Some(chosen) = chosen {
-            let account = self
-                .bind_authlib(&server, &access_token, &client_token, &chosen)
+            let (record, profile) = self
+                .authlib_selected_record(&server, &access_token, &client_token, &chosen)
                 .await?;
+            let account = self.commit_login(&record, &profile, commit)?;
             return Ok(AuthlibLogin {
                 status: "complete".into(),
                 session_id: None,
@@ -644,10 +696,21 @@ impl AuthService {
         })
     }
 
+    #[cfg(test)]
     pub async fn select_authlib_profile(
         &self,
         session_id: &str,
         profile_id: &str,
+    ) -> Result<AuthenticatedAccount, String> {
+        self.select_authlib_profile_with_commit(session_id, profile_id, |_| Ok(()))
+            .await
+    }
+
+    pub(crate) async fn select_authlib_profile_with_commit(
+        &self,
+        session_id: &str,
+        profile_id: &str,
+        commit: impl FnOnce(&AuthenticatedAccount) -> Result<(), String> + Send,
     ) -> Result<AuthenticatedAccount, String> {
         let profile_id = normalize_uuid(profile_id)?;
         let session = {
@@ -687,9 +750,17 @@ impl AuthService {
                 if session.cancelled.load(Ordering::SeqCst) || !sessions.contains_key(session_id) {
                     return Err("角色选择已取消".into());
                 }
-                self.save_record(&record)?;
+                let account = match self.commit_login(&record, &profile, commit) {
+                    Ok(account) => account,
+                    Err(error) => {
+                        if let Some(pending) = sessions.get_mut(session_id) {
+                            pending.in_flight = false;
+                        }
+                        return Err(error);
+                    }
+                };
                 sessions.remove(session_id);
-                Ok(account_dto(&record, &profile))
+                Ok(account)
             }
             Err(error) => {
                 if let Some(pending) = self
@@ -703,20 +774,6 @@ impl AuthService {
                 Err(error)
             }
         }
-    }
-
-    async fn bind_authlib(
-        &self,
-        server: &str,
-        access_token: &str,
-        client_token: &str,
-        profile: &AuthlibProfile,
-    ) -> Result<AuthenticatedAccount, String> {
-        let (record, profile) = self
-            .authlib_selected_record(server, access_token, client_token, profile)
-            .await?;
-        self.save_record(&record)?;
-        Ok(account_dto(&record, &profile))
     }
 
     async fn authlib_selected_record(
@@ -742,20 +799,6 @@ impl AuthService {
             selected,
         )
         .await
-    }
-
-    async fn finish_authlib(
-        &self,
-        server: &str,
-        access_token: String,
-        client_token: String,
-        selected: AuthlibProfile,
-    ) -> Result<AuthenticatedAccount, String> {
-        let (record, profile) = self
-            .authlib_record(server, access_token, client_token, selected)
-            .await?;
-        self.save_record(&record)?;
-        Ok(account_dto(&record, &profile))
     }
 
     async fn authlib_record(
@@ -794,9 +837,19 @@ impl AuthService {
         Ok((record, profile))
     }
 
+    #[cfg(test)]
     pub async fn refresh_account(&self, account_id: &str) -> Result<AuthenticatedAccount, String> {
+        self.refresh_account_with_generation(account_id, None).await
+    }
+
+    pub(crate) async fn refresh_account_with_generation(
+        &self,
+        account_id: &str,
+        generation: Option<&AccountGeneration>,
+    ) -> Result<AuthenticatedAccount, String> {
         let _guard = self.refresh_lock.lock().await;
-        let record = self.refresh_record(self.load_record(account_id)?).await?;
+        let (record, generation) = self.record_snapshot(account_id, generation)?;
+        let record = self.refresh_record(record, &generation).await?;
         let profile = if record.account_type == "authlib" {
             self.authlib_profile(&record)
                 .await
@@ -808,15 +861,17 @@ impl AuthService {
         } else {
             self.profile_for(&record).await?
         };
-        Ok(account_dto(&record, &profile))
+        self.update_current_account(account_id, &generation, || {
+            Ok(account_dto(&record, &profile))
+        })
     }
 
     pub async fn game_credentials(&self, account_id: &str) -> Result<GameCredentials, String> {
         let _guard = self.refresh_lock.lock().await;
-        let mut record = self.load_record(account_id)?;
+        let (mut record, generation) = self.record_snapshot(account_id, None)?;
         if record.account_type == "microsoft" {
             if record.expires_at.unwrap_or(0) <= chrono::Utc::now().timestamp() + 120 {
-                record = self.refresh_record(record).await?;
+                record = self.refresh_record(record, &generation).await?;
             } else {
                 // A still-dated token can have been revoked. Confirm with the official profile endpoint before launch.
                 let response = self
@@ -828,7 +883,7 @@ impl AuthService {
                     ))
                     .await?;
                 if response.status == 401 || response.status == 403 {
-                    record = self.refresh_record(record).await?;
+                    record = self.refresh_record(record, &generation).await?;
                 } else if response.status != 200 {
                     return Err("无法验证账号会话，请检查网络或重新登录".into());
                 } else {
@@ -855,26 +910,32 @@ impl AuthService {
                 ))
                 .await?;
             if response.status == 401 || response.status == 403 {
-                record = self.refresh_record(record).await?;
+                record = self.refresh_record(record, &generation).await?;
             } else if response.status != 200 && response.status != 204 {
                 return Err("无法验证第三方会话，请检查网络后重新登录".into());
             }
         } else {
             return Err("凭据类型无效".into());
         }
-        Ok(GameCredentials {
-            access_token: record.access_token,
-            username: record.username,
-            uuid: record.uuid,
-            account_type: record.account_type,
-            xuid: record.xuid,
-            client_id: record.microsoft_client_id,
-            authlib_server: record.authlib_server,
-            expires_at: record.expires_at.unwrap_or(0),
+        self.update_current_account(account_id, &generation, || {
+            Ok(GameCredentials {
+                access_token: record.access_token,
+                username: record.username,
+                uuid: record.uuid,
+                account_type: record.account_type,
+                xuid: record.xuid,
+                client_id: record.microsoft_client_id,
+                authlib_server: record.authlib_server,
+                expires_at: record.expires_at.unwrap_or(0),
+            })
         })
     }
 
-    async fn refresh_record(&self, record: CredentialRecord) -> Result<CredentialRecord, String> {
+    async fn refresh_record(
+        &self,
+        record: CredentialRecord,
+        generation: &AccountGeneration,
+    ) -> Result<CredentialRecord, String> {
         let mut next = if record.account_type == "microsoft" {
             let client_id = record
                 .microsoft_client_id
@@ -933,16 +994,11 @@ impl AuthService {
         }
         next.account_id = record.account_id;
         // A concurrent logout/new login must not be undone by this earlier network refresh.
-        let _mutation = self
-            .secret_mutation_lock
-            .lock()
-            .map_err(|_| "凭据更新锁异常")?;
-        let current = self.load_record(&next.account_id)?;
-        if current.access_token != record.access_token {
-            return Ok(current);
-        }
-        self.save_record_unlocked(&next)?;
-        Ok(next)
+        let id = next.account_id.clone();
+        self.update_current_account(&id, generation, move || {
+            self.save_record_unlocked(&next)?;
+            Ok(next)
+        })
     }
 
     pub async fn get_profile(&self, account_id: &str) -> Result<PlayerProfile, String> {
@@ -1066,19 +1122,169 @@ impl AuthService {
         self.profile_for(&self.load_record(account_id)?).await
     }
 
+    #[cfg(test)]
     pub fn remove_credentials(&self, account_id: &str) -> Result<(), String> {
-        let _guard = self
+        let mut guard = self
             .secret_mutation_lock
             .lock()
             .map_err(|_| "凭据更新锁异常")?;
-        self.secrets.remove(&format!("account:{account_id}"))
+        self.secrets.remove(&format!("account:{account_id}"))?;
+        guard.generations.remove(account_id);
+        Ok(())
     }
-    fn save_record(&self, record: &CredentialRecord) -> Result<(), String> {
-        let _guard = self
+
+    /// Metadata is removed and the cleanup ID is committed before the credential
+    /// is touched. The queued ID survives a crash or a temporarily locked file.
+    pub(crate) fn remove_account_transaction<T>(
+        &self,
+        account_id: &str,
+        commit_removal: impl FnOnce() -> Result<T, String>,
+        clear_pending: impl FnOnce() -> Result<(), String>,
+    ) -> Result<T, String> {
+        let mut guard = self
             .secret_mutation_lock
             .lock()
             .map_err(|_| "凭据更新锁异常")?;
-        self.save_record_unlocked(record)
+        let value = commit_removal()?;
+        guard.generations.remove(account_id);
+        guard.pending_removals.insert(account_id.to_owned());
+        self.secrets
+            .remove(&format!("account:{account_id}"))
+            .map_err(|_| crate::errors::CREDENTIAL_CLEANUP_PENDING)?;
+        clear_pending().map_err(|_| crate::errors::CREDENTIAL_CLEANUP_PENDING)?;
+        guard.pending_removals.remove(account_id);
+        Ok(value)
+    }
+
+    /// Before exposing the AuthService, block every unresolved cleanup ID
+    /// until deletion commits, so a failed retry does not reactivate it.
+    pub(crate) fn recover_credential_removals(
+        &self,
+        state: &crate::storage::LauncherState,
+    ) -> Result<(), String> {
+        let mut guard = self
+            .secret_mutation_lock
+            .lock()
+            .map_err(|_| "凭据更新锁异常")?;
+        let snapshot = state.snapshot()?;
+        let mut clear = Vec::new();
+        for id in &snapshot.pending_credential_removals {
+            if snapshot.accounts.iter().any(|account| account.id == *id) {
+                // A profile present in the same durable revision wins over an
+                // inconsistent stale cleanup marker. Keep its credential.
+                guard.pending_removals.remove(id);
+                clear.push(id);
+                continue;
+            }
+            guard.pending_removals.insert(id.clone());
+            guard.generations.remove(id);
+            if self.secrets.remove(&format!("account:{id}")).is_ok() {
+                clear.push(id);
+            }
+        }
+        if !clear.is_empty() {
+            state.update(|data| {
+                for id in &clear {
+                    data.pending_credential_removals.remove(*id);
+                }
+                Ok(())
+            })?;
+            for id in clear {
+                guard.pending_removals.remove(id);
+            }
+        }
+        if guard.pending_removals.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::errors::CREDENTIAL_CLEANUP_PENDING.into())
+        }
+    }
+
+    pub(crate) fn account_generation(&self, id: &str) -> Result<AccountGeneration, String> {
+        self.record_snapshot(id, None)
+            .map(|(_, generation)| generation)
+    }
+
+    fn record_snapshot(
+        &self,
+        id: &str,
+        expected: Option<&AccountGeneration>,
+    ) -> Result<(CredentialRecord, AccountGeneration), String> {
+        let mut guard = self
+            .secret_mutation_lock
+            .lock()
+            .map_err(|_| "凭据更新锁异常")?;
+        if guard.pending_removals.contains(id)
+            || expected.is_some_and(|ticket| !guard.has_generation(id, ticket))
+        {
+            return Err(crate::errors::ACCOUNT_SESSION_CHANGED.into());
+        }
+        Ok((self.read_record_unlocked(id)?, guard.generation(id)))
+    }
+
+    pub(crate) fn update_current_account<T>(
+        &self,
+        id: &str,
+        generation: &AccountGeneration,
+        update: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let guard = self
+            .secret_mutation_lock
+            .lock()
+            .map_err(|_| "凭据更新锁异常")?;
+        if guard.pending_removals.contains(id) || !guard.has_generation(id, generation) {
+            return Err(crate::errors::ACCOUNT_SESSION_CHANGED.into());
+        }
+        update()
+    }
+
+    fn commit_login(
+        &self,
+        record: &CredentialRecord,
+        profile: &PlayerProfile,
+        commit: impl FnOnce(&AuthenticatedAccount) -> Result<(), String>,
+    ) -> Result<AuthenticatedAccount, String> {
+        let account = account_dto(record, profile);
+        let key = format!("account:{}", record.account_id);
+        let mut guard = self
+            .secret_mutation_lock
+            .lock()
+            .map_err(|_| "凭据更新锁异常")?;
+        let previous = self.secrets.get(&key)?;
+        self.save_record_unlocked(record)?;
+        // Both changes are serialized under one lock. A failed state write
+        // restores prior credentials (re-login) or deletes our new entry.
+        if let Err(error) = commit(&account) {
+            let restored = if let Some(previous) = previous {
+                self.secrets.set(&key, &previous)
+            } else {
+                self.secrets.remove(&key)
+            };
+            if restored.is_err() {
+                guard.generations.remove(&record.account_id);
+                guard.pending_removals.insert(record.account_id.clone());
+                return Err(crate::errors::CREDENTIAL_RECOVERY_FAILED.into());
+            }
+            return Err(error);
+        }
+        guard.pending_removals.remove(&record.account_id);
+        guard
+            .generations
+            .insert(record.account_id.clone(), AccountGeneration(Arc::new(())));
+        Ok(account)
+    }
+
+    #[cfg(test)]
+    fn save_record(&self, record: &CredentialRecord) -> Result<(), String> {
+        let mut guard = self
+            .secret_mutation_lock
+            .lock()
+            .map_err(|_| "凭据更新锁异常")?;
+        self.save_record_unlocked(record)?;
+        guard
+            .generations
+            .insert(record.account_id.clone(), AccountGeneration(Arc::new(())));
+        Ok(())
     }
     fn save_record_unlocked(&self, record: &CredentialRecord) -> Result<(), String> {
         self.secrets.set(
@@ -1087,6 +1293,11 @@ impl AuthService {
         )
     }
     fn load_record(&self, account_id: &str) -> Result<CredentialRecord, String> {
+        self.record_snapshot(account_id, None)
+            .map(|(record, _)| record)
+    }
+
+    fn read_record_unlocked(&self, account_id: &str) -> Result<CredentialRecord, String> {
         let encoded = self
             .secrets
             .get(&format!("account:{account_id}"))?
@@ -1377,6 +1588,7 @@ mod tests {
     #[derive(Default)]
     struct MemorySecrets {
         entries: Mutex<HashMap<String, String>>,
+        fail_remove: AtomicBool,
     }
     impl SecretBackend for MemorySecrets {
         fn get(&self, key: &str) -> Result<Option<String>, String> {
@@ -1390,6 +1602,9 @@ mod tests {
             Ok(())
         }
         fn remove(&self, key: &str) -> Result<(), String> {
+            if self.fail_remove.load(Ordering::Relaxed) {
+                return Err("synthetic secret-store deletion failure".into());
+            }
             self.entries.lock().unwrap().remove(key);
             Ok(())
         }
@@ -1454,6 +1669,286 @@ mod tests {
             secrets,
         )
     }
+
+    fn account_transaction_state() -> crate::storage::LauncherState {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/account-probes")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&directory).unwrap();
+        crate::storage::LauncherState::test_fixture(
+            directory,
+            crate::models::Persisted::default(),
+            crate::storage::test_client(),
+        )
+    }
+
+    fn cleanup_account_transaction_state(state: crate::storage::LauncherState) {
+        let directory = state.data_dir.clone();
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn m06_failed_account_removal_keeps_both_profile_and_credentials() {
+        let state = account_transaction_state();
+        let (auth, _, _) = service(vec![]);
+        let record = ms_record();
+        let id = record.account_id.clone();
+        auth.save_record(&record).unwrap();
+        crate::auth_commands::remember(&state, &account_dto(&record, &PlayerProfile::default()))
+            .unwrap();
+        let state_path = state.data_dir.join("state.json");
+        let preserved = state.data_dir.join("fixture-preserved-state.json");
+        std::fs::rename(&state_path, &preserved).unwrap();
+        std::fs::create_dir(&state_path).unwrap(); // deterministic, harmless rename failure
+        crate::commands::remove_account_inner(&state, &auth, id.clone()).unwrap_err();
+        let still_registered = state
+            .snapshot()
+            .unwrap()
+            .accounts
+            .iter()
+            .any(|account| account.id == id);
+        let still_persisted = std::fs::read_to_string(&preserved).unwrap().contains(&id);
+        let still_has_credentials = auth.load_record(&id).is_ok();
+        eprintln!("M06_REMOVE: denied=true, in_memory_profile={still_registered}, preserved_disk_profile={still_persisted}, has_credentials={still_has_credentials}");
+        cleanup_account_transaction_state(state);
+        assert!(still_registered && still_persisted);
+        assert!(
+            still_has_credentials,
+            "a failed removal must not revoke credentials"
+        );
+    }
+
+    #[test]
+    fn m06_pending_removal_survives_restart_and_retries_without_restoring_account() {
+        let state = account_transaction_state();
+        let (auth, _, secrets) = service(vec![]);
+        let record = ms_record();
+        let id = record.account_id.clone();
+        let key = format!("account:{id}");
+        auth.save_record(&record).unwrap();
+        crate::auth_commands::remember(&state, &account_dto(&record, &PlayerProfile::default()))
+            .unwrap();
+        secrets.fail_remove.store(true, Ordering::Relaxed);
+
+        let error = crate::commands::remove_account_inner(&state, &auth, id.clone()).unwrap_err();
+        assert_eq!(error, crate::errors::CREDENTIAL_CLEANUP_PENDING);
+        let disk_revision = std::fs::read_to_string(state.data_dir.join("state.json")).unwrap();
+        let persisted = serde_json::from_str::<crate::models::Persisted>(&disk_revision).unwrap();
+        assert!(persisted.accounts.is_empty());
+        assert!(persisted.pending_credential_removals.contains(&id));
+        assert!(!disk_revision.contains(&record.access_token));
+        assert!(secrets.get(&key).unwrap().is_some());
+        assert!(auth.load_record(&id).is_err());
+        drop(auth);
+
+        let restarted = AuthService::with_backends(MockTransport::new(vec![]), secrets.clone());
+        assert_eq!(
+            restarted.recover_credential_removals(&state).unwrap_err(),
+            crate::errors::CREDENTIAL_CLEANUP_PENDING,
+        );
+        assert!(restarted.load_record(&id).is_err());
+        secrets.fail_remove.store(false, Ordering::Relaxed);
+        restarted.recover_credential_removals(&state).unwrap();
+        restarted.recover_credential_removals(&state).unwrap();
+        assert_eq!(secrets.get(&key).unwrap(), None);
+        let updated = state.snapshot().unwrap();
+        assert!(updated.accounts.is_empty() && updated.pending_credential_removals.is_empty());
+        cleanup_account_transaction_state(state);
+    }
+
+    #[test]
+    fn m06_completed_refresh_cannot_reinsert_logged_out_profile_during_final_profile_response() {
+        run(async {
+            let state = Arc::new(account_transaction_state());
+            let owner = Arc::new(Mutex::new(None::<std::sync::Weak<AuthService>>));
+            let final_owner = owner.clone();
+            let final_state = state.clone();
+            let record = ms_record();
+            let id = record.account_id.clone();
+            let final_id = id.clone();
+            let token: Step = Box::new(|request| {
+                assert_eq!(request.url, TOKEN_URL);
+                Ok(AuthResponse {
+                    status: 200,
+                    body: json!({"access_token":"test-msa-token","refresh_token":"rotated-synthetic-refresh","expires_in":3600}),
+                })
+            });
+            let delayed_profile: Step = Box::new(move |request| {
+                assert_eq!(request.url, format!("{MC_API}/minecraft/profile"));
+                let auth = final_owner
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .upgrade()
+                    .unwrap();
+                // refresh_record already saved new credentials; force logout during
+                // the *final* profile fetch before the Tauri command calls remember.
+                assert!(auth.load_record(&final_id).is_ok());
+                crate::commands::remove_account_inner(&final_state, &auth, final_id.clone())
+                    .unwrap();
+                assert!(final_state.snapshot().unwrap().accounts.is_empty());
+                assert!(auth.load_record(&final_id).is_err());
+                Ok(AuthResponse {
+                    status: 200,
+                    body: profile_body(),
+                })
+            });
+            let mut steps = vec![token];
+            steps.extend(exchange_steps());
+            steps.push(delayed_profile);
+            let transport = MockTransport::new(steps);
+            let auth = Arc::new(AuthService::with_backends(
+                transport.clone(),
+                Arc::new(MemorySecrets::default()),
+            ));
+            *owner.lock().unwrap() = Some(Arc::downgrade(&auth));
+            auth.save_record(&record).unwrap();
+            crate::auth_commands::remember(
+                &state,
+                &account_dto(&record, &PlayerProfile::default()),
+            )
+            .unwrap();
+            let refreshed = crate::auth_commands::refresh_account_inner(&state, &auth, &id).await;
+            transport.done();
+            let account_returned = refreshed.is_ok();
+            let registered = state
+                .snapshot()
+                .unwrap()
+                .accounts
+                .iter()
+                .any(|account| account.id == id);
+            let persisted = std::fs::read_to_string(state.data_dir.join("state.json"))
+                .unwrap()
+                .contains(&id);
+            let secret_restored = auth.load_record(&id).is_ok();
+            eprintln!("M06_REFRESH: returned_account={account_returned}, in_memory_profile={registered}, disk_profile={persisted}, has_credentials={secret_restored}");
+            cleanup_account_transaction_state(Arc::try_unwrap(state).ok().unwrap());
+            assert!(
+                !registered && !persisted,
+                "stale refresh restored only the removed profile"
+            );
+            assert!(!secret_restored, "logout must remove credentials");
+        });
+    }
+
+    #[test]
+    fn m06_completed_refresh_cannot_replace_a_new_login_with_the_same_id() {
+        run(async {
+            let state = Arc::new(account_transaction_state());
+            let owner = Arc::new(Mutex::new(None::<std::sync::Weak<AuthService>>));
+            let final_owner = owner.clone();
+            let final_state = state.clone();
+            let record = ms_record();
+            let id = record.account_id.clone();
+            let mut renewed = record.clone();
+            renewed.username = "NewSession".into();
+            renewed.access_token = "synthetic-fresh-session".into();
+            let expected_token = renewed.access_token.clone();
+            let token = reply(
+                TOKEN_URL,
+                200,
+                json!({
+                    "access_token": "test-msa-token",
+                    "refresh_token": "rotated-synthetic-refresh",
+                    "expires_in": 3600
+                }),
+            );
+            let delayed_profile: Step = Box::new(move |request| {
+                assert_eq!(request.url, format!("{MC_API}/minecraft/profile"));
+                let auth = final_owner
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .upgrade()
+                    .unwrap();
+                crate::commands::remove_account_inner(
+                    &final_state,
+                    &auth,
+                    renewed.account_id.clone(),
+                )
+                .unwrap();
+                auth.commit_login(&renewed, &PlayerProfile::default(), |account| {
+                    crate::auth_commands::remember(&final_state, account)
+                })
+                .unwrap();
+                Ok(AuthResponse {
+                    status: 200,
+                    body: profile_body(),
+                })
+            });
+            let mut steps = vec![token];
+            steps.extend(exchange_steps());
+            steps.push(delayed_profile);
+            let transport = MockTransport::new(steps);
+            let auth = Arc::new(AuthService::with_backends(
+                transport.clone(),
+                Arc::new(MemorySecrets::default()),
+            ));
+            *owner.lock().unwrap() = Some(Arc::downgrade(&auth));
+            auth.save_record(&record).unwrap();
+            crate::auth_commands::remember(
+                &state,
+                &account_dto(&record, &PlayerProfile::default()),
+            )
+            .unwrap();
+
+            let error = crate::auth_commands::refresh_account_inner(&state, &auth, &id)
+                .await
+                .err()
+                .unwrap();
+            transport.done();
+            assert_eq!(error, crate::errors::ACCOUNT_SESSION_CHANGED);
+            assert_eq!(state.snapshot().unwrap().accounts[0].username, "NewSession");
+            assert_eq!(auth.load_record(&id).unwrap().access_token, expected_token);
+            cleanup_account_transaction_state(Arc::try_unwrap(state).ok().unwrap());
+        });
+    }
+
+    #[test]
+    fn m06_failed_new_login_leaves_no_unregistered_credential() {
+        run(async {
+            let state = account_transaction_state();
+            state.save().unwrap();
+            let state_path = state.data_dir.join("state.json");
+            let preserved = state.data_dir.join("fixture-preserved-state.json");
+            std::fs::rename(&state_path, &preserved).unwrap();
+            std::fs::create_dir(&state_path).unwrap();
+            let mut steps = vec![device_step(), token_step()];
+            steps.extend(exchange_steps());
+            let (auth, transport, secrets) = service(steps);
+            let started = auth
+                .begin_microsoft("11111111-1111-1111-1111-111111111111")
+                .await
+                .unwrap();
+            due(&auth, &started.session_id);
+            assert!(crate::auth_commands::poll_microsoft_login_inner(
+                &state,
+                &auth,
+                &started.session_id
+            )
+            .await
+            .is_err());
+            let registered = !state.snapshot().unwrap().accounts.is_empty();
+            let serialized_old = std::fs::read_to_string(&preserved).unwrap();
+            let persisted_registered =
+                !serde_json::from_str::<crate::models::Persisted>(&serialized_old)
+                    .unwrap()
+                    .accounts
+                    .is_empty();
+            let credentials_present = !secrets.entries.lock().unwrap().is_empty();
+            transport.done();
+            eprintln!("M06_LOGIN: denied=true, in_memory_profile={registered}, preserved_disk_profile={persisted_registered}, has_credentials={credentials_present}");
+            cleanup_account_transaction_state(state);
+            assert!(!registered && !persisted_registered);
+            assert!(
+                !credentials_present,
+                "failed account creation leaves an unusable orphan credential"
+            );
+        });
+    }
     fn device_step() -> Step {
         reply(
             DEVICE_URL,
@@ -1473,8 +1968,9 @@ mod tests {
             let game_dir = root.join("game");
             std::fs::create_dir_all(&data_dir).unwrap();
             std::fs::create_dir_all(&game_dir).unwrap();
-            let state = crate::storage::LauncherState {
-                data: Mutex::new(crate::models::Persisted {
+            let state = crate::storage::LauncherState::test_fixture(
+                data_dir.clone(),
+                crate::models::Persisted {
                     config: crate::models::Config {
                         game_directory: game_dir.to_string_lossy().into_owned(),
                         max_memory_mb: 8192,
@@ -1482,13 +1978,9 @@ mod tests {
                         ..Default::default()
                     },
                     ..Default::default()
-                }),
-                data_dir: data_dir.clone(),
-                client: crate::storage::test_client(),
-                operation: tokio::sync::Mutex::new(()),
-                control: Default::default(),
-                games: Default::default(),
-            };
+                },
+                crate::storage::test_client(),
+            );
             state.save().unwrap();
             let (auth, transport, _) = service(vec![Box::new(|request| {
                 assert_eq!(request.url, DEVICE_URL);

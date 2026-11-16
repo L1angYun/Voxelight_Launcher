@@ -18,6 +18,7 @@ import { useAppearance } from "./AppearanceProvider";
 import { ToastProvider, useToast } from "../components/ui/ToastProvider";
 import { LoadingStatus } from "../components/ui/LoadingStatus";
 import { Button } from "../components/ui/Button";
+import { StorageRecoveryNotice } from "./StorageRecoveryNotice";
 import { PageErrorBoundary } from "./PageErrorBoundary";
 import { pageVariants } from "../design/motion";
 import { useMotionTier } from "../design/useMotionTier";
@@ -56,7 +57,7 @@ function AppShell() {
   const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
-  const { bootstrapped, bootstrapFailed, reload, run, activeAccount, accountAppearance, config, busy, progress, running, gamePid } = useLauncher();
+  const { bootstrapped, bootstrapFailed, data, reload, run, activeAccount, accountAppearance, config, busy, progress, running, gamePid } = useLauncher();
   const world = useMemo(() => deriveWorldState({ busy, progress, running, gamePid }), [busy, progress, running, gamePid]);
   const { effects, reducedMotion, highContrast } = useAppearance();
   return (
@@ -96,6 +97,7 @@ function AppShell() {
           accountSkinUrl={accountAppearance.skinUrl}
         />
         <main ref={mainRef} id="main-content" className="vx-app-main" data-current-page={page} tabIndex={-1}>
+          {data.storage?.recovery ? <StorageRecoveryNotice storage={data.storage} /> : null}
           {bootstrapFailed ? <div className="vx-bootstrap-error vx-panel" role="alert"><p>{t("common:errors.bootstrapFailed")}</p>
             <Button onClick={() => void run("bootstrap", reload)}>{t("common:actions.retry")}</Button></div> : null}
           <AnimatePresence mode="wait" initial={false} custom={direction}

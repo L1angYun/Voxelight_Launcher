@@ -101,7 +101,13 @@ pub fn run() {
         .setup(|app| {
             let state = match storage::LauncherState::load() {
                 Ok(state) => state,
-                Err(error) => fail_startup(integrity::data_directory_failure(&error.to_string())),
+                Err(error) => {
+                    let message = match error.in_use_detail() {
+                        Some((path, primary)) => integrity::profile_in_use(path, primary.as_deref()),
+                        None => integrity::data_directory_failure(&error.to_string()),
+                    };
+                    fail_startup(message)
+                }
             };
             let webview_data = state.data_dir.join("webview");
             let auth = match auth::AuthService::new(state.data_dir.clone()) {
@@ -110,6 +116,9 @@ pub fn run() {
                     "无法初始化认证服务。\n\n{error}"
                 )),
             };
+            if let Err(error) = auth.recover_credential_removals(&state) {
+                eprintln!("[voxelight/auth] deferred credential cleanup: {error}");
+            }
             let state = std::sync::Arc::new(state);
             let progress_state = state.clone();
             let progress_app = app.handle().clone();
@@ -201,6 +210,7 @@ pub fn run() {
             commands::bootstrap,
             commands::get_config,
             commands::save_config,
+            commands::save_appearance_config,
             commands::list_versions,
             commands::scan_versions,
             commands::detect_java,

@@ -81,25 +81,59 @@ fn current_process_integrity_level() -> Option<u32> {
     }
 }
 
-pub(crate) fn data_directory_failure(error: &str) -> String {
+fn startup_locale() -> &'static str {
     #[cfg(windows)]
     {
         use windows::Win32::Globalization::GetUserDefaultUILanguage;
-        // No persisted language setting can be read when the data directory
-        // cannot be opened. Use Windows' UI language without initializing COM.
+        // No profile settings are available yet. Use Windows' UI language.
         let language = unsafe { GetUserDefaultUILanguage() };
-        let locale = if language & 0x03ff == 0x0004 {
+        if language & 0x03ff == 0x0004 {
             "zh-CN"
         } else {
             "en-US"
-        };
-        format_data_directory_failure(error, current_process_integrity_level(), locale)
+        }
     }
     #[cfg(not(windows))]
     {
-        // Preserve the existing startup error on non-Windows platforms.
-        format_data_directory_failure(error, None, "zh-CN")
+        "zh-CN"
     }
+}
+
+pub(crate) fn data_directory_failure(error: &str) -> String {
+    #[cfg(windows)]
+    let integrity = current_process_integrity_level();
+    #[cfg(not(windows))]
+    let integrity = None;
+    format_data_directory_failure(error, integrity, startup_locale())
+}
+
+fn format_profile_in_use(
+    directory: &std::path::Path,
+    primary: Option<&str>,
+    locale: &str,
+) -> String {
+    let message = if locale.starts_with("zh") {
+        "另一个 Voxelight 启动器正在使用此数据目录。请关闭那个启动器，再重试。"
+    } else {
+        "Another Voxelight Launcher is using this data directory. Close that launcher and try again."
+    };
+    let primary = primary.map_or_else(String::new, |detail| {
+        format!(
+            "
+
+primary: {detail}"
+        )
+    });
+    format!(
+        "{message}
+
+{}{primary}",
+        directory.display()
+    )
+}
+
+pub(crate) fn profile_in_use(directory: &std::path::Path, primary: Option<&str>) -> String {
+    format_profile_in_use(directory, primary, startup_locale())
 }
 
 #[cfg(test)]

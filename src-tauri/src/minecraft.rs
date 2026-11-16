@@ -678,6 +678,17 @@ async fn resolve_metadata_resolved(
     source: &str,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<Value, String> {
+    resolve_metadata_at_roots(state, id, root, None, source, resolver).await
+}
+
+async fn resolve_metadata_at_roots(
+    state: &LauncherState,
+    id: &str,
+    root: &Path,
+    preview_cache: Option<&Path>,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<Value, String> {
     let mut chain = Vec::new();
     let mut visited = HashSet::new();
     let mut current = id.to_owned();
@@ -691,7 +702,10 @@ async fn resolve_metadata_resolved(
         let local = match bytes.as_deref().map(parse_json) {
             Some(Ok(metadata)) => Some(metadata),
             Some(Err(_)) if known_loader_profile(state, &current)? => {
-                return Err(format!("{}{current}", crate::errors::LOADER_REINSTALL_PREFIX));
+                return Err(format!(
+                    "{}{current}",
+                    crate::errors::LOADER_REINSTALL_PREFIX
+                ));
             }
             // A corrupt vanilla profile is classified only against the verified
             // metadata at the terminal owner, and must not be replaced by name alone.
@@ -717,18 +731,61 @@ async fn resolve_metadata_resolved(
         } else {
             // A mod loader's JSON is custom metadata; only this terminal parent is
             // fetched/checked against the vanilla manifest and its entry SHA-1.
-            chain.push(official_metadata_with_resolver(state, &current, root, source, resolver).await?);
+            let leaf = if let Some(cache) = preview_cache {
+                official_metadata_at_paths(state, &current, cache, Some(root), source, resolver).await?
+            } else {
+                official_metadata_with_resolver(state, &current, root, source, resolver).await?
+            };
+            chain.push(leaf);
             break;
         }
     }
     merge_chain(chain)
 }
 
+/// Resolve only the verified base needed for a character preview. Installed
+/// profiles can name their parent, but only the launcher-owned cache may be
+/// written here; the game tree may simultaneously be in use by an install.
+pub(crate) async fn resolve_preview_metadata(
+    state: &LauncherState,
+    id: Option<&str>,
+    installed: &Path,
+    cache: &Path,
+    source: &str,
+) -> Result<(String, Value), String> {
+    let initial = match id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => id.to_owned(),
+        None => {
+            // The passive preview can reuse a valid cached latest pointer.
+            // Refresh fetches on cold start, while ordinary version listing
+            // retains its existing online refresh policy.
+            let manifest = match read_cached_manifests(state, source).await?.into_iter().next() {
+                Some(manifest) => manifest,
+                None => manifest_with_resolver(state, source, &identity_url).await?,
+            };
+            manifest["latest"]["release"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or("官方版本清单缺少 latest.release")?
+                .to_owned()
+        }
+    };
+    let metadata =
+        resolve_metadata_at_roots(state, &initial, installed, Some(cache), source, &identity_url)
+            .await?;
+    let base_id = metadata["_launcherBaseId"].as_str().ok_or("角色预览缺少原版版本 ID")?.to_owned();
+    Ok((base_id, metadata))
+}
+
+
 fn known_loader_profile(state: &LauncherState, id: &str) -> Result<bool, String> {
     if state.snapshot()?.instances.iter().any(|instance| {
         instance.version_id == id
             && (!instance.loader_version.is_empty()
-                || matches!(instance.loader.as_str(), "fabric" | "quilt" | "forge" | "neoforge"))
+                || matches!(
+                    instance.loader.as_str(),
+                    "fabric" | "quilt" | "forge" | "neoforge"
+                ))
     }) {
         return Ok(true);
     }
@@ -891,11 +948,35 @@ fn mirror_download_client() -> Result<&'static reqwest::Client, String> {
     Ok(CLIENT.get_or_init(|| client))
 }
 
+#[derive(Clone, Copy)]
+enum DownloadPolicy<'a> {
+    Uncapped,
+    Foreground(&'a crate::downloads::DownloadControl),
+    Preview(&'a crate::downloads::DownloadControl),
+}
+
+impl DownloadPolicy<'_> {
+    async fn checkpoint(self) -> Result<(), String> {
+        match self {
+            Self::Foreground(control) => control.checkpoint().await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn throttle(self, bytes: usize) -> Result<(), String> {
+        match self {
+            Self::Foreground(control) => control.throttle(bytes).await,
+            Self::Preview(control) => control.throttle_preview(bytes).await,
+            Self::Uncapped => Ok(()),
+        }
+    }
+}
+
 async fn download_once(
     client: &reqwest::Client,
     file: &Download,
     url: &str,
-    control: Option<&crate::downloads::DownloadControl>,
+    policy: DownloadPolicy<'_>,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<(), String> {
     trusted_url(url)?;
@@ -930,9 +1011,7 @@ async fn download_once(
         let mut hash = Sha1::new();
         let mut size = 0u64;
         while let Some(chunk) = chunks.next().await {
-            if let Some(control) = control {
-                control.checkpoint().await?;
-            }
+            policy.checkpoint().await?;
             let chunk = chunk.map_err(|e| e.to_string())?;
             size += chunk.len() as u64;
             if size > file.size.unwrap_or(2 * 1024 * 1024 * 1024) {
@@ -940,9 +1019,7 @@ async fn download_once(
             }
             hash.update(&chunk);
             output.write_all(&chunk).await.map_err(|e| e.to_string())?;
-            if let Some(control) = control {
-                control.throttle(chunk.len()).await?;
-            }
+            policy.throttle(chunk.len()).await?;
         }
         output.flush().await.map_err(|e| e.to_string())?;
         output.sync_all().await.map_err(|e| e.to_string())?;
@@ -999,9 +1076,28 @@ async fn ensure_download_with_source_and_control_resolved(
     control: Option<&crate::downloads::DownloadControl>,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<bool, String> {
-    if let Some(control) = control {
-        control.checkpoint().await?;
-    }
+    let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
+    ensure_download_with_policy(client, file, source, policy, resolver).await
+}
+
+pub(crate) async fn ensure_preview_download(
+    client: &reqwest::Client,
+    file: &Download,
+    control: &crate::downloads::DownloadControl,
+) -> Result<bool, String> {
+    // As before, default skin bytes are fetched from their verified official
+    // client URL, even when official metadata came from an enabled mirror.
+    ensure_download_with_policy(client, file, "official", DownloadPolicy::Preview(control), &identity_url).await
+}
+
+async fn ensure_download_with_policy(
+    client: &reqwest::Client,
+    file: &Download,
+    source: &str,
+    policy: DownloadPolicy<'_>,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<bool, String> {
+    policy.checkpoint().await?;
     if file_valid(file).await? {
         return Ok(false);
     }
@@ -1029,10 +1125,8 @@ async fn ensure_download_with_source_and_control_resolved(
             client
         };
         for attempt in 0..attempts {
-            if let Some(control) = control {
-                control.checkpoint().await?;
-            }
-            match download_once(candidate_client, file, &candidate.url, control, resolver).await {
+            policy.checkpoint().await?;
+            match download_once(candidate_client, file, &candidate.url, policy, resolver).await {
                 Ok(()) => return Ok(true),
                 Err(error) => errors.push(format!("{}：{error}", candidate.url)),
             }
@@ -1280,13 +1374,38 @@ async fn official_metadata_with_resolver(
     source: &str,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<Value, String> {
+    official_metadata_at_paths(state, id, root, None, source, resolver).await
+}
+
+async fn official_metadata_at_paths(
+    state: &LauncherState,
+    id: &str,
+    root: &Path,
+    read_only_installed: Option<&Path>,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<Value, String> {
     validate_id(id)?;
-    let local_path = safe_join(root, &format!("versions/{id}/{id}.json"))?;
+    let relative = format!("versions/{id}/{id}.json");
+    let local_path = safe_join(root, &relative)?;
+    let installed_path = read_only_installed.map(|root| safe_join(root, &relative)).transpose()?;
+    let candidate_metadata = async {
+        let mut candidates = Vec::with_capacity(2);
+        if let Some(bytes) = read_version_profile(&local_path).await? {
+            candidates.push(bytes);
+        }
+        if let Some(path) = installed_path.as_ref() {
+            if let Some(bytes) = read_version_profile(path).await? {
+                candidates.push(bytes);
+            }
+        }
+        Ok::<_, String>(candidates)
+    }.await?;
     // Offline checksums must come from a manifest origin allowed by the current source.
     let cached_manifests = read_cached_manifests(state, source).await?;
-    if let Some(local_bytes) = read_version_profile(&local_path).await? {
-        for cached in cached_manifests {
-            if let Ok(version) = manifest_version(&cached, id) {
+    for local_bytes in &candidate_metadata {
+        for cached in &cached_manifests {
+            if let Ok(version) = manifest_version(cached, id) {
                 if let Ok(metadata) = parse_official_metadata(
                     &local_bytes,
                     id,
@@ -1339,8 +1458,8 @@ async fn official_metadata_with_resolver(
             .as_str()
             .ok_or("官方版本清单缺少 SHA-1")?
             .to_owned();
-        if let Some(local_bytes) = read_version_profile(&local_path).await? {
-            if let Ok(metadata) = parse_official_metadata(&local_bytes, id, &expected) {
+        for local_bytes in &candidate_metadata {
+            if let Ok(metadata) = parse_official_metadata(local_bytes, id, &expected) {
                 return Ok(metadata);
             }
         }
@@ -1358,12 +1477,15 @@ async fn official_metadata_with_resolver(
                 tokio::fs::create_dir_all(local_path.parent().ok_or("版本目录无效")?)
                     .await
                     .map_err(|e| e.to_string())?;
-                match publish_official_profile(id, &local_path, &bytes, &ownership_manifests).await {
+                match publish_official_profile(id, &local_path, &bytes, &ownership_manifests).await
+                {
                     Ok(()) => {}
                     // A mirror can return a separately trusted revision whose
                     // bytes do not match a truncated official-origin profile.
                     // Try the next permitted chain instead of stopping there.
-                    Err(error) if error == format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX) => {
+                    Err(error)
+                        if error == format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX) =>
+                    {
                         profile_conflict = Some(error);
                         continue;
                     }
@@ -1427,7 +1549,10 @@ async fn publish_official_profile(
 
     // Reserve our staging/quarantine name exclusively on the same volume.
     // Nothing from the old profile is removed until the replacement is ready.
-    let tag = if previous.as_deref().is_some_and(|bytes| parse_json(bytes).is_err()) {
+    let tag = if previous
+        .as_deref()
+        .is_some_and(|bytes| parse_json(bytes).is_err())
+    {
         "corrupt"
     } else {
         "previous"
@@ -1446,7 +1571,9 @@ async fn publish_official_profile(
             .open(&staged)
             .await
             .map_err(|error| error.to_string())?;
-        file.write_all(verified).await.map_err(|error| error.to_string())?;
+        file.write_all(verified)
+            .await
+            .map_err(|error| error.to_string())?;
         file.sync_all().await.map_err(|error| error.to_string())?;
         drop(file);
         if let Some(previous) = previous.as_deref() {
@@ -1459,7 +1586,9 @@ async fn publish_official_profile(
             }
             if current.is_some() {
                 // The destination lives in a freshly reserved private directory.
-                tokio::fs::rename(path, &original).await.map_err(|error| error.to_string())?;
+                tokio::fs::rename(path, &original)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 has_original = true;
                 if read_version_profile(&original).await?.as_deref() != Some(previous) {
                     return Err(format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX));
@@ -1475,7 +1604,10 @@ async fn publish_official_profile(
     }
     .await;
     let _ = tokio::fs::remove_file(&staged).await;
-    if outcome.is_err() && has_original && move_profile_to_vacant_path(&original, path).await.is_ok() {
+    if outcome.is_err()
+        && has_original
+        && move_profile_to_vacant_path(&original, path).await.is_ok()
+    {
         has_original = false;
     }
     if !has_original {
@@ -1809,7 +1941,7 @@ fn find_java(directory: &Path, depth: usize, output: &mut Vec<PathBuf>) {
     }
 }
 
-pub async fn detect_java(config: &Config) -> Vec<JavaRuntime> {
+fn java_candidates(config: &Config, data_dir: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if !config.java_path.trim().is_empty() {
         candidates.push(PathBuf::from(&config.java_path));
@@ -1841,12 +1973,14 @@ pub async fn detect_java(config: &Config) -> Vec<JavaRuntime> {
         7,
         &mut candidates,
     );
-    if let Ok(data_dir) = crate::storage::data_directory() {
-        find_java(&data_dir.join("runtimes"), 5, &mut candidates);
-    }
+    find_java(&data_dir.join("runtimes"), 5, &mut candidates);
     let mut unique = HashSet::new();
     candidates.retain(|p| p.is_file() && unique.insert(p.to_string_lossy().to_ascii_lowercase()));
-    let mut runtimes: Vec<_> = stream::iter(candidates.into_iter().map(inspect_java))
+    candidates
+}
+
+pub async fn detect_java(config: &Config, data_dir: &Path) -> Vec<JavaRuntime> {
+    let mut runtimes: Vec<_> = stream::iter(java_candidates(config, data_dir).into_iter().map(inspect_java))
         .buffer_unordered(4)
         .filter_map(|runtime| async { runtime })
         .collect()
@@ -1855,11 +1989,11 @@ pub async fn detect_java(config: &Config) -> Vec<JavaRuntime> {
     runtimes
 }
 
-pub(crate) async fn select_java(config: &Config, metadata: &Value) -> Result<JavaRuntime, String> {
+async fn select_java(config: &Config, data_dir: &Path, metadata: &Value) -> Result<JavaRuntime, String> {
     let required = metadata["javaVersion"]["majorVersion"]
         .as_u64()
         .unwrap_or(8) as u32;
-    let runtimes = detect_java(config).await;
+    let runtimes = detect_java(config, data_dir).await;
     if !config.java_path.trim().is_empty() {
         let runtime = runtimes
             .iter()
@@ -2080,7 +2214,7 @@ pub(crate) async fn select_or_install_java(
     config: &Config,
     metadata: &Value,
 ) -> Result<JavaRuntime, String> {
-    let selected = select_java(config, metadata).await;
+    let selected = select_java(config, &state.data_dir, metadata).await;
     if !config.java_path.trim().is_empty() || !config.java_auto_download {
         return selected;
     }
@@ -2913,24 +3047,21 @@ mod tests {
 
     fn source_test_state(directory: &Path) -> LauncherState {
         fs::create_dir_all(directory).unwrap();
-        LauncherState {
-            data: std::sync::Mutex::new(Persisted {
+        LauncherState::test_fixture(
+            directory.to_path_buf(),
+            Persisted {
                 config: Config {
                     game_directory: directory.join("game").to_string_lossy().into_owned(),
                     ..Config::default()
                 },
                 ..Persisted::default()
-            }),
-            data_dir: directory.to_path_buf(),
-            client: reqwest::Client::builder()
+            },
+            reqwest::Client::builder()
                 .no_proxy()
                 .timeout(Duration::from_secs(2))
                 .build()
                 .unwrap(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        }
+        )
     }
 
     fn source_test_directory(label: &str) -> PathBuf {
@@ -2988,6 +3119,7 @@ mod tests {
             assert_eq!(server.requests().len(), 2, "subsequent repairs use verified local bytes");
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3022,6 +3154,7 @@ mod tests {
             }
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3032,13 +3165,22 @@ mod tests {
             let directory = source_test_directory("damaged-loader-profile");
             let state = source_test_state(&directory.join("data"));
             let root = directory.join("game");
-            let path = root.join("versions/fabric-loader-0.7-source-test/fabric-loader-0.7-source-test.json");
+            let path = root
+                .join("versions/fabric-loader-0.7-source-test/fabric-loader-0.7-source-test.json");
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             let damaged = br#"{"id":"fabric-loader-0.7-source-test","inheritsFrom":"#;
             fs::write(&path, damaged).unwrap();
             let server = TestServer::new(&[]);
             let resolver = server.resolver();
-            let error = resolve_metadata_resolved(&state, "fabric-loader-0.7-source-test", &root, "official", &resolver).await.unwrap_err();
+            let error = resolve_metadata_resolved(
+                &state,
+                "fabric-loader-0.7-source-test",
+                &root,
+                "official",
+                &resolver,
+            )
+            .await
+            .unwrap_err();
             let localized = crate::errors::expected(error);
             assert_eq!(localized.code, "version.loaderReinstall");
             assert_eq!(localized.params["id"], "fabric-loader-0.7-source-test");
@@ -3046,6 +3188,7 @@ mod tests {
             assert!(server.requests().is_empty());
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3078,6 +3221,7 @@ mod tests {
             assert_eq!(server.requests().len(), 2);
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3092,12 +3236,14 @@ mod tests {
             fs::write(&staged, b"verified staged metadata").unwrap();
             fs::write(&target, b"user profile created before publication").unwrap();
             assert!(move_profile_to_vacant_path(&staged, &target).await.is_err());
-            assert_eq!(fs::read(&target).unwrap(), b"user profile created before publication");
+            assert_eq!(
+                fs::read(&target).unwrap(),
+                b"user profile created before publication"
+            );
             assert_eq!(fs::read(&staged).unwrap(), b"verified staged metadata");
             fs::remove_dir_all(directory).unwrap();
         });
     }
-
 
     #[test]
     fn launch_preparation_restarts_after_cancellation_and_finishes_failures() {
@@ -3143,6 +3289,7 @@ mod tests {
             let jobs = state.control.list();
             assert_eq!(jobs.iter().map(|job| job.status.as_str()).collect::<Vec<_>>(),
                 ["cancelled", "completed", "failed", "completed"]);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3152,43 +3299,63 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let directory = source_test_directory("launch-snapshot");
             let state = source_test_state(&directory);
-            state.data.lock().unwrap().instances.push(Instance {
-                id: "instance".into(),
-                version_id: "source-test".into(),
-                ..Default::default()
-            });
-            let guard = state.operation.lock().await;
-            let request =
-                with_launch_preparation(&state, "source-test", None, |snapshot| async move {
-                    Ok(snapshot.config.game_directory)
-                });
-            tokio::pin!(request);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(30), &mut request)
-                    .await
-                    .is_err()
-            );
-            let new_root = directory.join("new-game").to_string_lossy().into_owned();
-            state.data.lock().unwrap().config.game_directory = new_root.clone();
-            drop(guard);
-            assert_eq!(request.await.unwrap(), new_root);
-
-            let guard = state.operation.lock().await;
-            let request =
-                with_launch_preparation(&state, "source-test", Some("instance"), |_| async {
+            state
+                .update(|data| {
+                    data.instances.push(Instance {
+                        id: "instance".into(),
+                        version_id: "source-test".into(),
+                        ..Default::default()
+                    });
                     Ok(())
-                });
-            tokio::pin!(request);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(30), &mut request)
-                    .await
-                    .is_err()
-            );
-            state.data.lock().unwrap().instances.clear();
-            drop(guard);
-            assert!(request.await.unwrap_err().contains("实例不存在"));
+                })
+                .unwrap();
+            {
+                let guard = state.operation.lock().await;
+                let request =
+                    with_launch_preparation(&state, "source-test", None, |snapshot| async move {
+                        Ok(snapshot.config.game_directory)
+                    });
+                tokio::pin!(request);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(30), &mut request)
+                        .await
+                        .is_err()
+                );
+                let new_root = directory.join("new-game").to_string_lossy().into_owned();
+                state
+                    .update(|data| {
+                        data.config.game_directory = new_root.clone();
+                        Ok(())
+                    })
+                    .unwrap();
+                drop(guard);
+                assert_eq!(request.await.unwrap(), new_root);
+            }
+
+            {
+                let guard = state.operation.lock().await;
+                let request =
+                    with_launch_preparation(&state, "source-test", Some("instance"), |_| async {
+                        Ok(())
+                    });
+                tokio::pin!(request);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(30), &mut request)
+                        .await
+                        .is_err()
+                );
+                state
+                    .update(|data| {
+                        data.instances.clear();
+                        Ok(())
+                    })
+                    .unwrap();
+                drop(guard);
+                assert!(request.await.unwrap_err().contains("实例不存在"));
+            }
             assert_eq!(state.control.list().len(), 1);
             assert!(state.operation.try_lock().is_ok());
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3339,6 +3506,7 @@ mod tests {
             let offline = |url: &str| TestServer::resolve(&address, url);
             assert_eq!(official_metadata_with_resolver(&state, "source-test", &root, "official", &offline)
                 .await.unwrap()["type"], "release");
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3367,6 +3535,7 @@ mod tests {
             }
             assert!(official_metadata_with_resolver(&state, "source-test", &root, "official", &offline).await.is_err());
             assert!(manifest_with_resolver(&state, "official", &offline).await.is_err());
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3418,6 +3587,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(cached["versions"][0]["url"], metadata_url);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3477,6 +3647,7 @@ mod tests {
             );
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3526,6 +3697,7 @@ mod tests {
             );
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3586,6 +3758,7 @@ mod tests {
             );
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3683,6 +3856,7 @@ mod tests {
             assert_eq!(server.requests().len(), 4);
             drop(resolver);
             drop(server);
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -3894,23 +4068,20 @@ mod tests {
                 .join("target/core-tests")
                 .join(format!("network-smoke-{}", uuid::Uuid::new_v4()));
             fs::create_dir_all(&directory).unwrap();
-            let state = LauncherState {
-                data: std::sync::Mutex::new(Persisted {
+            let state = LauncherState::test_fixture(
+                directory.clone(),
+                Persisted {
                     config: Config {
                         game_directory: directory.join("game").to_string_lossy().into_owned(),
                         ..Config::default()
                     },
                     ..Persisted::default()
-                }),
-                data_dir: directory.clone(),
-                client: reqwest::Client::builder()
+                },
+                reqwest::Client::builder()
                     .timeout(Duration::from_secs(180))
                     .build()
                     .unwrap(),
-                operation: tokio::sync::Mutex::new(()),
-                control: Default::default(),
-                games: Default::default(),
-            };
+            );
             let list = manifest(&state).await.unwrap();
             let latest = list["latest"]["release"].as_str().unwrap();
             let root = directory.join("game");
@@ -3941,5 +4112,37 @@ mod tests {
                 directory.display()
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod managed_runtime_path_tests {
+    use super::*;
+
+    #[test]
+    fn java_discovery_sees_the_active_profile_runtime_without_executing_candidate() {
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(format!("managed-java-{}", uuid::Uuid::new_v4())),
+        ).unwrap();
+        // Candidate bytes are deliberately not executable; discovery scans
+        // filesystem locations independently of running java -version.
+        let active = fixture.path().join("active-fallback");
+        let game = fixture.path().join("isolated-game");
+        let sentinels = [
+            active.join("runtimes/java-runtime-gamma/fixture/bin/java.exe"),
+            game.join("runtime/fixture/bin/java.exe"),
+            fixture.path().join("nominal-primary/runtimes/fixture/bin/java.exe"),
+        ];
+        for file in &sentinels {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file,b"test path only").unwrap();
+        }
+        let config = Config { game_directory: game.to_string_lossy().into_owned(), ..Config::default() };
+        let found = java_candidates(&config, &active);
+        assert!(found.contains(&sentinels[0]));
+        assert!(found.contains(&sentinels[1]));
+        assert!(!found.contains(&sentinels[2]));
     }
 }

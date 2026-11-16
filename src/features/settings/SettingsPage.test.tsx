@@ -161,7 +161,7 @@ describe("global settings", () => {
     expect(mockLauncher.setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }));
     expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
     await click("Save settings");
-    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }));
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }), { worldScene: "massif", worldMaterial: "solid" });
   });
 
   it("previews appearance immediately, offers exactly two effect levels, and saves explicitly", async () => {
@@ -186,7 +186,7 @@ describe("global settings", () => {
       theme: "light",
       language: "zh-CN",
       soundEnabled: true,
-    }));
+    }), { effects: "lite", accentSource: "system", theme: "light", language: "zh-CN", soundEnabled: true });
   });
 
   it("supports custom accents without adding a third effects mode", async () => {

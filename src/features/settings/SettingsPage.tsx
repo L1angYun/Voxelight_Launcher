@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { RotateCcw, Save, SlidersHorizontal, Palette, Gamepad2, Coffee, Download, Info } from "lucide-react";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { settingsSectionRegistry } from "../../app/registry";
+import { appearanceFields, configChanges, type AppearancePatch } from "../../lib/launcher";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
@@ -23,6 +24,7 @@ export function SettingsPage() {
   const { t, i18n } = useTranslation();
   const {
     config,
+    data: launcherData,
     setConfig,
     saveConfig,
     reload,
@@ -75,7 +77,26 @@ export function SettingsPage() {
     setActionError(null);
     setActionNotice(null);
     setSaveFailed(false);
-    if (await saveConfig(draft)) {
+    const baseline = savedConfig.current;
+    const changes = configChanges(baseline, draft);
+    const look = Object.fromEntries(appearanceFields.filter(key => key in changes).map(key => [key, changes[key]]));
+    const hasVisualChanges = Object.keys(look).length > 0;
+    const visualOnly = hasVisualChanges && Object.keys(look).length === Object.keys(changes).length;
+    const previewOnly = hasVisualChanges && section === "appearance";
+    const candidate = { ...launcherData.config, ...changes };
+    if (visualOnly || previewOnly) {
+      const patch = look as AppearancePatch;
+      if (!(await saveConfig({ ...launcherData.config, ...patch }, patch))) {
+        setSaveFailed(true);
+        return;
+      }
+      // Leave unrelated drafts intact if the user saved from Appearance.
+      savedConfig.current = { ...baseline, ...patch };
+      await reload();
+      // Controller publishes the canonical native return, independently of this draft.
+      return;
+    }
+    if (await saveConfig(candidate)) {
       savedConfig.current = draft;
       await reload();
     } else setSaveFailed(true);

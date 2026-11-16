@@ -22,6 +22,7 @@ pub fn bootstrap(state: Shared<'_>) -> Result<Value, String> {
         "config": data.config, "accounts": data.accounts, "instances": data.instances,
         "installedVersions": minecraft::scan_versions(&data.config),
         "capabilities": bootstrap_capabilities(builtin_client_id()),
+        "storage":state.storage_status(),
     }))
 }
 
@@ -58,6 +59,101 @@ pub fn save_config(state: Shared<'_>, config: Config) -> AppResult<Config> {
     save_config_inner(&state, config).map_err(expected)
 }
 
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppearancePatch {
+    theme: Option<String>,
+    language: Option<String>,
+    effects: Option<String>,
+    world_scene: Option<String>,
+    world_material: Option<String>,
+    accent_source: Option<String>,
+    accent_color: Option<String>,
+    sound_enabled: Option<bool>,
+    default_skin: Option<String>,
+}
+
+impl AppearancePatch {
+    fn is_empty(&self) -> bool {
+        self.theme.is_none()
+            && self.language.is_none()
+            && self.effects.is_none()
+            && self.world_scene.is_none()
+            && self.world_material.is_none()
+            && self.accent_source.is_none()
+            && self.accent_color.is_none()
+            && self.sound_enabled.is_none()
+            && self.default_skin.is_none()
+    }
+
+    fn apply(&self, config: &mut Config) {
+        if let Some(value) = self.theme.as_ref() {
+            config.theme.clone_from(value);
+        }
+        if let Some(value) = self.language.as_ref() {
+            config.language.clone_from(value);
+        }
+        if let Some(value) = self.effects.as_ref() {
+            config.effects.clone_from(value);
+        }
+        if let Some(value) = self.world_scene.as_ref() {
+            config.world_scene.clone_from(value);
+        }
+        if let Some(value) = self.world_material.as_ref() {
+            config.world_material.clone_from(value);
+        }
+        if let Some(value) = self.accent_source.as_ref() {
+            config.accent_source.clone_from(value);
+        }
+        if let Some(value) = self.accent_color.as_ref() {
+            config.accent_color.clone_from(value);
+        }
+        if let Some(value) = self.sound_enabled {
+            config.sound_enabled = value;
+        }
+        if let Some(value) = self.default_skin.as_ref() {
+            config.default_skin.clone_from(value);
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        // Reuse the existing validator, but validate only patch values. A
+        // hand-edited legacy field must not block an unrelated appearance save.
+        let mut values = Config::default();
+        self.apply(&mut values);
+        validate_visual_preferences(&values)?;
+        if !["horizon", "massif"].contains(&values.world_scene.as_str()) {
+            return Err("不支持的世界场景".into());
+        }
+        if !["lattice", "solid"].contains(&values.world_material.as_str()) {
+            return Err("不支持的世界材质".into());
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn save_appearance_config(state: Shared<'_>, patch: AppearancePatch) -> AppResult<Config> {
+    save_appearance_config_inner(&state, patch).map_err(expected)
+}
+
+fn save_appearance_config_inner(
+    state: &LauncherState,
+    patch: AppearancePatch,
+) -> Result<Config, String> {
+    if patch.is_empty() {
+        return Ok(state.snapshot()?.config);
+    }
+    patch.validate()?;
+    // Apply only named appearance fields to the latest persisted configuration.
+    // Network/launch operations may hold their own lock while this small write
+    // proceeds. No game files, credential fields, or download limits change.
+    state.update(|data| {
+        patch.apply(&mut data.config);
+        Ok(data.config.clone())
+    })
+}
+
 pub(crate) fn save_config_inner(
     state: &LauncherState,
     mut config: Config,
@@ -68,7 +164,6 @@ pub(crate) fn save_config_inner(
         .map_err(|_| "已有安装或启动准备任务运行，请等待完成后修改配置")?;
     config.game_directory = config.game_directory.trim().to_owned();
     config.java_path = config.java_path.trim().to_owned();
-    validate_default_skin(&config.default_skin)?;
     validate_visual_preferences(&config)?;
     if !Path::new(&config.game_directory).is_absolute() {
         return Err("游戏目录必须是绝对路径".into());
@@ -81,9 +176,6 @@ pub(crate) fn save_config_inner(
     }
     if !(1..=16).contains(&config.download_concurrency) {
         return Err("下载并发需要在 1–16 之间".into());
-    }
-    if !["dark", "light", "system"].contains(&config.theme.as_str()) {
-        return Err("不支持的主题".into());
     }
     if config.jvm_arguments.len() > 8192 || config.jvm_arguments.contains(['\0', '\r', '\n']) {
         return Err("JVM 参数过长或包含非法字符".into());
@@ -103,6 +195,21 @@ pub(crate) fn save_config_inner(
     if !["official", "auto", "bmclapi"].contains(&config.download_source.as_str()) {
         return Err("下载源无效".into());
     }
+    let saved = state.update(|data| {
+        data.config = config.clone();
+        Ok(config)
+    })?;
+    // Game-setting saves own operation; publish rate only from durable state.
+    state.control.set_limit(saved.download_limit_kib);
+    Ok(saved)
+}
+
+fn validate_visual_preferences(config: &Config) -> Result<(), String> {
+    validate_default_skin(&config.default_skin)?;
+    if !["dark", "light", "system"].contains(&config.theme.as_str()) {
+        return Err("不支持的主题".into());
+    }
+
     if !config.accent_color.starts_with('#')
         || config.accent_color.len() != 7
         || !config.accent_color[1..]
@@ -111,14 +218,6 @@ pub(crate) fn save_config_inner(
     {
         return Err("强调色需要为 #RRGGBB".into());
     }
-    state.control.set_limit(config.download_limit_kib);
-    state.update(|data| {
-        data.config = config.clone();
-        Ok(config)
-    })
-}
-
-fn validate_visual_preferences(config: &Config) -> Result<(), String> {
     if !["lite", "full"].contains(&config.effects.as_str()) {
         return Err("特效级别仅支持精简或完全".into());
     }
@@ -143,7 +242,7 @@ pub fn scan_versions(state: Shared<'_>) -> Result<Vec<InstalledVersion>, String>
 
 #[tauri::command]
 pub async fn detect_java(state: Shared<'_>) -> Result<Vec<JavaRuntime>, String> {
-    Ok(minecraft::detect_java(&state.snapshot()?.config).await)
+    Ok(minecraft::detect_java(&state.snapshot()?.config, &state.data_dir).await)
 }
 
 fn installed_loader(config: &Config, version_id: &str) -> (String, String) {
@@ -282,27 +381,62 @@ pub fn remove_account(
     state: Shared<'_>,
     auth: State<'_, Arc<crate::auth::AuthService>>,
     account_id: String,
+) -> AppResult<Vec<Account>> {
+    remove_account_inner(&state, &auth, account_id).map_err(expected)
+}
+
+pub(crate) fn remove_account_inner(
+    state: &LauncherState,
+    auth: &crate::auth::AuthService,
+    account_id: String,
 ) -> Result<Vec<Account>, String> {
-    if state
-        .snapshot()?
+    let snapshot = state.snapshot()?;
+    let account = snapshot
         .accounts
         .iter()
-        .any(|a| a.id == account_id && a.account_type != "offline")
-    {
-        auth.remove_credentials(&account_id)?;
+        .find(|account| account.id == account_id);
+    if account.is_none() && !snapshot.pending_credential_removals.contains(&account_id) {
+        return Err("账号不存在".into());
     }
-    state.update(|data| {
-        if !data.accounts.iter().any(|a| a.id == account_id) {
-            return Err("账号不存在".into());
+    if account.is_some_and(|account| account.account_type == "offline") {
+        return state.update(|data| detach_account(data, &account_id));
+    }
+    auth.remove_account_transaction(
+        &account_id,
+        || {
+            state.update(|data| {
+                let remaining = if data.accounts.iter().any(|account| account.id == account_id) {
+                    detach_account(data, &account_id)?
+                } else if data.pending_credential_removals.contains(&account_id) {
+                    // Explicit retry of a previously committed removal.
+                    data.accounts.clone()
+                } else {
+                    return Err("账号不存在".into());
+                };
+                data.pending_credential_removals.insert(account_id.clone());
+                Ok(remaining)
+            })
+        },
+        || {
+            state.update(|data| {
+                data.pending_credential_removals.remove(&account_id);
+                Ok(())
+            })
+        },
+    )
+}
+
+fn detach_account(data: &mut Persisted, account_id: &str) -> Result<Vec<Account>, String> {
+    if !data.accounts.iter().any(|a| a.id == account_id) {
+        return Err("账号不存在".into());
+    }
+    data.accounts.retain(|a| a.id != account_id);
+    if !data.accounts.iter().any(|a| a.is_selected) {
+        if let Some(account) = data.accounts.first_mut() {
+            account.is_selected = true;
         }
-        data.accounts.retain(|a| a.id != account_id);
-        if !data.accounts.iter().any(|a| a.is_selected) {
-            if let Some(account) = data.accounts.first_mut() {
-                account.is_selected = true;
-            }
-        }
-        Ok(data.accounts.clone())
-    })
+    }
+    Ok(data.accounts.clone())
 }
 
 #[tauri::command]
@@ -419,20 +553,17 @@ mod tests {
             .join("target/command-tests")
             .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&directory).unwrap();
-        let state = LauncherState {
-            data: std::sync::Mutex::new(Persisted {
+        let state = LauncherState::test_fixture(
+            directory.clone(),
+            Persisted {
                 instances: vec![Instance {
                     id: "instance".into(),
                     ..Default::default()
                 }],
                 ..Default::default()
-            }),
-            data_dir: directory.clone(),
-            client: crate::storage::test_client(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        };
+            },
+            crate::storage::test_client(),
+        );
         let guard = state.operation.try_lock().unwrap();
         let mut config = state.snapshot().unwrap().config;
         config.game_directory = directory.join("new-game").to_string_lossy().into_owned();
@@ -454,6 +585,7 @@ mod tests {
         assert!(remove_instance_inner(&state, "instance")
             .unwrap()
             .is_empty());
+        drop(state);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -487,20 +619,17 @@ mod tests {
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
         }
-        let state = LauncherState {
-            data: std::sync::Mutex::new(Persisted {
+        let state = LauncherState::test_fixture(
+            root.clone(),
+            Persisted {
                 config: Config {
                     game_directory: root.to_string_lossy().into_owned(),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            data_dir: root.clone(),
-            client: crate::storage::test_client(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        };
+            },
+            crate::storage::test_client(),
+        );
         for name in [
             String::new(),
             " ".into(),
@@ -519,6 +648,7 @@ mod tests {
         assert_eq!(instance.version_id, "fabric-test");
         assert_eq!(state.snapshot().unwrap().instances.len(), 1);
         assert!(root.starts_with(parent));
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -567,5 +697,140 @@ mod tests {
             let error = validate_default_skin(skin).unwrap_err();
             assert!(!error.contains("lumen") && error.contains("steve") && error.contains("alex"));
         }
+    }
+}
+
+#[cfg(test)]
+mod scoped_settings_save_tests {
+    use super::*;
+    use std::fs;
+
+    fn owned_profile() -> (crate::instances::StagingDirectory, LauncherState) {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/command-tests")
+                .join(format!("settings-{}", uuid::Uuid::new_v4())),
+        )
+        .unwrap();
+        let config = Config {
+            game_directory: root
+                .path()
+                .join("isolated-game")
+                .to_string_lossy()
+                .into_owned(),
+            download_limit_kib: 128,
+            max_memory_mb: 16384,
+            ..Config::default()
+        };
+        let state = LauncherState::test_fixture(
+            root.path().to_path_buf(),
+            Persisted {
+                config,
+                ..Persisted::default()
+            },
+            crate::storage::test_client(),
+        );
+        state.control.set_limit(128);
+        (root, state)
+    }
+
+    #[test]
+    fn appearance_patch_saves_while_launch_is_preparing_and_keeps_runtime_fields() {
+        let (root, state) = owned_profile();
+        let lock = state.operation.try_lock().unwrap();
+        let patch = serde_json::from_value(json!({
+            "theme": "dark", "language": "en-US", "defaultSkin": "alex"
+        }))
+        .unwrap();
+        let saved = save_appearance_config_inner(&state, patch).unwrap();
+        assert_eq!(
+            (
+                saved.theme.as_str(),
+                saved.language.as_str(),
+                saved.default_skin.as_str()
+            ),
+            ("dark", "en-US", "alex")
+        );
+        assert_eq!(
+            (
+                saved.max_memory_mb,
+                saved.download_limit_kib,
+                state.control.limit_for_test()
+            ),
+            (16384, 128, 128)
+        );
+        let persisted: Persisted =
+            serde_json::from_slice(&fs::read(root.path().join("state.json")).unwrap()).unwrap();
+        assert_eq!(persisted.config.language, "en-US");
+        assert_eq!(persisted.config.max_memory_mb, 16384);
+        let mut next = saved;
+        next.max_memory_mb = 4096;
+        assert!(save_config_inner(&state, next).is_err());
+        drop(lock);
+    }
+
+    #[test]
+    fn appearance_patch_does_not_revalidate_or_overwrite_unrelated_legacy_fields() {
+        let (_root, state) = owned_profile();
+        state
+            .update(|data| {
+                data.config.world_scene = "legacy-setting".into();
+                data.config.accent_color = "legacy-color".into();
+                Ok(())
+            })
+            .unwrap();
+        let patch = serde_json::from_value(json!({"language":"en-US"})).unwrap();
+        let saved = save_appearance_config_inner(&state, patch).unwrap();
+        assert_eq!(saved.world_scene, "legacy-setting");
+        assert_eq!(saved.accent_color, "legacy-color");
+        assert_eq!(saved.language, "en-US");
+    }
+
+    #[test]
+    fn noop_or_invalid_patch_does_not_write_and_rejects_nonvisual_fields() {
+        let (root, state) = owned_profile();
+        let file = root.path().join("state.json");
+        assert!(serde_json::from_value::<AppearancePatch>(
+            json!({"theme":"light","maxMemoryMb":4096})
+        )
+        .is_err());
+        assert!(
+            serde_json::from_value::<AppearancePatch>(json!({"customBackground":null})).is_err()
+        );
+        assert!(save_appearance_config_inner(&state, AppearancePatch::default()).is_ok());
+        assert!(!file.exists());
+        for patch in [
+            json!({"theme":"future"}),
+            json!({"language":"xx-XX"}),
+            json!({"accentColor":"bad"}),
+            json!({"effects":"future"}),
+            json!({"worldScene":"future"}),
+            json!({"worldMaterial":"future"}),
+            json!({"defaultSkin":"future"}),
+        ] {
+            assert!(
+                save_appearance_config_inner(&state, serde_json::from_value(patch).unwrap())
+                    .is_err()
+            );
+        }
+        assert!(!file.exists());
+        assert_eq!(state.snapshot().unwrap().config.theme, "system");
+    }
+
+    #[test]
+    fn failed_config_persistence_never_publishes_download_limit() {
+        let (root, state) = owned_profile();
+        let file = root.path().join("state.json");
+        fs::create_dir(&file).unwrap(); // denies the real commit rename, not merely validation
+        let mut draft = state.snapshot().unwrap().config;
+        draft.download_limit_kib = 1024;
+        assert!(save_config_inner(&state, draft.clone()).is_err());
+        assert_eq!(state.snapshot().unwrap().config.download_limit_kib, 128);
+        assert_eq!(state.control.limit_for_test(), 128);
+        fs::remove_dir(&file).unwrap();
+        save_config_inner(&state, draft).unwrap();
+        let saved: Persisted = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+        assert_eq!(saved.config.download_limit_kib, 1024);
+        assert_eq!(state.control.limit_for_test(), 1024);
     }
 }

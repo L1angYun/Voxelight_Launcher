@@ -155,6 +155,65 @@ describe("launcher controller", () => {
     await act(async () => reject(new Error("obsolete initial error")));
     expect(current.bootstrapFailed).toBe(false);
   });
+  it("ignores a stale successful bootstrap after current StrictMode data arrives", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    let resolveOld!: (data: Bootstrap) => void;
+    let calls = 0;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "bootstrap" && ++calls === 1) return new Promise((resolve) => { resolveOld = resolve; });
+      return normal(name, args);
+    });
+    bootstrap.config = { ...defaults, theme: "dark" };
+    await act(async () => root.render(createElement(StrictMode, null, createElement(LauncherProvider, null, createElement(Harness)))));
+    expect(current.config.theme).toBe("dark");
+    await act(async () => resolveOld({ ...bootstrap, config: { ...defaults, theme: "light" }, accounts: [] }));
+    expect(current.config.theme).toBe("dark");
+    expect(current.data.accounts).toHaveLength(1);
+  });
+
+  it("reloads saved data without clobbering an in-progress appearance preview", async () => {
+    bootstrap.config = { ...defaults, theme: "dark", maxMemoryMb: 4096 };
+    await render();
+    await act(async () => current.setConfig({ ...current.config, theme: "light" }));
+    bootstrap = { ...bootstrap, config: { ...bootstrap.config, maxMemoryMb: 16384 } };
+    await act(async () => current.reload());
+    expect(current.data.config.maxMemoryMb).toBe(16384);
+    expect(current.config.theme).toBe("light");
+    expect(current.config.maxMemoryMb).toBe(16384);
+  });
+
+  it("publishes a completed save even when a pre-save Bootstrap response arrives afterwards", async () => {
+    await render();
+    const normal = commandMock.getMockImplementation()!;
+    let resolveOld!: (data: Bootstrap) => void;
+    commandMock.mockImplementation(async (name,args) => name === "bootstrap"
+      ? new Promise((resolve) => { resolveOld = resolve; }) : normal(name,args));
+    let reload!: Promise<void>;
+    await act(async () => { reload = current.reload(); });
+    const revised = { ...current.config, theme: "light" as const };
+    await act(async () => current.saveConfig(revised));
+    await act(async () => { resolveOld(bootstrap); await reload; });
+    expect(current.data.config.theme).toBe("light");
+    expect(current.config.theme).toBe("light");
+  });
+
+  it("uses the explicit appearance-only IPC while another operation owns the global lock", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "save_appearance_config") return Object.assign({}, bootstrap.config, args?.patch);
+      if (name === "save_config") throw new LauncherError("config.busy");
+      return normal(name, args);
+    });
+    await render();
+    const candidate = { ...current.config, theme: "light" as const };
+    await act(async () => {
+      await expect(current.saveConfig(candidate, { theme: "light" })).resolves.toBe(true);
+    });
+    expect(commandMock).toHaveBeenCalledWith("save_appearance_config", { patch: { theme: "light" } });
+    expect(commandMock.mock.calls.some(([name]) => name === "save_config")).toBe(false);
+    expect(current.data.config.theme).toBe("light");
+  });
+
   it("exposes a retryable initial bootstrap failure without treating a later reload failure as boot failure", async () => {
     const normal = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => {

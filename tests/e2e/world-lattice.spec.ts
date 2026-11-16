@@ -498,10 +498,17 @@ test("no float targets uses solid while preserving the requested lattice prefere
   await page.getByRole("button", { name: "Save settings", exact: true }).click();
   await expect.poll(() => page.evaluate(() => {
     const fixture = (window as unknown as {
-      __appearanceFixtures: { calls: { name: string; args?: { config?: { worldMaterial?: string; language?: string } } }[] };
+      __appearanceFixtures: { calls: { name: string; args?: { patch?: { language?: string } } }[] };
     }).__appearanceFixtures;
-    return fixture.calls.filter(call => call.name === "save_config").at(-1)?.args?.config;
-  })).toMatchObject({ worldMaterial: "lattice", language: "en-US" });
+    return fixture.calls.filter(call => call.name === "save_appearance_config").at(-1)?.args?.patch;
+  })).toEqual({ language: "en-US" });
+  const persisted = await page.evaluate(async () => {
+    const native = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string) => Promise<{ config: { worldMaterial: string } }>;
+    } }).__TAURI_INTERNALS__;
+    return (await native.invoke("bootstrap")).config.worldMaterial;
+  });
+  expect(persisted).toBe("lattice");
   await expect(page.getByRole("button", { name: "Save settings", exact: true })).toBeDisabled();
   await expect(scene).toHaveAttribute("data-world-material", "solid");
   expect(errors).toEqual([]);
@@ -539,10 +546,10 @@ test("appearance switches world material and scene without replacing its canvas 
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await expect.poll(() => page.evaluate(() => {
     const fixture = (window as unknown as {
-      __appearanceFixtures: { calls: { name: string; args?: { config?: Record<string, unknown> } }[] };
+      __appearanceFixtures: { calls: { name: string; args?: { patch?: Record<string, unknown> } }[] };
     }).__appearanceFixtures;
-    return fixture.calls.filter(call => call.name === "save_config").at(-1)?.args?.config;
-  })).toMatchObject({ worldMaterial: "solid", worldScene: "massif", soundEnabled: true });
+    return fixture.calls.filter(call => call.name === "save_appearance_config").at(-1)?.args?.patch;
+  })).toEqual({ worldMaterial: "solid", worldScene: "massif", soundEnabled: true });
   await expect(page.getByRole("button", { name: "保存设置", exact: true })).toBeDisabled();
   expect(errors).toEqual([]);
 });

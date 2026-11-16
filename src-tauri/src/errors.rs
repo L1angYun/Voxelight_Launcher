@@ -36,6 +36,7 @@ impl AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+pub(crate) const STORAGE_STATE_CHANGED: &str = "数据文件已被其他程序修改，为保留最新数据未保存。";
 pub(crate) const RESOURCE_RECOVERY_RUNNING: &str = "resource.recoveryRunning";
 pub(crate) const RESOURCE_RECOVERY_CONFLICT: &str = "resource.recoveryConflict";
 pub(crate) const RESOURCE_RECOVERY_INCOMPLETE: &str = "resource.recoveryIncomplete";
@@ -44,6 +45,9 @@ pub(crate) const RESOURCE_RECOVERY_REQUIRED: &str = "存在未完成的资源事
 
 pub(crate) const LOADER_REINSTALL_PREFIX: &str = "加载器版本元数据损坏，需重新安装：";
 pub(crate) const PROFILE_CONFLICT_PREFIX: &str = "版本配置的来源无法确认，原文件已保留：";
+pub(crate) const ACCOUNT_SESSION_CHANGED: &str = "账号会话已更换或移除，请重新选择账号";
+pub(crate) const CREDENTIAL_CLEANUP_PENDING: &str = "账号已从资料中移除，但加密凭据清理待重试";
+pub(crate) const CREDENTIAL_RECOVERY_FAILED: &str = "无法恢复账号原有的加密凭据，请重新登录";
 
 impl From<String> for AppError {
     fn from(detail: String) -> Self {
@@ -73,10 +77,14 @@ pub fn expected(detail: impl Into<String>) -> AppError {
         "config.presetInvalid"
     } else {
         match detail.as_str() {
+            STORAGE_STATE_CHANGED => "storage.stateChanged",
             RESOURCE_RECOVERY_REQUIRED => "resource.recoveryRequired",
             crate::auth::CLIENT_MISSING => "auth.clientIdRequired",
             crate::auth::CLIENT_REJECTED => "auth.clientRejected",
             crate::auth::APP_NOT_APPROVED => "auth.appNotApproved",
+            ACCOUNT_SESSION_CHANGED => "auth.sessionChanged",
+            CREDENTIAL_CLEANUP_PENDING => "auth.credentialCleanupPending",
+            CREDENTIAL_RECOVERY_FAILED => "auth.credentialRecoveryFailed",
             crate::auth::MC_RATE_LIMITED => "auth.rateLimited",
             crate::auth::MC_EXCHANGE_FAILED => "auth.minecraftExchangeFailed",
             crate::auth::XBOX_FAILED => "auth.xboxFailed",

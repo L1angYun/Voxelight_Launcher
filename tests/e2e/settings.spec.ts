@@ -82,8 +82,11 @@ test("appearance and language preview immediately and persist only on explicit s
   expect((await calls(page)).some((call) => call.name === "save_config")).toBe(false);
   await page.getByRole("checkbox", { name: "Sound effects", exact: true }).check();
   await page.getByRole("button", { name: "Save settings", exact: true }).click();
-  const saved = (await calls(page)).filter((call) => call.name === "save_config").at(-1)?.args?.config as Record<string, unknown>;
-  expect(saved).toMatchObject({ effects: "lite", accentSource: "system", theme: "light", language: "en-US", soundEnabled: true });
+  const saves = (await calls(page));
+  expect(saves.some(call => call.name === "save_config")).toBe(false);
+  const saved = saves.filter(call => call.name === "save_appearance_config").at(-1)?.args?.patch as Record<string, unknown>;
+  expect(saved).toEqual({ effects: "lite", theme: "light", language: "en-US", soundEnabled: true });
+  expect(await page.locator("html").getAttribute("data-theme")).toBe("light");
 });
 
 test("game, Java and download drafts survive section switches and save together", async ({ page }) => {
@@ -143,4 +146,32 @@ test("service secrets, presets and background stay in their owning groups", asyn
   expect(recorded.some((call) => call.name === "import_launcher_config")).toBe(true);
   expect(recorded.some((call) => call.name === "set_launcher_background" && call.args?.path === "C:\\SyntheticFixture\\background.png")).toBe(true);
   expect(recorded.some((call) => call.name === "set_launcher_background" && call.args?.path === null)).toBe(true);
+});
+
+test("fallback profile shows both the active directory and retained primary state", async ({ page }) => {
+  await installLauncherFixture(page);
+  await page.addInitScript(() => {
+    const internals = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown>;
+    } }).__TAURI_INTERNALS__;
+    const original = internals.invoke;
+    internals.invoke = async (name, args) => {
+      const result = await original(name, args);
+      if (name !== "bootstrap") return result;
+      return {
+        ...result as Record<string, unknown>,
+        storage: { activeDirectory: "C:\\SyntheticFixture\\fallback", recovery: {
+          reason: "newerSchema", primaryDirectory: "C:\\SyntheticFixture\\primary",
+          primaryStatePath: "C:\\SyntheticFixture\\primary\\state.json", primaryStateRetained: true,
+        } },
+      };
+    };
+  });
+  await page.goto("/?next-ui");
+  const warning = page.getByRole("alert").filter({ hasText: "C:\\SyntheticFixture\\fallback" });
+  await expect(warning).toContainText("C:\\SyntheticFixture\\primary\\state.json");
+  await expect(warning).toContainText("更新版本");
+  await expect(warning).toContainText("保留");
+  await page.getByRole("navigation", {name:"主导航"}).getByRole("button",{name:"设置",exact:true}).click();
+  await expect(warning).toBeVisible();
 });

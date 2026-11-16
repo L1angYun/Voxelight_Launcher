@@ -467,6 +467,18 @@ describe("accounts and appearance", () => {
     expect(mockLauncher.reload).toHaveBeenCalledTimes(3);
   });
 
+  it("reloads the removed row and explains when credential cleanup must be retried", async () => {
+    commandMock.mockImplementationOnce(async () => {
+      throw { code: "auth.credentialCleanupPending", params: {} };
+    });
+    await render();
+    await click("Remove AmberFixture");
+    expect(mockLauncher.reload).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "The account was removed, but its saved credentials could not be cleared",
+    );
+  });
+
   it("cancels the active Microsoft device session without polling or adding an account", async () => {
     await render();
     await click("Add account");
@@ -585,8 +597,8 @@ describe("accounts and appearance", () => {
     await click("Local preview");
     const alex = container.querySelector<HTMLInputElement>('input[aria-label="Alex"]')!;
     await act(async () => alex.click());
-    expect(commandMock).toHaveBeenCalledWith("save_config", {
-      config: expect.objectContaining({ defaultSkin: "alex" }),
+    expect(commandMock).toHaveBeenCalledWith("save_appearance_config", {
+      patch: { defaultSkin: "alex" },
     });
     expect(commandMock).not.toHaveBeenCalledWith("upload_account_skin", expect.anything());
   });

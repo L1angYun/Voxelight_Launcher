@@ -6,14 +6,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+fn explicit_data_directory(dedicated: Option<PathBuf>, legacy: Option<PathBuf>) -> Option<PathBuf> {
+    dedicated
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| legacy.filter(|path| !path.as_os_str().is_empty()))
+}
+
 fn select_data_directory(
     dedicated: Option<PathBuf>,
     legacy: Option<PathBuf>,
     local: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    dedicated
-        .filter(|path| !path.as_os_str().is_empty())
-        .or_else(|| legacy.filter(|path| !path.as_os_str().is_empty()))
+    explicit_data_directory(dedicated, legacy)
         .or_else(|| local.map(|path| path.join("dev.voxelight.launcher")))
         .ok_or_else(|| "无法定位用户数据目录".into())
 }
@@ -40,10 +44,6 @@ fn select_fallback_data_directory(local: Option<PathBuf>) -> Result<PathBuf, Str
 
 fn fallback_data_directory() -> Result<PathBuf, String> {
     select_fallback_data_directory(dirs::data_local_dir())
-}
-
-fn startup_error(message: String) -> Box<dyn std::error::Error> {
-    Box::new(std::io::Error::other(message))
 }
 
 pub(crate) fn migrate_state_json(mut value: Value) -> Result<Value, String> {
@@ -99,28 +99,270 @@ pub(crate) fn migrate_state_json(mut value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum StorageRecoveryReason {
+    Unavailable,
+    Corrupt,
+    NewerSchema,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageRecovery {
+    reason: StorageRecoveryReason,
+    primary_directory: Option<String>,
+    primary_state_path: Option<String>,
+    primary_state_retained: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StorageStatus {
+    active_directory: String,
+    recovery: Option<StorageRecovery>,
+}
+
+#[derive(Debug)]
+pub(crate) enum ProfileLoadError {
+    InUse(PathBuf),
+    Unavailable(String),
+    Corrupt(String),
+    NewerSchema(u64),
+    Changed,
+    FallbackUnavailable {
+        primary: Box<Self>,
+        directory: PathBuf,
+        fallback: Box<Self>,
+    },
+}
+
+impl ProfileLoadError {
+    fn recovery_reason(&self) -> StorageRecoveryReason {
+        match self {
+            Self::Corrupt(_) => StorageRecoveryReason::Corrupt,
+            Self::NewerSchema(_) => StorageRecoveryReason::NewerSchema,
+            _ => StorageRecoveryReason::Unavailable,
+        }
+    }
+
+    pub(crate) fn in_use_detail(&self) -> Option<(&Path, Option<String>)> {
+        match self {
+            Self::InUse(directory) => Some((directory, None)),
+            Self::FallbackUnavailable {
+                primary, fallback, ..
+            } => fallback
+                .in_use_detail()
+                .map(|(directory, _)| (directory, Some(primary.to_string()))),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ProfileLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InUse(directory) => {
+                write!(f, "Profile in use: {}", display_profile_path(directory))
+            }
+            Self::Unavailable(detail) => f.write_str(detail),
+            Self::Corrupt(detail) => write!(f, "配置损坏或不能迁移：{detail}"),
+            Self::NewerSchema(version) => write!(
+                f,
+                "配置来自更新版本的 Voxelight，请先升级启动器（schemaVersion: {version}）"
+            ),
+            Self::Changed => f.write_str(crate::errors::STORAGE_STATE_CHANGED),
+            Self::FallbackUnavailable {
+                primary,
+                directory,
+                fallback,
+            } => write!(
+                f,
+                "启动器数据目录不可用。primary: {primary}; fallback {}: {fallback}",
+                directory.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProfileLoadError {}
+
+pub(crate) fn display_profile_path(directory: &Path) -> String {
+    #[cfg(windows)]
+    {
+        // A canonical Windows disk path uses extended syntax; show people
+        // the familiar notation without changing the path used for real I/O.
+        let path = directory.to_string_lossy();
+        if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(local) = path.strip_prefix(r"\\?\") {
+            return local.to_owned();
+        }
+    }
+    directory.display().to_string()
+}
+
+fn unavailable(error: impl ToString) -> ProfileLoadError {
+    ProfileLoadError::Unavailable(error.to_string())
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct StateStamp {
+    generation: u64,
+    hash: [u8; 32],
+}
+
+#[derive(Default)]
+struct RetainedFields {
+    root: serde_json::Map<String, Value>,
+    config: serde_json::Map<String, Value>,
+}
+
+impl RetainedFields {
+    fn from_state(raw: &Value, decoded: &Persisted) -> serde_json::Result<Self> {
+        let known = serde_json::to_value(decoded)?;
+        let extras = |source: &Value, known: &Value| {
+            source
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(key, _)| key.as_str() != "writeGeneration" && known.get(*key).is_none())
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        };
+        Ok(Self {
+            root: extras(raw, &known),
+            config: extras(&raw["config"], &known["config"]),
+        })
+    }
+
+    // Preserve only additive top-level and configuration fields known at load.
+    // Account and instance arrays always follow the successfully edited model.
+    fn apply_to(&self, raw: &mut Value) {
+        if let Some(root) = raw.as_object_mut() {
+            for (key, value) in &self.root {
+                root.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+            if let Some(config) = root.get_mut("config").and_then(Value::as_object_mut) {
+                for (key, value) in &self.config {
+                    config.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+        }
+    }
+}
+
+struct ActiveState {
+    data: Persisted,
+    revision: Option<StateStamp>,
+    retained_fields: RetainedFields,
+}
+
+const STATE_FILE: &str = "state.json";
+const PROFILE_LOCK: &str = "launcher-profile.lock";
+
+fn open_profile_lock(directory: &Path) -> Result<fs::File, ProfileLoadError> {
+    fs::create_dir_all(directory).map_err(unavailable)?;
+    let path = safe_join(directory, PROFILE_LOCK).map_err(unavailable)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // A second launcher can open it to ask for the lock, but cannot replace the name
+        // under a live handle. Do not delete the sidecar when closing the launcher.
+        options.share_mode(0x1 | 0x2);
+    }
+    let file = options.open(path).map_err(unavailable)?;
+    if !file.metadata().map_err(unavailable)?.is_file() {
+        return Err(unavailable("启动器数据目录的锁不是普通文件"));
+    }
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(ProfileLoadError::InUse(directory.to_owned())),
+        Err(fs::TryLockError::Error(error)) => Err(unavailable(error)),
+    }
+}
+
+fn state_stamp(raw: &Value, bytes: &[u8]) -> Result<StateStamp, ProfileLoadError> {
+    let generation = match raw.get("writeGeneration") {
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| ProfileLoadError::Corrupt("writeGeneration 必须是无符号整数".into()))?,
+        None => 0, // pre-round-4 JSON
+    };
+    Ok(StateStamp {
+        generation,
+        hash: <sha2::Sha256 as sha2::Digest>::digest(bytes).into(),
+    })
+}
+
+fn state_contents(directory: &Path) -> Result<Option<(Value, StateStamp)>, ProfileLoadError> {
+    let path = safe_join(directory, STATE_FILE).map_err(unavailable)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(unavailable("启动器配置不是普通文件")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(unavailable(error)),
+    }
+    match fs::read(path) {
+        Ok(bytes) => {
+            let raw = serde_json::from_slice(&bytes)
+                .map_err(|error| ProfileLoadError::Corrupt(error.to_string()))?;
+            let stamp = state_stamp(&raw, &bytes)?;
+            Ok(Some((raw, stamp)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(unavailable(error)),
+    }
+}
+
 pub struct LauncherState {
-    pub data: Mutex<Persisted>,
+    active: Mutex<ActiveState>,
     pub data_dir: PathBuf,
     pub client: reqwest::Client,
     pub operation: tokio::sync::Mutex<()>,
     pub control: crate::downloads::DownloadControl,
     pub games: Arc<crate::processes::GameRegistry>,
+    recovery: Option<StorageRecovery>,
+    _profile_lock: fs::File,
 }
 
 impl LauncherState {
-    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::load_with_fallback(data_directory(), fallback_data_directory)
+    pub fn load() -> Result<Self, ProfileLoadError> {
+        Self::load_selected(
+            explicit_data_directory(
+                std::env::var_os("VOXELIGHT_LAUNCHER_DATA_DIR").map(PathBuf::from),
+                std::env::var_os("MINECRAFT_LAUNCHER_DATA_DIR").map(PathBuf::from),
+            ),
+            data_directory(),
+            fallback_data_directory,
+        )
+    }
+
+    fn load_selected<F>(
+        explicit: Option<PathBuf>,
+        primary: Result<PathBuf, String>,
+        fallback: F,
+    ) -> Result<Self, ProfileLoadError>
+    where
+        F: FnOnce() -> Result<PathBuf, String>,
+    {
+        match explicit {
+            Some(directory) => Self::load_from(directory),
+            None => Self::load_with_fallback(primary, fallback),
+        }
     }
 
     fn load_with_fallback<F>(
         primary_directory: Result<PathBuf, String>,
         fallback_directory: F,
-    ) -> Result<Self, Box<dyn std::error::Error>>
+    ) -> Result<Self, ProfileLoadError>
     where
         F: FnOnce() -> Result<PathBuf, String>,
     {
-        let primary_error = match primary_directory {
+        let (primary, failure) = match primary_directory {
             Ok(directory) => {
                 eprintln!(
                     "[voxelight/storage] loading primary state from {}",
@@ -128,49 +370,77 @@ impl LauncherState {
                 );
                 match Self::load_from(directory.clone()) {
                     Ok(state) => return Ok(state),
-                    Err(error) => {
-                        eprintln!(
-                            "[voxelight/storage] primary state at {} failed: {error}",
-                            directory.display()
-                        );
-                        error
+                    Err(error @ (ProfileLoadError::InUse(_) | ProfileLoadError::Changed)) => {
+                        return Err(error);
                     }
+                    Err(error) => (Some(directory), error),
                 }
             }
-            Err(error) => {
-                eprintln!("[voxelight/storage] primary data directory unavailable: {error}");
-                startup_error(error)
-            }
+            Err(error) => (None, unavailable(error)),
         };
 
-        let fallback_directory = fallback_directory().map_err(startup_error)?;
+        let directory = fallback_directory()
+            .map_err(|error| unavailable(format!("primary: {failure}; fallback: {error}")))?;
+        if primary.as_ref().is_some_and(|path| path == &directory) {
+            return Err(failure);
+        }
+        let primary_state_path = primary.as_ref().map(|path| path.join(STATE_FILE));
+        let retained = primary_state_path.as_ref().is_some_and(|path| {
+            fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
+        });
+        let recovery = StorageRecovery {
+            reason: failure.recovery_reason(),
+            primary_directory: primary.as_ref().map(|p| p.display().to_string()),
+            primary_state_path: primary_state_path.as_ref().map(|p| p.display().to_string()),
+            primary_state_retained: retained,
+        };
         eprintln!(
-            "[voxelight/storage] falling back to {}",
-            fallback_directory.display()
+            "[voxelight/storage] primary failed: {failure}; falling back to {}",
+            directory.display()
         );
-        Self::load_from(fallback_directory.clone()).map_err(|fallback_error| {
-            startup_error(format!(
-                "启动器数据目录不可用。primary: {primary_error}; fallback {}: {fallback_error}",
-                fallback_directory.display()
-            ))
-        })
+        let mut state = Self::load_from(directory.clone()).map_err(|error| {
+            ProfileLoadError::FallbackUnavailable {
+                primary: Box::new(failure),
+                directory,
+                fallback: Box::new(error),
+            }
+        })?;
+        state.recovery = Some(recovery);
+        Ok(state)
     }
 
-    fn load_from(data_dir: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        fs::create_dir_all(&data_dir)?;
-        let file = data_dir.join("state.json");
-        let mut data: Persisted = match fs::read(&file) {
-            Ok(bytes) => {
-                let raw = serde_json::from_slice(&bytes)?;
-                serde_json::from_value(migrate_state_json(raw)?)?
+    fn load_from(data_dir: PathBuf) -> Result<Self, ProfileLoadError> {
+        fs::create_dir_all(&data_dir).map_err(unavailable)?;
+        // Canonicalize before opening the sidecar so alternate spellings share
+        // the same lock and future IO uses the resolved directory.
+        let data_dir = std::fs::canonicalize(data_dir).map_err(unavailable)?;
+        let profile_lock = open_profile_lock(&data_dir)?;
+        let stored = state_contents(&data_dir)?;
+        let (mut data, revision, retained_fields, mut needs_write) = match stored {
+            Some((raw, stamp)) => {
+                let version = raw
+                    .get("schemaVersion")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if version > u64::from(CURRENT_SCHEMA_VERSION) {
+                    return Err(ProfileLoadError::NewerSchema(version));
+                }
+                let migrated =
+                    migrate_state_json(raw.clone()).map_err(ProfileLoadError::Corrupt)?;
+                let needs_write = raw != migrated || raw.get("writeGeneration").is_none();
+                let data: Persisted = serde_json::from_value(migrated.clone())
+                    .map_err(|error| ProfileLoadError::Corrupt(error.to_string()))?;
+                let retained_fields =
+                    RetainedFields::from_state(&migrated, &data).map_err(unavailable)?;
+                (data, Some(stamp), retained_fields, needs_write)
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Persisted::default(),
-            Err(error) => return Err(error.into()),
+            None => (Persisted::default(), None, RetainedFields::default(), true),
         };
         if let Some(directory) = select_game_directory(
             std::env::var("VOXELIGHT_LAUNCHER_GAME_DIR").ok(),
             std::env::var("MINECRAFT_LAUNCHER_GAME_DIR").ok(),
         ) {
+            needs_write |= data.config.game_directory != directory;
             data.config.game_directory = directory;
         }
         let client = reqwest::Client::builder()
@@ -188,54 +458,162 @@ impl LauncherState {
                     attempt.error("untrusted download redirect")
                 }
             }))
-            .build()?;
+            .build()
+            .map_err(unavailable)?;
         let control = crate::downloads::DownloadControl::load(
             data_dir.clone(),
             data.config.download_limit_kib,
-        )?;
-        let state = Self {
-            data: Mutex::new(data),
+        )
+        .map_err(unavailable)?;
+        let mut state = Self::new(data_dir, data, revision, client, control, profile_lock);
+        state.active.get_mut().map_err(unavailable)?.retained_fields = retained_fields;
+        if needs_write {
+            state.save().map_err(|error| {
+                if error == crate::errors::STORAGE_STATE_CHANGED {
+                    ProfileLoadError::Changed
+                } else {
+                    unavailable(error)
+                }
+            })?;
+        }
+        Ok(state)
+    }
+
+    fn new(
+        data_dir: PathBuf,
+        data: Persisted,
+        revision: Option<StateStamp>,
+        client: reqwest::Client,
+        control: crate::downloads::DownloadControl,
+        profile_lock: fs::File,
+    ) -> Self {
+        Self {
+            active: Mutex::new(ActiveState {
+                data,
+                revision,
+                retained_fields: RetainedFields::default(),
+            }),
             data_dir,
             client,
             operation: tokio::sync::Mutex::new(()),
             control,
             games: Default::default(),
-        };
-        state.save()?;
-        Ok(state)
+            recovery: None,
+            _profile_lock: profile_lock,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_fixture(
+        data_dir: PathBuf,
+        data: Persisted,
+        client: reqwest::Client,
+    ) -> Self {
+        let profile_lock = open_profile_lock(&data_dir).unwrap();
+        let revision = state_contents(&data_dir).unwrap().map(|(_, stamp)| stamp);
+        Self::new(
+            data_dir,
+            data,
+            revision,
+            client,
+            Default::default(),
+            profile_lock,
+        )
+    }
+
+    pub(crate) fn storage_status(&self) -> StorageStatus {
+        StorageStatus {
+            active_directory: display_profile_path(&self.data_dir),
+            recovery: self.recovery.as_ref().map(|status| StorageRecovery {
+                reason: status.reason,
+                primary_directory: status.primary_directory.clone(),
+                primary_state_path: status.primary_state_path.clone(),
+                primary_state_retained: status.primary_state_retained,
+            }),
+        }
     }
 
     pub fn snapshot(&self) -> Result<Persisted, String> {
-        self.data
+        self.active
             .lock()
-            .map(|data| data.clone())
+            .map(|state| state.data.clone())
             .map_err(|_| "配置锁异常".into())
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let data = self.data.lock().map_err(|_| "配置锁异常")?;
-        self.write(&data)
+        let mut state = self.active.lock().map_err(|_| "配置锁异常")?;
+        state.revision =
+            Some(self.write(&state.data, state.revision.as_ref(), &state.retained_fields)?);
+        Ok(())
     }
 
     pub fn update<T>(
         &self,
         action: impl FnOnce(&mut Persisted) -> Result<T, String>,
     ) -> Result<T, String> {
-        let mut data = self.data.lock().map_err(|_| "配置锁异常")?;
-        let mut next = data.clone();
+        let mut state = self.active.lock().map_err(|_| "配置锁异常")?;
+        self.check_current(state.revision.as_ref())?;
+        let mut next = state.data.clone();
         let result = action(&mut next)?;
-        self.write(&next)?;
-        *data = next;
+        state.revision =
+            Some(self.write(&next, state.revision.as_ref(), &state.retained_fields)?);
+        state.data = next;
         Ok(result)
     }
 
-    fn write(&self, data: &Persisted) -> Result<(), String> {
-        let temp = self
-            .data_dir
-            .join(format!("state-{}.tmp", uuid::Uuid::new_v4()));
-        let bytes = serde_json::to_vec_pretty(data).map_err(|e| e.to_string())?;
-        fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-        fs::rename(temp, self.data_dir.join("state.json")).map_err(|e| format!("保存配置失败：{e}"))
+    fn check_current(&self, revision: Option<&StateStamp>) -> Result<(), String> {
+        let current = match state_contents(&self.data_dir) {
+            Ok(current) => current,
+            Err(ProfileLoadError::Corrupt(_) | ProfileLoadError::NewerSchema(_)) => {
+                return Err(crate::errors::STORAGE_STATE_CHANGED.into());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        if current.as_ref().map(|(_, stamp)| stamp) != revision {
+            return Err(crate::errors::STORAGE_STATE_CHANGED.into());
+        }
+        Ok(())
+    }
+
+    fn write(
+        &self,
+        data: &Persisted,
+        revision: Option<&StateStamp>,
+        retained: &RetainedFields,
+    ) -> Result<StateStamp, String> {
+        self.check_current(revision)?;
+        let generation = revision
+            .map_or(0, |stamp| stamp.generation)
+            .checked_add(1)
+            .ok_or("启动器数据代次已达上限，未保存")?;
+        let mut raw = serde_json::to_value(data).map_err(|error| error.to_string())?;
+        retained.apply_to(&mut raw);
+        raw["writeGeneration"] = Value::from(generation);
+        let bytes = serde_json::to_vec_pretty(&raw).map_err(|error| error.to_string())?;
+        let stamp = state_stamp(&raw, &bytes).map_err(|error| error.to_string())?;
+        let temp = safe_join(
+            &self.data_dir,
+            &format!("state-{}.tmp", uuid::Uuid::new_v4()),
+        )?;
+        let file = safe_join(&self.data_dir, STATE_FILE)?;
+        let mut pending = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| error.to_string())?;
+        use std::io::Write;
+        let written = pending.write_all(&bytes).and_then(|_| pending.sync_all());
+        drop(pending);
+        let result = written
+            .map_err(|error| error.to_string())
+            .and_then(|_| self.check_current(revision))
+            .and_then(|_| {
+                fs::rename(&temp, file).map_err(|error| format!("保存配置失败：{error}"))
+            });
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result.map(|_| stamp)
     }
 }
 
@@ -482,20 +860,328 @@ mod tests {
         assert!(trusted_client_redirect("https://evil.example/file", official).is_err());
     }
 
+    const PROFILE_CHILD_KIND: &str = "VOXELIGHT_H04_TEST_CHILD_KIND";
+    const PROFILE_CHILD_ROOT: &str = "VOXELIGHT_H04_TEST_CHILD_ROOT";
+    const PROFILE_CHILD_TEST: &str = "storage::tests::profile_storage_child";
+
+    fn profile_process_fixture() -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("core-tests")
+            .join(format!("profile-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    struct ChildFixture(std::process::Child);
+    impl Drop for ChildFixture {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn profile_child(root: &Path, kind: &str) -> ChildFixture {
+        use std::process::{Command, Stdio};
+        let out = fs::File::create(root.join(format!("{kind}.stdout"))).unwrap();
+        let err = fs::File::create(root.join(format!("{kind}.stderr"))).unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", PROFILE_CHILD_TEST, "--nocapture"])
+            .env(PROFILE_CHILD_KIND, kind)
+            .env(PROFILE_CHILD_ROOT, root)
+            .env("VOXELIGHT_LAUNCHER_GAME_DIR", root.join("isolated-game"))
+            .env_remove("MINECRAFT_LAUNCHER_GAME_DIR")
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .spawn()
+            .unwrap();
+        ChildFixture(child)
+    }
+
+    fn wait_until(mut ready: impl FnMut() -> bool, note: &str) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(12);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < end,
+                "timeout waiting for {note}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    fn child_finished(child: &mut ChildFixture) {
+        wait_until(
+            || child.0.try_wait().unwrap().is_some(),
+            "profile test process exit",
+        );
+        assert!(child.0.wait().unwrap().success());
+    }
+
+    /// This test is only active when the parent explicitly launches it for one disposable profile.
+    #[test]
+    fn profile_storage_child() {
+        let Ok(mission) = std::env::var(PROFILE_CHILD_KIND) else {
+            return;
+        };
+        let root = PathBuf::from(std::env::var_os(PROFILE_CHILD_ROOT).unwrap());
+        let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("core-tests");
+        assert!(root.starts_with(expected));
+        assert!(root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("profile-"));
+        let profile = root.join("primary");
+        let file = profile.join("state.json");
+        match mission.as_str() {
+            "hold" => {
+                let state = LauncherState::load_from(profile).unwrap();
+                fs::write(root.join("holder-ready"), b"ready").unwrap();
+                wait_until(|| root.join("hold-release").exists(), "first write release");
+                state
+                    .update(|row| {
+                        row.config.max_memory_mb = 16384;
+                        Ok(())
+                    })
+                    .unwrap();
+                fs::write(root.join("holder-written"), b"written").unwrap();
+                wait_until(|| root.join("hold-stop").exists(), "holder stop");
+            }
+            "contender" => {
+                let opened =
+                    LauncherState::load_with_fallback(Ok(profile), || Ok(root.join("fallback")));
+                let report = match opened {
+                    Ok(state) => {
+                        // Old launcher takes a whole-state snapshot before holder commits.
+                        fs::write(root.join("contender-result"), b"opened").unwrap();
+                        wait_until(
+                            || root.join("contender-release").exists(),
+                            "contender release",
+                        );
+                        state
+                            .update(|row| {
+                                row.config.language = "en-US".into();
+                                Ok(())
+                            })
+                            .map(|_| "written".to_owned())
+                    }
+                    Err(error) => Ok(error.to_string()),
+                };
+                fs::write(root.join("contender-result"), report.unwrap()).unwrap();
+            }
+            "reload" => {
+                let state = LauncherState::load_from(profile).unwrap();
+                assert_eq!(state.snapshot().unwrap().config.max_memory_mb, 16384);
+                fs::write(root.join("reloaded"), b"yes").unwrap();
+            }
+            "watch" => {
+                let state = LauncherState::load_from(profile).unwrap();
+                assert_eq!(state.snapshot().unwrap().config.max_memory_mb, 4096);
+                fs::write(root.join("watch-ready"), b"ready").unwrap();
+                wait_until(|| root.join("watch-release").exists(), "test state edit");
+                let result = state.update(|row| {
+                    row.config.language = "en-US".into();
+                    Ok(())
+                });
+                let bridge_result = result
+                    .map(|_| "written".to_owned())
+                    .unwrap_or_else(|reason| crate::errors::expected(reason).code);
+                fs::write(root.join("watch-result"), bridge_result).unwrap();
+            }
+            "external-later" | "external-legacy" => {
+                let mut json: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+                json["config"]["maxMemoryMb"] = Value::from(16384);
+                if mission == "external-later" {
+                    json["writeGeneration"] =
+                        Value::from(json["writeGeneration"].as_u64().unwrap_or(0) + 1);
+                }
+                // Simulate only a cooperative test editor of the owned fixture. Never use a user profile.
+                let temp = profile.join("simulated-editor.tmp");
+                fs::write(&temp, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+                fs::rename(temp, file).unwrap();
+            }
+            _ => panic!("unknown profile test child"),
+        }
+    }
+
+    #[test]
+    fn profile_lock_prevents_a_second_process_resetting_16384_to_4096_or_creating_fallback() {
+        let root = profile_process_fixture();
+        let file = root.join("primary/state.json");
+        let mut holder = profile_child(&root, "hold");
+        wait_until(|| root.join("holder-ready").exists(), "holder startup");
+        let mut contender = profile_child(&root, "contender");
+        wait_until(
+            || root.join("contender-result").exists(),
+            "contender decision",
+        );
+        let first_decision = fs::read_to_string(root.join("contender-result")).unwrap();
+        fs::write(root.join("hold-release"), b"yes").unwrap();
+        wait_until(
+            || root.join("holder-written").exists(),
+            "holder durable update",
+        );
+        fs::write(root.join("contender-release"), b"yes").unwrap();
+        child_finished(&mut contender);
+        let disk: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        fs::write(root.join("hold-stop"), b"yes").unwrap();
+        child_finished(&mut holder);
+        assert_eq!(
+            disk["config"]["maxMemoryMb"], 16384,
+            "second process overwrote persisted settings"
+        );
+        assert!(
+            !root.join("fallback").exists(),
+            "profile lock wrongly triggered fallback"
+        );
+        assert!(
+            first_decision.contains("Profile in use"),
+            "{first_decision}"
+        );
+        let mut reloaded = profile_child(&root, "reload");
+        child_finished(&mut reloaded);
+        assert!(root.join("reloaded").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn profile_stamp_rejects_newer_revision_and_legacy_same_generation_writes() {
+        for mutation in ["external-later", "external-legacy"] {
+            let root = profile_process_fixture();
+            let mut watcher = profile_child(&root, "watch");
+            wait_until(|| root.join("watch-ready").exists(), "stale-writer startup");
+            let mut editor = profile_child(&root, mutation);
+            child_finished(&mut editor);
+            let expected = fs::read(root.join("primary/state.json")).unwrap();
+            fs::write(root.join("watch-release"), b"yes").unwrap();
+            child_finished(&mut watcher);
+            assert_eq!(
+                fs::read(root.join("primary/state.json")).unwrap(),
+                expected,
+                "{mutation}: stale launcher overwrote the other process"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("watch-result")).unwrap(),
+                "storage.stateChanged"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn corrupt_and_newer_primary_report_protected_state_and_actual_fallback() {
+        for (bytes, reason) in [
+            (b"{".as_slice(), "corrupt"),
+            (br#"{"schemaVersion":999}"#.as_slice(), "newerSchema"),
+        ] {
+            let root = profile_process_fixture();
+            let primary = root.join("primary");
+            let fallback = root.join("fallback");
+            fs::create_dir(&primary).unwrap();
+            fs::write(primary.join("state.json"), bytes).unwrap();
+            let state =
+                LauncherState::load_with_fallback(Ok(primary.clone()), || Ok(fallback.clone()))
+                    .unwrap();
+            let metadata = serde_json::to_value(state.storage_status()).unwrap();
+            assert_eq!(metadata["activeDirectory"], fallback.display().to_string());
+            assert_eq!(metadata["recovery"]["reason"], reason);
+            assert_eq!(
+                metadata["recovery"]["primaryDirectory"],
+                primary.display().to_string()
+            );
+            assert_eq!(
+                metadata["recovery"]["primaryStatePath"],
+                primary.join("state.json").display().to_string()
+            );
+            assert_eq!(metadata["recovery"]["primaryStateRetained"], true);
+            assert_eq!(fs::read(primary.join("state.json")).unwrap(), bytes);
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn default_primary_without_state_uses_its_own_directory_and_alias_is_locked() {
+        let root = profile_process_fixture();
+        let primary = root.join("primary");
+        let initial = LauncherState::load_with_fallback(Ok(primary.clone()), || {
+            unreachable!("fresh primary must not fallback")
+        })
+        .unwrap();
+        let alias = primary.join("..").join("primary");
+        let second = LauncherState::load_with_fallback(Ok(alias), || {
+            unreachable!("locked alias must not fallback")
+        });
+        assert!(matches!(second, Err(ProfileLoadError::InUse(_))));
+        assert_eq!(
+            initial.storage_status().active_directory,
+            primary.display().to_string()
+        );
+        drop(initial);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_corrupt_override_does_not_attempt_normal_fallback() {
+        let root = profile_process_fixture();
+        let primary = root.join("explicit");
+        fs::create_dir(&primary).unwrap();
+        fs::write(primary.join("state.json"), b"{").unwrap();
+        let result =
+            LauncherState::load_selected(Some(primary.clone()), Ok(root.join("normal")), || {
+                panic!("explicit profile selection touched the normal fallback")
+            });
+        assert!(matches!(result, Err(ProfileLoadError::Corrupt(_))));
+        assert_eq!(fs::read(primary.join("state.json")).unwrap(), b"{");
+        assert!(!root.join("normal").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn profile_save_preserves_additive_fields_without_resurrecting_removed_records() {
+        let root = profile_process_fixture();
+        let primary = root.join("primary");
+        fs::create_dir(&primary).unwrap();
+        let file = primary.join("state.json");
+        fs::write(
+            &file,
+            br#"{
+            "schemaVersion":1, "unrecognizedRootSetting":{"example":true},
+            "config":{"unrecognizedConfigSetting":{"kept":true}},
+            "accounts":[{"id":"fixture","unrecognizedAccountField":"do not carry removed records"}]
+        }"#,
+        )
+        .unwrap();
+        let state = LauncherState::load_from(primary).unwrap();
+        state
+            .update(|data| {
+                data.accounts.clear();
+                data.config.theme = "dark".into();
+                Ok(())
+            })
+            .unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+        assert_eq!(saved["unrecognizedRootSetting"]["example"], true);
+        assert_eq!(saved["config"]["unrecognizedConfigSetting"]["kept"], true);
+        assert_eq!(saved["config"]["theme"], "dark");
+        assert_eq!(saved["accounts"], serde_json::json!([]));
+        assert_eq!(saved["writeGeneration"], 2);
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn atomic_state_replace_preserves_existing_target_on_windows() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target/core-tests")
+            .join("target")
+            .join("core-tests")
             .join(format!("state-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&directory).unwrap();
-        let state = LauncherState {
-            data: Mutex::new(Persisted::default()),
-            data_dir: directory.clone(),
-            client: test_client(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        };
+        let state =
+            LauncherState::test_fixture(directory.clone(), Persisted::default(), test_client());
         state.save().unwrap();
         state
             .update(|data| {
@@ -513,14 +1199,15 @@ mod tests {
         });
         assert!(failed.is_err());
         assert_eq!(state.snapshot().unwrap().config.max_memory_mb, 8192);
-        fs::remove_file(directory.join("state.json")).unwrap();
-        fs::remove_dir(directory).unwrap();
+        drop(state);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn unavailable_primary_storage_falls_back_without_panicking() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target/core-tests")
+            .join("target")
+            .join("core-tests")
             .join(format!("storage-fallback-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let primary = root.join("primary-is-a-file");
@@ -529,7 +1216,7 @@ mod tests {
 
         let state =
             LauncherState::load_with_fallback(Ok(primary), || Ok(fallback.clone())).unwrap();
-        assert_eq!(state.data_dir, fallback);
+        assert_eq!(state.data_dir, fs::canonicalize(&fallback).unwrap());
         assert!(fallback.join("state.json").exists());
 
         drop(state);

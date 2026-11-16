@@ -268,8 +268,24 @@ impl DownloadControl {
             tokio::time::sleep(Duration::from_millis(80)).await;
         }
     }
+
     pub async fn throttle(&self, bytes: usize) -> Result<(), String> {
-        self.checkpoint().await?;
+        self.wait_for_bandwidth(bytes, true).await
+    }
+
+    pub(crate) async fn throttle_preview(&self, bytes: usize) -> Result<(), String> {
+        self.wait_for_bandwidth(bytes, false).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limit_for_test(&self) -> u64 {
+        self.limit_kib.load(Ordering::Relaxed)
+    }
+
+    async fn wait_for_bandwidth(&self, bytes: usize, foreground: bool) -> Result<(), String> {
+        if foreground {
+            self.checkpoint().await?;
+        }
         let limit = self.limit_kib.load(Ordering::Relaxed);
         if limit == 0 {
             return Ok(());
@@ -284,7 +300,9 @@ impl DownloadControl {
             *slot
         };
         while Instant::now() < until {
-            self.checkpoint().await?;
+            if foreground {
+                self.checkpoint().await?;
+            }
             tokio::time::sleep(
                 until
                     .saturating_duration_since(Instant::now())
@@ -422,6 +440,32 @@ mod tests {
             control.finish(&task, Some("cancelled"));
             let next = control.begin("install", "next", "Next");
             assert!(control.checkpoint().await.is_ok());
+            control.finish(&next, None);
+        });
+    }
+}
+
+#[cfg(test)]
+mod preview_bandwidth_tests {
+    use super::*;
+
+    #[test]
+    fn passive_preview_preserves_foreground_cancellation_and_reserves_the_same_quota() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let control = DownloadControl::default();
+            control.set_limit(1000);
+            let pending = control.begin("install", "fixture", "Fixture only");
+            control.cancel(Some(&pending));
+            let before = *control.next_slot.lock().unwrap();
+            control.throttle_preview(1024).await.unwrap();
+            let preview_slot = *control.next_slot.lock().unwrap();
+            assert!(preview_slot >= before + Duration::from_millis(1));
+            assert!(control.checkpoint().await.is_err());
+            assert_eq!(control.list().len(), 1);
+            control.finish(&pending, Some("cancelled"));
+            let next = control.begin("install", "another", "Fixture only");
+            control.throttle(1024).await.unwrap();
+            assert!(*control.next_slot.lock().unwrap() >= preview_slot + Duration::from_millis(1));
             control.finish(&next, None);
         });
     }

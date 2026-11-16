@@ -147,6 +147,9 @@
       "urlInvalid": "Enter a complete http:// or https:// PNG skin URL."
     },
     "auth": {
+      "sessionChanged": "This account was removed or signed in again. Select the current account and retry.",
+      "credentialCleanupPending": "The account was removed, but its saved credentials could not be cleared. The Launcher will retry when it restarts.",
+      "credentialRecoveryFailed": "The Launcher could not restore the saved credentials. Sign in again.",
       "profileUnavailable": "We couldn't load this account's appearance. Check the session and retry.",
       "deviceExpired": "The device code expired. Start Microsoft login again.",
       "invalidResponse": "The authentication service returned an incomplete response. No account was added; try again.",

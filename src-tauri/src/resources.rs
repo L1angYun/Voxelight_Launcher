@@ -1626,20 +1626,17 @@ mod tests {
             fs::create_dir_all(&directory).unwrap();
             fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
         }
-        let state = Arc::new(LauncherState {
-            data: std::sync::Mutex::new(Persisted {
+        let state = Arc::new(LauncherState::test_fixture(
+            root.clone(),
+            Persisted {
                 config: crate::models::Config {
                     game_directory: root.to_string_lossy().into_owned(),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            data_dir: root.clone(),
-            client: crate::storage::test_client(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        });
+            },
+            crate::storage::test_client(),
+        ));
         (root, state)
     }
 
@@ -1673,6 +1670,7 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].status, "cancelled");
         assert_eq!(jobs[0].kind, "resource");
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1704,6 +1702,7 @@ mod tests {
         finish_resource_task(None, &state, &task, Some(&error));
         assert_eq!(state.control.list().len(), 1);
         assert_eq!(state.control.list()[0].status, "cancelled");
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1727,6 +1726,7 @@ mod tests {
         );
         finish_resource_task(None, &state, &task, Some(&error));
         assert_eq!(state.control.list()[0].status, "failed");
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1754,6 +1754,7 @@ mod tests {
         finish_resource_task(None, &state, &task, None);
         assert_eq!(state.control.list().len(), 1);
         assert_eq!(state.control.list()[0].status, "completed");
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1790,6 +1791,7 @@ mod tests {
             .unwrap();
         assert_eq!(error.code, "resource.versionMissing");
         assert_eq!(error.params["versionId"], "not-installed");
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1817,6 +1819,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["1.21.1"]
         );
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1868,6 +1871,7 @@ mod tests {
                 true
             );
         }
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1901,6 +1905,7 @@ mod tests {
             serde_json::to_value(plan).unwrap()["manifestUnavailable"],
             true
         );
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1965,6 +1970,7 @@ mod tests {
         assert_eq!(result.status, "recovered");
         assert_eq!(fs::read(directory.join("mod.jar")).unwrap(), b"original");
         assert_eq!(fs::read(transaction.join("next/mod.jar")).unwrap(), b"new");
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -1984,6 +1990,7 @@ mod tests {
         }];
         assert!(target_running(&data, "fabric-test", None, &games));
         assert!(!target_running(&data, "1.21.1", None, &games));
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -2007,6 +2014,7 @@ mod tests {
         assert!(error.contains("必需前置没有可核验"));
         assert!(state.snapshot().unwrap().instances.is_empty());
         assert!(!root.join("instances").exists());
+        drop(state);
         cleanup_fixture(root);
     }
 
@@ -2039,20 +2047,17 @@ mod tests {
         let version = root.join("versions/1.21.1");
         fs::create_dir_all(&version).unwrap();
         fs::write(version.join("1.21.1.json"), r#"{"id":"1.21.1"}"#).unwrap();
-        let state = LauncherState {
-            data: std::sync::Mutex::new(Persisted {
+        let state = LauncherState::test_fixture(
+            root.clone(),
+            Persisted {
                 config: crate::models::Config {
                     game_directory: root.to_string_lossy().into_owned(),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
-            data_dir: root.clone(),
-            client: crate::storage::test_client(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        };
+            },
+            crate::storage::test_client(),
+        );
         let error = resource_target(&state, "1.21.1", None, ResourceKind::Mod)
             .err()
             .unwrap();
@@ -2060,6 +2065,7 @@ mod tests {
         assert_eq!(value["code"], "resource.loaderRequired");
         assert_eq!(value["params"]["versionId"], "1.21.1");
         assert!(root.starts_with(parent));
+        drop(state);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2106,14 +2112,11 @@ mod tests {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests");
         let root = parent.join(uuid::Uuid::new_v4().to_string());
         let directory = root.join("mods");
-        let state = Arc::new(LauncherState {
-            data: std::sync::Mutex::new(Persisted::default()),
-            data_dir: root.join("data"),
-            client: crate::storage::test_client(),
-            operation: tokio::sync::Mutex::new(()),
-            control: Default::default(),
-            games: Default::default(),
-        });
+        let state = Arc::new(LauncherState::test_fixture(
+            root.join("data"),
+            Persisted::default(),
+            crate::storage::test_client(),
+        ));
         let client = reqwest::Client::builder()
             .no_proxy()
             .resolve("cdn.modrinth.com", address)
@@ -2187,6 +2190,7 @@ mod tests {
         assert_eq!(job.stage, "resource-download");
         assert_eq!((job.bytes_completed, job.bytes_total), (6, 6));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        drop(state);
         cleanup_fixture(root.clone());
         (address.port(), root)
     }

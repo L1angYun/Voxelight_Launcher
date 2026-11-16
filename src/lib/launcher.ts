@@ -38,6 +38,18 @@ export interface Config {
   javaAutoDownload: boolean;
   defaultSkin: DefaultSkinId;
 }
+type AppearanceField = typeof appearanceFields[number];
+export const appearanceFields = [
+  "theme", "language", "effects", "worldScene", "worldMaterial",
+  "accentSource", "accentColor", "soundEnabled", "defaultSkin",
+] as const satisfies ReadonlyArray<keyof Config>;
+export type AppearancePatch = Partial<Pick<Config, AppearanceField>>;
+
+export function configChanges(base: Config, next: Config): Partial<Config> {
+  return Object.fromEntries((Object.keys(next) as (keyof Config)[])
+    .filter(key => !Object.is(base[key], next[key])).map(key => [key, next[key]]));
+}
+
 export interface Account {
   id: string;
   username: string;
@@ -105,6 +117,15 @@ export interface Bootstrap {
   instances: Instance[];
   installedVersions: InstalledVersion[];
   capabilities: Record<string, unknown>;
+  storage?: {
+    activeDirectory: string;
+    recovery: null | {
+      reason: "unavailable" | "corrupt" | "newerSchema";
+      primaryDirectory: string | null;
+      primaryStatePath: string | null;
+      primaryStateRetained: boolean;
+    };
+  };
 }
 export interface Progress {
   operation: string;

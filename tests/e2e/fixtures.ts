@@ -317,6 +317,10 @@ export async function installLauncherFixture(
               account.isSelected = account.id === args?.accountId;
             return null;
           }
+          if (name === "save_appearance_config") {
+            Object.assign(config, args?.patch);
+            return config;
+          }
           if (name === "save_config") {
             Object.assign(config, args?.config);
             return config;

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { command, type Account } from "../../lib/launcher";
+import { normalizeError } from "../../lib/errors";
 import type { useAccountSkin } from "../../lib/accountSkin";
 import { PlayerAvatar } from "../../components/PlayerAvatar";
 import { Button, IconButton } from "../../components/ui/Button";
@@ -41,6 +42,10 @@ export function AccountList({
       await onChanged();
       if (action === "refresh") setNotice(t("accounts:notice.sessionRefreshed", { name: account.username }));
     } catch (cause) {
+      if (action === "remove" && normalizeError(cause).code === "auth.credentialCleanupPending") {
+        // The profile is already gone; keep the cleanup warning visible after refreshing.
+        await onChanged().catch(() => {});
+      }
       setError(accountErrorText(cause, t));
     } finally {
       setBusy("");
