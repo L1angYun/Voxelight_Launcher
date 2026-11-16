@@ -14,6 +14,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
+import { resolveSmokeArtifact } from "./build-runtime.mjs";
 
 async function verifyLoader(
   loader,
@@ -213,9 +214,7 @@ const work = path.join(
 );
 const game = path.join(work, "game"),
   storage = path.join(work, "data");
-const binary =
-  process.env.SMOKE_BINARY ||
-  path.join(project, "src-tauri", "target", "debug", "voxelight-launcher.exe");
+const binary = resolveSmokeArtifact("launcher", { repositoryRoot: project });
 const baseVersion = "1.20.1";
 const port = Number(process.env.SMOKE_CDP_PORT || 9333);
 const wait = (milliseconds) =>

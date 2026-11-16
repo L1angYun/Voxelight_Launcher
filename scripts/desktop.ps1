@@ -26,6 +26,13 @@ function Get-SignTool {
     if (-not $candidate) { throw 'signtool.exe is required from the Windows SDK.' }
     return $candidate
 }
+function Invoke-CargoAction([string]$CargoAction) {
+    Push-Location -LiteralPath (Join-Path $taskRoot 'src-tauri')
+    try {
+        & cargo $CargoAction --locked
+        if ($LASTEXITCODE -ne 0) { throw "Cargo $CargoAction failed (exit $LASTEXITCODE)" }
+    } finally { Pop-Location }
+}
 function Invoke-SignArtifacts {
     if ([bool]$CertificatePath -eq [bool]$CertificateThumbprint) {
         throw 'Provide exactly one of CertificatePath or CertificateThumbprint; no certificate is selected automatically.'
@@ -81,8 +88,8 @@ try {
     switch ($Action) {
         'dev' { & npm.cmd run desktop:dev }
         'build' { & npm.cmd run desktop:build }
-        'check' { & cargo check --manifest-path src-tauri/Cargo.toml --locked }
-        'test' { & cargo test --manifest-path src-tauri/Cargo.toml --locked }
+        'check' { Invoke-CargoAction 'check' }
+        'test' { Invoke-CargoAction 'test' }
         'sign' { Invoke-SignArtifacts }
     }
     if ($LASTEXITCODE -ne 0) { throw "Launcher command failed (exit $LASTEXITCODE)" }

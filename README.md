@@ -12,7 +12,7 @@ _Screenshot from 0.5.0. The current interface differs; an updated screenshot wil
 
 Original project code and original artwork are **GPL-3.0-only**. See `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`. Third-party dependencies keep their own licenses; their notices are collected in `licenses/`.
 
-Source repository: https://github.com/L1angYun/Voxelight-Launcher
+Source repository: https://github.com/L1angYun/Voxelight_Launcher
 
 The source archive contains the Rust/React sources, original assets, build scripts, tests and lockfiles. It does not contain user accounts, tokens, save games, downloaded game clients, build outputs or proprietary UI sources. `python scripts/package-source.py --output <output.zip>` creates and verifies a source archive matching the current files.
 
@@ -41,14 +41,14 @@ The Rust HTTP client honors the existing Windows system proxy through reqwest's 
 
 ## Run
 
-Requirements: Node.js 22+, Rust stable with the MSVC target, Visual Studio C++ build tools, Windows SDK and WebView2 on Windows. Python 3 is used for original asset generation and source packaging; only `scripts/generate-installer-assets.py` additionally needs Pillow. The license collector uses the system `tar` in local-archive mode and does not run dependency install scripts.
+Requirements on Windows: Node.js 22.13.0 or later on 22.x, or Node.js 24.0.0 or later; Rust 1.90 or later with the MSVC target; Visual Studio C++ build tools, the Windows SDK and WebView2. Python 3 is used for original asset generation and source packaging; only `scripts/generate-installer-assets.py` additionally needs Pillow. The license collector uses the system `tar` in local-archive mode and does not run dependency install scripts.
 
 ```powershell
 npm ci
 npm run desktop:dev
 ```
 
-Build the Windows desktop application and NSIS installer with `powershell -File scripts/build.ps1` (wraps the Tauri build and configures the Rust PATH). Local builds collect the installer and the matching GPL source archive under `releases/<version>/`; that directory is not tracked in git. See the [0.6.0 implementation and verification report](docs/reports/frontend-completion-0.6.0.md) for measured results and manual checks still outstanding. The NSIS installer uses the standard current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
+Build the Windows desktop executable with `powershell -File scripts/build.ps1 -NoBundle`. Omit `-NoBundle` when building an NSIS installer for release. The script wraps Tauri, configures the Rust PATH, and prints output paths from the configured Cargo target directory. It does not copy artifacts to `releases/<version>/`. Create the matching source archive separately with `npm run source:package` from the same checkout used to build the binary; this command writes to the untracked `releases/<version>/` directory. See the [0.6.0 implementation and verification report](docs/reports/frontend-completion-0.6.0.md) for measured results and manual checks still outstanding. The NSIS installer uses current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights. Updates are installed manually; the installer maintenance flow is not an in-app updater.
 
 `scripts/desktop.ps1` is an optional helper when local PowerShell policy permits unsigned local scripts. Do not change that policy merely to build the app: the npm commands above invoke the same Tauri toolchain.
 
@@ -72,7 +72,9 @@ This changes only the selected `.exe` files' mandatory labels; it does not recur
 npm run build
 npm test
 npm run test:e2e
-cargo test --manifest-path src-tauri/Cargo.toml --locked
+Push-Location src-tauri
+cargo test --locked
+Pop-Location
 npm run license:check
 ```
 
@@ -80,9 +82,11 @@ The license check reads the locked npm/Cargo dependency graph and compares it wi
 
 `npm run source:package` creates and verifies the GPL source archive under `releases/<version>/`. It excludes dependencies, build outputs, user data, secrets, proprietary textures and restricted UI sources.
 
-`node scripts/smoke-install.mjs` verifies an isolated current-user NSIS installation and uninstall, including registration, license resources, executable integrity and preservation of the real launcher data directory. It uses owned test directories and never reads account contents. If the source workspace has a Low mandatory label, copy the generated setup to a normal per-user directory and set `SMOKE_INSTALLER` to that copy; the script rejects a Low-labeled setup instead of silently testing an old installation. It also checks the installed file version. Set `SMOKE_REPORT` to choose its JSON report path.
+To verify a released source ZIP, extract it into a clean directory outside any Git checkout. Run `npm run source:check` there to verify the manifest and run the public source guard, then run `npm ci` and `powershell -File scripts/build.ps1 -NoBundle` to build and link the Windows executable. The archive does not include Git metadata; `npm test` in a normal Git checkout still checks the index and history.
 
-`node scripts/smoke-native.mjs` runs isolated native IPC checks against a built Debug application. On Windows it rejects an executable with a Low mandatory label; set `SMOKE_BINARY` to the normally installed Release executable or another verified normal-location binary. Set `SMOKE_CACHE` to reuse immutable versions, libraries and assets from an isolated prior run; worlds and credentials are never copied. `SMOKE_CHECKS` optionally selects comma-separated substrings of check names for focused debugging; omit it for the full suite.
+`node scripts/smoke-install.mjs` verifies an isolated current-user NSIS installation and uninstall, including registration, license resources, executable integrity and preservation of the real launcher data directory. It uses owned test directories and never reads account contents. It looks for a matching Release setup in the configured Cargo target directory; set `SMOKE_INSTALLER` to pick an explicit file if several are present. If the source workspace has a Low mandatory label, copy the generated setup to a normal per-user directory and set `SMOKE_INSTALLER` to that copy; the script rejects a Low-labeled setup instead of silently testing an old installation. It also checks the installed file version. Set `SMOKE_REPORT` to choose its JSON report path.
+
+`node scripts/smoke-native.mjs` runs isolated native IPC checks against the Debug executable in the configured Cargo target directory. Set `SMOKE_BINARY` to choose a specific executable if several are present or to test an installed Release build. On Windows it rejects an executable with a Low mandatory label. Set `SMOKE_CACHE` to reuse immutable versions, libraries and assets from an isolated prior run; worlds and credentials are never copied. `SMOKE_CHECKS` optionally selects comma-separated substrings of check names for focused debugging; omit it for the full suite.
 
 Test state is created below `src-tauri/target/native-*`; do not point the test overrides at personal launcher or game directories.
 

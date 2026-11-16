@@ -28,11 +28,12 @@ SOURCE_DIRECTORIES = (
     "tests",
     "licenses",
     "src-tauri/src",
+    "src-tauri/tests",
     "src-tauri/capabilities",
     "src-tauri/icons",
     "src-tauri/installer",
 )
-TAURI_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "tauri.conf.json")
+TAURI_FILES = ("Cargo.toml", "Cargo.lock", "app.manifest", "build.rs", "tauri.conf.json")
 BLOCKED_PARTS = {".git", ".vs", "node_modules", "target", "dist", "releases", "_backup", "__pycache__"}
 BLOCKED_FILES = {
     "steve.png",
@@ -43,42 +44,61 @@ BLOCKED_FILES = {
     "accounts.json",
     "instances.json",
 }
-REQUIRED = {
-    "LICENSE",
-    "NOTICE",
-    "README.md",
-    "THIRD_PARTY_NOTICES.md",
-    "package.json",
-    "package-lock.json",
+# Files whose absence can break the release build, link, or its verification.
+# Directory entries above still select the rest of the application and tests.
+REQUIRED = ROOT_FILES | {f"src-tauri/{name}" for name in TAURI_FILES} | {
     "src/main.tsx",
     "src/app/App.tsx",
     "src/i18n/locales/zh-CN/settings.json",
     "src/i18n/locales/en-US/settings.json",
+    "public/fonts/Doto-Black.woff2",
     "public/fonts/MiSans-Regular.woff2",
     "public/fonts/MiSans-Semibold.woff2",
+    "licenses/fonts/Doto/OFL.txt",
     "licenses/fonts/MiSans/LICENSE.pdf",
     "src/components/WorldScene.tsx",
-    "src-tauri/Cargo.toml",
-    "src-tauri/Cargo.lock",
     "src-tauri/src/main.rs",
     "src-tauri/src/lib.rs",
-    "src-tauri/tauri.conf.json",
+    "src-tauri/tests/build_config.rs",
+    "src-tauri/capabilities/default.json",
+    "src-tauri/icons/32x32.png",
+    "src-tauri/icons/128x128.png",
+    "src-tauri/icons/icon.ico",
+    "src-tauri/installer/windows/installer.nsi",
+    "src-tauri/installer/windows/FileAssociation.nsh",
+    "src-tauri/installer/windows/VoxelightPages.nsh",
+    "src-tauri/installer/windows/utils.nsh",
+    "src-tauri/installer/windows/languages/English.nsh",
+    "src-tauri/installer/windows/languages/SimpChinese.nsh",
+    "src-tauri/installer/windows/assets/MiSans-Regular.ttf",
+    "src-tauri/installer/windows/assets/MiSans-Semibold.ttf",
+    "src-tauri/installer/windows/assets/header.bmp",
+    "src-tauri/installer/windows/assets/sidebar.bmp",
+    "src-tauri/installer/windows/assets/scene.bmp",
+    "src-tauri/installer/windows/assets/installer.ico",
+    "src-tauri/installer/windows/assets/uninstaller.ico",
     "licenses/dependency-inventory.json",
+    "scripts/build.ps1",
+    "scripts/build-runtime.mjs",
+    "scripts/check-public-secrets.mjs",
+    "scripts/repair-build-integrity.ps1",
+    "scripts/run-medium.mjs",
+    "scripts/tauri.mjs",
+    "tests/fixtures/skin64.png",
 }
 
 
-def allowed(relative: Path) -> bool:
-    parts = relative.parts
-    name = relative.name
-    lower = name.lower()
-    if any(part.lower() in BLOCKED_PARTS for part in parts):
+def allowed(path: Path) -> bool:
+    parts = tuple(part.lower() for part in path.relative_to(ROOT).parts)
+    lower = parts[-1]
+    if any(part in BLOCKED_PARTS for part in parts):
         return False
-    is_locale = relative.is_relative_to(ROOT / "src" / "i18n" / "locales")
-    if (lower in BLOCKED_FILES and not is_locale) or lower.startswith(".env") or relative.suffix.lower() in {".log", ".tmp", ".part", ".key", ".pem", ".p12", ".pfx", ".obj"}:
+    is_locale = parts[:3] == ("src", "i18n", "locales")
+    if (lower in BLOCKED_FILES and not is_locale) or lower.startswith(".env") or path.suffix.lower() in {".log", ".tmp", ".part", ".key", ".pem", ".p12", ".pfx", ".obj"}:
         return False
-    if relative.as_posix().startswith("public/assets/skins/"):
+    if parts[:3] == ("public", "assets", "skins"):
         return False
-    return relative.is_file() and not relative.is_symlink()
+    return path.is_file() and not path.is_symlink()
 
 
 def source_files():
@@ -101,17 +121,18 @@ def source_files():
     for path in (ROOT / "docs").rglob("*.md"):
         if allowed(path):
             selected.add(path.relative_to(ROOT))
+    missing = REQUIRED.difference(path.as_posix() for path in selected)
+    if missing:
+        raise RuntimeError(f"Required source files are missing: {sorted(missing)}")
     version = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"]
     for path in (ROOT / "docs" / "screenshots" / version).rglob("*.png"):
         if allowed(path):
             selected.add(path.relative_to(ROOT))
-    missing = REQUIRED.difference(path.as_posix() for path in selected)
-    if missing:
-        raise RuntimeError(f"Required source files are missing: {sorted(missing)}")
     return sorted(selected, key=lambda path: path.as_posix())
 
 
 def main():
+    files = source_files()
     config = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
     version = config["version"]
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
@@ -130,7 +151,6 @@ def main():
     if output.suffix.lower() != ".zip":
         raise RuntimeError("The source archive must be a .zip file")
     output.parent.mkdir(parents=True, exist_ok=True)
-    files = source_files()
     manifest = {
         "project": "Voxelight Launcher",
         "version": version,

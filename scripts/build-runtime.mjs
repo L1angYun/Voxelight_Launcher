@@ -166,6 +166,26 @@ export function collectBuiltArtifacts(target, args = ["build"]) {
   return artifacts;
 }
 
+export function resolveSmokeArtifact(kind, {
+  repositoryRoot = checkoutRoot,
+  environment = process.env,
+  productName,
+  version,
+} = {}) {
+  const isInstaller = kind === "installer";
+  const override = isInstaller ? "SMOKE_INSTALLER" : "SMOKE_BINARY";
+  if (environment[override]) return resolve(environment[override]);
+  const target = targetDirectory({ repositoryRoot, environment });
+  const args = isInstaller ? ["build"] : ["build", "--debug", "--no-bundle"];
+  if (environment.CARGO_BUILD_TARGET) args.push("--target", environment.CARGO_BUILD_TARGET);
+  const candidates = collectBuiltArtifacts(target, args).filter(path =>
+    isInstaller ? win32.basename(path).startsWith(`${productName}_${version}_`) && /-setup\.exe$/i.test(path) : true,
+  );
+  if (candidates.length === 1) return candidates[0];
+  const reason = candidates.length === 0 ? "No matching" : "Found multiple";
+  throw new Error(`${reason} ${isInstaller ? "Release setup files" : "Debug launcher executables"} below ${target}. Build the expected artifact or set ${override} to its exact path.`);
+}
+
 export async function runTauri(args, options = {}) {
   const invocation = tauriInvocation(args, options);
   const code = await execute(invocation.command, invocation.args, { currentDirectory: invocation.cwd, environment: invocation.env });

@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveSmokeArtifact } from "./build-runtime.mjs";
 
 const project = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -26,17 +27,9 @@ const target = path.join(
   "Temp",
   `VoxelightLauncherSmoke-${randomUUID()}`,
 );
-const installer =
-  process.env.SMOKE_INSTALLER ||
-  path.join(
-    project,
-    "src-tauri",
-    "target",
-    "release",
-    "bundle",
-    "nsis",
-    `Voxelight Launcher_${config.version}_x64-setup.exe`,
-  );
+const installer = resolveSmokeArtifact("installer", {
+  repositoryRoot: project, productName: config.productName, version: config.version,
+});
 const executable = path.join(target, "voxelight-launcher.exe");
 const report = {
   product: config.productName,

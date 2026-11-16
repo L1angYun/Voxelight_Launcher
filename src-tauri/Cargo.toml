@@ -4,10 +4,10 @@ version = "0.6.0"
 description = "Voxelight Launcher with a Rust core and React interface"
 authors = ["Voxelight Launcher contributors"]
 license = "GPL-3.0-only"
-homepage = "https://github.com/L1angYun/Voxelight-Launcher"
-repository = "https://github.com/L1angYun/Voxelight-Launcher"
+homepage = "https://github.com/L1angYun/Voxelight_Launcher"
+repository = "https://github.com/L1angYun/Voxelight_Launcher"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.90"
 
 [lib]
 name = "voxelight_launcher_lib"

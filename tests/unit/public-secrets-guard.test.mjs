@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -62,6 +63,134 @@ function rejected(result, location) {
   assert.equal(result.output.trim().split(/\r?\n/).every(line => /^[^\r\n]+:\d+:[A-Za-z_][A-Za-z0-9_.-]*$/.test(line)), true, "rejections must contain only file:line:key diagnostics");
   if (location) assert.equal(result.output.includes(location), true, "diagnostic must identify only the file, line, and key");
 }
+
+function extractedSource(t, extraFiles = {}) {
+  const root = mkdtempSync(join(tmpdir(), "voxelight-archive-guard-"));
+  assert.equal(dirname(resolve(root)), resolve(tmpdir()));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const write = (path, content) => {
+    const target = join(root, path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content);
+  };
+  const content = {
+    "package.json": '{"name":"voxelight-launcher","version":"0.6.0","license":"GPL-3.0-only"}\n',
+    "package-lock.json": '{"lockfileVersion":3}\n',
+    "src-tauri/Cargo.toml": '[package]\nname = "synthetic-source-fixture"\n',
+    "src-tauri/Cargo.lock": '# synthetic lock fixture\n',
+    "scripts/check-public-secrets.mjs": "// synthetic source fixture\n",
+    "src/demo.ts": "// synthetic, clean source\n",
+    ...extraFiles,
+  };
+  const manifest = {
+    project: "Voxelight Launcher", version: "0.6.0", license: "GPL-3.0-only",
+    files: Object.entries(content).map(([path, value]) => {
+      write(path, value);
+      return { path, bytes: Buffer.byteLength(value), sha256: createHash("sha256").update(value).digest("hex") };
+    }),
+  };
+  const writeManifest = () => write("SOURCE_MANIFEST.json", JSON.stringify(manifest));
+  writeManifest();
+  const check = (mode = "archive") => {
+    const args = mode === "archive" ? ["--archive", "--root", root] : ["--root", root];
+    const result = spawnSync(process.execPath, [script, ...args], { cwd: root, encoding: "utf8" });
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    assert.equal(uuid.test(output), false, "archive diagnostics must not disclose a fixture value");
+    return { status: result.status, output };
+  };
+  return { root, write, manifest, writeManifest, check };
+}
+
+test("the explicit archive guard verifies source without Git; checkout mode still requires Git", t => {
+  const archive = extractedSource(t);
+  const checked = archive.check();
+  assert.equal(checked.status, 0, checked.output);
+  assert.match(checked.output, /archive mode/);
+  rejected(archive.check("git"), ".git:1:git-command");
+});
+
+test("the archive guard requires a manifest", t => {
+  const archive = extractedSource(t);
+  rmSync(join(archive.root, "SOURCE_MANIFEST.json"));
+  rejected(archive.check(), "SOURCE_MANIFEST.json:1:archive-manifest");
+});
+
+test("the archive guard rejects a different package version even when its hashes match", t => {
+  const archive = extractedSource(t);
+  archive.manifest.version = "0.5.0";
+  archive.writeManifest();
+  rejected(archive.check(), "package.json:1:archive-package");
+});
+
+test("the archive guard checks every manifest file and detects same-size changes", t => {
+  const archive = extractedSource(t);
+  archive.write("src/demo.ts", "// synthetic, stale source\n");
+  assert.equal(Buffer.byteLength("// synthetic, stale source\n"), Buffer.byteLength("// synthetic, clean source\n"));
+  rejected(archive.check(), "src/demo.ts:1:archive-hash");
+  rmSync(join(archive.root, "src-tauri/Cargo.lock"));
+  rejected(archive.check(), "src-tauri/Cargo.lock:1:archive-missing");
+});
+
+test("the archive guard scans public credentials even when the source hash matches", t => {
+  const archive = extractedSource(t, { "src/demo.ts": `// synthetic fixture\nclientId: "${mixed}"\n` });
+  rejected(archive.check(), "src/demo.ts:2:clientId");
+});
+
+test("the archive guard does not accept missing manifest entries or unlisted source", t => {
+  const archive = extractedSource(t);
+  archive.write("src/fresh.ts", "// clean but not from the archive\n");
+  rejected(archive.check(), "src/fresh.ts:1:archive-unlisted");
+  archive.manifest.files = archive.manifest.files.filter(entry => entry.path !== "package-lock.json");
+  archive.writeManifest();
+  rmSync(join(archive.root, "package-lock.json"));
+  rejected(archive.check(), "package-lock.json:1:archive-required");
+});
+
+test("the archive guard rejects a local Cargo config before it can be consumed by a build", t => {
+  const archive = extractedSource(t);
+  archive.write("src-tauri/.cargo/config.toml", "# no ID required to violate the archive contract\n");
+  rejected(archive.check(), "src-tauri/.cargo:1:cargo-path");
+});
+
+test("the archive guard excludes generated dependency and build directories, without accepting them as source", t => {
+  const archive = extractedSource(t);
+  archive.write("node_modules/example/package.json", "{}\n");
+  archive.write("dist/index.html", "<main>generated</main>\n");
+  archive.write("src-tauri/gen/schemas/generated.json", "{}\n");
+  archive.write("src-tauri/target/artifact.txt", "generated\n");
+  assert.equal(archive.check().status, 0);
+  archive.manifest.files.push({ path: "dist/index.html", bytes: 23, sha256: "0".repeat(64) });
+  archive.writeManifest();
+  rejected(archive.check(), "SOURCE_MANIFEST.json:1:archive-entry");
+});
+
+test("the archive guard tolerates just the root TypeScript build info after a build", t => {
+  const archive = extractedSource(t);
+  archive.write("tsconfig.tsbuildinfo", "generated by tsc -b\n");
+  const checked = archive.check();
+  assert.equal(checked.status, 0, checked.output);
+  archive.write("src/extra.tsbuildinfo", "not the root build output\n");
+  rejected(archive.check(), "src/extra.tsbuildinfo:1:archive-unlisted");
+  archive.manifest.files.push({ path: "tsconfig.tsbuildinfo", bytes: 19, sha256: "0".repeat(64) });
+  archive.writeManifest();
+  rejected(archive.check(), "SOURCE_MANIFEST.json:1:archive-entry");
+});
+
+test("the archive guard refuses an existing Git checkout even when it contains a manifest", t => {
+  const archive = extractedSource(t);
+  archive.write(".git/HEAD", "ref: refs/heads/main\n");
+  rejected(archive.check(), ".git:1:archive-git");
+});
+
+test("the archive guard refuses file aliases without reading the synthetic target", t => {
+  const archive = extractedSource(t);
+  const path = join(archive.root, "src/demo.ts");
+  const target = join(archive.root, "dist/demo.ts");
+  archive.write("dist/demo.ts", readFileSync(path));
+  rmSync(path);
+  symlinkSync(target, path, "file");
+  rejected(archive.check(), "src/demo.ts:1:symlink-path");
+});
 
 test("public guard rejects keyed UUIDs without exposing their values", t => {
   const repo = repository(t);

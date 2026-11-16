@@ -17,7 +17,8 @@
     "test:design": "playwright test tests/e2e/design-consistency.spec.ts",
     "license:check": "node scripts/check-licenses.mjs",
     "license:update": "node scripts/check-licenses.mjs --write",
-    "source:package": "python scripts/package-source.py"
+    "source:package": "python scripts/package-source.py",
+    "source:check": "node scripts/check-public-secrets.mjs --archive"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
@@ -48,10 +49,13 @@
     "vite": "^8.3.5",
     "vitest": "^4.1.0"
   },
+  "engines": {
+    "node": "^22.13.0 || >=24.0.0"
+  },
   "license": "GPL-3.0-only",
-  "homepage": "https://github.com/L1angYun/Voxelight-Launcher",
+  "homepage": "https://github.com/L1angYun/Voxelight_Launcher",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/L1angYun/Voxelight-Launcher.git"
+    "url": "git+https://github.com/L1angYun/Voxelight_Launcher.git"
   }
 }

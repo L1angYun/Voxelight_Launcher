@@ -33,7 +33,7 @@
     "targets": ["nsis"],
     "license": "GPL-3.0-only",
     "licenseFile": "../LICENSE",
-    "homepage": "https://github.com/L1angYun/Voxelight-Launcher",
+    "homepage": "https://github.com/L1angYun/Voxelight_Launcher",
     "resources": {
       "../LICENSE": "licenses/LICENSE",
       "../NOTICE": "licenses/NOTICE",

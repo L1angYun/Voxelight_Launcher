@@ -1,10 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readlinkSync } from "node:fs";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { createReadStream, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const CONFIG_PATHS = new Set([".cargo/config.toml", "src-tauri/.cargo/config.toml"]);
+const ARCHIVE_MANIFEST = "SOURCE_MANIFEST.json";
+const ARCHIVE_REQUIRED = ["package.json", "package-lock.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "scripts/check-public-secrets.mjs"];
+// Only fixed output locations are outside the archive contract. A manifest
+// cannot turn a build directory into a source directory by listing its files.
+const ARCHIVE_OUTPUT_DIRS = ["node_modules", "dist", "src-tauri/target", "src-tauri/gen", "test-results", "playwright-report", "releases"];
+const ARCHIVE_OUTPUT_FILE = "tsconfig.tsbuildinfo";
 const DISABLED_PUSH_URLS = new Set(["DISABLED", "DISABLED-private-never-pushes"]);
 const BINARY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".zip", ".jar", ".exe", ".dll", ".pdf", ".mp4", ".webm"]);
 const UUID_SOURCE = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
@@ -285,6 +292,111 @@ function cargoPath(path) {
   return /^(?:src-tauri\/)?\.cargo(?:\/|$)/i.test(path);
 }
 
+function inspectPublicText(path, buffer) {
+  if (!textCandidate(path, buffer.length) || buffer.includes(0)) return;
+  const text = buffer.toString("utf8");
+  for (const match of clientValues(text)) {
+    if (!/^([0-9a-f])\1{31}$/i.test(match.value.replaceAll("-", ""))) {
+      diagnostic(path, lineAt(text, match.index), match.key);
+    }
+  }
+}
+
+function outputDirectory(path) {
+  return ARCHIVE_OUTPUT_DIRS.some(output => path === output || path.startsWith(`${output}/`));
+}
+
+function validArchivePath(path) {
+  return typeof path === "string" && path.split("/").every(part =>
+    part.length > 0 && !/[. ]$|[\\<>:"|?*\x00-\x1f]/.test(part)
+      && !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)
+      && part.toLowerCase() !== ".git",
+  );
+}
+
+function archiveObject(root, path, key) {
+  const target = join(root, path);
+  const stat = lstatSync(target, { throwIfNoEntry: false });
+  if (!stat) fail(path, key);
+  if (stat.isSymbolicLink()) fail(path, "symlink-path");
+  return { target, stat };
+}
+
+// Validate only the extracted tree. SHA-256 establishes consistency with its
+// manifest; it does not authenticate the origin of the archive.
+async function inspectArchive(root) {
+  const rootStat = lstatSync(root, { throwIfNoEntry: false });
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) fail(".", "archive-root");
+  for (let dir = root;; dir = dirname(dir)) {
+    if (lstatSync(join(dir, ".git"), { throwIfNoEntry: false })) fail(".git", "archive-git");
+    if (dirname(dir) === dir) break;
+  }
+  const { target: manifestFile, stat: manifestStat } = archiveObject(root, ARCHIVE_MANIFEST, "archive-manifest");
+  if (!manifestStat.isFile() || manifestStat.size > MAX_TEXT_BYTES) fail(ARCHIVE_MANIFEST, "archive-manifest");
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(manifestFile, "utf8")); }
+  catch { fail(ARCHIVE_MANIFEST, "archive-manifest"); }
+  if (manifest?.project !== "Voxelight Launcher" || manifest.license !== "GPL-3.0-only"
+    || typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+$/.test(manifest.version)
+    || !Array.isArray(manifest.files)) fail(ARCHIVE_MANIFEST, "archive-manifest");
+
+  const entries = new Map();
+  const portableNames = new Set();
+  for (const entry of manifest.files) {
+    const path = entry?.path;
+    if (!validArchivePath(path) || outputDirectory(path) || path === ARCHIVE_OUTPUT_FILE
+      || path.toLowerCase() === ARCHIVE_MANIFEST.toLowerCase()
+      || portableNames.has(path.toLowerCase()) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0
+      || typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(entry.sha256)) fail(ARCHIVE_MANIFEST, "archive-entry");
+    portableNames.add(path.toLowerCase());
+    if (cargoPath(path)) fail(path, "cargo-path");
+    entries.set(path, entry);
+  }
+  for (const required of ARCHIVE_REQUIRED) {
+    if (!entries.has(required)) diagnostic(required, 1, "archive-required");
+  }
+
+  const seen = new Set();
+  const directories = [{ target: root, path: "" }];
+  while (directories.length > 0) {
+    const directory = directories.pop();
+    for (const name of readdirSync(directory.target)) {
+      const path = directory.path ? `${directory.path}/${name}` : name;
+      if (path === ARCHIVE_MANIFEST) continue;
+      if (cargoPath(path)) { diagnostic(path, 1, "cargo-path"); continue; }
+      if (!validArchivePath(path)) { diagnostic(path, 1, "archive-path"); continue; }
+      const { target, stat } = archiveObject(root, path, "archive-missing");
+      if (outputDirectory(path) && stat.isDirectory() || path === ARCHIVE_OUTPUT_FILE && stat.isFile()) continue;
+      if (stat.isDirectory()) { directories.push({ path, target }); continue; }
+      if (!stat.isFile() || !entries.has(path)) { diagnostic(path, 1, "archive-unlisted"); continue; }
+
+      const { bytes, sha256 } = entries.get(path);
+      seen.add(path);
+      if (stat.size !== bytes) { diagnostic(path, 1, "archive-hash"); continue; }
+      const hash = createHash("sha256");
+      let buffer;
+      if (textCandidate(path, bytes)) {
+        buffer = readFileSync(target);
+        hash.update(buffer);
+      } else {
+        for await (const chunk of createReadStream(target)) hash.update(chunk);
+      }
+      if (hash.digest("hex") !== sha256) { diagnostic(path, 1, "archive-hash"); continue; }
+      if (path === "package.json") {
+        let metadata;
+        try { metadata = JSON.parse(buffer?.toString("utf8")); }
+        catch { fail(path, "archive-package"); }
+        if (metadata?.name !== "voxelight-launcher" || metadata.version !== manifest.version || metadata.license !== manifest.license)
+          fail(path, "archive-package");
+      }
+      if (buffer) inspectPublicText(path, buffer);
+    }
+  }
+  for (const path of entries.keys()) {
+    if (!seen.has(path)) diagnostic(path, 1, "archive-missing");
+  }
+}
+
 function inspect(root) {
   if (git(root, ["rev-parse", "--show-prefix"]).toString("utf8").trim()) fail(".", "repository-root");
   const privateValue = git(root, ["config", "--local", "--bool", "--get", "voxelight.private"], { missing: true });
@@ -343,22 +455,24 @@ function inspect(root) {
         if (index >= 0) diagnostic(path, lineAt(text, index), "VOXELIGHT_MS_CLIENT_ID");
       }
     }
-    if (!textCandidate(path, buffer.length) || buffer.includes(0)) continue;
-    for (const match of clientValues(text)) {
-      if (!/^([0-9a-f])\1{31}$/i.test(match.value.replaceAll("-", ""))) {
-        diagnostic(path, lineAt(text, match.index), match.key);
-      }
-    }
+    inspectPublicText(path, buffer);
   }
   return privateMode;
 }
 
-let privateMode = false;
+let mode = "public";
 try {
   const args = process.argv.slice(2);
+  const archiveMode = args[0] === "--archive";
+  if (archiveMode) args.shift();
   if (args.length !== 0 && (args.length !== 2 || args[0] !== "--root" || !args[1])) fail(".", "arguments");
   const root = args.length ? resolve(args[1]) : fileURLToPath(new URL("..", import.meta.url));
-  privateMode = inspect(root);
+  if (archiveMode) {
+    mode = "archive";
+    await inspectArchive(root);
+  } else if (inspect(root)) {
+    mode = "private";
+  }
 } catch {
   if (diagnostics.size === 0) diagnostic(".", 1, "guard-error");
 }
@@ -366,5 +480,5 @@ if (diagnostics.size > 0) {
   for (const entry of [...diagnostics].sort()) console.error(entry);
   process.exitCode = 1;
 } else {
-  console.log(`Public secrets guard passed (${privateMode ? "private" : "public"} mode).`);
+  console.log(`Public secrets guard passed (${mode} mode).`);
 }
