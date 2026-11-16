@@ -29,8 +29,8 @@ if (-not $definition) { throw 'Production artifact resolver function was not fou
 Invoke-Expression $definition.Extent.Text
 $nodeCmd = { $global:LASTEXITCODE = 0; $script:fixtureJson }
 $desktop = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/desktop.ps1'), [ref]$tokens, [ref]$parseErrors)
-$profileLoop = $desktop.Find({param($node) $node -is [Management.Automation.Language.ForEachStatementAst] -and $node.Variable.VariablePath.UserPath -eq 'profile'}, $true)
-if (-not $profileLoop) { throw 'Production signing artifact loop was not found.' }
+$artifactAssignment = $desktop.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$artifacts'}, $true)
+if (-not $artifactAssignment) { throw 'Production signing receipt paths were not found.' }
 $installer = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts/verify-installer-ui.ps1'), [ref]$tokens, [ref]$parseErrors)
 $candidateAssignment = $installer.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$installerCandidates'}, $true)
 if (-not $candidateAssignment) { throw 'Production installer candidate assignment was not found.' }
@@ -46,9 +46,9 @@ foreach ($case in $cases) {
   try { $observed = @(Get-ArtifactDirectories) } catch { $failure = $_.Exception.Message }
   $records += @{consumer='build'; case=$case.name; count=$observed.Count; values=$observed; error=$failure}
   $artifacts = @()
-  $script:fixturePathExists = $false
+  $receiptJson = if ($case.name -eq 'empty') { '[]' } else { ConvertTo-Json -InputObject @($profiles | ForEach-Object { Join-Path $_ 'voxelight-launcher.exe' }) -Compress }
   $failure = $null
-  try { . ([scriptblock]::Create($profileLoop.Extent.Text)) } catch { $failure = $_.Exception.Message }
+  try { . ([scriptblock]::Create($artifactAssignment.Extent.Text)) } catch { $failure = $_.Exception.Message }
   $records += @{consumer='sign'; case=$case.name; count=$artifacts.Count; values=$artifacts; error=$failure}
   $installerCandidates = @()
   $script:fixturePathExists = $true

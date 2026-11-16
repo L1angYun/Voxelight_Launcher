@@ -81,9 +81,7 @@
     "cape": "Cape",
     "noCape": "Hide cape",
     "noCapes": "No capes are available for this account.",
-    "authlibReadonly": "Appearance is read-only here. Manage this player's skin on its Authlib service.",
-    "uploadPicker": "Choose a PNG skin to upload to your Microsoft account",
-    "pngFilter": "PNG skin"
+    "authlibReadonly": "Appearance is read-only here. Manage this player's skin on its Authlib service."
   },
   "preview": {
     "source": "Preview source",

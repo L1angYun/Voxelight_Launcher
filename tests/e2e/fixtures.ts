@@ -284,6 +284,24 @@ export async function installLauncherFixture(
             listeners.set(String(args?.event), Number(args?.handler));
             return nextCallback;
           }
+          if (name === "choose_launcher_path") {
+            const files: Record<string, string> = {
+              gameDirectory: "C:\\SyntheticFixture\\game", java: "C:\\SyntheticFixture\\java.exe",
+              instanceIcon: "C:\\SyntheticFixture\\icon.png", skin: "C:\\SyntheticFixture\\skin.png",
+              background: "C:\\SyntheticFixture\\background.png", presetRead: "C:\\SyntheticFixture\\preset.json",
+              presetWrite: "C:\\SyntheticFixture\\preset.json", localResources: "C:\\SyntheticFixture\\example.jar",
+              worldRead: "C:\\SyntheticFixture\\fixture-world.zip", worldWrite: "C:\\SyntheticFixture\\fixture-world.zip",
+              packRead: "C:\\SyntheticFixture\\fixture-pack.zip", packWrite: "C:\\SyntheticFixture\\fixture-pack.mrpack",
+              instanceArchive: "C:\\SyntheticFixture\\backup.zip", diagnostics: "C:\\SyntheticFixture\\diagnostic.txt",
+            };
+            const path = files[String(args?.purpose)];
+            if (!path) throw new Error("Fixture received an unknown native path purpose");
+            return [path];
+          }
+          if (name === "plan_modrinth_export") return {
+            downloadReferences: ["mods/synthetic.jar"], bundledFiles: ["modrinth.index.json"],
+            excludedFiles: [{ path: "config/example.toml", reason: "notSelected" }], fingerprint: "synthetic-share-fingerprint",
+          };
           if (name === "bootstrap")
             return {
               config: { ...config },
@@ -494,7 +512,11 @@ export async function installLauncherFixture(
             finally { cancelLaunches.delete(taskId); }
             task.status = "completed"; task.stage = "complete"; task.completed = task.total;
             publishTasks();
-            return { pid: 12345 };
+            return { gameId: `fixture-game-${taskId}`, pid: 12345 };
+          }
+          if (name === "stop_game") {
+            if (!String(args?.gameId).startsWith("fixture-game-")) throw { code: "game.notRunning" };
+            return { status: "stopped" };
           }
           if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
           if (name.startsWith("list_") || name === "read_managed_server_logs")

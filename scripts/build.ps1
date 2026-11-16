@@ -21,7 +21,7 @@
     Executable only (`tauri build --no-bundle`). Skips the NSIS installer.
 
 .PARAMETER CloseRunning
-    Stop a running voxelight-launcher instead of aborting. It first asks the
+    Stop only a running executable at -CloseRunningPath instead of aborting. It first asks the
     window to close (WM_CLOSE); this app hides to the tray instead of exiting,
     so it is then terminated. Anything unsaved is lost, and a Minecraft instance
     the launcher started keeps running on its own.
@@ -30,13 +30,17 @@
     Delete dist\ and the previous bundles first. Slower; use when the frontend
     output looks stale.
 
+.PARAMETER PrepareSigning
+    Use a new Cargo output directory and record the exact unsigned outputs for
+    the later desktop.ps1 -Action sign command. No signing is performed here.
+
 .EXAMPLE
     .\scripts\build.ps1
 
     Full build: frontend + executable + NSIS installer.
 
 .EXAMPLE
-    .\scripts\build.ps1 -NoBundle -CloseRunning
+    .\scripts\build.ps1 -NoBundle -CloseRunning -CloseRunningPath '<exact path shown by the preflight>'
 
     Rebuild just the executable, closing the running launcher first.
 
@@ -47,6 +51,8 @@
 param(
     [switch]$NoBundle,
     [switch]$CloseRunning,
+    [string]$CloseRunningPath,
+    [switch]$PrepareSigning,
     [switch]$Clean
 )
 
@@ -65,6 +71,25 @@ Set-Location -LiteralPath $root
 $nodeCmd = (Get-Command node.exe -ErrorAction Stop).Source
 $targetDir = & $nodeCmd (Join-Path $root 'scripts\build-runtime.mjs') --print-target-dir
 if ($LASTEXITCODE -ne 0 -or -not $targetDir) { throw 'Could not resolve the Windows build output directory.' }
+$previousTarget = $env:CARGO_TARGET_DIR
+if ($PrepareSigning) {
+    $signingRoot = Join-Path $targetDir 'signing-builds'
+    foreach ($directory in @($targetDir, $signingRoot)) {
+        if (-not (Test-Path -LiteralPath $directory)) {
+            New-Item -ItemType Directory -Path $directory | Out-Null
+        }
+        $item = Get-Item -LiteralPath $directory
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing to prepare signing under a redirected output directory: $directory"
+        }
+    }
+    # New-Item without -Force also rejects a collision. Keep the child
+    # short for MSVC-generated object and debug-record paths.
+    $targetDir = Join-Path $signingRoot ([Guid]::NewGuid().ToString('N').Substring(0, 16))
+    New-Item -ItemType Directory -Path $targetDir | Out-Null
+    $env:CARGO_TARGET_DIR = $targetDir
+}
+try {
 function Get-ArtifactDirectories {
     $json = & $nodeCmd (Join-Path $root 'scripts\build-runtime.mjs') --print-artifact-dirs
     if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Cargo artifact profile directories.' }
@@ -162,35 +187,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules\@tauri-apps\cli'
 # --------------------------------------------------------------------------
 # The build cannot replace the exe while it is running
 # --------------------------------------------------------------------------
-$running = @(Get-Process -Name 'voxelight-launcher' -ErrorAction SilentlyContinue)
-if ($running.Count -gt 0) {
-    $list = ($running | ForEach-Object { "$($_.ProcessName) (pid $($_.Id))" }) -join ', '
-    if (-not $CloseRunning) {
-        Write-Fail "a launcher is running and locks an executable below $targetDir"
-        Write-Host "  running: $list" -ForegroundColor Yellow
-        Write-Host '  Close it, or re-run with -CloseRunning to close it for you.' -ForegroundColor Yellow
-        exit 1
-    }
-    Write-Step "Closing $list"
-    foreach ($proc in $running) {
-        $null = $proc.CloseMainWindow()
-        if ($proc.WaitForExit(15000)) {
-            Write-Detail "pid $($proc.Id) exited"
-            continue
-        }
-        # The launcher intercepts CloseRequested (hides to the tray instead of
-        # exiting), so WM_CLOSE alone never ends the process. -CloseRunning was
-        # explicit consent to stop it, so fall back to terminating it.
-        Write-Detail "pid $($proc.Id) ignored WM_CLOSE (hides to tray); terminating"
-        try { $proc.Kill() } catch { }
-        if (-not $proc.WaitForExit(15000)) {
-            Write-Fail "pid $($proc.Id) could not be terminated"
-            Write-Host '  Close it from Task Manager, then re-run.' -ForegroundColor Yellow
-            exit 1
-        }
-        Write-Detail "pid $($proc.Id) terminated"
-    }
-}
+. (Join-Path $PSScriptRoot 'build-process-safety.ps1')
+Stop-SelectedBuildLauncher -ExePaths $exePaths -CloseRunning:$CloseRunning -CloseRunningPath $CloseRunningPath
 
 foreach ($exePath in $exePaths) {
     if (Test-FileLocked $exePath) {
@@ -292,7 +290,11 @@ foreach ($directory in $artifactDirectories) {
     }
 }
 if ($artifacts.Count -eq 0) { throw 'No ordinary launcher build artifacts were found.' }
-Write-Detail 'artifacts: repaired existing/cached candidates; the Cargo build log identifies what was rebuilt'
+if ($PrepareSigning) {
+    Write-Detail 'artifacts: fresh outputs in this signing build directory'
+} else {
+    Write-Detail 'artifacts: repaired existing/cached candidates; the Cargo build log identifies what was rebuilt'
+}
 
 foreach ($item in $artifacts) {
     $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
@@ -306,7 +308,17 @@ if ($NoBundle) {
 } elseif (@($artifacts | Where-Object Name -Like '*-setup.exe').Count -eq 0) {
     Write-Host '  (no installer produced - check the log for the bundling step)' -ForegroundColor Yellow
 }
+if ($PrepareSigning) {
+    $receiptArguments = @((Join-Path $root 'scripts\signing-receipt.mjs'), 'create', $targetDir)
+    if ($NoBundle) { $receiptArguments += '--no-bundle' }
+    $receipt = & $nodeCmd @receiptArguments
+    if ($LASTEXITCODE -ne 0 -or -not $receipt) { throw 'Could not record the exact signing build outputs.' }
+    Write-Host "  signing receipt: $receipt"
+}
 
 Write-Host ''
 Write-Host "  log: $logPath" -ForegroundColor DarkGray
 exit 0
+} finally {
+    if ($PrepareSigning) { $env:CARGO_TARGET_DIR = $previousTarget }
+}

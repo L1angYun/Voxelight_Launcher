@@ -41,7 +41,7 @@ function mockAccountCommands(page: Page) {
         profiles: [{ id: "profile-one", name: "First" }, { id: "profile-two", name: "Second" }],
         account: null,
       });
-      if (name === "plugin:dialog|open") return record("E:\\SyntheticFixture\\skin.png");
+      if (name === "choose_launcher_path" && args?.purpose === "skin") return record(["E:\\SyntheticFixture\\skin.png"]);
       if (["upload_account_skin", "reset_account_skin", "select_account_cape"].includes(name)) {
         const profile = await original("get_player_profile", { accountId: "fixture-classic" });
         return record(profile);
@@ -114,6 +114,7 @@ test("online skin, reset and cape changes happen only after explicit actions", a
   await selectValue(page, "正版披风", "");
   await expect(page.getByText("披风已隐藏。", { exact: true })).toBeVisible();
   calls = await internals(page);
+  expect(calls.some((call) => call.name === "choose_launcher_path" && call.args?.purpose === "skin")).toBe(true);
   expect(calls.some((call) => call.name === "upload_account_skin" && call.args?.path === "E:\\SyntheticFixture\\skin.png" && call.args?.model === "slim")).toBe(true);
   expect(calls.some((call) => call.name === "reset_account_skin" && call.args?.accountId === "fixture-classic")).toBe(true);
   expect(calls.some((call) => call.name === "select_account_cape" && call.args?.capeId === null)).toBe(true);

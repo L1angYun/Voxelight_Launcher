@@ -194,6 +194,10 @@ beforeEach(() => {
   mocks.openUrl.mockReset();
   commandMock.mockReset();
   commandMock.mockImplementation(async (name, args) => {
+    if (name === "choose_launcher_path") {
+      const picked = await mocks.open();
+      return typeof picked === "string" ? [picked] : picked;
+    }
     if (name === "begin_microsoft_login") return device;
     if (name === "login_authlib") return {
       status: "selectProfile",

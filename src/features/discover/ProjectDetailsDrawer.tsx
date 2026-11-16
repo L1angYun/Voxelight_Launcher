@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { ArrowDownToLine, Download } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { ExternalLink } from "../../components/ui/ExternalLink";
 import type { ResourceProject } from "../../lib/launcher";
 import type { ResourceProjectDetails, ResourceSource } from "./types";
 import { Button } from "../../components/ui/Button";
@@ -33,7 +33,6 @@ export function ProjectDetailsDrawer({
   targetName: string;
 }) {
   const { t, i18n } = useTranslation();
-  const [externalError, setExternalError] = useState({ key: "", message: "" });
   const snapshot = useRef<{ project: ResourceProject; details?: ResourceProjectDetails; loading: boolean; error: string; source: ResourceSource; targetName: string } | undefined>(undefined);
   const current = project ? { project, details, loading, error, source, targetName } : undefined;
   if (current) snapshot.current = current;
@@ -51,12 +50,11 @@ export function ProjectDetailsDrawer({
       title={shown.title}
       closeLabel={t("common:actions.close")}
       className="vx-project-details"
-      footer={<><Button variant="ghost" onClick={() => { setExternalError({ key: projectKey, message: "" }); void openUrl(external).catch((cause) => setExternalError({ key: projectKey, message: errorText(cause, t) })); }}>{t("discover:external")}</Button><Button variant="primary" icon={<Download size={15} />} aria-label={`${t("discover:install")} · ${view.targetName}`} onClick={onInstall}>{t("discover:install")}</Button></>}
+      footer={<><ExternalLink url={external} variant="ghost">{t("discover:external")}</ExternalLink><Button variant="primary" icon={<Download size={15} />} aria-label={`${t("discover:install")} · ${view.targetName}`} onClick={onInstall}>{t("discover:install")}</Button></>}
     >
       <div className="vx-project-details__target"><ArrowDownToLine size={16} aria-hidden="true" /><span>{t("discover:target")}</span><strong>{view.targetName}</strong></div>
       <LoadingStatus active={view.loading}>{t("common:status.loading")}</LoadingStatus>
       {view.error ? <p role="alert">{view.error}</p> : null}
-      {externalError.key === projectKey && externalError.message ? <p role="alert">{externalError.message}</p> : null}
       <p className="vx-project-details__description">{shown.description || t("discover:noDescription")}</p>
       <p className="vx-project-details__meta">{shown.author || t("discover:authorUnknown")} · {formatNumber(shown.downloads, i18n.language, { notation: "compact" })}</p>
       {view.details ? (

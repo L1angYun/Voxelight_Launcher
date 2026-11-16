@@ -368,6 +368,55 @@ describe("library and instance details", () => {
     }
   });
 
+  it("shows the exact shared export inventory before opening the picker and excludes configs by default", async () => {
+    const options = { includeConfigs: false, includeResourcePacks: false, includeShaderPacks: false, includeSaves: false, includeOwnedAssets: false };
+    const outputPath = "C:\\SyntheticFixture\\sharing\\pack-preview.mrpack";
+    commandMock.mockImplementation(async name => {
+      if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
+      if (name === "plan_modrinth_export") return {
+        downloadReferences: ["mods/verified-fixture.jar"],
+        bundledFiles: ["modrinth.index.json"],
+        excludedFiles: [{ path: "config/not-for-sharing.toml", reason: "notSelected" }],
+        fingerprint: "named-preview-fixture",
+      };
+      if (name === "choose_launcher_path") return [outputPath];
+      if (name === "export_modrinth_modpack") return { path: outputPath, warnings: [] };
+      return null;
+    });
+    await render(createElement(InstanceOverview, { instance, onChanged: vi.fn(async () => {}) }));
+    const control = (scope: ParentNode, text: string) => [...scope.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === text)!;
+    const preview = control(container, "导出 Modrinth 整合包");
+    const configs = [...container.querySelectorAll<HTMLLabelElement>("label")].find(label => label.textContent?.includes("配置与脚本"))!;
+    const configChoice = configs.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(configChoice.checked).toBe(false);
+    await act(async () => { preview.focus(); preview.click(); });
+    expect(commandMock).toHaveBeenCalledWith("plan_modrinth_export", { instanceId: instance.id, options });
+    expect(commandMock.mock.calls.some(([name]) => name === "choose_launcher_path" || name === "export_modrinth_modpack")).toBe(false);
+    const visible = container.querySelector<HTMLDialogElement>("dialog[open]")!;
+    expect(visible.querySelector("h2")?.textContent).toBe("分享前检查文件");
+    expect(visible.textContent).toContain("mods/verified-fixture.jar");
+    expect(visible.textContent).toContain("modrinth.index.json");
+    expect(visible.textContent).toContain("config/not-for-sharing.toml");
+    expect(visible.textContent).toContain("未选择此类文件");
+    expect(document.activeElement).toBe(control(visible, "取消"));
+    await act(async () => visible.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector("dialog[open]")).toBeNull();
+    expect(document.activeElement).toBe(preview);
+    expect(commandMock.mock.calls.some(([name]) => name === "choose_launcher_path" || name === "export_modrinth_modpack")).toBe(false);
+    await act(async () => preview.click());
+    const confirmed = container.querySelector<HTMLDialogElement>("dialog[open]")!;
+    await act(async () => control(confirmed, "确认并选择保存位置").click());
+    expect(commandMock).toHaveBeenCalledWith("choose_launcher_path", { purpose: "packWrite", suggestedName: instance.name + ".mrpack" });
+    expect(commandMock).toHaveBeenCalledWith("export_modrinth_modpack", {
+      instanceId: instance.id, outputPath, name: instance.name, options, confirmedFingerprint: "named-preview-fixture",
+    });
+    const planned = commandMock.mock.calls.findIndex(([name]) => name === "plan_modrinth_export");
+    const chosen = commandMock.mock.calls.findIndex(([name]) => name === "choose_launcher_path");
+    const exported = commandMock.mock.calls.findIndex(([name]) => name === "export_modrinth_modpack");
+    expect(planned).toBeLessThan(chosen);
+    expect(chosen).toBeLessThan(exported);
+  });
+
   const pack = (id: string): ResourceProject => ({ project_id: id, slug: id, title: `Pack ${id}`, description: "", icon_url: null, downloads: 0, author: "Fixture", project_type: "modpack", versions: ["1.21.1"] });
   const packVersion = (id: string): ModpackVersion => ({ id, name: id, versionNumber: id, gameVersions: ["1.21.1"], loaders: ["fabric"], datePublished: "2026-01-01" });
   const packChoice = () => container.querySelector<HTMLButtonElement>('[role="combobox"][id$="-create-pack-version"]')!;

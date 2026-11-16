@@ -11,6 +11,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$project = Split-Path -Parent $PSScriptRoot
+$config = Get-Content -Raw (Join-Path $project "src-tauri/tauri.conf.json") | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'installer-safety.ps1')
+Assert-CleanInstallerAccount $config.productName
+
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Drawing
@@ -25,11 +30,9 @@ public static class VoxelightNativeMethods {
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 }
 '@
-$project = Split-Path -Parent $PSScriptRoot
 $targetDir = & node.exe (Join-Path $project 'scripts\build-runtime.mjs') --print-target-dir
 if ($LASTEXITCODE -ne 0 -or -not $targetDir) { throw 'Could not resolve the Windows build output directory.' }
 if (-not $Installer) {
-    $config = Get-Content -Raw (Join-Path $project "src-tauri/tauri.conf.json") | ConvertFrom-Json
     $profileJson = & node.exe (Join-Path $project 'scripts\build-runtime.mjs') --print-artifact-dirs
     if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Cargo artifact profile directories.' }
     $installerCandidates = @(@($profileJson | ConvertFrom-Json | ForEach-Object { $_ }) | ForEach-Object {

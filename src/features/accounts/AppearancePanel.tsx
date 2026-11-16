@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { Image, RotateCcw, Upload, UserRound } from "lucide-react";
 import { command, type Account, type Config } from "../../lib/launcher";
 import type { useAccountSkin } from "../../lib/accountSkin";
@@ -138,12 +138,7 @@ export function AppearancePanel({
     setError("");
     setNotice("");
     try {
-      const path = await open({
-        multiple: false,
-        directory: false,
-        title: t("accounts:appearance.uploadPicker"),
-        filters: [{ name: t("accounts:appearance.pngFilter"), extensions: ["png"] }],
-      });
+      const path = await pickLauncherPath("skin");
       if (generation.current !== current || typeof path !== "string") return;
       await change("upload_account_skin", { path, model: uploadModel }, "skinUpdated");
     } catch (cause) {

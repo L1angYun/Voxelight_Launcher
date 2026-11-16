@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { ExternalLink } from "../../components/ui/ExternalLink";
 import { command, desktop, type Config } from "../../lib/launcher";
 import { LauncherError } from "../../lib/errors";
 import {
@@ -226,15 +226,6 @@ export function LoginDialog({
     }
   }
 
-  async function openVerification() {
-    if (!device) return;
-    try {
-      if (desktop) await openUrl(device.verificationUri);
-      else window.open(device.verificationUri, "_blank", "noopener,noreferrer");
-    } catch (cause) {
-      report(cause);
-    }
-  }
 
   async function addOffline() {
     if (!/^[A-Za-z0-9_]{3,16}$/.test(offlineName.trim())) {
@@ -351,18 +342,8 @@ export function LoginDialog({
             <div className="vx-account-device">
               <p>{t("accounts:microsoft.deviceInstruction")}</p>
               <strong className="vx-account-device__code">{device.userCode}</strong>
-              <Button variant="primary" onClick={() => void openVerification()}>{t("accounts:microsoft.openVerification")}</Button>
-              <a
-                href={device.verificationUri}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(event) => {
-                  event.preventDefault();
-                  void openVerification();
-                }}
-              >
-                {device.verificationUri}
-              </a>
+              <ExternalLink url={device.verificationUri} desktop={desktop} variant="primary">{t("accounts:microsoft.openVerification")}</ExternalLink>
+              <ExternalLink url={device.verificationUri} desktop={desktop}>{device.verificationUri}</ExternalLink>
               <p role="status">{t("accounts:microsoft.waiting", {
                 minutes: Math.floor(remaining / 60),
                 seconds: String(remaining % 60).padStart(2, "0"),

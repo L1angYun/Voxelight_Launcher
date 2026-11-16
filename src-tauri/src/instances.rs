@@ -1,4 +1,5 @@
 //! Reversible instance metadata changes, cloning, personal backups and restoration.
+use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     errors::{AppError, AppResult},
     models::{Instance, Persisted},
@@ -411,6 +412,8 @@ fn replace_metadata(value: &mut Instance, changes: &[(String, Value)]) -> Result
 
 #[tauri::command]
 pub async fn update_instance(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     instance_id: String,
     name: Option<String>,
@@ -423,9 +426,23 @@ pub async fn update_instance(
     screen_width: Option<u32>,
     screen_height: Option<u32>,
     reset_runtime: Option<bool>,
-) -> Result<Instance, String> {
+) -> crate::errors::AppResult<Instance> {
+    let previous = instance(&state.snapshot()?, &instance_id)?;
+    let java_path = if let Some(path) = java_path.filter(|path| Some(path.as_str()) != previous.java_path.as_deref()) {
+        if path.trim().is_empty() { Some(path) }
+        else { Some(grants.choose_or_confirm(PathUse::Java, path.trim(), &window, true).await?
+            .to_string_lossy().into_owned()) }
+    } else { None };
+    let icon_path = if let Some(path) = icon_path.filter(|path| Some(path.as_str()) != previous.icon_path.as_deref()) {
+        if path.trim().is_empty() { Some(path) }
+        else { Some(grants.consume(PathUse::InstanceIcon, &path, &window)?
+            .to_string_lossy().into_owned()) }
+    } else { None };
     let _operation = state.operation.lock().await;
-    instance(&state.snapshot()?, &instance_id)?;
+    let current = instance(&state.snapshot()?, &instance_id)?;
+    if current.java_path != previous.java_path || current.icon_path != previous.icon_path {
+        return Err(crate::errors::STORAGE_STATE_CHANGED.into());
+    }
     let mut changes = Vec::new();
     if reset_runtime.unwrap_or(false) {
         for field in [
@@ -529,7 +546,7 @@ pub async fn update_instance(
             .ok_or("实例不存在")?;
         replace_metadata(value, &changes)?;
         Ok(value.clone())
-    })
+    }).map_err(crate::errors::expected)
 }
 
 #[tauri::command]
@@ -552,9 +569,8 @@ pub async fn clone_instance(
 }
 
 fn clone_inner(state: &LauncherState, instance_id: &str, name: &str) -> Result<Instance, String> {
-    state.games.require_instance_stopped(instance_id)?;
-    let old = instance(&state.snapshot()?, &instance_id)?;
-    let source = checked_absolute(Path::new(&old.game_directory))?;
+    let old = instance(&state.snapshot()?, instance_id)?;
+    let source = state.games.require_directory_stopped(Path::new(&old.game_directory), Some(instance_id), false)?;
     let root = instance_root(&state)?;
     let token = uuid::Uuid::new_v4().to_string();
     let staging = safe_join(&root, &format!(".clone-{token}"))?;
@@ -616,6 +632,11 @@ fn backup_file_options(size: u64) -> SimpleFileOptions {
         .unix_permissions(0o644)
 }
 
+/// No replacement even if a file appeared after an earlier path check.
+pub(crate) fn publish_archive_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    rename_owned_directory(source, destination)
+}
+
 fn write_archive_controlled(
     source: &Path,
     output: &Path,
@@ -668,7 +689,7 @@ fn write_archive_controlled(
         if output.exists() {
             return Err("导出期间出现同名文件，已保留该文件".into());
         }
-        fs::rename(&temp, &output).map_err(|e| e.to_string())
+        publish_archive_file(&temp, &output).map_err(|e| e.to_string())
     })();
     if result.is_err() {
         let _ = fs::remove_file(temp);
@@ -705,8 +726,7 @@ pub(crate) fn backup_inner(
     state: &LauncherState,
     value: &Instance,
 ) -> Result<InstanceBackup, String> {
-    state.games.require_instance_stopped(&value.id)?;
-    let source = checked_absolute(Path::new(&value.game_directory))?;
+    let source = state.games.require_directory_stopped(Path::new(&value.game_directory), Some(&value.id), false)?;
     let files = collect_files_controlled(&source, Some(state))?;
     validate_id(&value.id)?;
     let root = checked_absolute(&state.data_dir.join("instance-backups"))?;
@@ -1414,10 +1434,13 @@ fn restore_inner(
 
 #[tauri::command]
 pub async fn export_instance_zip(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     instance_id: String,
     output_path: String,
-) -> Result<String, String> {
+) -> crate::errors::AppResult<String> {
+    let output_path = grants.consume(PathUse::InstanceArchive, &output_path, &window)?.to_string_lossy().into_owned();
     let _operation = state.operation.lock().await;
     let label = instance(&state.snapshot()?, &instance_id)?.name;
     let task = state
@@ -1431,7 +1454,7 @@ pub async fn export_instance_zip(
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
-    result
+    result.map_err(crate::errors::expected)
 }
 
 fn export_zip_inner(
@@ -1439,8 +1462,8 @@ fn export_zip_inner(
     instance_id: &str,
     output_path: &str,
 ) -> Result<String, String> {
-    state.games.require_instance_stopped(instance_id)?;
-    let value = instance(&state.snapshot()?, &instance_id)?;
+    let value = instance(&state.snapshot()?, instance_id)?;
+    let source = state.games.require_directory_stopped(Path::new(&value.game_directory), Some(instance_id), false)?;
     let output = checked_absolute(Path::new(&output_path))?;
     if output
         .extension()
@@ -1449,7 +1472,6 @@ fn export_zip_inner(
     {
         return Err("个人备份导出路径必须以 .zip 结尾".into());
     }
-    let source = checked_absolute(Path::new(&value.game_directory))?;
     if output.starts_with(&source) {
         return Err("备份文件不能写入正在备份的实例目录".into());
     }
@@ -1499,6 +1521,20 @@ mod tests {
                 && root.file_name().unwrap().to_string_lossy().len() == 36
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn c5_final_publisher_keeps_destination_created_after_preflight() {
+        let fixture = StagingDirectory::create(Path::new(env!("CARGO_MANIFEST_DIR")).join("target/core-tests").join(Uuid::new_v4().to_string())).unwrap();
+        let source = fixture.path().join("owned.part");
+        let destination = fixture.path().join("saved.zip");
+        fs::write(&source, b"new temporary bytes").unwrap();
+        assert!(!destination.exists());
+        fs::write(&destination, b"user-owned bytes").unwrap();
+        let result = publish_archive_file(&source, &destination);
+        assert!(result.is_err(), "the final move itself must refuse replacement");
+        assert_eq!(fs::read(&destination).unwrap(), b"user-owned bytes");
+        assert_eq!(fs::read(&source).unwrap(), b"new temporary bytes");
     }
 
     #[test]

@@ -222,6 +222,7 @@ pub struct InstallResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchResult {
+    pub game_id: String,
     pub pid: u32,
     pub version_id: String,
     pub game_directory: String,

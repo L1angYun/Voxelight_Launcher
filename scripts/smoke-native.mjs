@@ -17,6 +17,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { resolveSmokeArtifact } from "./build-runtime.mjs";
 
 const ownedDownloads = new Set();
+const ownedGames = new Map();
 
 async function listTasks() {
   return (await invoke("list_download_tasks")).tasks;
@@ -32,7 +33,20 @@ async function launchGame(args) {
   const { versionId, instanceId } = args;
   const taskId = await invoke("reserve_launch_task", { versionId, instanceId });
   ownedDownloads.add(taskId);
-  return invoke("launch_game", { ...args, taskId });
+  const launched = await invoke("launch_game", { ...args, taskId });
+  ownedGames.set(launched.gameId, launched);
+  return launched;
+}
+
+async function stopOwnedGame(game) {
+  if (!ownedGames.has(game.gameId)) {
+    throw new Error("Smoke will only stop a game it launched in its isolated directory");
+  }
+  const result = await invoke("stop_game", { gameId: game.gameId, force: false });
+  if (result.status !== "stopped") {
+    throw new Error("The test game did not close normally. Save and exit it in Minecraft; an unattended smoke does not approve force quit.");
+  }
+  ownedGames.delete(game.gameId);
 }
 
 async function verifyLoader(
@@ -156,7 +170,7 @@ async function verifyLoader(
     runningInstanceGuards: 6,
   };
   report.loaders.push(result);
-  await invoke("stop_game", { pid: gamePid });
+  await stopOwnedGame(launched);
   gamePid = undefined;
   await eventually(
     async () =>
@@ -174,7 +188,7 @@ async function verifyLoader(
   });
   gamePid = restarted.pid;
   assert.notEqual(restarted.pid, launched.pid);
-  await invoke("stop_game", { pid: restarted.pid });
+  await stopOwnedGame(restarted);
   gamePid = undefined;
   await eventually(
     async () =>
@@ -1101,24 +1115,25 @@ try {
         name: "Voxelight concurrent B",
         versionId: baseVersion,
       });
-      const pids = [];
+      const launchedGames = [];
       try {
-        pids.push(
+        launchedGames.push(
           (
             await launchGame({
               versionId: baseVersion,
               instanceId: first.id,
             })
-          ).pid,
+          ),
         );
-        pids.push(
+        launchedGames.push(
           (
             await launchGame({
               versionId: baseVersion,
               instanceId: second.id,
             })
-          ).pid,
+          ),
         );
+        const pids = launchedGames.map(game => game.pid);
         assert.equal(new Set(pids).size, 2);
         assert.notEqual(first.gameDirectory, second.gameDirectory);
         const games = await invoke("list_running_games");
@@ -1138,8 +1153,7 @@ try {
           independentDirectories: true,
         };
       } finally {
-        for (const pid of pids)
-          await invoke("stop_game", { pid }).catch(() => {});
+        for (const game of launchedGames) await stopOwnedGame(game);
         await eventually(async () =>
           (await invoke("list_running_games")).every(
             (game) =>
@@ -1436,7 +1450,7 @@ try {
       });
       gamePid = directLaunch.pid;
       assert(gamePid > 0);
-      await invoke("stop_game", { pid: gamePid });
+      await stopOwnedGame(directLaunch);
       gamePid = undefined;
       await eventually(async () =>
         (await invoke("list_running_games")).every(
@@ -1521,12 +1535,10 @@ try {
       const pending = (await listTasks()).filter(job => ownedDownloads.has(job.id) &&
         ["running", "queued", "paused"].includes(job.status));
       await Promise.allSettled(pending.map(({ id }) => invoke("cancel_download_task", { taskId: id })));
-      for (const game of await invoke("list_running_games"))
-        await invoke("stop_game", { pid: game.pid });
-    } catch {}
-  if (gamePid)
-    try {
-      process.kill(gamePid);
+      for (const game of (await invoke("list_running_games")).filter(game => ownedGames.has(game.gameId))) {
+        try { await stopOwnedGame(game); }
+        catch (error) { report.failures.push({ name: "owned game cleanup", error: String(error) }); }
+      }
     } catch {}
   if (mockServer) await new Promise((resolve) => mockServer.close(resolve));
   if (browser) await browser.close().catch(() => {});

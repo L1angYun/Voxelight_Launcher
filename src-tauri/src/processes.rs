@@ -1,13 +1,16 @@
+use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     errors::{expected, AppResult},
+    game_process::{StopHandle, StopResult, StopStatus},
     models::LogEvent,
     storage::{safe_join, LauncherState},
 };
 use serde::Serialize;
 use std::{
     collections::HashMap,
+    io::{self, Write},
     io::{Read, Seek},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -16,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunningGame {
+    pub game_id: String,
     pub pid: u32,
     pub version_id: String,
     pub instance_id: Option<String>,
@@ -25,12 +29,57 @@ pub struct RunningGame {
 struct TrackedGame {
     info: RunningGame,
     clock: Instant,
+    owner: Option<Arc<StopHandle>>,
 }
 #[derive(Default)]
 pub struct GameRegistry {
-    games: Mutex<HashMap<u32, TrackedGame>>,
+    games: Mutex<HashMap<String, TrackedGame>>,
 }
+/// Normalize a validated game root even if the final version/instance directory
+/// has not been created. Canonicalize the nearest existing ordinary ancestor.
+pub(crate) fn canonical_game_directory(path: &Path) -> Result<PathBuf, String> {
+    let checked = crate::instances::checked_absolute(path)?;
+    let mut current = checked.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::metadata(current) {
+            Ok(metadata) if metadata.is_dir() => {
+                let mut identity = current.canonicalize().map_err(|e| format!("无法解析游戏目录：{e}"))?;
+                for name in missing.into_iter().rev() {
+                    identity.push(name);
+                }
+                return Ok(identity);
+            }
+            Ok(_) => return Err("游戏目录不是目录".into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(current.file_name().ok_or("游戏目录无效")?);
+                current = current.parent().ok_or("游戏目录无效")?;
+            }
+            Err(error) => return Err(format!("无法访问游戏目录：{error}")),
+        }
+    }
+}
+
+pub(crate) fn same_canonical_directory(path: &Path, active: &Path) -> bool {
+    // Registered process paths are canonical. Normalize an existing alternate
+    // spelling as well to handle older tests and legacy active paths.
+    let active = active.canonicalize().unwrap_or_else(|_| active.to_path_buf());
+    #[cfg(windows)]
+    { path.to_string_lossy().eq_ignore_ascii_case(&active.to_string_lossy()) }
+    #[cfg(not(windows))]
+    { path == active }
+}
+
 impl GameRegistry {
+    fn stop_handle(&self, game_id: &str) -> Result<Arc<StopHandle>, String> {
+        self.games
+            .lock()
+            .map_err(|_| "游戏进程锁异常，为保护实例文件，已拒绝此操作")?
+            .get(game_id)
+            .and_then(|game| game.owner.clone())
+            .ok_or_else(|| "只能结束由本启动器启动、且仍在运行的游戏进程".into())
+    }
+
     pub(crate) fn snapshot(&self) -> Result<Vec<RunningGame>, String> {
         self.games
             .lock()
@@ -43,6 +92,38 @@ impl GameRegistry {
             .map(|games| games.values().map(|game| game.info.clone()).collect())
             .unwrap_or_default()
     }
+    #[cfg(test)]
+    pub(crate) fn fixture_running_directory(&self, directory: &Path, instance_id: Option<&str>) {
+        let game_id = "fixture-canonical-game".to_owned();
+        self.games.lock().unwrap().insert(game_id.clone(), TrackedGame {
+            clock: Instant::now(),
+            owner: None,
+            info: RunningGame { game_id, pid: 12, version_id: "first-test-version".into(), instance_id: instance_id.map(str::to_owned),
+                game_directory: directory.canonicalize().unwrap().display().to_string(), started_at: String::new() },
+        });
+    }
+
+    pub(crate) fn require_directory_stopped(
+        &self,
+        directory: &Path,
+        instance_id: Option<&str>,
+        launch: bool,
+    ) -> Result<PathBuf, String> {
+        let directory = canonical_game_directory(directory)?;
+        let games = self.snapshot()?;
+        if games.iter().any(|game| {
+            (instance_id.is_some() && game.instance_id.as_deref() == instance_id)
+                || same_canonical_directory(&directory, Path::new(&game.game_directory))
+        }) {
+            return Err(if launch {
+                "此实例已在运行，请勿重复启动".into()
+            } else {
+                "此实例的游戏仍在运行。请先正常退出游戏，再备份、克隆、导出或恢复实例。".into()
+            });
+        }
+        Ok(directory)
+    }
+
     fn require_instance_stopped_with_error(
         &self,
         instance_id: &str,
@@ -67,23 +148,27 @@ impl GameRegistry {
             "此实例的游戏仍在运行。请先正常退出游戏，再备份、克隆、导出或恢复实例。",
         )
     }
-    pub fn require_instance_launch_stopped(&self, instance_id: &str) -> Result<(), String> {
+    #[cfg(test)]
+    fn require_instance_launch_stopped(&self, instance_id: &str) -> Result<(), String> {
         self.require_instance_stopped_with_error(instance_id, "此实例已在运行，请勿重复启动")
     }
 }
 pub fn register(
     app: &AppHandle,
+    game_id: &str,
     pid: u32,
     version: &str,
     instance_id: Option<String>,
     directory: &Path,
+    owner: StopHandle,
 ) {
     if let Some(registry) = app.try_state::<Arc<GameRegistry>>() {
         if let Ok(mut games) = registry.games.lock() {
             games.insert(
-                pid,
+                game_id.into(),
                 TrackedGame {
                     info: RunningGame {
+                        game_id: game_id.into(),
                         pid,
                         version_id: version.into(),
                         instance_id,
@@ -91,70 +176,125 @@ pub fn register(
                         started_at: chrono::Utc::now().to_rfc3339(),
                     },
                     clock: Instant::now(),
+                    owner: Some(Arc::new(owner)),
                 },
             );
         }
         let _ = app.emit("launcher://games", registry.list());
     }
 }
-pub fn unregister(app: &AppHandle, state: &LauncherState, pid: u32, code: Option<i32>) {
-    if let Some(registry) = app.try_state::<Arc<GameRegistry>>() {
-        let tracked = registry
-            .games
-            .lock()
-            .ok()
-            .and_then(|mut games| games.remove(&pid));
-        if let Some(game) = tracked {
-            if let Some(id) = game.info.instance_id {
-                let seconds = game.clock.elapsed().as_secs();
-                let _ = state.update(|data| {
-                    if let Some(instance) = data.instances.iter_mut().find(|i| i.id == id) {
-                        instance.total_play_time = instance.total_play_time.saturating_add(seconds);
-                    }
-                    Ok(())
-                });
-            }
+pub fn unregister(app: &AppHandle, state: &LauncherState, game_id: &str, code: Option<i32>) {
+    let Some(registry) = app.try_state::<Arc<GameRegistry>>() else {
+        return;
+    };
+    let tracked = registry
+        .games
+        .lock()
+        .ok()
+        .and_then(|mut games| games.remove(game_id));
+    if let Some(game) = tracked {
+        if let Some(id) = game.info.instance_id {
+            let seconds = game.clock.elapsed().as_secs();
+            let _ = state.update(|data| {
+                if let Some(instance) = data.instances.iter_mut().find(|i| i.id == id) {
+                    instance.total_play_time = instance.total_play_time.saturating_add(seconds);
+                }
+                Ok(())
+            });
         }
-        let _ = app.emit("launcher://games", registry.list());
         let _ = app.emit(
             "launcher://log",
             LogEvent {
                 level: if code == Some(0) { "info" } else { "warn" }.into(),
-                message: format!("游戏进程 {pid} 已结束，退出码 {code:?}"),
+                message: format!("游戏进程 {} 已结束，退出码 {code:?}", game.info.pid),
                 timestamp: chrono::Utc::now().to_rfc3339(),
             },
         );
     }
+    let _ = app.emit("launcher://games", registry.list());
 }
 #[tauri::command]
 pub fn list_running_games(registry: State<'_, Arc<GameRegistry>>) -> Vec<RunningGame> {
     registry.list()
 }
 #[tauri::command]
-pub async fn stop_game(registry: State<'_, Arc<GameRegistry>>, pid: u32) -> Result<(), String> {
-    if !registry.list().iter().any(|game| game.pid == pid) {
-        return Err("只能结束由本启动器启动、且仍在运行的游戏进程".into());
-    }
-    #[cfg(windows)]
-    let output = {
-        let mut command = tokio::process::Command::new("taskkill.exe");
-        command.args(["/PID", &pid.to_string(), "/T", "/F"]);
-        command.creation_flags(0x08000000);
-        command.output().await.map_err(|e| e.to_string())?
+pub async fn stop_game(
+    webview: tauri::WebviewWindow,
+    state: State<'_, Arc<LauncherState>>,
+    registry: State<'_, Arc<GameRegistry>>,
+    game_id: String,
+    force: Option<bool>,
+) -> AppResult<StopResult> {
+    let owner = registry.stop_handle(&game_id)?;
+    let _single_request = owner
+        .authorization
+        .try_lock()
+        .map_err(|_| "正在处理此游戏的结束请求")?;
+    let status = if force.unwrap_or(false) {
+        let settings = state.snapshot()?.config;
+        let zh = match settings.language.as_str() {
+            "zh-CN" => true,
+            "en-US" => false,
+            _ => crate::platform::get_system_appearance().locale == "zh-CN",
+        };
+        confirm_and_force(&owner, || confirm_force_stop(&webview, zh)).await?
+    } else {
+        owner.request(false).await?
     };
-    #[cfg(not(windows))]
-    let output = tokio::process::Command::new("kill")
-        .args(["-TERM", "--", &pid.to_string()])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "结束进程失败：{}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    Ok(StopResult { status })
+}
+
+async fn confirm_and_force<F: std::future::Future<Output = bool>>(
+    owner: &StopHandle,
+    confirm: impl FnOnce() -> F,
+) -> Result<StopStatus, String> {
+    if let Some(status) = owner.completion_status() {
+        return status;
     }
-    Ok(())
+    if !owner
+        .force_required
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(StopStatus::ForceRequired);
+    }
+    if !confirm().await {
+        return Ok(StopStatus::Declined);
+    }
+    owner.request(true).await
+}
+
+async fn confirm_force_stop(webview: &tauri::WebviewWindow, zh: bool) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let (title, body, force, cancel) = if zh {
+        (
+            "强制结束 Minecraft？",
+            "游戏未能正常退出。请优先回到游戏保存并退出。强制结束可能丢失尚未保存的进度。",
+            "强制结束",
+            "返回游戏",
+        )
+    } else {
+        (
+            "Force quit Minecraft?",
+            "The game did not close normally. Save and quit in Minecraft if possible. Forcing it to close can lose unsaved progress.",
+            "Force quit",
+            "Return to game",
+        )
+    };
+    let (response, wait) = tokio::sync::oneshot::channel();
+    webview
+        .dialog()
+        .message(body)
+        .title(title)
+        .parent(webview)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            force.into(),
+            cancel.into(),
+        ))
+        .show(move |confirmed| {
+            let _ = response.send(confirmed);
+        });
+    wait.await.unwrap_or(false)
 }
 
 #[derive(Serialize)]
@@ -321,11 +461,14 @@ fn diagnose_instance_inner(
 }
 #[tauri::command]
 pub fn export_diagnostics(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     version_id: String,
     instance_id: Option<String>,
     output_path: String,
-) -> Result<String, String> {
+) -> crate::errors::AppResult<String> {
+    let output_path = grants.consume(PathUse::Diagnostics, &output_path, &window)?.to_string_lossy().into_owned();
     let diagnosis =
         diagnose_instance_inner(state.clone(), version_id.clone(), instance_id.clone())?;
     let destination = Path::new(&output_path);
@@ -351,12 +494,160 @@ pub fn export_diagnostics(
         diagnosis.suggestions.join("\n"),
         diagnosis.excerpt
     );
-    std::fs::write(destination, report).map_err(|e| e.to_string())?;
+    write_diagnostics_file(destination, report.as_bytes())?;
     Ok(output_path)
 }
+fn write_diagnostics_file(destination: &Path, report: &[u8]) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(destination)
+        .map_err(|error| if error.kind() == io::ErrorKind::AlreadyExists {
+            "报告文件已存在，请选择新文件名以保留原文件".to_owned()
+        } else { error.to_string() })?;
+    file.write_all(report).and_then(|()| file.sync_all()).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const STOP_FIXTURE_DIR: &str = "VOXELIGHT_M09_OWNED_TEST_DIR";
+
+    #[test]
+    fn game_stop_child_fixture() {
+        let Some(directory) = std::env::var_os(STOP_FIXTURE_DIR) else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::write(directory.join("ready"), b"owned fixture").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !directory.join("exit").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::write(directory.join("saved"), b"normal exit").unwrap();
+    }
+
+    #[test]
+    fn m09_stop_does_not_force_a_headless_owned_child_without_explicit_consent() {
+        use std::{fs, time::Duration};
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/process-tests")
+                .join(uuid::Uuid::new_v4().to_string());
+            fs::create_dir_all(&directory).unwrap();
+            let child = spawn_stop_fixture(&directory);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !directory.join("ready").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let pid = child.id().unwrap();
+            let (actor, handle) = crate::game_process::GameProcess::new(child);
+            let mut wait = tokio::spawn(actor.wait());
+            let registry = GameRegistry::default();
+            // Stale and live identities deliberately share a displayed PID in
+            // this in-memory fixture. Only the exact owned identity can resolve.
+            registry.games.lock().unwrap().insert(
+                "owned".into(),
+                TrackedGame {
+                    info: RunningGame {
+                        game_id: "owned".into(),
+                        pid,
+                        version_id: "owned-fixture".into(),
+                        instance_id: None,
+                        game_directory: directory.to_string_lossy().into_owned(),
+                        started_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                    clock: Instant::now(),
+                    owner: Some(Arc::new(handle)),
+                },
+            );
+            assert!(registry.stop_handle("stale").is_err());
+            let owner = registry.stop_handle("owned").unwrap();
+            assert_eq!(
+                confirm_and_force(&owner, || async {
+                    panic!("no prompt before graceful stop")
+                })
+                .await
+                .unwrap(),
+                StopStatus::ForceRequired
+            );
+            assert_eq!(
+                owner.request(true).await.unwrap(),
+                StopStatus::ForceRequired
+            );
+            assert_eq!(
+                owner.request(false).await.unwrap(),
+                StopStatus::ForceRequired
+            );
+            assert_eq!(
+                confirm_and_force(&owner, || async { false }).await.unwrap(),
+                StopStatus::Declined
+            );
+            assert!(tokio::time::timeout(Duration::from_millis(80), &mut wait)
+                .await
+                .is_err());
+            assert!(!directory.join("saved").exists());
+            fs::write(directory.join("exit"), b"exit").unwrap();
+            assert!(wait.await.unwrap().unwrap().success());
+            assert_eq!(fs::read(directory.join("saved")).unwrap(), b"normal exit");
+            assert_eq!(
+                confirm_and_force(&owner, || async { true }).await.unwrap(),
+                StopStatus::Stopped
+            );
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn m09_confirmed_force_reaps_only_its_own_child() {
+        use std::{fs, time::Duration};
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let first = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/process-tests")
+                .join(uuid::Uuid::new_v4().to_string());
+            let other = first.join("other");
+            fs::create_dir_all(&other).unwrap();
+            let (actor, owner) = crate::game_process::GameProcess::new(spawn_stop_fixture(&first));
+            let mut unrelated = spawn_stop_fixture(&other);
+            let wait = tokio::spawn(actor.wait());
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !first.join("ready").exists() || !other.join("ready").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                owner.request(false).await.unwrap(),
+                StopStatus::ForceRequired
+            );
+            assert_eq!(
+                confirm_and_force(&owner, || async { true }).await.unwrap(),
+                StopStatus::Stopped
+            );
+            assert!(!wait.await.unwrap().unwrap().success());
+            assert!(unrelated.try_wait().unwrap().is_none());
+            fs::write(other.join("exit"), b"exit").unwrap();
+            assert!(unrelated.wait().await.unwrap().success());
+            assert!(!first.join("saved").exists());
+            assert!(other.join("saved").exists());
+            fs::remove_dir_all(first).unwrap();
+        });
+    }
+
+    fn spawn_stop_fixture(directory: &Path) -> tokio::process::Child {
+        use std::process::Stdio;
+        tokio::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("processes::tests::game_stop_child_fixture")
+            .env(STOP_FIXTURE_DIR, directory)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
 
     #[test]
     fn diagnostics_redact_client_id_arguments_and_assignments() {
@@ -393,9 +684,10 @@ mod tests {
     fn running_instance_guard_is_scoped_to_the_selected_instance() {
         let registry = GameRegistry::default();
         registry.games.lock().unwrap().insert(
-            42,
+            "owned-fixture".into(),
             TrackedGame {
                 info: RunningGame {
+                    game_id: "owned-fixture".into(),
                     pid: 42,
                     version_id: "fabric-test".into(),
                     instance_id: Some("running-instance".into()),
@@ -403,6 +695,7 @@ mod tests {
                     started_at: chrono::Utc::now().to_rfc3339(),
                 },
                 clock: Instant::now(),
+                owner: None,
             },
         );
         assert!(registry
@@ -415,9 +708,10 @@ mod tests {
     fn launch_guard_reports_duplicate_launch_but_preserves_registry_failures() {
         let registry = GameRegistry::default();
         registry.games.lock().unwrap().insert(
-            42,
+            "owned-fixture".into(),
             TrackedGame {
                 info: RunningGame {
+                    game_id: "owned-fixture".into(),
                     pid: 42,
                     version_id: "same-version".into(),
                     instance_id: Some("running-instance".into()),
@@ -425,6 +719,7 @@ mod tests {
                     started_at: chrono::Utc::now().to_rfc3339(),
                 },
                 clock: Instant::now(),
+                owner: None,
             },
         );
         assert_eq!(

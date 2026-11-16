@@ -10,12 +10,14 @@ mod curseforge;
 mod download_io;
 mod downloads;
 mod errors;
+mod game_process;
 mod instances;
 mod integrity;
 mod loaders;
 mod minecraft;
 mod models;
 mod modpacks;
+mod path_grants;
 mod platform;
 mod processes;
 mod resource_targets;
@@ -126,6 +128,7 @@ pub fn run() {
             app.manage(std::sync::Arc::new(
                 server_manager::ServerRegistry::default(),
             ));
+            app.manage(path_grants::PathGrants::default());
             app.manage(state);
             app.manage(auth);
             let window_config = match app.config().app.windows.first().cloned() {
@@ -201,6 +204,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            path_grants::choose_launcher_path,
             commands::bootstrap,
             commands::get_config,
             commands::save_config,
@@ -260,6 +264,7 @@ pub fn run() {
             modpacks::list_modpack_versions,
             modpacks::import_modpack,
             modpacks::install_modrinth_modpack,
+            modpacks::plan_modrinth_export,
             modpacks::export_modrinth_modpack,
             processes::list_running_games,
             processes::stop_game,

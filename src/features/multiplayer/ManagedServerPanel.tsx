@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { ExternalLink } from "../../components/ui/ExternalLink";
 import { Play, Plus, RefreshCw, Square } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
@@ -132,7 +132,7 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
                   disabled={Boolean(busy) || alive}
                   onChange={(event) => void setEula(event.target.checked)}
                 />
-                <span>{t("multiplayer:eula.consent")} <a href={current.eulaUrl} onClick={(event) => { event.preventDefault(); void openUrl(current.eulaUrl).catch(report); }}>Minecraft EULA</a></span>
+                <span>{t("multiplayer:eula.consent")} <ExternalLink url={current.eulaUrl}>Minecraft EULA</ExternalLink></span>
               </label>
               <div className="vx-action-row">
                 <Button variant="primary" icon={<Play size={14} />} disabled={Boolean(busy) || alive || !current.eulaAccepted} onClick={() => void startManaged()}>

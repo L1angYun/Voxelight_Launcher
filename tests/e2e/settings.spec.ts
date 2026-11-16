@@ -23,13 +23,11 @@ function mockSettings(page: Page) {
         return record(configured);
       }
       if (name === "detect_java") return record([{ path: "C:\\SyntheticFixture\\java.exe", version: "21.0.1", major: 21 }]);
-      if (name === "plugin:dialog|open") {
-        const options = JSON.stringify(args ?? {});
-        if (options.includes('"directory":true')) return record("C:\\ChangedFixture");
-        if (options.includes("json")) return record("C:\\SyntheticFixture\\preset.json");
-        return record("C:\\SyntheticFixture\\background.png");
+      if (name === "choose_launcher_path") {
+        if (args?.purpose === "gameDirectory") return record(["C:\\ChangedFixture"]);
+        if (args?.purpose === "presetRead" || args?.purpose === "presetWrite") return record(["C:\\SyntheticFixture\\preset.json"]);
+        if (args?.purpose === "background") return record(["C:\\SyntheticFixture\\background.png"]);
       }
-      if (name === "plugin:dialog|save") return record("C:\\SyntheticFixture\\preset.json");
       if (name === "set_launcher_background") {
         const bootstrap = await original("bootstrap") as { config: Record<string, unknown> };
         const next = { ...bootstrap.config, customBackground: args?.path ?? null };

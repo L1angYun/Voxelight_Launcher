@@ -1,3 +1,4 @@
+use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     errors::{expected, AppResult},
     instances, minecraft,
@@ -566,32 +567,8 @@ fn backup_world_inner(
         if output.exists() {
             return Err("备份期间出现同名目标文件，未覆盖".into());
         }
-        match fs::rename(&temporary, &output) {
-            Ok(()) => {}
-            Err(error) => {
-                let mut target = fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&output)
-                    .map_err(|_| {
-                        format!(
-                            "无法提交备份：{error}；已保留暂存文件 {}",
-                            temporary.display()
-                        )
-                    })?;
-                std::io::copy(
-                    &mut fs::File::open(&temporary).map_err(|e| e.to_string())?,
-                    &mut target,
-                )
-                .map_err(|e| e.to_string())?;
-                target.sync_all().map_err(|e| e.to_string())?;
-                drop(target);
-                if hash(&temporary)? != hash(&output)? {
-                    return Err("备份提交校验失败，原世界未改变，暂存备份仍保留".into());
-                }
-                let _ = fs::remove_file(&temporary);
-            }
-        }
+        instances::publish_archive_file(&temporary, &output)
+            .map_err(|error| format!("无法提交备份：{error}；已保留暂存文件 {}", temporary.display()))?;
         Ok(WorldBackup {
             path: output.to_string_lossy().into_owned(),
             files: files.len(),
@@ -605,15 +582,19 @@ fn backup_world_inner(
 
 #[tauri::command]
 pub async fn backup_world(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     app: AppHandle,
     state: State<'_, Arc<LauncherState>>,
     version_id: String,
     instance_id: Option<String>,
     world_folder: String,
     output_path: String,
-) -> Result<WorldBackup, String> {
+) -> crate::errors::AppResult<WorldBackup> {
+    let output_path = grants.consume(PathUse::WorldWrite, &output_path, &window)?.to_string_lossy().into_owned();
     let _guard = state.operation.lock().await;
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
+    let root = state.games.require_directory_stopped(&root, instance_id.as_deref(), false)?;
     let task = state
         .control
         .begin("world-backup", &world_folder, "备份世界")?;
@@ -634,7 +615,7 @@ pub async fn backup_world(
             format!("世界备份已保存：{}", backup.path),
         );
     }
-    result
+    result.map_err(crate::errors::expected)
 }
 
 fn inspect_world_archive(path: &Path) -> Result<String, String> {
@@ -760,7 +741,7 @@ fn import_world_inner(
         return Err("导入期间出现同名世界，未覆盖；暂存副本保留".into());
     }
     let mut warning = None;
-    if let Err(error) = fs::rename(&stage, &destination) {
+    if let Err(error) = instances::rename_owned_directory(&stage, &destination) {
         let files = instances::collect_files(&stage)?;
         instances::copy_snapshot(&stage, &destination, &files).map_err(|copy_error| {
             format!(
@@ -782,12 +763,15 @@ fn import_world_inner(
 
 #[tauri::command]
 pub async fn import_world(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     version_id: String,
     instance_id: Option<String>,
     path: String,
     name: Option<String>,
-) -> Result<World, String> {
+) -> crate::errors::AppResult<World> {
+    let path = grants.consume(PathUse::WorldRead, &path, &window)?.to_string_lossy().into_owned();
     let _guard = state.operation.lock().await;
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
     let path = instances::checked_absolute(Path::new(&path))?;
@@ -797,6 +781,7 @@ pub async fn import_world(
     {
         return Err("请选择 Java 世界 .zip 文件".into());
     }
+    let root = state.games.require_directory_stopped(&root, instance_id.as_deref(), false)?;
     let task = state.control.begin("world-import", &version_id, "导入世界")?;
     let shared = state.inner().clone();
     let result =
@@ -806,7 +791,7 @@ pub async fn import_world(
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
-    result
+    result.map_err(crate::errors::expected)
 }
 
 #[tauri::command]
@@ -874,12 +859,15 @@ pub async fn read_screenshot(
 
 #[tauri::command]
 pub async fn import_local_resources(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     version_id: String,
     instance_id: Option<String>,
     paths: Vec<String>,
     resource_type: String,
 ) -> AppResult<Vec<ImportedResource>> {
+    let paths = grants.consume_resources(&paths, &window)?.into_iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
     let (folder, extension) = match resource_type.as_str() {
         "mod" => ("mods", "jar"),
         "resourcepack" => ("resourcepacks", "zip"),
@@ -891,6 +879,7 @@ pub async fn import_local_resources(
     }
     let _guard = state.operation.lock().await;
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
+    let root = state.games.require_directory_stopped(&root, instance_id.as_deref(), false)?;
     let directory = safe_join(&root, folder)?;
     crate::resources::resource_transactions::require_no_pending(&directory)?;
     let task = state

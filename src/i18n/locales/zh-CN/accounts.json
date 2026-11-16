@@ -81,9 +81,7 @@
     "cape": "正版披风",
     "noCape": "不显示披风",
     "noCapes": "此账号没有可用披风。",
-    "authlibReadonly": "此处仅显示第三方角色外观，修改皮肤请前往对应认证服务。",
-    "uploadPicker": "选择要上传到正版账号的 PNG 皮肤",
-    "pngFilter": "PNG 皮肤"
+    "authlibReadonly": "此处仅显示第三方角色外观，修改皮肤请前往对应认证服务。"
   },
   "preview": {
     "source": "预览来源",

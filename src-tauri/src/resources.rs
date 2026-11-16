@@ -934,20 +934,6 @@ fn version_lite(version: &Version) -> crate::resource_targets::VersionLite {
     }
 }
 
-fn same_directory(a: &Path, b: &Path) -> bool {
-    let a = a.canonicalize().unwrap_or_else(|_| a.to_owned());
-    let b = b.canonicalize().unwrap_or_else(|_| b.to_owned());
-    #[cfg(windows)]
-    {
-        a.to_string_lossy()
-            .eq_ignore_ascii_case(&b.to_string_lossy())
-    }
-    #[cfg(not(windows))]
-    {
-        a == b
-    }
-}
-
 fn target_running(
     data: &Persisted,
     version_id: &str,
@@ -956,12 +942,13 @@ fn target_running(
 ) -> bool {
     let instance =
         instance_id.and_then(|id| data.instances.iter().find(|instance| instance.id == id));
-    let directory = crate::minecraft::game_directory(&data.config, version_id, instance).ok();
+    let directory = crate::minecraft::game_directory(&data.config, version_id, instance)
+        .and_then(|path| crate::processes::canonical_game_directory(&path)).ok();
     running.iter().any(|game| {
         (instance_id.is_some() && game.instance_id.as_deref() == instance_id)
             || directory
                 .as_ref()
-                .is_some_and(|directory| same_directory(directory, Path::new(&game.game_directory)))
+                .is_some_and(|directory| crate::processes::same_canonical_directory(directory, Path::new(&game.game_directory)))
     })
 }
 
@@ -970,15 +957,11 @@ pub(crate) fn require_resource_stopped(
     version_id: &str,
     instance_id: Option<&str>,
 ) -> AppResult<()> {
-    if target_running(
-        &state.snapshot()?,
-        version_id,
-        instance_id,
-        &state.games.snapshot()?,
-    ) {
-        return Err(AppError::new("instance.running")
-            .with_detail("此目标的游戏仍在运行，请先退出游戏再安装资源。"));
-    }
+    let data = state.snapshot()?;
+    let instance = instance_id.map(|id| data.instances.iter().find(|value| value.id == id)
+        .ok_or("实例不存在")).transpose().map_err(|error| crate::errors::expected(error))?;
+    let directory = crate::minecraft::game_directory(&data.config, version_id, instance)?;
+    state.games.require_directory_stopped(&directory, instance_id, false)?;
     Ok(())
 }
 
@@ -1930,6 +1913,7 @@ mod tests {
         )
         .unwrap();
         let games = [crate::processes::RunningGame {
+            game_id: "fixture-game".into(),
             pid: 7,
             version_id: "another-view".into(),
             instance_id: None,
@@ -1972,6 +1956,7 @@ mod tests {
         let directory =
             crate::minecraft::game_directory(&data.config, "fabric-test", None).unwrap();
         let games = vec![crate::processes::RunningGame {
+            game_id: "fixture-game".into(),
             pid: 7,
             version_id: "fabric-test".into(),
             instance_id: None,

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { command, type Instance, type ResourceProject, type VersionManifest } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
@@ -114,9 +114,9 @@ export function CreateInstanceDialog({
   }
 
   async function importPack() {
-    const path = await open({ title: t("library:importPack"), multiple: false, filters: [{ name: t("library:modpackFileType"), extensions: ["mrpack", "zip"] }] });
-    if (typeof path !== "string") return;
     await run("instance.import", async () => {
+      const path = await pickLauncherPath("packRead");
+      if (!path) return;
       const result = await command<PackResult>("import_modpack", {
         path,
         name: instanceName.trim() || undefined,

@@ -1,3 +1,4 @@
+use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     errors::{expected, AppResult},
     models::Config,
@@ -63,9 +64,13 @@ fn set_launcher_background_inner(
 }
 #[tauri::command]
 pub fn set_launcher_background(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     path: Option<String>,
 ) -> AppResult<Config> {
+    let path = path.map(|value| grants.consume(PathUse::Background, &value, &window)).transpose()?
+        .map(|value| value.to_string_lossy().into_owned());
     set_launcher_background_inner(state, path).map_err(expected)
 }
 
@@ -97,13 +102,16 @@ pub(crate) fn export_launcher_config_inner(
 }
 #[tauri::command]
 pub fn export_launcher_config(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     path: String,
 ) -> AppResult<String> {
+    let path = grants.consume(PathUse::PresetWrite, &path, &window)?.to_string_lossy().into_owned();
     export_launcher_config_inner(state.inner(), path).map_err(expected)
 }
 
-fn import_launcher_config_inner(state: &LauncherState, path: String) -> Result<Config, String> {
+fn read_config_preset(path: &str) -> Result<Config, String> {
     let target = Path::new(&path);
     if !target.is_absolute() {
         return Err("请选择本地配置文件".into());
@@ -122,15 +130,30 @@ fn import_launcher_config_inner(state: &LauncherState, path: String) -> Result<C
     }))?;
     let config: Config =
         serde_json::from_value(migrated["config"].clone()).map_err(|e| e.to_string())?;
-    crate::commands::save_config_inner(&state, config)
+    Ok(config)
+}
+#[cfg(test)]
+fn import_launcher_config_inner(state: &LauncherState, path: String) -> Result<Config, String> {
+    crate::commands::save_config_inner(state, read_config_preset(&path)?)
 }
 
 #[tauri::command]
-pub fn import_launcher_config(
+pub async fn import_launcher_config(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     path: String,
 ) -> AppResult<Config> {
-    import_launcher_config_inner(state.inner(), path).map_err(expected)
+    let path = grants.consume(PathUse::PresetRead, &path, &window)?.to_string_lossy().into_owned();
+    let previous = state.snapshot()?.config;
+    let mut config = read_config_preset(&path)?;
+    if config.custom_background != previous.custom_background {
+        // A preset can restore visual preferences, but a reference to an
+        // external image is not a native file grant. Keep the selected image.
+        config.custom_background = previous.custom_background.clone();
+    }
+    crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
+    crate::commands::save_approved_config(&state, config, Some(&previous)).map_err(expected)
 }
 
 #[cfg(test)]

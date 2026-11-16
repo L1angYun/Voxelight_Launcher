@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { ExternalLink } from "../../components/ui/ExternalLink";
 import type { SettingsSectionProps } from "./types";
 import { Select } from "../../components/ui/Select";
 
@@ -19,7 +19,7 @@ export function DownloadSettings({ config, onChange, onError }: SettingsSectionP
         {config.downloadSource !== "official" ? (
           <p>
             {t("settings:downloadSource.mirrorNotice")}{" "}
-            <a href="https://bmclapi2.bangbang93.com/" onClick={(event) => { event.preventDefault(); void openUrl("https://bmclapi2.bangbang93.com/").catch(onError); }}>{t("settings:downloadSource.mirrorLink")}</a>
+            <ExternalLink url="https://bmclapi2.bangbang93.com/">{t("settings:downloadSource.mirrorLink")}</ExternalLink>
           </p>
         ) : null}
         <div className="vx-settings-fields">

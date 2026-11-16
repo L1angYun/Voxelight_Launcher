@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { Folder } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import type { SettingsSectionProps } from "./types";
@@ -9,7 +9,7 @@ export function GameSettings({ config, onChange, onError }: SettingsSectionProps
 
   async function chooseDirectory() {
     try {
-      const path = await open({ directory: true, multiple: false, title: t("settings:game.directoryPicker") });
+      const path = await pickLauncherPath("gameDirectory");
       if (typeof path === "string") onChange({ ...config, gameDirectory: path });
     } catch (cause) {
       onError(cause);

@@ -235,8 +235,8 @@ test("configured artifact discovery is bounded, excludes redirected directories 
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("PowerShell build/signing and installer verification share Cargo metadata output resolution", () => {
-  for (const script of ["build.ps1", "desktop.ps1", "verify-installer-ui.ps1"]) {
+test("PowerShell build and installer verification share Cargo metadata output resolution", () => {
+  for (const script of ["build.ps1", "verify-installer-ui.ps1"]) {
     const source = readFileSync(join(repositoryRoot, "scripts", script), "utf8");
     assert.match(source, /build-runtime\.mjs/);
     assert.match(source, /--print-target-dir/);
@@ -244,10 +244,16 @@ test("PowerShell build/signing and installer verification share Cargo metadata o
   }
 });
 
-test("PowerShell artifact reporting, signing and installer selection consume configured profile directories", () => {
-  for (const script of ["build.ps1", "desktop.ps1", "verify-installer-ui.ps1"]) {
+test("artifact reporting and installer selection use profiles; signing requires a receipt under the resolved target", () => {
+  for (const script of ["build.ps1", "verify-installer-ui.ps1"]) {
     const source = readFileSync(join(repositoryRoot, "scripts", script), "utf8");
     assert.match(source, /--print-artifact-dirs/);
     assert.match(source, /ConvertFrom-Json/);
   }
+  const desktop = readFileSync(join(repositoryRoot, "scripts", "desktop.ps1"), "utf8");
+  const receipt = readFileSync(join(repositoryRoot, "scripts", "signing-receipt.mjs"), "utf8");
+  assert.match(desktop, /signing-receipt\.mjs'\) read \$SigningReceipt/);
+  assert.match(desktop, /\$artifacts = @\(\$receiptJson \| ConvertFrom-Json/);
+  assert.doesNotMatch(desktop, /--print-artifact-dirs|--print-target-dir|Temp\\VoxelightLauncher\\build/);
+  assert.match(receipt, /readSigningReceipt\(targetDirectory\(\{ repositoryRoot \}\), resolve\(arg\)\)/);
 });

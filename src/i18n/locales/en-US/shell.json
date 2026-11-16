@@ -50,6 +50,8 @@
     "auth.required": "Choose a player first.",
     "instance.required": "Choose an instance first.",
     "game.notRunning": "No running game matches the current selection.",
+    "game.stopBusy": "A stop request for this game is already in progress.",
+    "game.stopFailed": "Voxelight could not confirm that the game stopped. Check the game window before starting another session.",
     "versions.unavailable": "Version list unavailable.",
     "desktop.required": "Use the desktop app for this action.",
     "renderer.unavailable": "3D preview is unavailable. Check your graphics driver and hardware acceleration.",
@@ -63,7 +65,10 @@
     "backup.restoreRecoveryRequired": "The backup restore did not finish. Keep the listed directories and use the recovery action to verify the copies again.",
     "backup.restoreRolledBack": "The backup restore could not finish. The original directory was restored.",
     "backup.restoreRecoveryMissing": "No backup restore needs recovery. Refresh the backup list.",
-    "storage.stateChanged": "Another program changed this profile. Close and reopen the launcher before saving again."
+    "storage.stateChanged": "Another program changed this profile. Close and reopen the launcher before saving again.",
+    "storage.pathAuthorizationRequired": "Choose or approve this exact path in the native dialog before continuing.",
+    "storage.folderUnavailable": "The launcher could not open this registered directory.",
+    "instance.exportPreviewChanged": "Files changed after you reviewed them. Review the updated list before exporting."
   },
   "storage": {
     "fallbackTitle": "Using a fallback data profile",
@@ -77,5 +82,12 @@
     "primaryState": "Primary state file: {{path}}",
     "primaryDirectory": "Primary data directory: {{path}}",
     "recoveryHelp": "Changes in this window are saved to the fallback profile. Fix the primary directory or upgrade the launcher, then close and reopen it."
+  },
+  "external": {
+    "openFailed": "The system could not open this link. Copy the address to open it in your browser.",
+    "address": "Link address",
+    "copy": "Copy link",
+    "copied": "Link copied.",
+    "copyFailed": "Clipboard access is unavailable. Select and copy the address manually."
   }
 }

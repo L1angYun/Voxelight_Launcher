@@ -26,17 +26,6 @@
   "createInstance": "Create instance",
   "createInstanceDescription": "Set up an isolated game directory and runtime.",
   "importPack": "Import modpack",
-  "modpackFileType": "Minecraft modpack",
-  "backupFileType": "Instance backup",
-  "modrinthFileType": "Modrinth modpack",
-  "diagnosticsFileType": "Diagnostics",
-  "imageFileType": "Image",
-  "javaFileType": "Java",
-  "selectResources": "Select local Minecraft resources",
-  "jarMods": "JAR mods",
-  "zipResources": "ZIP resources",
-  "selectWorldZip": "Select a Minecraft world ZIP",
-  "worldZipFileType": "Minecraft world ZIP",
   "noSearchResults": "No matching instances",
   "noSearchDescription": "Try another keyword or clear the search.",
   "clearSearch": "Clear search",
@@ -200,5 +189,19 @@
   "backupStagedPath": "Preserved restore copy: {{path}}",
   "backupPreviousId": "Pre-restore backup ID: {{id}}",
   "backupPreservedPath": "Preserved directory: {{path}}",
-  "backupPreviousDate": "Pre-restore backup: {{date}}. You can select it in the backup list above."
+  "backupPreviousDate": "Pre-restore backup: {{date}}. You can select it in the backup list above.",
+  "sharePreview": {
+    "title": "Review files before sharing",
+    "description": "Download references do not include copies of the original files. Review the bundled and excluded files before choosing a destination.",
+    "confirm": "Confirm and choose destination",
+    "references": "Download references ({{count}})",
+    "bundled": "Files included in the pack ({{count}})",
+    "excluded": "Excluded files ({{count}})",
+    "reason": {
+      "notSelected": "Not selected",
+      "credentialName": "Possible credential file",
+      "unmappedJar": "Unmapped JAR",
+      "unmapped": "No authorized download reference"
+    }
+  }
 }

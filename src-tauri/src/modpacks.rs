@@ -1,4 +1,5 @@
 //! Standards-based Modrinth and CurseForge pack import/export into new instances.
+use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     instances::{self, checked_absolute, FileRecord},
     models::Instance,
@@ -1030,13 +1031,16 @@ pub async fn list_modpack_versions(project_id: String) -> Result<Vec<ModpackVers
 }
 #[tauri::command]
 pub async fn import_modpack(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     app: AppHandle,
     state: State<'_, Arc<LauncherState>>,
     path: String,
     name: Option<String>,
     curseforge_api_key: Option<String>,
     include_optional: Option<bool>,
-) -> Result<PackImportResult, String> {
+) -> crate::errors::AppResult<PackImportResult> {
+    let path = grants.consume(PathUse::PackRead, &path, &window)?.to_string_lossy().into_owned();
     let archive = checked_absolute(Path::new(&path))?;
     if !archive.is_file()
         || archive
@@ -1060,7 +1064,7 @@ pub async fn import_modpack(
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
-    result
+    result.map_err(crate::errors::expected)
 }
 #[tauri::command]
 pub async fn install_modrinth_modpack(
@@ -1214,6 +1218,10 @@ fn credential_path(relative: &str) -> bool {
         .any(|word| part.contains(word))
     })
 }
+fn include_shared_config(record: &FileRecord, include_configs: Option<bool>) -> bool {
+    include_configs.unwrap_or(false) && ["config/", "defaultconfigs/", "kubejs/", "scripts/"].iter().any(|prefix| record.relative.starts_with(prefix))
+}
+
 fn without_disabled(value: &str) -> &str {
     if value.to_ascii_lowercase().ends_with(".disabled") {
         &value[..value.len() - 9]
@@ -1228,66 +1236,169 @@ fn is_mod(relative: &str) -> bool {
             .ends_with(".jar")
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedExportOptions {
+    include_configs: bool,
+    include_resource_packs: bool,
+    include_shader_packs: bool,
+    include_saves: bool,
+    include_owned_assets: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExcludedExportFile {
+    path: String,
+    reason: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedExportPreview {
+    download_references: Vec<String>,
+    bundled_files: Vec<String>,
+    excluded_files: Vec<ExcludedExportFile>,
+    fingerprint: String,
+}
+
+struct SharedExportPlan {
+    preview: SharedExportPreview,
+    files: Vec<FileRecord>,
+    index_files: Vec<PackFile>,
+    raw_files: Vec<FileRecord>,
+}
+
+fn shareable_extra(record: &FileRecord, options: SharedExportOptions) -> Result<bool, &'static str> {
+    let name = &record.relative;
+    if credential_path(name) { return Err("credentialName"); }
+    let allow = include_shared_config(record, Some(options.include_configs))
+        || options.include_saves && name.starts_with("saves/");
+    if allow && without_disabled(name).to_ascii_lowercase().ends_with(".jar") {
+        return Err("unmappedJar");
+    }
+    Ok(allow)
+}
+
+async fn build_shared_export_plan(
+    state: &LauncherState,
+    instance: &Instance,
+    root: &Path,
+    options: SharedExportOptions,
+) -> Result<SharedExportPlan, String> {
+    let root_for_scan = root.to_path_buf();
+    let files = tokio::task::spawn_blocking(move || instances::collect_files(&root_for_scan))
+        .await.map_err(|error| error.to_string())??;
+    let mut hash_matches = HashMap::<String, Vec<(FileRecord, String)>>::new();
+    let mut excluded_files = Vec::new();
+    let mut raw_files = Vec::new();
+    for record in &files {
+        let path = &record.relative;
+        if credential_path(path) {
+            excluded_files.push(ExcludedExportFile { path: path.clone(), reason: "credentialName" });
+        } else if is_mod(path)
+            || options.include_resource_packs && path.starts_with("resourcepacks/")
+            || options.include_shader_packs && path.starts_with("shaderpacks/") {
+            state.control.checkpoint().await?;
+            let file = safe_join(root, path)?;
+            let (sha1, sha512, size) = tokio::task::spawn_blocking(move || hashes(&file))
+                .await.map_err(|error| error.to_string())??;
+            if size != record.size { return Err("导出期间资源文件发生变化".into()); }
+            hash_matches.entry(sha512).or_default().push((record.clone(), sha1));
+        } else {
+            match shareable_extra(record, options) {
+                Ok(true) => raw_files.push(record.clone()),
+                Ok(false) => excluded_files.push(ExcludedExportFile { path: path.clone(), reason: "notSelected" }),
+                Err(reason) => excluded_files.push(ExcludedExportFile { path: path.clone(), reason }),
+            }
+        }
+    }
+    let api = client(false)?;
+    let hashes: Vec<_> = hash_matches.keys().cloned().collect();
+    let mut mappings = HashMap::<String, ApiVersion>::new();
+    for chunk in hashes.chunks(100) {
+        state.control.checkpoint().await?;
+        let result: HashMap<String, ApiVersion> = json_response(api.post(format!("{API}/version_files"))
+            .json(&json!({"algorithm":"sha512","hashes":chunk}))).await?;
+        mappings.extend(result);
+    }
+    let mut index_files = Vec::new();
+    for (hash, records) in hash_matches {
+        let mapped = mappings.get(&hash).and_then(|version| version.files.iter()
+            .find(|file| file.hashes.get("sha512").is_some_and(|value| value.eq_ignore_ascii_case(&hash))));
+        for (record, sha1) in records {
+            if let Some(file) = mapped {
+                allowed_download(&file.url)?;
+                index_files.push(PackFile { path: record.relative, hashes: BTreeMap::from([("sha1".into(), sha1), ("sha512".into(), hash.clone())]),
+                    downloads: vec![file.url.clone()], file_size: record.size, env: None });
+            } else if !is_mod(&record.relative) && options.include_owned_assets {
+                raw_files.push(record);
+            } else {
+                excluded_files.push(ExcludedExportFile { path: record.relative, reason: "unmapped" });
+            }
+        }
+    }
+    index_files.sort_by(|a, b| a.path.cmp(&b.path));
+    raw_files.sort_by(|a, b| a.relative.cmp(&b.relative));
+    excluded_files.sort_by(|a, b| a.path.cmp(&b.path));
+    // The confirmation covers complete inventory hashes, actual reference URLs
+    // and content choices; a change between approval and export must be shown again.
+    let fingerprint = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&(
+        &instance.id, &instance.version_id, options, &files, &index_files, &raw_files, &excluded_files,
+    )).map_err(|error| error.to_string())?));
+    let preview = SharedExportPreview {
+        download_references: index_files.iter().map(|file| file.path.clone()).collect(),
+        bundled_files: std::iter::once("modrinth.index.json".to_owned()).chain(raw_files.iter()
+            .map(|file| format!("overrides/{}", file.relative))).collect(),
+        excluded_files, fingerprint,
+    };
+    Ok(SharedExportPlan { preview, files, index_files, raw_files })
+}
+
+#[tauri::command]
+pub async fn plan_modrinth_export(
+    state: State<'_, Arc<LauncherState>>,
+    instance_id: String,
+    options: SharedExportOptions,
+) -> Result<SharedExportPreview, String> {
+    let _operation = state.operation.lock().await;
+    let instance = instances::instance(&state.snapshot()?, &instance_id)?;
+    let root = state.games.require_directory_stopped(Path::new(&instance.game_directory), Some(&instance_id), false)?;
+    let task = state.control.begin_with_display("export", &instance_id, "检查共享整合包清单", &instance.name)?;
+    let result = build_shared_export_plan(&state, &instance, &root, options).await;
+    state.control.finish(&task, result.as_ref().err().map(String::as_str));
+    Ok(result?.preview)
+}
+
 #[tauri::command]
 pub async fn export_modrinth_modpack(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     instance_id: String,
     output_path: String,
     name: Option<String>,
-    include_configs: Option<bool>,
-    include_resource_packs: Option<bool>,
-    include_shader_packs: Option<bool>,
-    include_saves: Option<bool>,
-    include_owned_assets: Option<bool>,
-) -> Result<PackExportResult, String> {
+    options: SharedExportOptions,
+    confirmed_fingerprint: String,
+) -> crate::errors::AppResult<PackExportResult> {
+    let output_path = grants.consume(PathUse::PackWrite, &output_path, &window)?.to_string_lossy().into_owned();
     let _operation = state.operation.lock().await;
     let instance = instances::instance(&state.snapshot()?, &instance_id)?;
-    let task = state
-        .control
-        .begin_with_display("export", &instance_id, "导出 Modrinth 整合包", &instance.name)?;
-    let result=async{
-        let root=checked_absolute(Path::new(&instance.game_directory))?;let output=checked_absolute(Path::new(&output_path))?;
-        if output.extension().and_then(|s|s.to_str()).is_none_or(|s|!s.eq_ignore_ascii_case("mrpack")){return Err("整合包导出路径须以 .mrpack 结尾".into());}
+    let task = state.control.begin_with_display("export", &instance_id, "导出 Modrinth 整合包", &instance.name)?;
+    let result=async {
+        let root=state.games.require_directory_stopped(Path::new(&instance.game_directory),Some(&instance_id),false)?;
+        let output=checked_absolute(Path::new(&output_path))?;
+        if output.extension().and_then(|s|s.to_str()).is_none_or(|s|!s.eq_ignore_ascii_case("mrpack")) {
+            return Err("整合包导出路径须以 .mrpack 结尾".into());
+        }
         if output.exists()||output.starts_with(&root){return Err("导出目标已存在或位于实例内部，请另选文件名和目录".into());}
-        let files=instances::collect_files(&root)?;let mut selected=Vec::new();let mut warnings=Vec::new();
-        for record in &files{
-            let relative=&record.relative;
-            if is_mod(relative)||relative.starts_with("resourcepacks/")&&include_resource_packs.unwrap_or(false)||relative.starts_with("shaderpacks/")&&include_shader_packs.unwrap_or(false){selected.push(record.clone());}
+        let plan = build_shared_export_plan(&state, &instance, &root, options).await?;
+        if plan.preview.fingerprint != confirmed_fingerprint {
+            return Err("instance.exportPreviewChanged".into());
         }
-        let mut hash_to_record=HashMap::<String,Vec<(FileRecord,String)>>::new();
-        for record in &selected{
-            state.control.checkpoint().await?;let(a,b,size)=hashes(&safe_join(&root,&record.relative)?)?;
-            if size!=record.size{return Err("导出期间资源文件发生变化".into());}
-            hash_to_record.entry(b).or_default().push((record.clone(),a));
-        }
-        let api=client(false)?;let all_hashes:Vec<String>=hash_to_record.keys().cloned().collect();let mut mappings=HashMap::<String,ApiVersion>::new();
-        for chunk in all_hashes.chunks(100){
-            state.control.checkpoint().await?;
-            let result:HashMap<String,ApiVersion>=json_response(api.post(format!("{API}/version_files")).json(&json!({"algorithm":"sha512","hashes":chunk}))).await?;
-            mappings.extend(result);
-        }
-        let mut index_files=Vec::new();let mut raw_files=Vec::new();let mut unmapped=Vec::new();
-        for(hash,records)in hash_to_record{
-            let mapped=mappings.get(&hash).and_then(|version|version.files.iter().find(|file|file.hashes.get("sha512").is_some_and(|v|v.eq_ignore_ascii_case(&hash))));
-            for(record,sha1)in records{
-                if let Some(file)=mapped{
-                    allowed_download(&file.url)?;
-                    index_files.push(PackFile{path:record.relative.clone(),hashes:BTreeMap::from([("sha1".into(),sha1),("sha512".into(),hash.clone())]),downloads:vec![file.url.clone()],file_size:record.size,env:None});
-                }else if is_mod(&record.relative)||!include_owned_assets.unwrap_or(false){unmapped.push(record.relative);}
-                else{raw_files.push(record);}
-            }
-        }
-        if !unmapped.is_empty(){return Err(format!("以下文件无法映射到可下载的 Modrinth 版本，未直接重新分发原文件：{}。模组请使用个人备份迁移；自有资源需明确选择“有权分享额外资源”。",unmapped.iter().take(12).cloned().collect::<Vec<_>>().join("、")));}
-        for record in &files{
-            let include=(include_configs.unwrap_or(true)&&["config/","defaultconfigs/","kubejs/","scripts/"].iter().any(|prefix|record.relative.starts_with(prefix)))
-                ||include_saves.unwrap_or(false)&&record.relative.starts_with("saves/");
-            if include{if credential_path(&record.relative){warnings.push(format!("已排除可能包含凭据的配置 {}",record.relative));}else{raw_files.push(record.clone());}}
-        }
-        raw_files.sort_by(|a,b|a.relative.cmp(&b.relative));raw_files.dedup_by(|a,b|a.relative==b.relative);
-        if raw_files.iter().any(|file|without_disabled(&file.relative).to_ascii_lowercase().ends_with(".jar")) {
-            return Err("配置或存档目录包含未经 Modrinth 映射的 JAR。为避免擅自重新分发，不能放进 overrides；请改用个人备份。".into());
-        }
-        index_files.sort_by(|a,b|a.path.cmp(&b.path));
+        let SharedExportPlan { preview, files, index_files, raw_files } = plan;
+        let warnings = preview.excluded_files.iter().filter(|file| file.reason != "notSelected")
+            .map(|file| file.path.clone()).collect::<Vec<_>>();
         let index=PackIndex{format_version:1,game:"minecraft".into(),version_id:uuid::Uuid::new_v4().to_string(),name:name.unwrap_or_else(||instance.name.clone()),
             summary:Some("Exported by VoxelightLauncher; mods are download references, never bundled without permission.".into()),files:index_files,dependencies:instance_dependencies(&state,&instance)?};
         let parent=output.parent().ok_or("导出目录无效")?;checked_absolute(parent)?;fs::create_dir_all(parent).map_err(|e|e.to_string())?;
@@ -1298,13 +1409,16 @@ pub async fn export_modrinth_modpack(
             zip.start_file("modrinth.index.json",options).map_err(|e|e.to_string())?;zip.write_all(&serde_json::to_vec_pretty(&index).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             for record in &raw_files{
                 state.control.checkpoint().await?;
-                zip.start_file(format!("overrides/{}",record.relative),options).map_err(|e|e.to_string())?;
+                zip.start_file(format!("overrides/{}",record.relative),options.large_file(record.size >= u32::MAX as u64)).map_err(|e|e.to_string())?;
                 std::io::copy(&mut fs::File::open(safe_join(&root,&record.relative)?).map_err(|e|e.to_string())?,&mut zip).map_err(|e|e.to_string())?;
             }
             zip.finish().map_err(|e|e.to_string())?.sync_all().map_err(|e|e.to_string())?;
-            if instances::collect_files(&root)?!=files{return Err("导出期间实例发生变化，请关闭游戏后重试".into());}
+            let verify_root = root.clone();
+            let latest = tokio::task::spawn_blocking(move || instances::collect_files(&verify_root))
+                .await.map_err(|error| error.to_string())??;
+            if latest != files { return Err("导出期间实例发生变化，请关闭游戏后重试".into()); }
             if output.exists(){return Err("导出期间出现同名文件，现有文件未覆盖".into());}
-            fs::rename(&temporary,&output).map_err(|e|e.to_string())
+            instances::publish_archive_file(&temporary,&output).map_err(|e|e.to_string())
         }.await;
         if write_result.is_err(){let _=fs::remove_file(&temporary);}write_result?;
         Ok(PackExportResult{path:output.to_string_lossy().into_owned(),download_files:index.files.len(),override_files:raw_files.len(),warnings})
@@ -1312,12 +1426,24 @@ pub async fn export_modrinth_modpack(
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
-    result
+    result.map_err(crate::errors::expected)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn c5_shared_default_never_includes_user_configs_and_preview_lists_files() {
+        let mods = [FileRecord { relative: "mods/example.jar".into(), size: 4, sha256: "known".into() }];
+        let records = mods.into_iter().chain([
+            FileRecord { relative: "config/ordinary.toml".into(), size: 8, sha256: "present".into() },
+            FileRecord { relative: "config/account-token.json".into(), size: 8, sha256: "present".into() },
+        ]).collect::<Vec<_>>();
+        let preview = records.iter().filter(|record| is_mod(&record.relative)
+            || include_shared_config(record, None)).map(|record| record.relative.as_str()).collect::<Vec<_>>();
+        assert_eq!(preview, vec!["mods/example.jar"], "implicit shared export copied ordinary user settings");
+    }
+
     fn test_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target/modpack-tests")

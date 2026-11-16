@@ -9,6 +9,8 @@ import {
   type Bootstrap,
   type Config,
   type LogEntry,
+  type LaunchResult,
+  type GameStopResult,
   type Progress,
   type RunningGame,
   type VersionManifest,
@@ -57,7 +59,10 @@ export function useLauncherController(): LauncherContextValue {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<LauncherNotice | null>(null);
-  const [gamePid, setGamePid] = useState<number>();
+  const [lastLaunched, setLastLaunched] = useState<LaunchResult>();
+  const recentlyExitedGames = useRef<string[]>([]);
+  const stoppingGames = useRef(new Set<string>());
+  const gamePid = lastLaunched?.pid;
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const operationCount = useRef(0);
 
@@ -209,7 +214,7 @@ export function useLauncherController(): LauncherContextValue {
           await request.cancellation;
           return;
         }
-        return await command<{ pid: number }>("launch_game", { ...target, taskId: request.id });
+        return await command<LaunchResult>("launch_game", { ...target, taskId: request.id });
       } catch (error) {
         const normalized = normalizeError(error);
         if (normalized.code !== "download.cancelled") {
@@ -230,7 +235,7 @@ export function useLauncherController(): LauncherContextValue {
       }
     });
     if (result) {
-      setGamePid(result.pid);
+      if (!recentlyExitedGames.current.includes(result.gameId)) setLastLaunched(result);
       showNotice("game.launched");
       await reload();
     }
@@ -253,25 +258,29 @@ export function useLauncherController(): LauncherContextValue {
   }, [activeAccount, data.instances, selectedInstanceId, selectedVersionId, showNotice, startLaunch]);
 
   const stop = useCallback(async () => {
-    const pid = selectedRunningGame?.pid ?? gamePid;
-    if (pid === undefined) {
+    const gameId = selectedRunningGame?.gameId ?? lastLaunched?.gameId;
+    if (!gameId) {
       showNotice("game.notRunning", "error");
       return;
     }
-    const result = await run("game.stop", async () => {
-      await command("stop_game", { pid });
-      const games = await command<RunningGame[]>("list_running_games");
-      return { games, pid };
-    });
-    if (!result) return;
-    setRunningGames(result.games);
-    if (result.games.some((game) => game.pid === pid)) {
-      showNotice("game.stopRequested");
-      return;
+    if (stoppingGames.current.has(gameId)) return;
+    stoppingGames.current.add(gameId);
+    try {
+      const result = await run("game.stop", async () => {
+        const normal = await command<GameStopResult>("stop_game", { gameId, force: false });
+        if (normal.status !== "forceRequired") return normal;
+        // The native command presents the save-risk warning and requires consent.
+        return command<GameStopResult>("stop_game", { gameId, force: true });
+      });
+      if (result?.status === "stopped") {
+        setRunningGames(games => games.filter(game => game.gameId !== gameId));
+        setLastLaunched(game => game?.gameId === gameId ? undefined : game);
+        showNotice("game.stopped");
+      }
+    } finally {
+      stoppingGames.current.delete(gameId);
     }
-    setGamePid((current) => (current === pid ? undefined : current));
-    showNotice("game.stopped");
-  }, [gamePid, run, selectedRunningGame?.pid, showNotice]);
+  }, [lastLaunched?.gameId, run, selectedRunningGame?.gameId, showNotice]);
 
   const launchMultiplayer = useCallback(async (versionId: string, serverAddress: string) => {
     if (!activeAccount) {
@@ -332,9 +341,10 @@ export function useLauncherController(): LauncherContextValue {
       events<LogEntry>("launcher://log", (item) =>
         setLogs((previous) => [...previous.slice(-399), item]),
       ),
-      events<{ pid: number; code: number }>("launcher://game-exit", (result) => {
-        setGamePid(undefined);
-        showNotice("game.exited", "info", { code: result.code });
+      events<{ gameId: string; pid: number; code: number | null }>("launcher://game-exit", (result) => {
+        recentlyExitedGames.current = [...recentlyExitedGames.current.slice(-31), result.gameId];
+        setLastLaunched(game => game?.gameId === result.gameId ? undefined : game);
+        showNotice("game.exited", "info", { code: result.code ?? "—" });
       }),
     ];
     return () => {

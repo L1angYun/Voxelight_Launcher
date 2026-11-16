@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { Download, KeyRound, Upload } from "lucide-react";
 import { command } from "../../lib/launcher";
 import { Button } from "../../components/ui/Button";
@@ -47,14 +47,8 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
   async function preset(mode: "import" | "export") {
     try {
       const path = mode === "export"
-        ? await save({
-            defaultPath: "voxelight-launcher-preset.json",
-            filters: [{ name: t("settings:preset.filter"), extensions: ["json"] }],
-          })
-        : await open({
-            multiple: false,
-            filters: [{ name: t("settings:preset.filter"), extensions: ["json"] }],
-          });
+        ? await pickLauncherPath("presetWrite", "voxelight-launcher-preset.json")
+        : await pickLauncherPath("presetRead");
       if (typeof path !== "string") return;
       if (mode === "export") {
         await command("export_launcher_config", { path });

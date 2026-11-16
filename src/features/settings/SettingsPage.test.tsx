@@ -123,6 +123,10 @@ beforeEach(() => {
   mockLauncher = fixture();
   commandMock.mockReset();
   commandMock.mockImplementation(async (name, args) => {
+    if (name === "choose_launcher_path") {
+      const picked = args?.purpose === "presetWrite" ? await mocks.save() : await mocks.open();
+      return typeof picked === "string" ? [picked] : picked;
+    }
     if (name === "get_service_status") return { curseforgeConfigured: false };
     if (name === "set_service_secret") return Boolean(args?.secret);
     if (name === "detect_java") return [{ path: "C:\\SyntheticFixture\\java.exe", version: "21.0.1", major: 21 }];
@@ -210,7 +214,7 @@ describe("global settings", () => {
     await fill("Game window width", "1600");
     await fill("Game window height", "900");
     await click("Save settings");
-    expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ directory: true }));
+    expect(commandMock).toHaveBeenCalledWith("choose_launcher_path", { purpose: "gameDirectory", suggestedName: undefined });
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
       gameDirectory: "C:\\ChangedFixture",
       versionIsolation: false,
@@ -318,6 +322,7 @@ describe("global settings", () => {
     expect(appearance.effects).toBe("full");
     expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
     commandMock.mockImplementation(async (name) => {
+      if (name === "choose_launcher_path") return [await mocks.open()];
       if (name === "set_launcher_background") throw new LauncherError("config.backgroundInvalid");
       return null;
     });

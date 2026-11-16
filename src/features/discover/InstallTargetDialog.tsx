@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { ExternalLink } from "../../components/ui/ExternalLink";
 import { command } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import { useLauncher } from "../../app/controller/LauncherProvider";
@@ -126,7 +126,7 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCrea
     {actionError ? <p role="alert">{actionError}</p> : null}
     {flow.status === "curseforge" ? <p>{t("discover:installTarget.curseforge")}</p> : null}
     {unsupported ? <EmptyState title={t("discover:installTarget.unsupported." + unsupported)}
-      action={<Button onClick={() => { void openUrl(external).catch(cause => setActionError(errorText(normalizeError(cause).code, t))); }}>{t("discover:external")}</Button>} /> : null}
+      action={<ExternalLink url={external} variant="ghost">{t("discover:external")}</ExternalLink>} /> : null}
     {flow.plan && !unsupported ? <>
       <div inert={working || undefined}>
         {compatible.length ? <section className="vx-install-target__section">

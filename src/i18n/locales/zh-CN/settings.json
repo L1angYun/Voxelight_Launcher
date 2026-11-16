@@ -32,7 +32,6 @@
   "preset": {
     "title": "配置预设",
     "description": "导出或导入启动器设置，不包含账号、登录令牌或平台密钥。",
-    "filter": "启动器预设",
     "export": "导出设置预设",
     "import": "导入设置预设"
   },
@@ -92,14 +91,11 @@
   "background": {
     "title": "首页背景",
     "description": "选择本地 PNG、JPEG 或 WebP 图片，文字区域保持稳定对比度。",
-    "picker": "选择首页背景",
-    "filter": "背景图片",
     "choose": "选择首页背景",
     "reset": "恢复默认背景"
   },
   "gameDescription": "共享游戏文件与窗口默认值，实例覆盖仍在实例设置中。",
   "game": {
-    "directoryPicker": "选择 Minecraft 游戏目录",
     "browse": "浏览",
     "isolationDescription": "为每个游戏版本保存独立的存档、模组和设置。"
   },

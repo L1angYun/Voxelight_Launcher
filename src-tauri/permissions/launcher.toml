@@ -1,0 +1,149 @@
+# App-specific IPC families for the single local launcher WebView.
+
+[[permission]]
+identifier = "launcher-shell"
+description = "Allow the launcher shell commands in the local main window."
+commands.allow = [
+  "bootstrap",
+  "get_system_appearance",
+  "get_launcher_background",
+  "list_running_games",
+  "open_folder",
+]
+
+[[permission]]
+identifier = "launcher-settings"
+description = "Allow the launcher settings commands in the local main window."
+commands.allow = [
+  "get_config",
+  "save_config",
+  "save_appearance_config",
+  "detect_java",
+  "get_service_status",
+  "set_service_secret",
+  "set_launcher_background",
+  "export_launcher_config",
+  "import_launcher_config",
+]
+
+[[permission]]
+identifier = "launcher-accounts"
+description = "Allow the launcher accounts commands in the local main window."
+commands.allow = [
+  "add_offline_account",
+  "select_account",
+  "remove_account",
+  "start_microsoft_login",
+  "begin_microsoft_login",
+  "poll_microsoft_login",
+  "cancel_auth_login",
+  "login_authlib",
+  "select_authlib_profile",
+  "refresh_account",
+  "get_player_profile",
+  "upload_account_skin",
+  "reset_account_skin",
+  "select_account_cape",
+  "get_default_skin",
+]
+
+[[permission]]
+identifier = "launcher-launch"
+description = "Allow the launcher launch commands in the local main window."
+commands.allow = [
+  "list_versions",
+  "scan_versions",
+  "list_loader_versions",
+  "install_loader",
+  "install_java",
+  "install_version",
+  "reserve_launch_task",
+  "launch_game",
+  "stop_game",
+]
+
+[[permission]]
+identifier = "launcher-library"
+description = "Allow the launcher library commands in the local main window."
+commands.allow = [
+  "create_instance",
+  "remove_instance",
+  "update_instance",
+  "clone_instance",
+  "backup_instance",
+  "list_instance_backups",
+  "restore_instance_backup",
+  "recover_instance_restore",
+  "export_instance_zip",
+  "list_modpack_versions",
+  "import_modpack",
+  "diagnose_instance",
+  "export_diagnostics",
+  "list_worlds",
+  "backup_world",
+  "import_world",
+  "list_screenshots",
+  "read_screenshot",
+  "import_local_resources",
+  "plan_modrinth_export",
+  "export_modrinth_modpack",
+]
+
+[[permission]]
+identifier = "launcher-downloads"
+description = "Allow the launcher downloads commands in the local main window."
+commands.allow = [
+  "list_download_tasks",
+  "set_download_paused",
+  "cancel_download_task",
+  "queue_install",
+  "retry_download_task",
+]
+
+[[permission]]
+identifier = "launcher-discover"
+description = "Allow the launcher discover commands in the local main window."
+commands.allow = [
+  "get_resource_context",
+  "get_modrinth_project_details",
+  "get_curseforge_project_details",
+  "resolve_resource_targets",
+  "create_instance_for_resource",
+  "install_resource",
+  "list_local_resources",
+  "toggle_resource",
+  "check_resource_updates",
+  "update_resource",
+  "list_resource_update_history",
+  "rollback_resource_update",
+  "recover_resource_update",
+  "install_modrinth_modpack",
+  "search_curseforge",
+  "install_curseforge_resource",
+]
+
+[[permission]]
+identifier = "launcher-multiplayer"
+description = "Allow the launcher multiplayer commands in the local main window."
+commands.allow = [
+  "list_servers",
+  "save_server",
+  "remove_server",
+  "ping_server",
+  "discover_lan",
+  "list_managed_servers",
+  "create_managed_server",
+  "update_managed_server",
+  "set_managed_server_eula",
+  "start_managed_server",
+  "stop_managed_server",
+  "send_managed_server_command",
+  "read_managed_server_logs",
+]
+
+[[permission]]
+identifier = "launcher-native-paths"
+description = "Allow the launcher native paths commands in the local main window."
+commands.allow = [
+  "choose_launcher_path",
+]

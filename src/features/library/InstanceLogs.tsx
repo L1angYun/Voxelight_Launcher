@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { save } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { command } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { normalizeError } from "../../lib/errors";
@@ -32,9 +32,9 @@ export function InstanceLogs({ versionId, instanceId }: { versionId: string; ins
   }
 
   async function exportReport() {
-    const outputPath = await save({ title: t("library:exportDiagnostics"), defaultPath: `minecraft-${versionId}-diagnostics.txt`, filters: [{ name: t("library:diagnosticsFileType"), extensions: ["txt"] }] });
-    if (!outputPath) return;
     try {
+      const outputPath = await pickLauncherPath("diagnostics", `minecraft-${versionId}-diagnostics.txt`);
+      if (!outputPath) return;
       await command("export_diagnostics", { versionId, instanceId, outputPath });
       setNotice("diagnosticsExported");
     } catch (cause) {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { command, type Instance } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
@@ -71,7 +71,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         </div>
         <Field label={t("library:notes")} htmlFor="instance-notes"><textarea id="instance-notes" value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} /></Field>
         <div className="vx-action-row">
-          <Button variant="secondary" onClick={() => void open({ title: t("library:chooseIcon"), multiple: false, filters: [{ name: t("library:imageFileType"), extensions: ["png", "jpg", "jpeg", "webp", "ico"] }] }).then((path) => { if (typeof path === "string") setIconPath(path); })}>{t("library:chooseIcon")}</Button>
+          <Button variant="secondary" onClick={() => void run("instance.settings", () => pickLauncherPath("instanceIcon").then((path) => { if (typeof path === "string") setIconPath(path); }))}>{t("library:chooseIcon")}</Button>
           {iconPath ? <small className="vx-path">{iconPath}</small> : null}
         </div>
       </section>
@@ -85,7 +85,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         </div>
         <Field label={t("library:jvmArguments")} htmlFor="instance-jvm"><input id="instance-jvm" value={jvmArguments} onChange={(event) => setJvmArguments(event.target.value)} /></Field>
         <div className="vx-action-row">
-          <Button variant="secondary" onClick={() => void open({ title: t("library:chooseJava"), multiple: false, filters: [{ name: t("library:javaFileType"), extensions: ["exe"] }] }).then((path) => { if (typeof path === "string") setJavaPath(path); })}>{t("library:chooseJava")}</Button>
+          <Button variant="secondary" onClick={() => void run("instance.settings", () => pickLauncherPath("java").then((path) => { if (typeof path === "string") setJavaPath(path); }))}>{t("library:chooseJava")}</Button>
           <Button variant="ghost" onClick={resetRuntime}>{t("library:resetRuntime")}</Button>
         </div>
       </section>

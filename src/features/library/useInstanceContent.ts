@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPaths, pickLauncherPath } from "../../lib/nativePaths";
 import { command, desktop } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import type {
@@ -190,11 +190,9 @@ export function useResourceManager(versionId: string, instanceId?: string) {
 
   const importFiles = useCallback(async () => {
     if (!desktop || busy) return;
-    const paths = await open({
-      title: t("library:selectResources"),
-      multiple: true,
-      filters: [{ name: kind === "mod" ? t("library:jarMods") : t("library:zipResources"), extensions: [kind === "mod" ? "jar" : "zip"] }],
-    });
+    let paths: string[] | null = null;
+    try { paths = await pickLauncherPaths("localResources"); }
+    catch (cause) { setError(normalizeError(cause).code); return; }
     if (!paths?.length) return;
     const request = ++generation.current;
     setBusy("import");
@@ -265,7 +263,9 @@ export function useWorlds(versionId: string, instanceId?: string) {
 
   const importWorld = useCallback(async () => {
     if (!desktop || busy) return;
-    const path = await open({ title: t("library:selectWorldZip"), multiple: false, filters: [{ name: t("library:worldZipFileType"), extensions: ["zip"] }] });
+    let path: string | null = null;
+    try { path = await pickLauncherPath("worldRead"); }
+    catch (cause) { setError(normalizeError(cause).code); return; }
     if (typeof path !== "string") return;
     const request = ++generation.current;
     setBusy("import");
@@ -285,7 +285,9 @@ export function useWorlds(versionId: string, instanceId?: string) {
 
   const backupWorld = useCallback(async (world: World) => {
     if (!desktop || busy) return;
-    const outputPath = await save({ title: t("library:backupWorld"), defaultPath: `${world.folderName}.zip`, filters: [{ name: t("library:worldZipFileType"), extensions: ["zip"] }] });
+    let outputPath: string | null = null;
+    try { outputPath = await pickLauncherPath("worldWrite", `${world.folderName}.zip`); }
+    catch (cause) { setError(normalizeError(cause).code); return; }
     if (!outputPath) return;
     const request = ++generation.current;
     setBusy(`backup:${world.folderName}`);

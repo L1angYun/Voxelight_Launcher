@@ -12,7 +12,7 @@ rem scope only, nothing is changed system-wide) sidesteps that.
 rem
 rem Usage:  build.cmd                 full build (exe + NSIS installer)
 rem         build.cmd -NoBundle       executable only
-rem         build.cmd -CloseRunning   stop a running launcher first
+rem         build.cmd -CloseRunning -CloseRunningPath "..." closes an exact build executable
 rem         build.cmd -Clean          discard dist\ and old bundles first
 rem Any argument is passed straight through to build.ps1.
 rem ---------------------------------------------------------------------------

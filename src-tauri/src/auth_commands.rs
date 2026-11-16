@@ -1,3 +1,4 @@
+use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     auth::{
         AuthService, AuthenticatedAccount, AuthlibLogin, DeviceLogin, DevicePoll, PlayerProfile,
@@ -7,7 +8,7 @@ use crate::{
     models::{Account, Config},
     storage::LauncherState,
 };
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 use tauri::State;
 pub(crate) fn remember(state: &LauncherState, value: &AuthenticatedAccount) -> Result<(), String> {
     state.update(|data| {
@@ -178,13 +179,16 @@ pub async fn get_player_profile(
 }
 #[tauri::command]
 pub async fn upload_account_skin(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     auth: State<'_, Arc<AuthService>>,
     account_id: String,
     path: String,
     model: String,
 ) -> AppResult<PlayerProfile> {
-    let path = Path::new(&path);
+    let path = grants.consume(PathUse::Skin, &path, &window)?;
+    let path = path.as_path();
     if !path.is_absolute()
         || path
             .extension()

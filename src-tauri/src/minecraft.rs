@@ -1984,14 +1984,11 @@ fn java_candidates(config: &Config, data_dir: &Path) -> Vec<PathBuf> {
             }
         }
     }
-    find_java(
-        &Path::new(&config.game_directory).join("runtime"),
-        7,
-        &mut candidates,
-    );
+    // Choosing a game-data directory never authorizes arbitrary executables in it.
     find_java(&data_dir.join("runtimes"), 5, &mut candidates);
     let mut unique = HashSet::new();
-    candidates.retain(|p| p.is_file() && unique.insert(p.to_string_lossy().to_ascii_lowercase()));
+    candidates.retain(|p| p.is_file() && crate::instances::checked_absolute(p).is_ok()
+        && unique.insert(p.to_string_lossy().to_ascii_lowercase()));
     candidates
 }
 
@@ -2540,15 +2537,11 @@ where
 
     let result = async {
         let snapshot = state.snapshot()?;
-        if let Some(instance_id) = instance_id {
-            let instance = snapshot
-                .instances
-                .iter()
-                .find(|instance| instance.id == instance_id)
-                .ok_or("实例不存在")?;
-            game_directory(&snapshot.config, id, Some(instance))?;
-            state.games.require_instance_launch_stopped(instance_id)?;
-        }
+        let instance = instance_id
+            .map(|id| snapshot.instances.iter().find(|value| value.id == id).ok_or("实例不存在"))
+            .transpose()?;
+        let directory = game_directory(&snapshot.config, id, instance)?;
+        state.games.require_directory_stopped(&directory, instance_id, true)?;
 
         state.control.checkpoint().await?;
         prepare(snapshot).await
@@ -2647,7 +2640,9 @@ async fn launch_prepared(
             config.screen_height = height;
         }
     }
-    let game_dir = game_directory(&snapshot.config, &id, instance)?;
+    let game_dir = crate::processes::canonical_game_directory(
+        &game_directory(&snapshot.config, &id, instance)?,
+    )?;
     let (_, metadata) = install_with_config(&state, &app, &id, &snapshot.config).await?;
     let java = select_or_install_java(&state, &app, &config, &metadata).await?;
     let recommended = metadata["javaVersion"]["majorVersion"]
@@ -2872,7 +2867,6 @@ async fn launch_prepared(
         command.spawn().map_err(|e| format!("启动 Java 失败：{e}"))
     }).await?;
     let pid = child.id().ok_or("Java 进程未提供 PID")?;
-    crate::processes::register(&app, pid, &id, instance_id.clone(), &game_dir);
     log(
         &app,
         &state,
@@ -2883,9 +2877,9 @@ async fn launch_prepared(
             game_dir.display()
         ),
     );
-    if let Some(instance_id) = instance_id {
+    if let Some(instance_id) = instance_id.as_ref() {
         if let Err(error) = state.update(|data| {
-            if let Some(instance) = data.instances.iter_mut().find(|i| i.id == instance_id) {
+            if let Some(instance) = data.instances.iter_mut().find(|i| &i.id == instance_id) {
                 instance.last_played = Some(chrono::Utc::now().to_rfc3339());
             }
             Ok(())
@@ -2930,12 +2924,19 @@ async fn launch_prepared(
             }
         });
     }
+    let game_id = uuid::Uuid::new_v4().to_string();
+    let (process, owner) = crate::game_process::GameProcess::new(child);
+    crate::processes::register(&app, &game_id, pid, &id, instance_id.clone(), &game_dir, owner);
     let app_for_exit = app.clone();
     let state_for_exit = state.clone();
+    let id_for_exit = game_id.clone();
     tauri::async_runtime::spawn(async move {
-        match child.wait().await {
+        let status = process.wait().await;
+        // The actor owns the child until exit, including when force was approved.
+        // Remove only this identity; the PID may now be used for another game.
+        match status {
             Ok(status) => {
-                crate::processes::unregister(&app_for_exit, &state_for_exit, pid, status.code());
+                crate::processes::unregister(&app_for_exit, &state_for_exit, &id_for_exit, status.code());
                 log(
                     &app_for_exit,
                     &state_for_exit,
@@ -2944,7 +2945,7 @@ async fn launch_prepared(
                 );
                 let _ = app_for_exit.emit(
                     "launcher://game-exit",
-                    json!({"pid":pid,"code":status.code()}),
+                    json!({"gameId":id_for_exit,"pid":pid,"code":status.code()}),
                 );
             }
             Err(error) => log(
@@ -2956,6 +2957,7 @@ async fn launch_prepared(
         }
     });
     Ok(LaunchResult {
+        game_id,
         pid,
         version_id: id,
         game_directory: game_dir.to_string_lossy().into_owned(),
@@ -3439,6 +3441,28 @@ mod tests {
                 b"user profile created before publication"
             );
             assert_eq!(fs::read(&staged).unwrap(), b"verified staged metadata");
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn launch_guard_c5_root_alias_rejects_version_directory_of_another_instance() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("c5-canonical-root");
+            let state = source_test_state(&directory);
+            let snapshot = state.snapshot().unwrap();
+            let game = game_directory(&snapshot.config, "same-root", None).unwrap();
+            fs::create_dir_all(&game).unwrap();
+            state.games.fixture_running_directory(&game, Some("unrelated-instance-id"));
+            let prepared = std::sync::atomic::AtomicBool::new(false);
+            let task_id = state.control.reserve_launch("same-root", None).unwrap();
+            let result = with_launch_preparation(&state, &task_id, "same-root", None, |_| async {
+                prepared.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }).await;
+            assert!(result.is_err(), "a second launch must not prepare the active game directory");
+            assert!(!prepared.load(std::sync::atomic::Ordering::SeqCst));
+            drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
     }
@@ -4432,7 +4456,7 @@ mod managed_runtime_path_tests {
         let config = Config { game_directory: game.to_string_lossy().into_owned(), ..Config::default() };
         let found = java_candidates(&config, &active);
         assert!(found.contains(&sentinels[0]));
-        assert!(found.contains(&sentinels[1]));
+        assert!(!found.contains(&sentinels[1]), "a game folder is not permission to probe executables");
         assert!(!found.contains(&sentinels[2]));
     }
 }

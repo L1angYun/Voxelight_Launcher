@@ -55,8 +55,14 @@ fn validate_default_skin(skin: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn save_config(state: Shared<'_>, config: Config) -> AppResult<Config> {
-    save_config_inner(&state, config).map_err(expected)
+pub async fn save_config(
+    window: tauri::WebviewWindow,
+    grants: State<'_, crate::path_grants::PathGrants>,
+    state: Shared<'_>, mut config: Config,
+) -> AppResult<Config> {
+    let previous = state.snapshot()?.config;
+    crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
+    save_approved_config(&state, config, Some(&previous)).map_err(expected)
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -154,10 +160,12 @@ fn save_appearance_config_inner(
     })
 }
 
-pub(crate) fn save_config_inner(
-    state: &LauncherState,
-    mut config: Config,
-) -> Result<Config, String> {
+#[cfg(test)]
+pub(crate) fn save_config_inner(state: &LauncherState, config: Config) -> Result<Config, String> {
+    save_approved_config(state, config, None)
+}
+
+pub(crate) fn save_approved_config(state: &LauncherState, mut config: Config, approved_against: Option<&Config>) -> Result<Config, String> {
     let _guard = state
         .operation
         .try_lock()
@@ -196,6 +204,11 @@ pub(crate) fn save_config_inner(
         return Err("下载源无效".into());
     }
     let saved = state.update(|data| {
+        if let Some(approved) = approved_against {
+            if !crate::path_grants::approved_config_is_current(approved, &data.config) {
+                return Err(crate::errors::STORAGE_STATE_CHANGED.into());
+            }
+        }
         data.config = config.clone();
         Ok(config)
     })?;
@@ -495,30 +508,52 @@ pub async fn launch_game(
     }
 }
 
+fn registered_folder(
+    state: &LauncherState, kind: &str, version_id: Option<&str>, instance_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    if kind == "logs" {
+        return crate::instances::checked_absolute(&safe_join(&state.data_dir, "logs")?);
+    }
+    let data = state.snapshot()?;
+    let root = crate::processes::canonical_game_directory(Path::new(&data.config.game_directory))?;
+    let directory = match kind {
+        "game" => root,
+        "instances" => safe_join(&root, "instances")?,
+        "version" => {
+            let id = version_id.ok_or("未指定版本")?;
+            validate_id(id)?;
+            safe_join(&root, &format!("versions/{id}"))?
+        }
+        "instance" => {
+            let id = instance_id.ok_or("未指定实例")?;
+            validate_id(id)?;
+            let value = crate::instances::instance(&data, id)?;
+            let directory = crate::processes::canonical_game_directory(Path::new(&value.game_directory))?;
+            if !directory.starts_with(root) { return Err("实例目录不在已授权的游戏根目录中".into()); }
+            directory
+        }
+        _ => return Err("不支持的文件夹类型".into()),
+    };
+    crate::instances::checked_absolute(&directory)
+}
+
 #[tauri::command]
 pub fn open_folder(
     app: AppHandle,
     state: Shared<'_>,
     kind: String,
     version_id: Option<String>,
-) -> Result<(), String> {
-    let config = state.snapshot()?.config;
-    let root = PathBuf::from(config.game_directory);
-    let directory = match kind.as_str() {
-        "game" => root,
-        "logs" => state.data_dir.join("logs"),
-        "instances" => safe_join(&root, "instances")?,
-        "version" => {
-            let id = version_id.ok_or("未指定版本")?;
-            validate_id(&id)?;
-            safe_join(&root, &format!("versions/{id}"))?
-        }
-        _ => return Err("不支持的文件夹类型".into()),
-    };
-    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    app.opener()
-        .open_path(directory.to_string_lossy().as_ref(), None::<&str>)
-        .map_err(|e| e.to_string())
+    instance_id: Option<String>,
+) -> AppResult<()> {
+    let folder_error = |detail: String| crate::errors::AppError::new("storage.folderUnavailable").with_detail(detail);
+    let directory = registered_folder(&state, &kind, version_id.as_deref(), instance_id.as_deref()).map_err(folder_error)?;
+    // Looking up a stale registered instance should not create its directory.
+    if kind != "instance" {
+        std::fs::create_dir_all(&directory).map_err(|error| folder_error(error.to_string()))?;
+    }
+    if !directory.is_dir() { return Err(folder_error("实例目录不存在".into())); }
+    app.opener().open_path(crate::storage::display_profile_path(&directory), None::<&str>)
+        .map_err(|error| folder_error(error.to_string()))
 }
 
 #[tauri::command]
@@ -534,6 +569,34 @@ pub async fn start_microsoft_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c5_logs_folder_does_not_depend_on_unavailable_game_directory() {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/command-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let not_a_directory = root.path().join("unavailable-game-root");
+        std::fs::write(&not_a_directory, b"not a directory").unwrap();
+        let state = LauncherState::test_fixture(
+            root.path().to_owned(),
+            Persisted {
+                config: Config {
+                    game_directory: not_a_directory.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        assert!(registered_folder(&state, "game", None, None).is_err());
+        assert_eq!(
+            registered_folder(&state, "logs", None, None).unwrap(),
+            root.path().join("logs")
+        );
+    }
 
     #[test]
     fn bootstrap_capabilities_expose_only_builtin_presence() {

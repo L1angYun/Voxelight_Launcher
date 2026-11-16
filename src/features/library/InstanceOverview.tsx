@@ -1,16 +1,23 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { save } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { command, type Instance } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import type { BackupRecoveryPaths, InstanceBackup, RecoverInstanceRestoreResult, RestoreInstanceBackupResult } from "./types";
 import { useLauncher } from "../../app/controller/LauncherProvider";
+import { Dialog } from "../../components/ui/Dialog";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { useInstanceBackups } from "./useInstanceContent";
 import { errorText, loaderText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
+
+interface SharePreview {
+  downloadReferences: string[];
+  bundledFiles: string[];
+  excludedFiles: { path: string; reason: string }[];
+  fingerprint: string;
+}
 
 export function InstanceOverview({
   instance,
@@ -34,7 +41,12 @@ export function InstanceOverview({
   } | null>(null);
   const chosenBackup = backups.find((item) => item.id === selectedBackup);
   const [notice, setNotice] = useState("");
-  const [includeConfigs, setIncludeConfigs] = useState(true);
+  const [includeConfigs, setIncludeConfigs] = useState(false);
+  const [share, setShare] = useState<{
+    instanceId: string;
+    options: Record<string, boolean>;
+    preview: SharePreview;
+  } | null>(null);
   const [includeResourcePacks, setIncludeResourcePacks] = useState(false);
   const [includeShaderPacks, setIncludeShaderPacks] = useState(false);
   const [includeSaves, setIncludeSaves] = useState(false);
@@ -120,11 +132,7 @@ export function InstanceOverview({
   );
   const exportZip = () =>
     void run("instance.exportZip", async () => {
-      const outputPath = await save({
-        title: t("library:exportZip"),
-        defaultPath: `${instance.name}-backup.zip`,
-        filters: [{ name: t("library:backupFileType"), extensions: ["zip"] }],
-      });
+      const outputPath = await pickLauncherPath("instanceArchive", `${instance.name}-backup.zip`);
       if (!outputPath) return;
       await command("export_instance_zip", {
         instanceId: instance.id,
@@ -132,28 +140,26 @@ export function InstanceOverview({
       });
       setNotice("exportComplete");
     });
-  const exportPack = () =>
+  const previewPack = () =>
     void run("instance.exportPack", async () => {
-      const outputPath = await save({
-        title: t("library:exportPack"),
-        defaultPath: `${instance.name}.mrpack`,
-        filters: [
-          { name: t("library:modrinthFileType"), extensions: ["mrpack"] },
-        ],
-      });
+      const options = { includeConfigs, includeResourcePacks, includeShaderPacks, includeSaves, includeOwnedAssets };
+      const preview = await command<SharePreview>("plan_modrinth_export", { instanceId: instance.id, options });
+      setShare({ instanceId: instance.id, options, preview });
+    });
+  const exportPack = () => {
+    if (!share || share.instanceId !== instance.id) return;
+    const approved = share;
+    setShare(null);
+    void run("instance.exportPack", async () => {
+      const outputPath = await pickLauncherPath("packWrite", `${instance.name}.mrpack`);
       if (!outputPath) return;
       await command("export_modrinth_modpack", {
-        instanceId: instance.id,
-        outputPath,
-        name: instance.name,
-        includeConfigs,
-        includeResourcePacks,
-        includeShaderPacks,
-        includeSaves,
-        includeOwnedAssets,
+        instanceId: approved.instanceId, outputPath, name: instance.name, options: approved.options,
+        confirmedFingerprint: approved.preview.fingerprint,
       });
       setNotice("exportComplete");
     });
+  };
   return (
     <div className="vx-detail-stack">
       <section className="vx-detail-section vx-overview-ledger">
@@ -191,7 +197,7 @@ export function InstanceOverview({
         <div className="vx-action-row">
           <Button
             variant="secondary"
-            onClick={() => void openPath(instance.gameDirectory)}
+            onClick={() => void run("folder.open", () => command("open_folder", { kind: "instance", instanceId: instance.id }))}
           >
             {t("library:openFolder")}
           </Button>
@@ -263,7 +269,7 @@ export function InstanceOverview({
             <Button variant="secondary" onClick={exportZip}>
               {t("library:exportZip")}
             </Button>
-            <Button variant="secondary" onClick={exportPack}>
+            <Button variant="secondary" onClick={previewPack}>
               {t("library:exportPack")}
             </Button>
           </div>
@@ -319,6 +325,17 @@ export function InstanceOverview({
           </div>
         </section>
       </div>
+      {share?.instanceId === instance.id ? <Dialog open onOpenChange={(open) => { if (!open) setShare(null); }}
+        title={t("library:sharePreview.title")} description={t("library:sharePreview.description")}
+        footer={<><Button variant="ghost" onClick={() => setShare(null)}>{t("common:actions.cancel")}</Button>
+          <Button variant="primary" onClick={exportPack}>{t("library:sharePreview.confirm")}</Button></>}>
+        <details open><summary>{t("library:sharePreview.references", { count: share.preview.downloadReferences.length })}</summary>
+          <ul>{share.preview.downloadReferences.map((path) => <li className="vx-path" key={path}>{path}</li>)}</ul></details>
+        <details open><summary>{t("library:sharePreview.bundled", { count: share.preview.bundledFiles.length })}</summary>
+          <ul>{share.preview.bundledFiles.map((path) => <li className="vx-path" key={path}>{path}</li>)}</ul></details>
+        <details><summary>{t("library:sharePreview.excluded", { count: share.preview.excludedFiles.length })}</summary>
+          <ul>{share.preview.excludedFiles.map((file) => <li className="vx-path" key={file.path}>{file.path} · {t(`library:sharePreview.reason.${file.reason}`)}</li>)}</ul></details>
+      </Dialog> : null}
       {notice ? (
         <p className="vx-inline-notice">{noticeText(notice, t)}</p>
       ) : null}

@@ -27,6 +27,12 @@ const target = path.join(
   "Temp",
   `VoxelightLauncherSmoke-${randomUUID()}`,
 );
+const environment = {
+  ...process.env,
+  VOXELIGHT_LAUNCHER_DATA_DIR: path.join(work, "data"),
+  VOXELIGHT_LAUNCHER_GAME_DIR: path.join(work, "game"),
+};
+assertCleanInstallerAccount(config.productName);
 const installer = resolveSmokeArtifact("installer", {
   repositoryRoot: project, productName: config.productName, version: config.version,
 });
@@ -39,11 +45,6 @@ const report = {
   installer,
   target,
   checks: [],
-};
-const environment = {
-  ...process.env,
-  VOXELIGHT_LAUNCHER_DATA_DIR: path.join(work, "data"),
-  VOXELIGHT_LAUNCHER_GAME_DIR: path.join(work, "game"),
 };
 
 async function exists(file) {
@@ -129,6 +130,17 @@ function powershell(command, env = environment) {
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim();
+}
+
+function assertCleanInstallerAccount(productName) {
+  powershell(
+    "$ErrorActionPreference = 'Stop'; . $env:VOXELIGHT_INSTALLER_SAFETY; Assert-CleanInstallerAccount $env:VOXELIGHT_INSTALLER_PRODUCT",
+    {
+      ...environment,
+      VOXELIGHT_INSTALLER_SAFETY: path.join(project, "scripts", "installer-safety.ps1"),
+      VOXELIGHT_INSTALLER_PRODUCT: productName,
+    },
+  );
 }
 
 async function names(directory) {

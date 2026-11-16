@@ -18,7 +18,7 @@ describe("world status from launcher state", () => {
   });
 
   it("running wins over preparation without a selected instance", () => {
-    const game: RunningGame = { pid: 41, versionId: "another-version", instanceId: "another-instance" };
+    const game: RunningGame = { gameId: "fixture-game", pid: 41, versionId: "another-version", instanceId: "another-instance" };
     expect(deriveWorldState({ preparing: true, progress: progress({ completed: 1, total: 2 }), running: [game] }))
       .toEqual({ phase: "running", fraction: null });
     expect(deriveWorldState({ preparing: false, progress: null, running: [], gamePid: 7 }))

@@ -1,8 +1,7 @@
 param(
     [ValidateSet('dev', 'build', 'check', 'test', 'sign')][string]$Action = 'dev',
-    [string]$CertificatePath,
     [string]$CertificateThumbprint,
-    [SecureString]$CertificatePassword
+    [string]$SigningReceipt
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
@@ -34,53 +33,21 @@ function Invoke-CargoAction([string]$CargoAction) {
     } finally { Pop-Location }
 }
 function Invoke-SignArtifacts {
-    if ([bool]$CertificatePath -eq [bool]$CertificateThumbprint) {
-        throw 'Provide exactly one of CertificatePath or CertificateThumbprint; no certificate is selected automatically.'
+    if ($CertificateThumbprint -notmatch '^[a-f0-9]{40}$' -or -not $SigningReceipt) {
+        throw 'Provide -CertificateThumbprint for a certificate in the current-user certificate store and -SigningReceipt from build.ps1 -PrepareSigning.'
     }
+    $receiptJson = & node.exe (Join-Path $taskRoot 'scripts\signing-receipt.mjs') read $SigningReceipt
+    if ($LASTEXITCODE -ne 0 -or -not $receiptJson) { throw 'Signing receipt validation failed.' }
+    $artifacts = @($receiptJson | ConvertFrom-Json | ForEach-Object { $_ })
+    if (-not $artifacts) { throw 'Signing receipt has no validated artifacts.' }
     $signTool = Get-SignTool
-    $artifacts = @()
-    $targetDir = & node.exe (Join-Path $taskRoot 'scripts\build-runtime.mjs') --print-target-dir
-    if ($LASTEXITCODE -ne 0 -or -not $targetDir) { throw 'Could not resolve the Windows build output directory.' }
-    $profileJson = & node.exe (Join-Path $taskRoot 'scripts\build-runtime.mjs') --print-artifact-dirs
-    if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Cargo artifact profile directories.' }
-    foreach ($profile in @($profileJson | ConvertFrom-Json | ForEach-Object { $_ })) {
-        $artifacts += Join-Path $profile 'voxelight-launcher.exe'
-        $bundle = Join-Path $profile 'bundle\nsis'
-        if (Test-Path -LiteralPath $bundle) {
-            $artifacts += Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe' -File |
-                ForEach-Object { $_.FullName }
-        }
-    }
-    if (-not $artifacts) { throw "No Release executable or installer found below $targetDir. Run the build action first." }
-    Write-Host 'Signing existing/cached Release candidates; no artifact is assumed to have been rebuilt.'
-    $arguments = @('sign', '/fd', 'SHA256', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256')
-    if ($CertificatePath) {
-        if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) {
-            throw "Certificate file does not exist: $CertificatePath"
-        }
-        $arguments += @('/f', $CertificatePath)
-    } else {
-        $arguments += @('/sha1', $CertificateThumbprint)
-    }
-    $plainPassword = $null
-    $passwordHandle = [IntPtr]::Zero
-    try {
-        if ($CertificatePassword) {
-            $passwordHandle = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($CertificatePassword)
-            $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordHandle)
-            $arguments += @('/p', $plainPassword)
-        }
-        & $signTool @arguments @artifacts
-        if ($LASTEXITCODE -ne 0) { throw "Signing failed (exit $LASTEXITCODE)" }
-        foreach ($artifact in $artifacts) {
-            & $signTool verify /pa /v $artifact
-            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $artifact" }
-        }
-    } finally {
-        if ($passwordHandle -ne [IntPtr]::Zero) {
-            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordHandle)
-        }
-        $plainPassword = $null
+    Write-Host 'Signing the exact outputs of the recorded build.'
+    $arguments = @('sign', '/fd', 'SHA256', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256', '/s', 'My', '/sha1', $CertificateThumbprint)
+    & $signTool @arguments @artifacts
+    if ($LASTEXITCODE -ne 0) { throw "Signing failed (exit $LASTEXITCODE)" }
+    foreach ($artifact in $artifacts) {
+        & $signTool verify /pa /v $artifact
+        if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $artifact" }
     }
 }
 Push-Location -LiteralPath $taskRoot

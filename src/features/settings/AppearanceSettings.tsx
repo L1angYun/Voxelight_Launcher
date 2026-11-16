@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useId, type CSSProperties } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickLauncherPath } from "../../lib/nativePaths";
 import { Image, X } from "lucide-react";
 import { command, type Config } from "../../lib/launcher";
 import { useAppearance } from "../../app/AppearanceProvider";
@@ -22,12 +22,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
   async function background(path?: string) {
     try {
       const selected = path === undefined
-        ? await open({
-            multiple: false,
-            directory: false,
-            title: t("settings:background.picker"),
-            filters: [{ name: t("settings:background.filter"), extensions: ["png", "jpg", "jpeg", "webp"] }],
-          })
+        ? await pickLauncherPath("background")
         : path;
       if (selected === undefined || selected === null || typeof selected !== "string" && path === undefined) return;
       const next = await command<Config>("set_launcher_background", { path: selected || null });

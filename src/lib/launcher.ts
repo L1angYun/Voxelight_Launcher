@@ -88,7 +88,15 @@ export interface InstalledVersion {
   reason?: string;
   javaMajor?: number;
 }
+export interface LaunchResult {
+  gameId: string;
+  pid: number;
+}
+export interface GameStopResult {
+  status: "stopped" | "forceRequired" | "declined";
+}
 export interface RunningGame {
+  gameId: string;
   pid: number;
   versionId: string;
   instanceId?: string | null;

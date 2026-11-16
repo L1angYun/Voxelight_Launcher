@@ -8,7 +8,18 @@ test("resource and world writes keep instance and version-directory contexts dis
       __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> };
     }).__TAURI_INTERNALS__;
     const original = internals.invoke;
+    const fixture = (window as unknown as {
+      __appearanceFixtures: { calls: { name: string; args?: Record<string, unknown> }[] };
+    }).__appearanceFixtures;
     internals.invoke = async (name, args) => {
+      const record = <T,>(value: T): T => {
+        fixture.calls.push({ name, args });
+        return value;
+      };
+      if (name === "choose_launcher_path" && args?.purpose === "worldRead") {
+        return record(["C:\\SyntheticFixture\\world.zip"]);
+      }
+      if (name === "import_world") return record({ name: "ImportedFixture" });
       const result = await original(name, args);
       if (name === "bootstrap") {
         const data = result as { installedVersions: Record<string, unknown>[] };
@@ -17,8 +28,6 @@ test("resource and world writes keep instance and version-directory contexts dis
         }
       }
       if (name === "list_local_resources") return [{ name: "Synthetic pack", fileName: "fixture.zip", enabled: true, size: 1000, path: "C:\\SyntheticFixture\\fixture.zip" }];
-      if (name === "plugin:dialog|open") return "C:\\SyntheticFixture\\world.zip";
-      if (name === "import_world") return { name: "ImportedFixture" };
       return result;
     };
   });

@@ -78,6 +78,7 @@ pub fn expected(detail: impl Into<String>) -> AppError {
     } else {
         match detail.as_str() {
             STORAGE_STATE_CHANGED => "storage.stateChanged",
+            "instance.exportPreviewChanged" => "instance.exportPreviewChanged",
             RESOURCE_RECOVERY_REQUIRED => "resource.recoveryRequired",
             crate::auth::CLIENT_MISSING => "auth.clientIdRequired",
             crate::auth::CLIENT_REJECTED => "auth.clientRejected",
@@ -112,6 +113,9 @@ pub fn expected(detail: impl Into<String>) -> AppError {
                 "download.retryUnsupported"
             }
             "该任务仍在执行或排队" => "download.active",
+            "只能结束由本启动器启动、且仍在运行的游戏进程" => "game.notRunning",
+            "正在处理此游戏的结束请求" => "game.stopBusy",
+            "无法确认或结束游戏进程" => "game.stopFailed",
             "无法获取 Minecraft 角色，请刷新登录后重试" | "无法获取第三方角色皮肤" => {
                 "auth.profileUnavailable"
             }

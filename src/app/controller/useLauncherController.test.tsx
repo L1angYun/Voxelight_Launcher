@@ -122,7 +122,7 @@ beforeEach(() => {
       return { latestRelease: "1.21.1", latestSnapshot: "", versions: [] };
     if (name === "list_running_games") return [];
     if (name === "reserve_launch_task") return "reserved-fixture-task";
-    if (name === "launch_game") return { pid: 12345 };
+    if (name === "launch_game") return { gameId: "owned-fixture", pid: 12345 };
     if (name === "save_config") return args?.config as Config;
     if (name === "cancel_download_task" || name === "set_download_paused") return { revision: 0, tasks: [] };
     return null;
@@ -314,7 +314,7 @@ describe("launcher controller", () => {
 
   it("ignores another operation's progress even when it targets the same version", async () => {
     const normal = commandMock.getMockImplementation()!;
-    let finish!: (pid: { pid: number }) => void;
+    let finish!: (result: { gameId: string; pid: number }) => void;
     const launchResult = new Promise<{ pid: number }>(resolve => { finish = resolve; });
     commandMock.mockImplementation(async (name, args) => {
       if (name === "reserve_launch_task") return "owned-launch-33";
@@ -329,7 +329,7 @@ describe("launcher controller", () => {
     expect(current.progress?.completed).toBe(37);
     await act(async () => listeners.get("launcher://progress")?.({ ...delivered, taskId: "separate-install-51", operation: "install", completed: 82 }));
     expect(current.progress?.completed).toBe(37);
-    await act(async () => { finish({ pid: 12345 }); await launching; });
+    await act(async () => { finish({ gameId: "owned-fixture", pid: 12345 }); await launching; });
     await act(async () => listeners.get("launcher://progress")?.({ ...delivered, taskId: "owned-launch-33", operation: "launch", completed: 100 }));
     expect(current.progress).toBeNull();
   });
@@ -398,6 +398,7 @@ describe("launcher controller", () => {
   it("applies running events and exposes normalized busy errors", async () => {
     await render();
     const running: RunningGame = {
+      gameId: "owned-fixture",
       pid: 99,
       versionId: "1.21.1",
       instanceId: "fixture-world",
@@ -417,6 +418,41 @@ describe("launcher controller", () => {
     expect(current.busy).toBe("");
     expect(current.notice?.code).toBe("instance.running");
     expect(current.notice?.error).toBeInstanceOf(LauncherError);
+  });
+
+  it("requests grace before native consent and a decline leaves the selected game running", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "stop_game") return { status: args?.force ? "declined" : "forceRequired" };
+      return normal(name, args);
+    });
+    await render();
+    act(() => listeners.get("launcher://games")?.([{ gameId: "owned-game", pid: 42, versionId: "1.21.1" }]));
+    await act(async () => current.stop());
+    expect(commandMock.mock.calls.filter(([name]) => name === "stop_game")).toEqual([
+      ["stop_game", { gameId: "owned-game", force: false }],
+      ["stop_game", { gameId: "owned-game", force: true }],
+    ]);
+    expect(current.running.map(game => game.gameId)).toEqual(["owned-game"]);
+  });
+
+  it("a stopped game does not clear another game that reuses its displayed PID", async () => {
+    const normal = commandMock.getMockImplementation()!;
+    let finish!: () => void;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "stop_game") return new Promise(resolve => { finish = () => resolve({ status: "stopped" }); });
+      return normal(name, args);
+    });
+    await render();
+    const first = { gameId: "older", pid: 42, versionId: "1.21.1" };
+    const second = { ...first, gameId: "newer" };
+    act(() => listeners.get("launcher://games")?.([first]));
+    let request!: Promise<void>;
+    await act(async () => { request = current.stop(); });
+    act(() => listeners.get("launcher://games")?.([second]));
+    await act(async () => { finish(); await request; });
+    expect(current.running).toEqual([second]);
+    expect(commandMock).not.toHaveBeenCalledWith("stop_game", { gameId: "newer", force: false });
   });
 
   it("saves config through the same command and updates the shared snapshot", async () => {
