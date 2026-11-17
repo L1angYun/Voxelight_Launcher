@@ -39,7 +39,35 @@ pub struct GameRegistry {
 /// has not been created. Canonicalize the nearest existing ordinary ancestor.
 pub(crate) fn canonical_game_directory(path: &Path) -> Result<PathBuf, String> {
     let checked = crate::instances::checked_absolute(path)?;
-    let mut current = checked.as_path();
+    canonical_existing_ancestor(&checked)
+}
+
+/// Only the configured root may follow junctions/symlinks. Descendants selected
+/// by IDs or archive paths still go through checked_absolute / safe_join.
+pub(crate) fn configured_game_root(path: &Path) -> Result<PathBuf, String> {
+    crate::instances::validate_absolute_syntax(path)?;
+    crate::storage::to_process_path(path)?;
+    crate::instances::checked_absolute(&crate::storage::to_process_path(&canonical_existing_ancestor(path)?)?)
+}
+
+/// Inputs are absolute and expressed using the same prefix syntax. On Windows
+/// the filesystem's canonical spelling takes precedence; fold ordinary ASCII
+/// path case when comparing alternate persisted spellings.
+pub(crate) fn directory_tail<'a>(child: &'a Path, parent: &Path) -> Option<&'a Path> {
+    let mut child = child.components();
+    for parent in parent.components() {
+        let part = child.next()?;
+        #[cfg(windows)]
+        let equal = part.as_os_str().eq_ignore_ascii_case(parent.as_os_str());
+        #[cfg(not(windows))]
+        let equal = part == parent;
+        if !equal { return None; }
+    }
+    Some(child.as_path())
+}
+
+fn canonical_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
+    let mut current = path;
     let mut missing = Vec::new();
     loop {
         match std::fs::metadata(current) {
@@ -52,6 +80,10 @@ pub(crate) fn canonical_game_directory(path: &Path) -> Result<PathBuf, String> {
             }
             Ok(_) => return Err("游戏目录不是目录".into()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // A dangling link is not a missing directory that we may create.
+                if std::fs::symlink_metadata(current).is_ok() {
+                    return Err(format!("无法解析游戏目录：{error}"));
+                }
                 missing.push(current.file_name().ok_or("游戏目录无效")?);
                 current = current.parent().ok_or("游戏目录无效")?;
             }
@@ -61,8 +93,8 @@ pub(crate) fn canonical_game_directory(path: &Path) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn same_canonical_directory(path: &Path, active: &Path) -> bool {
-    // Registered process paths are canonical. Normalize an existing alternate
-    // spelling as well to handle older tests and legacy active paths.
+    // RunningGame stores an ordinary path for display. Convert it back to
+    // the identity form when comparing a process with an operation target.
     let active = active.canonicalize().unwrap_or_else(|_| active.to_path_buf());
     #[cfg(windows)]
     { path.to_string_lossy().eq_ignore_ascii_case(&active.to_string_lossy()) }
@@ -531,6 +563,47 @@ fn write_diagnostics_file(destination: &Path, report: &[u8]) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn r4_configured_junction_resolves_before_validation_of_instance_children() {
+        struct Junction(std::path::PathBuf);
+        impl Drop for Junction {
+            fn drop(&mut self) { let _ = std::fs::remove_dir(&self.0); }
+        }
+        let owned = crate::instances::StagingDirectory::create(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/game-path-tests")
+                .join(uuid::Uuid::new_v4().to_string())
+        ).unwrap();
+        let physical = owned.path().join("physical");
+        let alias = owned.path().join("alias");
+        std::fs::create_dir(&physical).unwrap();
+        let junction = |alias: &std::path::Path, target: &std::path::Path| {
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(alias.to_string_lossy().replace('/', r"\"))
+                .arg(target.to_string_lossy().replace('/', r"\")).output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            Junction(alias.to_owned())
+        };
+        let _root_junction = junction(&alias, &physical);
+        let root = alias.join("games");
+        let config = crate::models::Config {
+            game_directory: root.display().to_string(), version_isolation: true, ..Default::default()
+        };
+        let version = crate::minecraft::game_directory(&config, "1.20.1", None).unwrap();
+        assert_eq!(version, physical.join("games/versions/1.20.1"));
+        let game = root.join("instances/game");
+        let instance = crate::models::Instance {
+            id: "game".into(), game_directory: game.display().to_string(),
+            version_id: "1.20.1".into(), ..Default::default()
+        };
+        let resolved = crate::minecraft::game_directory(&config, "1.20.1", Some(&instance)).unwrap();
+        assert_eq!(resolved, physical.join("games/instances/game"));
+        std::fs::create_dir_all(resolved.parent().unwrap()).unwrap();
+        let _child_junction = junction(&resolved, &physical);
+        assert!(crate::minecraft::game_directory(&config, "1.20.1", Some(&instance)).is_err(),
+            "links below the approved root must remain forbidden");
+    }
     use super::*;
 
     const STOP_FIXTURE_DIR: &str = "VOXELIGHT_M09_OWNED_TEST_DIR";

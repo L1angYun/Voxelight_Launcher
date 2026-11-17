@@ -43,7 +43,7 @@ export interface LauncherContextValue {
   notice: LauncherNotice | null;
   gamePid?: number;
   reload(): Promise<void>;
-  saveConfig(next: Config, appearancePatch?: AppearancePatch): Promise<boolean>;
+  saveConfig(next: Config, options?: { appearancePatch: AppearancePatch } | { preserveAppearance: true }): Promise<Config>;
   setConfig(next: Config): void;
   selectInstance(id?: string): void;
   selectVersion(id: string): void;

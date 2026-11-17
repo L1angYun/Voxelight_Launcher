@@ -63,7 +63,7 @@ function fixture(): LauncherContextValue {
     notice: null,
     gamePid: undefined,
     reload: vi.fn(async () => {}),
-    saveConfig: vi.fn(async () => true),
+    saveConfig: vi.fn(async (next) => next),
     setConfig: vi.fn((next) => {
       mockLauncher.config = next;
       appearance.effects = next.effects;
@@ -165,7 +165,7 @@ describe("global settings", () => {
     expect(mockLauncher.setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }));
     expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
     await click("Save settings");
-    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }), { worldScene: "massif", worldMaterial: "solid" });
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ worldScene: "massif", worldMaterial: "solid" }), { appearancePatch: { worldScene: "massif", worldMaterial: "solid" } });
   });
 
   it("previews appearance immediately, offers exactly two effect levels, and saves explicitly", async () => {
@@ -190,7 +190,7 @@ describe("global settings", () => {
       theme: "light",
       language: "zh-CN",
       soundEnabled: true,
-    }), { effects: "lite", accentSource: "system", theme: "light", language: "zh-CN", soundEnabled: true });
+    }), { appearancePatch: { effects: "lite", accentSource: "system", theme: "light", language: "zh-CN", soundEnabled: true } });
   });
 
   it("supports custom accents without adding a third effects mode", async () => {
@@ -220,7 +220,63 @@ describe("global settings", () => {
       versionIsolation: false,
       screenWidth: 1600,
       screenHeight: 900,
-    }));
+    }), { preserveAppearance: true });
+  });
+
+  it("R4-M1 saves appearance despite the operation lock and keeps other changes for retry", async () => {
+    const save = vi.fn<LauncherContextValue["saveConfig"]>()
+      .mockImplementationOnce(async (next) => next)
+      .mockRejectedValueOnce(new LauncherError("config.busy"))
+      .mockImplementationOnce(async (next) => next);
+    mockLauncher.saveConfig = save;
+    mockLauncher.busy = "instance.install";
+    await render();
+    await click("Game");
+    await fill("Game window width", "1600");
+    await click("Appearance");
+    await select("Theme", "light");
+    await click("Save settings");
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenNthCalledWith(1, expect.objectContaining({ theme: "light", screenWidth: defaults.screenWidth }), { appearancePatch: { theme: "light" } });
+    expect(save).toHaveBeenNthCalledWith(2, expect.objectContaining({ theme: "light", screenWidth: 1600 }), { preserveAppearance: true });
+    expect(container.textContent).toContain("Appearance saved.");
+    expect(container.textContent).toContain("Other settings were not saved.");
+    expect(container.textContent).toContain("Wait for the current installation or launch preparation");
+    expect(container.textContent).toContain("You have unsaved changes.");
+    expect(appearance.resolvedTheme).toBe("light");
+
+    await click("Game");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Game window width"]')!.value).toBe("1600");
+    mockLauncher.busy = "";
+    await click("Save settings");
+    expect(save).toHaveBeenCalledTimes(3);
+    expect(save).toHaveBeenNthCalledWith(3, expect.objectContaining({ theme: "light", screenWidth: 1600 }), { preserveAppearance: true });
+    expect(container.textContent).toContain("Other settings saved.");
+    expect(container.textContent).not.toContain("You have unsaved changes.");
+  });
+
+  it("R4-M1 saves other settings even if the appearance write fails", async () => {
+    const save = vi.fn<LauncherContextValue["saveConfig"]>()
+      .mockRejectedValueOnce(new LauncherError("config.invalid"))
+      .mockImplementationOnce(async (next) => next);
+    mockLauncher.saveConfig = save;
+    await render();
+    await click("Appearance");
+    await select("Theme", "light");
+    await click("Game");
+    await fill("Game window width", "1600");
+    await click("Save settings");
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenNthCalledWith(2, expect.objectContaining({ theme: "dark", screenWidth: 1600 }), { preserveAppearance: true });
+    expect(container.textContent).toContain("Appearance was not saved.");
+    expect(container.textContent).toContain("Other settings saved.");
+    expect(container.textContent).toContain("You have unsaved changes.");
+    expect(appearance.resolvedTheme).toBe("light");
+    await click("Reset changes");
+    expect(appearance.resolvedTheme).toBe("dark");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Game window width"]')!.value).toBe("1600");
   });
 
   it("detects Java and saves runtime, memory, JVM and auto-download settings", async () => {
@@ -238,7 +294,7 @@ describe("global settings", () => {
       maxMemoryMb: 8192,
       jvmArguments: "-XX:+UseG1GC",
       javaAutoDownload: false,
-    }));
+    }), { preserveAppearance: true });
   });
 
   it("keeps download source, concurrency and rate limit together", async () => {
@@ -249,7 +305,7 @@ describe("global settings", () => {
     await fill("Download limit (KiB/s)", "1024");
     expect(container.textContent).toContain("community mirror");
     await click("Save settings");
-    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ downloadSource: "bmclapi", downloadConcurrency: 8, downloadLimitKib: 1024 }));
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ downloadSource: "bmclapi", downloadConcurrency: 8, downloadLimitKib: 1024 }), { preserveAppearance: true });
   });
 
   it("stores service configuration in General rather than About", async () => {
@@ -263,7 +319,7 @@ describe("global settings", () => {
     expect(commandMock).toHaveBeenCalledWith("set_service_secret", { service: "curseforge", secret: "" });
     await fill("Microsoft Client ID", "22222222-2222-2222-2222-222222222222");
     await click("Save settings");
-    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ microsoftClientId: "22222222-2222-2222-2222-222222222222" }));
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ microsoftClientId: "22222222-2222-2222-2222-222222222222" }), { preserveAppearance: true });
   });
 
   it("labels the Client ID as optional when a built-in Microsoft app is available", async () => {
@@ -278,7 +334,7 @@ describe("global settings", () => {
     await click("Game");
     await fill("Game window width", "1600");
     await click("Save settings");
-    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ microsoftClientId: "" }));
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ microsoftClientId: "" }), { preserveAppearance: true });
   });
 
   it("keeps the existing Client ID label when service status omits the built-in flag", async () => {
@@ -332,10 +388,7 @@ describe("global settings", () => {
   });
 
   it("shows the expected configuration error when explicit save is rejected", async () => {
-    mockLauncher.saveConfig = vi.fn(async () => {
-      mockLauncher.notice = { kind: "error", code: "config.gameDirectory", params: {}, error: new LauncherError("config.gameDirectory") };
-      return false;
-    });
+    mockLauncher.saveConfig = vi.fn(async () => { throw new LauncherError("config.gameDirectory"); });
     await render();
     await click("Game");
     await fill("Game directory", "relative-path");

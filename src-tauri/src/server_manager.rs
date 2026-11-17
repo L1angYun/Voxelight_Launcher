@@ -972,9 +972,9 @@ async fn start_managed_server_inner(
         .finish(&task, prepared.as_ref().err().map(String::as_str));
     let runtime = prepared?;
     let temp = crate::storage::runtime_temp_directory(&dir)?;
-    let mut command = Command::new(runtime.path);
-    command.arg(format!("-Djava.io.tmpdir={}", temp.display()));
-    command.current_dir(&dir).args([
+    let mut command = Command::new(crate::storage::to_process_path(Path::new(&runtime.path))?);
+    command.arg(format!("-Djava.io.tmpdir={}", crate::storage::process_path_text(&temp)?));
+    command.current_dir(crate::storage::to_process_path(&dir)?).args([
         "-Xms512M",
         &format!("-Xmx{}M", settings.max_memory_mb),
         "-jar",

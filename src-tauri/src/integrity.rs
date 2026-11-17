@@ -128,7 +128,7 @@ primary: {detail}"
         "{message}
 
 {}{primary}",
-        directory.display()
+        crate::storage::display_profile_path(directory)
     )
 }
 
@@ -139,6 +139,21 @@ pub(crate) fn profile_in_use(directory: &std::path::Path, primary: Option<&str>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn r4_profile_in_use_shows_an_ordinary_windows_path() {
+        for (canonical, ordinary) in [
+            (r"\\?\C:\Example Profile", r"C:\Example Profile"),
+            (r"\\?\UNC\server\share\Example Profile", r"\\server\share\Example Profile"),
+        ] {
+            for locale in ["en-US", "zh-CN"] {
+                let message = format_profile_in_use(std::path::Path::new(canonical), None, locale);
+                assert!(message.contains(ordinary), "{message}");
+                assert!(!message.contains(r"\\?\"), "{message}");
+            }
+        }
+    }
 
     const ERROR: &str = "primary: Access is denied. (os error 5); fallback: denied";
 

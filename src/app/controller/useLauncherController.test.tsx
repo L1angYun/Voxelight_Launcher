@@ -208,7 +208,7 @@ describe("launcher controller", () => {
     await render();
     const candidate = { ...current.config, theme: "light" as const };
     await act(async () => {
-      await expect(current.saveConfig(candidate, { theme: "light" })).resolves.toBe(true);
+      await expect(current.saveConfig(candidate, { appearancePatch: { theme: "light" } })).resolves.toMatchObject({ theme: "light" });
     });
     expect(commandMock).toHaveBeenCalledWith("save_appearance_config", { patch: { theme: "light" } });
     expect(commandMock.mock.calls.some(([name]) => name === "save_config")).toBe(false);
@@ -379,10 +379,10 @@ describe("launcher controller", () => {
     });
   });
 
-  it("reports whether an explicit settings save succeeded", async () => {
+  it("returns the canonical settings saved by the native command", async () => {
     await render();
     await act(async () => {
-      await expect(current.saveConfig(current.config)).resolves.toBe(true);
+      await expect(current.saveConfig(current.config)).resolves.toEqual(current.config);
     });
   });
 

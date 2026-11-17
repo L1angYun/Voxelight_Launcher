@@ -1,6 +1,6 @@
 use crate::{
     models::*,
-    storage::{safe_join, trusted_url, validate_id, LauncherState},
+    storage::{process_path_text, safe_join, to_process_path, trusted_url, validate_id, LauncherState},
 };
 use futures_util::{stream, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
@@ -30,25 +30,64 @@ pub fn game_directory(
     instance: Option<&Instance>,
 ) -> Result<PathBuf, String> {
     validate_id(version_id)?;
+    let configured = Path::new(&config.game_directory);
     if let Some(instance) = instance {
         if instance.version_id != version_id {
             return Err("实例绑定版本与请求不一致".into());
         }
-        let path = PathBuf::from(&instance.game_directory);
-        if !path.is_absolute() {
-            return Err("实例目录必须是绝对路径".into());
+        let path = crate::storage::to_process_path(Path::new(&instance.game_directory))?;
+        crate::instances::validate_absolute_syntax(&path)?;
+        let configured = crate::storage::to_process_path(configured)?;
+        if configured.is_absolute() {
+            if let Some(relative) = crate::processes::directory_tail(&path, &configured) {
+                let root = crate::processes::configured_game_root(&configured)?;
+                return crate::instances::checked_absolute(&root.join(relative));
+            }
         }
-        return Ok(path);
+        // A registered instance from a previously configured root remains
+        // usable. The path comes from the record, never from the renderer.
+        let identity = crate::processes::canonical_game_directory(&path)?;
+        return crate::storage::to_process_path(&identity);
     }
-    let root = PathBuf::from(&config.game_directory);
-    if !root.is_absolute() {
-        return Err("游戏目录必须是绝对路径".into());
-    }
+    let root = crate::processes::configured_game_root(configured)?;
     if config.version_isolation {
-        safe_join(&root, &format!("versions/{version_id}"))
+        crate::instances::checked_absolute(&safe_join(&root, &format!("versions/{version_id}"))?)
     } else {
         Ok(root)
     }
+}
+
+fn java_path_variables(game_dir: &Path, assets: &Path, game_assets: &Path, natives: &Path, libraries: &Path) -> Result<Vec<(String, String)>, String> {
+    [
+        ("game_directory", game_dir),
+        ("assets_root", assets),
+        ("game_assets", game_assets),
+        ("natives_directory", natives),
+        ("library_directory", libraries),
+    ].into_iter().map(|(key, path)| Ok((key.into(), process_path_text(path)?))).collect()
+}
+
+fn javaagent_argument(injector: &Path, server: &str) -> Result<String, String> {
+    Ok(format!("-javaagent:{}={server}", process_path_text(injector)?))
+}
+
+
+#[cfg(all(test, windows))]
+#[test]
+fn r4_generated_javaagent_game_dir_and_natives_are_not_verbatim() {
+    let game = Path::new(r"\\?\D:\Instance Space\game");
+    let libs = Path::new(r"\\?\UNC\server\share\libraries");
+    let fields: HashMap<_, _> = java_path_variables(
+        game, &game.join("assets"), &game.join("legacy-assets"), &game.join("natives"), libs,
+    ).unwrap().into_iter().collect();
+    let args = read_arguments(&json!(["--gameDir", "${game_directory}", "-Djava.library.path=${natives_directory}"]), &fields).unwrap();
+    assert_eq!(args, ["--gameDir", r"D:\Instance Space\game", r"-Djava.library.path=D:\Instance Space\game\natives"]);
+    assert_eq!(fields["library_directory"], r"\\server\share\libraries");
+    assert!(fields.values().all(|path| !path.contains(r"\\?\")));
+    assert_eq!(
+        javaagent_argument(Path::new(r"\\?\D:\Launcher Profile\injector.jar"), "https://auth.invalid").unwrap(),
+        r"-javaagent:D:\Launcher Profile\injector.jar=https://auth.invalid",
+    );
 }
 
 pub fn log(app: &AppHandle, state: &LauncherState, level: &str, message: impl Into<String>) {
@@ -426,7 +465,10 @@ pub async fn list_versions(state: &LauncherState) -> Result<Value, String> {
 }
 
 pub fn scan_versions(config: &Config) -> Vec<InstalledVersion> {
-    let root = Path::new(&config.game_directory);
+    let Ok(root) = crate::processes::configured_game_root(Path::new(&config.game_directory)) else {
+        return vec![];
+    };
+    let root = root.as_path();
     let Ok(versions) = safe_join(root, "versions") else {
         return vec![];
     };
@@ -1688,10 +1730,8 @@ async fn install_with_config(
     config: &Config,
 ) -> Result<(InstallResult, Value), String> {
     validate_id(id)?;
-    let root = Path::new(&config.game_directory);
-    if !root.is_absolute() {
-        return Err("游戏目录必须是绝对路径".into());
-    }
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
+    let root = root.as_path();
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     state.control.checkpoint().await?;
     progress(
@@ -1909,6 +1949,7 @@ fn java_major(version: &str) -> Option<u32> {
 }
 
 async fn inspect_java(path: PathBuf) -> Option<JavaRuntime> {
+    let path = to_process_path(&path).ok()?;
     let mut command = tokio::process::Command::new(&path);
     command
         .arg("-version")
@@ -2260,8 +2301,8 @@ pub async fn install_java(
         .begin("java", &game_version, "安装Mojang官方Java")?;
     let result = async {
         let config = state.snapshot()?.config;
-        let metadata =
-            resolve_metadata(&state, &game_version, Path::new(&config.game_directory)).await?;
+        let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
+        let metadata = resolve_metadata(&state, &game_version, &root).await?;
         install_official_java(&state, &app, &metadata, &config).await
     }
     .await;
@@ -2389,11 +2430,7 @@ fn build_classpath(metadata: &Value, root: &Path, id: &str) -> Result<String, St
         root,
         &format!("versions/{client_id}/{client_id}.jar"),
     )?);
-    Ok(paths
-        .iter()
-        .map(|p| p.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(";"))
+    Ok(paths.iter().map(|p| process_path_text(p)).collect::<Result<Vec<_>, _>>()?.join(";"))
 }
 
 fn materialize_legacy_assets(
@@ -2612,7 +2649,7 @@ async fn launch_prepared(
     if let Some(address) = server_address.as_deref() {
         server_parts(address)?;
     }
-    let root = PathBuf::from(&snapshot.config.game_directory);
+    let root = crate::processes::configured_game_root(Path::new(&snapshot.config.game_directory))?;
     let instance = if let Some(instance_id) = instance_id.as_ref() {
         let instance = snapshot
             .instances
@@ -2641,9 +2678,7 @@ async fn launch_prepared(
             config.screen_height = height;
         }
     }
-    let game_dir = crate::processes::canonical_game_directory(
-        &game_directory(&snapshot.config, &id, instance)?,
-    )?;
+    let game_dir = game_directory(&snapshot.config, &id, instance)?;
     let (_, metadata) = install_with_config(&state, &app, &id, &snapshot.config).await?;
     let java = select_or_install_java(&state, &app, &config, &metadata).await?;
     let recommended = metadata["javaVersion"]["majorVersion"]
@@ -2721,25 +2756,7 @@ async fn launch_prepared(
     ]
     .into_iter()
     .map(|(k, v)| (k.into(), v.into()))
-    .chain([
-        (
-            "game_directory".into(),
-            game_dir.to_string_lossy().into_owned(),
-        ),
-        ("assets_root".into(), assets.to_string_lossy().into_owned()),
-        (
-            "game_assets".into(),
-            game_assets.to_string_lossy().into_owned(),
-        ),
-        (
-            "natives_directory".into(),
-            natives.to_string_lossy().into_owned(),
-        ),
-        (
-            "library_directory".into(),
-            libraries.to_string_lossy().into_owned(),
-        ),
-    ])
+    .chain(java_path_variables(&game_dir, &assets, &game_assets, &natives, &libraries)?)
     .collect();
     let mut arguments = vec![
         format!("-Xmx{}M", config.max_memory_mb.clamp(512, 65536)),
@@ -2775,14 +2792,14 @@ async fn launch_prepared(
     {
         arguments.push(format!(
             "-Djava.io.tmpdir={}",
-            launch_scratch.java_temp()?.display()
+            process_path_text(&launch_scratch.java_temp()?)?
         ));
     }
     if let Some(values) = metadata["arguments"].get("jvm") {
         arguments.extend(read_arguments(values, &variables)?);
     } else {
         arguments.extend([
-            format!("-Djava.library.path={}", natives.display()),
+            format!("-Djava.library.path={}", process_path_text(&natives)?),
             "-cp".into(),
             classpath,
         ]);
@@ -2802,14 +2819,14 @@ async fn launch_prepared(
         let template = metadata["logging"]["client"]["argument"]
             .as_str()
             .ok_or("日志配置参数缺失")?;
-        arguments.push(template.replace("${path}", &download.path.to_string_lossy()));
+        arguments.push(template.replace("${path}", &process_path_text(&download.path)?));
     }
     if let Some(server) = credentials
         .as_ref()
         .and_then(|c| c.authlib_server.as_deref())
     {
         let injector = crate::loaders::authlib_injector(&state).await?;
-        arguments.push(format!("-javaagent:{}={server}", injector.display()));
+        arguments.push(javaagent_argument(&injector, server)?);
         arguments.push("-Dauthlibinjector.side=client".into());
     }
     let jvm_argument_count = arguments.len();
@@ -2837,7 +2854,7 @@ async fn launch_prepared(
     if let Some(address) = server_address.as_deref() {
         append_direct_connect(&mut arguments, &metadata, address)?;
     }
-    let mut command = tokio::process::Command::new(&java.path);
+    let mut command = tokio::process::Command::new(to_process_path(Path::new(&java.path))?);
     if java.major >= 9 {
         // Java's response file avoids Windows' 32 KiB process command-line limit.
         let content = arguments[..jvm_argument_count]
@@ -2846,13 +2863,13 @@ async fn launch_prepared(
             .collect::<Vec<_>>()
             .join("\n");
         let argument_file = launch_scratch.write_args(&content)?;
-        command.arg(format!("@{}", argument_file.display()));
+        command.arg(format!("@{}", process_path_text(&argument_file)?));
         command.args(&arguments[jvm_argument_count..]);
     } else {
         command.args(&arguments);
     }
     command
-        .current_dir(&game_dir)
+        .current_dir(to_process_path(&game_dir)?)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

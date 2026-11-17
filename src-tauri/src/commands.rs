@@ -62,11 +62,17 @@ fn validate_default_skin(skin: &str) -> Result<(), String> {
 pub async fn save_config(
     window: tauri::WebviewWindow,
     grants: State<'_, crate::path_grants::PathGrants>,
-    state: Shared<'_>, mut config: Config,
+    state: Shared<'_>, mut config: Config, preserve_appearance: Option<bool>,
 ) -> AppResult<Config> {
     let previous = state.snapshot()?.config;
+    let preserve_appearance = preserve_appearance.unwrap_or(false);
+    if preserve_appearance {
+        // Scoped nonvisual writes ignore the incoming visual snapshot, so
+        // an unrelated background change does not trigger a path prompt.
+        keep_saved_appearance(&mut config, &previous);
+    }
     crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
-    save_approved_config(&state, config, Some(&previous)).map_err(expected)
+    save_approved_config_with_scope(&state, config, Some(&previous), preserve_appearance).map_err(expected)
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -169,14 +175,33 @@ pub(crate) fn save_config_inner(state: &LauncherState, config: Config) -> Result
     save_approved_config(state, config, None)
 }
 
-pub(crate) fn save_approved_config(state: &LauncherState, mut config: Config, approved_against: Option<&Config>) -> Result<Config, String> {
+pub(crate) fn save_approved_config(state: &LauncherState, config: Config, approved_against: Option<&Config>) -> Result<Config, String> {
+    save_approved_config_with_scope(state, config, approved_against, false)
+}
+
+fn keep_saved_appearance(config: &mut Config, saved: &Config) {
+    config.theme.clone_from(&saved.theme);
+    config.language.clone_from(&saved.language);
+    config.effects.clone_from(&saved.effects);
+    config.world_scene.clone_from(&saved.world_scene);
+    config.world_material.clone_from(&saved.world_material);
+    config.accent_source.clone_from(&saved.accent_source);
+    config.accent_color.clone_from(&saved.accent_color);
+    config.sound_enabled = saved.sound_enabled;
+    config.custom_background.clone_from(&saved.custom_background);
+    config.default_skin.clone_from(&saved.default_skin);
+}
+
+fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, approved_against: Option<&Config>, preserve_appearance: bool) -> Result<Config, String> {
     let _guard = state
         .operation
         .try_lock()
         .map_err(|_| "已有安装或启动准备任务运行，请等待完成后修改配置")?;
     config.game_directory = config.game_directory.trim().to_owned();
     config.java_path = config.java_path.trim().to_owned();
-    validate_visual_preferences(&config)?;
+    if !preserve_appearance {
+        validate_visual_preferences(&config)?;
+    }
     if !Path::new(&config.game_directory).is_absolute() {
         return Err("游戏目录必须是绝对路径".into());
     }
@@ -209,9 +234,18 @@ pub(crate) fn save_approved_config(state: &LauncherState, mut config: Config, ap
     }
     let saved = state.update(|data| {
         if let Some(approved) = approved_against {
-            if !crate::path_grants::approved_config_is_current(approved, &data.config) {
+            let approval_current = if preserve_appearance {
+                approved.game_directory == data.config.game_directory && approved.java_path == data.config.java_path
+            } else {
+                crate::path_grants::approved_config_is_current(approved, &data.config)
+            };
+            if !approval_current {
                 return Err(crate::errors::STORAGE_STATE_CHANGED.into());
             }
+        }
+        if preserve_appearance {
+            // An appearance save can interleave after the native path dialog.
+            keep_saved_appearance(&mut config, &data.config);
         }
         data.config = config.clone();
         Ok(config)
@@ -266,12 +300,15 @@ pub async fn detect_java(state: Shared<'_>) -> Result<Vec<JavaRuntime>, String> 
 }
 
 fn installed_loader(config: &Config, version_id: &str) -> (String, String) {
-    let loader = crate::resources::version_context(Path::new(&config.game_directory), version_id)
+    let Ok(root) = crate::processes::configured_game_root(Path::new(&config.game_directory)) else {
+        return ("vanilla".into(), String::new());
+    };
+    let loader = crate::resources::version_context(&root, version_id)
         .ok()
         .and_then(|(_, loader)| loader)
         .unwrap_or_else(|| "vanilla".into());
     let version = safe_join(
-        Path::new(&config.game_directory),
+        &root,
         &format!("versions/{version_id}/{version_id}.json"),
     )
     .ok()
@@ -306,10 +343,8 @@ pub(crate) fn create_instance_inner(
     let config = state.snapshot()?.config;
     let (loader, loader_version) = installed_loader(&config, &version_id);
     let id = uuid::Uuid::new_v4().to_string();
-    let directory = safe_join(
-        Path::new(&config.game_directory),
-        &format!("instances/{id}"),
-    )?;
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
+    let directory = crate::instances::checked_absolute(&safe_join(&root, &format!("instances/{id}"))?)?;
     std::fs::create_dir_all(&directory).map_err(|e| format!("创建实例目录失败：{e}"))?;
     let instance = Instance {
         id,
@@ -522,7 +557,13 @@ fn registered_folder(
         return crate::instances::checked_absolute(&safe_join(&state.data_dir, "logs")?);
     }
     let data = state.snapshot()?;
-    let root = crate::processes::canonical_game_directory(Path::new(&data.config.game_directory))?;
+    if kind == "instance" {
+        let id = instance_id.ok_or("未指定实例")?;
+        validate_id(id)?;
+        let value = crate::instances::instance(&data, id)?;
+        return minecraft::game_directory(&data.config, &value.version_id, Some(&value));
+    }
+    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory))?;
     let directory = match kind {
         "game" => root,
         "instances" => safe_join(&root, "instances")?,
@@ -530,14 +571,6 @@ fn registered_folder(
             let id = version_id.ok_or("未指定版本")?;
             validate_id(id)?;
             safe_join(&root, &format!("versions/{id}"))?
-        }
-        "instance" => {
-            let id = instance_id.ok_or("未指定实例")?;
-            validate_id(id)?;
-            let value = crate::instances::instance(&data, id)?;
-            let directory = crate::processes::canonical_game_directory(Path::new(&value.game_directory))?;
-            if !directory.starts_with(root) { return Err("实例目录不在已授权的游戏根目录中".into()); }
-            directory
         }
         _ => return Err("不支持的文件夹类型".into()),
     };
@@ -603,6 +636,31 @@ mod tests {
             registered_folder(&state, "logs", None, None).unwrap(),
             root.path().join("logs")
         );
+    }
+
+    #[test]
+    fn r4_open_folder_and_launch_use_the_same_registered_external_instance() {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/command-tests")
+                .join(uuid::Uuid::new_v4().to_string())
+        ).unwrap();
+        let configured = root.path().join("current-root");
+        let external = root.path().join("previous-root/instance");
+        std::fs::create_dir_all(&configured).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let config = Config { game_directory: configured.display().to_string(), ..Default::default() };
+        let instance = Instance {
+            id: "old-instance".into(), version_id: "1.20.1".into(),
+            game_directory: external.display().to_string(), ..Default::default()
+        };
+        let state = LauncherState::test_fixture(
+            root.path().to_owned(),
+            Persisted { config: config.clone(), instances: vec![instance.clone()], ..Default::default() },
+            crate::storage::test_client()
+        );
+        let launch = minecraft::game_directory(&config, &instance.version_id, Some(&instance)).unwrap();
+        assert_eq!(registered_folder(&state, "instance", None, Some(&instance.id)).unwrap(), launch);
+        assert!(registered_folder(&state, "instance", None, Some("unknown")).is_err());
     }
 
     #[test]
@@ -854,6 +912,33 @@ mod scoped_settings_save_tests {
         assert_eq!(saved.world_scene, "legacy-setting");
         assert_eq!(saved.accent_color, "legacy-color");
         assert_eq!(saved.language, "en-US");
+    }
+
+    #[test]
+    fn r4_nonvisual_save_keeps_the_latest_independently_saved_appearance() {
+        let (_root, state) = owned_profile();
+        let previous = state.snapshot().unwrap().config;
+        let mut pending = previous.clone();
+        pending.max_memory_mb = 4096;
+        let patch = serde_json::from_value(json!({"theme":"light", "defaultSkin":"alex"})).unwrap();
+        save_appearance_config_inner(&state, patch).unwrap();
+        let saved = save_approved_config_with_scope(&state, pending.clone(), Some(&previous), true).unwrap();
+        assert_eq!((saved.theme.as_str(), saved.default_skin.as_str(), saved.max_memory_mb), ("light", "alex", 4096));
+
+        let after = state.snapshot().unwrap().config;
+        state.update(|data| {
+            data.config.custom_background = Some("synthetic-background.png".into());
+            Ok(())
+        }).unwrap();
+        pending.max_memory_mb = 2048;
+        let saved = save_approved_config_with_scope(&state, pending.clone(), Some(&after), true).unwrap();
+        assert_eq!(saved.custom_background.as_deref(), Some("synthetic-background.png"));
+        assert_eq!(saved.max_memory_mb, 2048);
+        state.update(|data| {
+            data.config.game_directory = std::env::current_dir().unwrap().join("another-game").display().to_string();
+            Ok(())
+        }).unwrap();
+        assert!(save_approved_config_with_scope(&state, pending, Some(&after), true).is_err());
     }
 
     #[test]

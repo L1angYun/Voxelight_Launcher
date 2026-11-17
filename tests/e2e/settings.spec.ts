@@ -123,6 +123,45 @@ test("game, Java and download drafts survive section switches and save together"
   });
 });
 
+test("R4-M1 saves the appearance during an operation and can retry the retained game settings", async ({ page }) => {
+  await installLauncherFixture(page, { settingsOperationLocked: true });
+  await openSettings(page);
+  const sections = page.locator(".vx-settings-nav");
+  const save = page.getByRole("button", { name: "保存设置", exact: true });
+  const width = page.getByRole("spinbutton", { name: "游戏窗口宽度", exact: true });
+  const persistedConfig = () => page.evaluate(async () => (await (window as unknown as {
+    __TAURI_INTERNALS__: { invoke: (name: string) => Promise<{ config: Record<string, unknown> }> };
+  }).__TAURI_INTERNALS__.invoke("bootstrap")).config);
+
+  await sections.getByRole("button", { name: "游戏", exact: true }).click();
+  await width.fill("1600");
+  await sections.getByRole("button", { name: "外观", exact: true }).click();
+  await selectValue(page, "主题", "light");
+  await save.click();
+
+  await expect(page.getByRole("status").filter({ hasText: "外观已保存。" })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "其他设置未保存。" })).toBeVisible();
+  await expect(page.getByText(/有未保存的更改/)).toBeVisible();
+  expect(await persistedConfig()).toMatchObject({ theme: "light", screenWidth: 1280 });
+
+  await page.evaluate(() => (window as unknown as {
+    __appearanceFixtures: { releaseSettingsOperation: () => void };
+  }).__appearanceFixtures.releaseSettingsOperation());
+  await sections.getByRole("button", { name: "游戏", exact: true }).click();
+  await expect(width).toHaveValue("1600");
+  await save.click();
+  await expect(page.getByRole("status").filter({ hasText: "其他设置已保存。" })).toBeVisible();
+  await expect(page.getByText(/有未保存的更改/)).toHaveCount(0);
+  expect(await persistedConfig()).toMatchObject({ theme: "light", screenWidth: 1600 });
+
+  const saves = (await calls(page)).filter(({ name }) => name === "save_appearance_config" || name === "save_config");
+  expect(saves).toEqual([
+    { name: "save_appearance_config", args: { patch: { theme: "light" } } },
+    { name: "save_config", args: { config: expect.objectContaining({ theme: "light", screenWidth: 1600 }), preserveAppearance: true } },
+    { name: "save_config", args: { config: expect.objectContaining({ theme: "light", screenWidth: 1600 }), preserveAppearance: true } },
+  ]);
+});
+
 test("service secrets, presets and background stay in their owning groups", async ({ page }) => {
   await installLauncherFixture(page);
   await mockSettings(page);

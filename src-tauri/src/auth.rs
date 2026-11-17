@@ -19,6 +19,17 @@ use std::{
 
 const DEVICE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
 const TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+// Keep these exact destinations in sync with the native opener capability.
+const DEVICE_VERIFICATION_URLS: &[&str] = &[
+    "https://microsoft.com/devicelogin",
+    "https://www.microsoft.com/devicelogin",
+    "https://microsoft.com/link",
+    "https://www.microsoft.com/link",
+    "https://login.microsoftonline.com/common/oauth2/deviceauth",
+    "https://login.microsoftonline.com/common/oauth2/v2.0/deviceauth",
+    "https://login.live.com/oauth20_deviceauth.srf",
+    "https://login.live.com/oauth20_remoteconnect.srf",
+];
 const XBOX_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_API: &str = "https://api.minecraftservices.com";
@@ -270,16 +281,7 @@ impl AuthService {
         let device_code = string_field(&response.body, "device_code")?;
         let user_code = string_field(&response.body, "user_code")?;
         let verification_uri = string_field(&response.body, "verification_uri")?;
-        let parsed = validate_https(&verification_uri)?;
-        if !matches!(
-            parsed.host_str(),
-            Some(
-                "microsoft.com"
-                    | "www.microsoft.com"
-                    | "login.microsoftonline.com"
-                    | "login.live.com"
-            )
-        ) {
+        if !DEVICE_VERIFICATION_URLS.contains(&verification_uri.as_str()) {
             return Err("Microsoft 验证页面地址异常".into());
         }
         let expires_in = response.body["expires_in"]
@@ -1955,6 +1957,91 @@ mod tests {
             200,
             json!({"device_code":"test-device-secret","user_code":"TEST-CODE","verification_uri":"https://microsoft.com/devicelogin","expires_in":900,"interval":5}),
         )
+    }
+
+    async fn device_login_with_verification_uri(uri: &str) -> Result<DeviceLogin, String> {
+        let (auth, transport, _) = service(vec![reply(
+            DEVICE_URL,
+            200,
+            json!({"device_code":"test-device-secret","user_code":"TEST-CODE","verification_uri":uri,"expires_in":900,"interval":5}),
+        )]);
+        let result = auth
+            .begin_microsoft("11111111-1111-1111-1111-111111111111")
+            .await;
+        transport.done();
+        result
+    }
+
+    #[test]
+    fn microsoft_device_verification_pages_match_native_opener_scope() {
+        run(async {
+            use std::collections::BTreeSet;
+
+            let known = BTreeSet::from([
+                "https://microsoft.com/devicelogin",
+                "https://www.microsoft.com/devicelogin",
+                "https://microsoft.com/link",
+                "https://www.microsoft.com/link",
+                "https://login.microsoftonline.com/common/oauth2/deviceauth",
+                "https://login.microsoftonline.com/common/oauth2/v2.0/deviceauth",
+                "https://login.live.com/oauth20_deviceauth.srf",
+                "https://login.live.com/oauth20_remoteconnect.srf",
+            ]);
+            let capabilities: Value =
+                serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+            let opener = capabilities["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["identifier"] == "opener:allow-open-url")
+                .unwrap();
+            let microsoft_grants = opener["allow"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|entry| entry["url"].as_str())
+                .filter(|url| {
+                    let host = reqwest::Url::parse(url).unwrap();
+                    matches!(
+                        host.host_str(),
+                        Some(
+                            "microsoft.com"
+                                | "www.microsoft.com"
+                                | "login.microsoftonline.com"
+                                | "login.live.com"
+                        )
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                microsoft_grants, known,
+                "native opener and reviewed device destinations differ"
+            );
+            for uri in known {
+                let login = device_login_with_verification_uri(uri).await.unwrap();
+                assert_eq!(login.verification_uri, uri);
+                assert_eq!(login.user_code, "TEST-CODE");
+            }
+        });
+    }
+
+    #[test]
+    fn microsoft_device_login_rejects_non_verification_urls_even_on_an_approved_host() {
+        run(async {
+            for uri in [
+                "https://www.microsoft.com/windows",
+                "https://www.microsoft.com/link/extra",
+                "https://www.microsoft.com/link?other=1",
+                "https://www.microsoft.com:8443/link",
+                "http://www.microsoft.com/link",
+                "https://www.microsoft.com.example.invalid/link",
+            ] {
+                assert!(
+                    device_login_with_verification_uri(uri).await.is_err(),
+                    "unexpected verification URL: {uri}"
+                );
+            }
+        });
     }
 
     #[test]

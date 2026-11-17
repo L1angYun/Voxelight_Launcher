@@ -597,6 +597,89 @@ mod tests {
         .unwrap()
     }
 
+    fn fixture_with_size(size: usize) -> Vec<u8> {
+        let mut root: HashMap<String, Nbt> = fastnbt::from_bytes(&fixture_bytes(1)).unwrap();
+        root.insert(
+            "padding".into(),
+            Nbt::ByteArray(fastnbt::ByteArray::new(vec![])),
+        );
+        let overhead = fastnbt::to_bytes(&root).unwrap().len();
+        root.insert(
+            "padding".into(),
+            Nbt::ByteArray(fastnbt::ByteArray::new(vec![0; size - overhead])),
+        );
+        let bytes = fastnbt::to_bytes(&root).unwrap();
+        assert_eq!(bytes.len(), size);
+        bytes
+    }
+
+    fn assert_servers_file_limit(gzip: bool, expected_error: &str) {
+        let directory = crate::instances::StagingDirectory::create(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/server-bookmark-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let target = ServerTarget {
+            path: directory.path().join("servers.dat"),
+            version_id: "A",
+            instance_id: None,
+        };
+        let encode = |size| {
+            let bytes = fixture_with_size(size);
+            if gzip {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                encoder.write_all(&bytes).unwrap();
+                encoder.finish().unwrap()
+            } else {
+                bytes
+            }
+        };
+        let limit = 16 * 1024 * 1024;
+        fs::write(&target.path, encode(limit)).unwrap();
+        let accepted = read_servers(&target).unwrap();
+        assert_eq!(accepted.gzip, gzip);
+        assert_eq!(entries(&accepted.root, &accepted.snapshot).len(), 2);
+        drop(accepted);
+
+        let original = encode(limit + 1);
+        if gzip {
+            assert!(original.len() < limit, "must reach the decoded size check");
+        } else {
+            assert_eq!(original.len(), limit + 1);
+        }
+        fs::write(&target.path, &original).unwrap();
+        assert_eq!(read_servers(&target).err().as_deref(), Some(expected_error));
+        let error = save_server_inner(
+            &target,
+            ServerInput {
+                name: "New bookmark".into(),
+                address: "new.example.invalid".into(),
+                hide_address: false,
+            },
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.detail.as_deref(), Some(expected_error));
+        assert!(
+            fs::read(&target.path).unwrap() == original,
+            "original bytes were changed"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn m08_servers_raw_file_rejects_bytes_beyond_sixteen_mib() {
+        assert_servers_file_limit(false, "服务器列表文件过大");
+    }
+
+    #[test]
+    fn m08_servers_gzip_rejects_decoded_bytes_beyond_sixteen_mib() {
+        assert_servers_file_limit(true, "服务器列表解压过大");
+    }
+
     fn bookmark(target: &ServerTarget<'_>, index: usize) -> ServerExpected {
         let file = read_servers(target).unwrap();
         let row = &entries(&file.root, &file.snapshot)[index];

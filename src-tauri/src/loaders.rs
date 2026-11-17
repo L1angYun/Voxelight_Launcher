@@ -409,6 +409,30 @@ async fn read_process_output<R: tokio::io::AsyncRead + Unpin>(
     Ok(())
 }
 
+fn installer_command(java: &Path, jar: &Path, stage: &Path, temp: &Path) -> Result<tokio::process::Command, String> {
+    use crate::storage::{process_path_text, to_process_path};
+    let mut command = tokio::process::Command::new(to_process_path(java)?);
+    command
+        .arg(format!("-Djava.io.tmpdir={}", process_path_text(temp)?))
+        .arg("-Dfile.encoding=UTF-8")
+        .arg("-Djava.awt.headless=true")
+        .arg("-Djava.net.useSystemProxies=true")
+        .arg("-Dsun.stdout.encoding=UTF-8")
+        .arg("-Dsun.stderr.encoding=UTF-8")
+        .arg("-jar")
+        .arg(to_process_path(jar)?)
+        .arg("--installClient")
+        .arg(to_process_path(stage)?)
+        .current_dir(to_process_path(stage)?)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    Ok(command)
+}
+
 async fn run_installer(
     state: &LauncherState,
     app: &AppHandle,
@@ -419,25 +443,7 @@ async fn run_installer(
 ) -> Result<(), String> {
     state.control.checkpoint().await?;
     let temp = crate::storage::runtime_temp_directory(stage)?;
-    let mut command = tokio::process::Command::new(java);
-    command
-        .arg(format!("-Djava.io.tmpdir={}", temp.display()))
-        .arg("-Dfile.encoding=UTF-8")
-        .arg("-Djava.awt.headless=true")
-        .arg("-Djava.net.useSystemProxies=true")
-        .arg("-Dsun.stdout.encoding=UTF-8")
-        .arg("-Dsun.stderr.encoding=UTF-8")
-        .arg("-jar")
-        .arg(jar)
-        .arg("--installClient")
-        .arg(stage)
-        .current_dir(stage)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(0x08000000);
+    let mut command = installer_command(java, jar, stage, &temp)?;
     let mut child = command
         .spawn()
         .map_err(|e| format!("启动 {loader} 官方安装器失败：{e}"))?;
@@ -667,7 +673,7 @@ pub async fn install_loader_inner(
         loader_version.to_owned()
     };
     state.control.checkpoint().await?;
-    let root = PathBuf::from(state.snapshot()?.config.game_directory);
+    let root = crate::processes::configured_game_root(Path::new(&state.snapshot()?.config.game_directory))?;
     let (_, base) = minecraft::install(state, app, game_version).await?;
     let id = if matches!(loader, "fabric" | "quilt") {
         lightweight_loader(state, app, loader, game_version, &version, &root).await?
@@ -773,6 +779,25 @@ pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, S
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn r4_forge_installer_passes_ordinary_java_jar_stage_and_temp_paths() {
+        let command = super::installer_command(
+            std::path::Path::new(r"\\?\C:\Java\bin\java.exe"),
+            std::path::Path::new(r"\\?\D:\Launcher Profile\cache\installer.jar"),
+            std::path::Path::new(r"\\?\D:\Launcher Profile\forge stage"),
+            std::path::Path::new(r"\\?\D:\Launcher Profile\forge stage\runtime-temp"),
+        ).unwrap();
+        let command = command.as_std();
+        assert_eq!(command.get_program(), r"C:\Java\bin\java.exe");
+        assert_eq!(command.get_current_dir().unwrap(), std::path::Path::new(r"D:\Launcher Profile\forge stage"));
+        let args = command.get_args().map(|value| value.to_string_lossy()).collect::<Vec<_>>();
+        assert!(args.contains(&"-Djava.io.tmpdir=D:\\Launcher Profile\\forge stage\\runtime-temp".into()));
+        assert!(args.windows(2).any(|pair| pair == ["-jar", r"D:\Launcher Profile\cache\installer.jar"]));
+        assert!(args.windows(2).any(|pair| pair == ["--installClient", r"D:\Launcher Profile\forge stage"]));
+        assert!(args.iter().all(|value| !value.contains(r"\\?\")));
+    }
+
     use super::*;
     #[test]
     fn neoforge_versions_are_scoped_to_minecraft_minor() {

@@ -56,8 +56,7 @@ pub(crate) fn sync_checkpoint(state: &LauncherState) -> Result<(), String> {
     tokio::runtime::Handle::current().block_on(state.control.checkpoint())
 }
 
-/// Validate absolute user paths and reject links/junctions without following their targets.
-pub(crate) fn checked_absolute(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn validate_absolute_syntax(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("文件或目录必须使用绝对路径".into());
     }
@@ -69,6 +68,12 @@ pub(crate) fn checked_absolute(path: &Path) -> Result<PathBuf, String> {
             return Err("路径不能包含 . 或 ..".into());
         }
     }
+    Ok(())
+}
+
+/// Validate absolute user paths and reject links/junctions without following their targets.
+pub(crate) fn checked_absolute(path: &Path) -> Result<PathBuf, String> {
+    validate_absolute_syntax(path)?;
     for part in path.ancestors() {
         if let Ok(metadata) = fs::symlink_metadata(part) {
             let mut link = metadata.file_type().is_symlink();
@@ -225,7 +230,7 @@ pub(crate) fn instance(data: &Persisted, id: &str) -> Result<Instance, String> {
 
 pub(crate) fn instance_root(state: &LauncherState) -> Result<PathBuf, String> {
     let config = state.snapshot()?.config;
-    let root = checked_absolute(Path::new(&config.game_directory))?;
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
     let instances = safe_join(&root, "instances")?;
     fs::create_dir_all(&instances).map_err(|e| format!("无法创建实例目录：{e}"))?;
     checked_absolute(&instances)
@@ -578,14 +583,21 @@ pub async fn clone_instance(
     result
 }
 
+fn stopped_instance_directory(state: &LauncherState, value: &Instance) -> Result<PathBuf, String> {
+    let config = state.snapshot()?.config;
+    let directory = crate::minecraft::game_directory(&config, &value.version_id, Some(value))?;
+    let identity = state.games.require_directory_stopped(&directory, Some(&value.id), false)?;
+    crate::storage::to_process_path(&identity)
+}
+
 fn clone_inner(state: &LauncherState, instance_id: &str, name: &str) -> Result<Instance, String> {
     let old = instance(&state.snapshot()?, instance_id)?;
-    let source = state.games.require_directory_stopped(Path::new(&old.game_directory), Some(instance_id), false)?;
+    let source = stopped_instance_directory(state, &old)?;
     let root = instance_root(&state)?;
     let token = uuid::Uuid::new_v4().to_string();
     let staging = safe_join(&root, &format!(".clone-{token}"))?;
     let destination = safe_join(&root, &token)?;
-    if root.starts_with(&source) {
+    if crate::processes::directory_tail(&root, &source).is_some() {
         return Err(
             "共享游戏根目录不能直接作为独立实例克隆，请先导出个人备份。独立实例可正常克隆。".into(),
         );
@@ -736,12 +748,12 @@ pub(crate) fn backup_inner(
     state: &LauncherState,
     value: &Instance,
 ) -> Result<InstanceBackup, String> {
-    let source = state.games.require_directory_stopped(Path::new(&value.game_directory), Some(&value.id), false)?;
+    let source = stopped_instance_directory(state, value)?;
     let files = collect_files_controlled(&source, Some(state))?;
     validate_id(&value.id)?;
     let root = checked_absolute(&state.data_dir.join("instance-backups"))?;
     let folder = safe_join(&root, &value.id)?;
-    if folder.starts_with(&source) {
+    if crate::processes::directory_tail(&folder, &source).is_some() {
         return Err("备份目录不能位于被备份的实例内部".into());
     }
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
@@ -1002,12 +1014,14 @@ pub fn list_instance_backups(
     state: State<'_, Arc<LauncherState>>,
     instance_id: String,
 ) -> AppResult<BackupHistory> {
-    let current = instance(&state.snapshot()?, &instance_id)?;
+    let data = state.snapshot()?;
+    let current = instance(&data, &instance_id)?;
     let folder = backup_folder(&state, &instance_id)?;
     let mut history = backup_history(&folder, &instance_id)?;
-    let live = Path::new(&current.game_directory);
+    let resolved = crate::minecraft::game_directory(&data.config, &current.version_id, Some(&current));
+    let live = resolved.as_deref().unwrap_or_else(|_| Path::new(&current.game_directory));
     history.recovery = match read_intent(&folder) {
-        Ok(Some(intent)) => Some(intent_paths(&intent, &current).map_or_else(
+        Ok(Some(intent)) => Some(intent_paths(&intent, &current, live).map_or_else(
             |_| RecoveryPaths::current(live),
             |paths| paths.locations(&intent),
         )),
@@ -1017,7 +1031,7 @@ pub fn list_instance_backups(
     Ok(history)
 }
 
-fn intent_paths(intent: &RestoreIntent, current: &Instance) -> Result<RestorePaths, String> {
+fn intent_paths(intent: &RestoreIntent, current: &Instance, live: &Path) -> Result<RestorePaths, String> {
     if intent.before.game_directory != current.game_directory
         || intent.after.game_directory != current.game_directory
         || intent.before.id != current.id
@@ -1029,7 +1043,7 @@ fn intent_paths(intent: &RestoreIntent, current: &Instance) -> Result<RestorePat
     {
         return Err("恢复记录与当前实例不一致".into());
     }
-    RestorePaths::new(Path::new(&current.game_directory), intent.token)
+    RestorePaths::new(live, intent.token)
 }
 
 fn read_intent(folder: &Path) -> Result<Option<RestoreIntent>, String> {
@@ -1130,18 +1144,19 @@ fn replace_registered_instance(
 
 fn restore_target(state: &LauncherState, current: &Instance) -> AppResult<PathBuf> {
     crate::resources::require_resource_stopped(state, &current.version_id, Some(&current.id))?;
-    let directory = checked_absolute(Path::new(&current.game_directory))?;
-    let configured = PathBuf::from(state.snapshot()?.config.game_directory);
-    let normalized = directory
-        .canonicalize()
-        .unwrap_or_else(|_| directory.clone());
-    // Named archive metadata may reference another folder. The only target is
-    // the currently registered independent instance, not a shared game root.
-    if directory == configured
-        || normalized == configured.canonicalize().unwrap_or(configured)
-        || state.data_dir.starts_with(&directory)
-        || Path::new(env!("CARGO_MANIFEST_DIR")).starts_with(&directory)
-    {
+    let config = state.snapshot()?.config;
+    let directory = crate::minecraft::game_directory(&config, &current.version_id, Some(current))?;
+    let target = crate::processes::canonical_game_directory(&directory)?;
+    let configured = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
+    let configured = crate::processes::canonical_game_directory(&configured)?;
+    let profile = crate::processes::canonical_game_directory(&state.data_dir)?;
+    // A release may run on a machine where the build checkout/drive does not
+    // exist. A local checkout still participates in canonical comparisons.
+    let source = crate::processes::canonical_game_directory(Path::new(env!("CARGO_MANIFEST_DIR"))).ok();
+    let contains = |parent: &Path, child: &Path| crate::processes::directory_tail(child, parent).is_some();
+    let overlaps = |a: &Path, b: &Path| contains(a, b) || contains(b, a);
+    // Only an independent registered instance can be replaced in place.
+    if contains(&target, &configured) || overlaps(&target, &profile) || source.as_deref().is_some_and(|source| contains(&target, source)) {
         return Err("共享游戏根目录或启动器目录不能原地恢复。请将备份导入为新的独立实例。".into());
     }
     Ok(directory)
@@ -1206,7 +1221,7 @@ pub async fn recover_instance_restore(
                 RecoveryPaths::current(&directory).error("backup.restoreRecoveryRequired", err)
             })?
             .ok_or_else(|| AppError::new("backup.restoreRecoveryMissing"))?;
-        let paths = intent_paths(&intent, &current).map_err(|err| {
+        let paths = intent_paths(&intent, &current, &directory).map_err(|err| {
             RecoveryPaths::current(&directory).error("backup.restoreRecoveryRequired", err)
         })?;
         recover_with_state(&arc, &folder, &intent, &paths, &current).map_err(|err| {
@@ -1338,7 +1353,7 @@ fn restore_inner(
     match read_intent(&folder) {
         Ok(None) => (),
         Ok(Some(pending)) => {
-            let locations = intent_paths(&pending, &current).map_or_else(
+            let locations = intent_paths(&pending, &current, &directory).map_or_else(
                 |_| RecoveryPaths::current(&directory),
                 |paths| paths.locations(&pending),
             );
@@ -1473,8 +1488,8 @@ fn export_zip_inner(
     output_path: &str,
 ) -> Result<String, String> {
     let value = instance(&state.snapshot()?, instance_id)?;
-    let source = state.games.require_directory_stopped(Path::new(&value.game_directory), Some(instance_id), false)?;
-    let output = checked_absolute(Path::new(&output_path))?;
+    let source = stopped_instance_directory(state, &value)?;
+    let output = checked_absolute(&crate::storage::to_process_path(Path::new(output_path))?)?;
     if output
         .extension()
         .and_then(|s| s.to_str())
@@ -1482,7 +1497,7 @@ fn export_zip_inner(
     {
         return Err("个人备份导出路径必须以 .zip 结尾".into());
     }
-    if output.starts_with(&source) {
+    if crate::processes::directory_tail(&output, &source).is_some() {
         return Err("备份文件不能写入正在备份的实例目录".into());
     }
     let files = collect_files_controlled(&source, Some(state))?;
@@ -1634,6 +1649,34 @@ mod backup_recovery_tests {
             },
             reqwest::Client::builder().no_proxy().build().unwrap(),
         )
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn r4_restore_refuses_the_launcher_profile_and_its_subdirectory() {
+        let root = fixture_folder("r4-restore-profile");
+        let profile = root.path().join("profile");
+        fs::create_dir_all(profile.join("internal")).unwrap();
+        for target in [profile.clone(), profile.join("internal")] {
+            let instance = Instance {
+                id: "restore-example".into(), version_id: "1.20.1".into(),
+                game_directory: target.display().to_string(), ..Instance::default()
+            };
+            let state = LauncherState::test_fixture(
+                profile.canonicalize().unwrap(),
+                Persisted {
+                    config: crate::models::Config {
+                        game_directory: root.path().join("game").display().to_string(),
+                        ..Default::default()
+                    },
+                    instances: vec![instance.clone()],
+                    ..Default::default()
+                },
+                crate::storage::test_client(),
+            );
+            let error = restore_target(&state, &instance).unwrap_err();
+            assert!(error.detail.as_deref().is_some_and(|detail| detail.contains("不能原地恢复")));
+        }
     }
 
     #[test]
@@ -1859,7 +1902,7 @@ mod backup_recovery_tests {
         assert!(write_intent(root.path(), &second).is_err());
         let reopened = read_intent(root.path()).unwrap().unwrap();
         assert_eq!(reopened.token, token);
-        let paths = intent_paths(&reopened, &first.before).unwrap();
+        let paths = intent_paths(&reopened, &first.before, &live).unwrap();
         let error = paths.locations(&reopened).error(
             "backup.restoreRecoveryRequired",
             "detail goes to diagnostics",

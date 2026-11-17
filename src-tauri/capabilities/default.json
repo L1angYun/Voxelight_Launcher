@@ -23,6 +23,12 @@
           "url": "https://www.microsoft.com/devicelogin"
         },
         {
+          "url": "https://microsoft.com/link"
+        },
+        {
+          "url": "https://www.microsoft.com/link"
+        },
+        {
           "url": "https://login.microsoftonline.com/common/oauth2/deviceauth"
         },
         {
@@ -30,6 +36,9 @@
         },
         {
           "url": "https://login.live.com/oauth20_deviceauth.srf"
+        },
+        {
+          "url": "https://login.live.com/oauth20_remoteconnect.srf"
         },
         {
           "url": "https://www.minecraft.net/en-us/eula"

@@ -108,7 +108,7 @@ function fixture(): LauncherContextValue {
     notice: null,
     gamePid: undefined,
     reload: vi.fn(async () => {}),
-    saveConfig: vi.fn(async () => true),
+    saveConfig: vi.fn(async (next) => next),
     setConfig: vi.fn(),
     selectInstance: vi.fn(),
     selectVersion: vi.fn(),

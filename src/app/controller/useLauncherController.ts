@@ -3,7 +3,6 @@ import {
   appearanceFields,
   command,
   configChanges,
-  type AppearancePatch,
   defaults,
   events,
   type Bootstrap,
@@ -139,48 +138,48 @@ export function useLauncherController(): LauncherContextValue {
     );
   }, [publishConfig]);
 
-  const run = useCallback(
-    async <T,>(labelKey: string, action: () => Promise<T>): Promise<T | undefined> => {
+  const trackOperation = useCallback(
+    async <T,>(labelKey: string, action: () => Promise<T>): Promise<T> => {
       if (labelKey === "resource.install") setResourceProgress(null);
       operationCount.current += 1;
       setBusy((current) => current || labelKey);
       try {
         return await action();
-      } catch (error) {
-        const normalized = normalizeError(error);
-        showNotice(normalized.code, "error", normalized.params, normalized);
-        return undefined;
       } finally {
         operationCount.current -= 1;
         if (operationCount.current === 0) setBusy("");
       }
     },
-    [showNotice],
+    [],
   );
 
-  const saveConfig = useCallback(
-    async (next: Config, appearancePatch?: AppearancePatch) => {
-      const saved = await run("settings.save", async () => {
-        const value = appearancePatch
-          ? await command<Config>("save_appearance_config", { patch: appearancePatch })
-          : await command<Config>("save_config", { config: next });
-        // A read initiated before this durable save cannot publish a stale snapshot.
-        ++bootstrapGeneration.current;
-        const previous = canonicalConfig.current;
-        canonicalConfig.current = value;
-        setData((current) => ({ ...current, config: value }));
-        setConfigValue((current) => {
-          const preview = configChanges(previous, current);
-          const remaining = configChanges(next, { ...next, ...preview });
-          return { ...value, ...remaining };
-        });
-        showNotice("settings.saved");
-        return value;
+  const run = useCallback(async <T,>(labelKey: string, action: () => Promise<T>): Promise<T | undefined> => {
+    try {
+      return await trackOperation(labelKey, action);
+    } catch (error) {
+      const normalized = normalizeError(error);
+      showNotice(normalized.code, "error", normalized.params, normalized);
+      return undefined;
+    }
+  }, [showNotice, trackOperation]);
+
+  const saveConfig = useCallback<LauncherContextValue["saveConfig"]>((next, options) =>
+    trackOperation("settings.save", async () => {
+      const value = options && "appearancePatch" in options
+        ? await command<Config>("save_appearance_config", { patch: options.appearancePatch })
+        : await command<Config>("save_config", { config: next, ...options });
+      // A read initiated before this durable save cannot publish a stale snapshot.
+      ++bootstrapGeneration.current;
+      const previous = canonicalConfig.current;
+      canonicalConfig.current = value;
+      setData((current) => ({ ...current, config: value }));
+      setConfigValue((current) => {
+        const preview = configChanges(previous, current);
+        const remaining = configChanges(next, { ...next, ...preview });
+        return { ...value, ...remaining };
       });
-      return saved !== undefined;
-    },
-    [run, showNotice],
-  );
+      return value;
+    }), [trackOperation]);
 
   const selectInstance = useCallback(
     (id?: string) => {

@@ -1143,7 +1143,9 @@ pub(crate) fn instance_dependencies(
     state: &LauncherState,
     instance: &Instance,
 ) -> Result<BTreeMap<String, String>, String> {
-    let local = Path::new(&instance.game_directory).join(".launcher-pack.json");
+    let config = state.snapshot()?.config;
+    let directory = crate::minecraft::game_directory(&config, &instance.version_id, Some(instance))?;
+    let local = directory.join(".launcher-pack.json");
     if local.is_file() {
         checked_absolute(&local)?;
         let value: Value = serde_json::from_slice(&fs::read(local).map_err(|e| e.to_string())?)
@@ -1155,8 +1157,7 @@ pub(crate) fn instance_dependencies(
             return Ok(deps);
         }
     }
-    let config = state.snapshot()?.config;
-    let root = Path::new(&config.game_directory);
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
     let mut current = instance.version_id.clone();
     let mut visited = HashSet::new();
     let mut loader = None;
@@ -1164,7 +1165,7 @@ pub(crate) fn instance_dependencies(
         if !visited.insert(current.clone()) {
             return Err("版本继承关系循环".into());
         }
-        let path = safe_join(root, &format!("versions/{current}/{current}.json"))?;
+        let path = safe_join(&root, &format!("versions/{current}/{current}.json"))?;
         let value: Value = serde_json::from_slice(
             &fs::read(path).map_err(|_| "缺少版本元数据，无法生成准确的整合包依赖")?,
         )
@@ -1375,8 +1376,10 @@ pub async fn plan_modrinth_export(
     options: SharedExportOptions,
 ) -> Result<SharedExportPreview, String> {
     let _operation = state.operation.lock().await;
-    let instance = instances::instance(&state.snapshot()?, &instance_id)?;
-    let root = state.games.require_directory_stopped(Path::new(&instance.game_directory), Some(&instance_id), false)?;
+    let data = state.snapshot()?;
+    let instance = instances::instance(&data, &instance_id)?;
+    let directory = crate::minecraft::game_directory(&data.config, &instance.version_id, Some(&instance))?;
+    let root = state.games.require_directory_stopped(&directory, Some(&instance_id), false)?;
     let task = state.control.begin_with_display("export", &instance_id, "检查共享整合包清单", &instance.name)?;
     let result = build_shared_export_plan(&state, &instance, &root, options).await;
     state.control.finish(&task, result.as_ref().err().map(String::as_str));
@@ -1394,67 +1397,300 @@ pub async fn export_modrinth_modpack(
     options: SharedExportOptions,
     confirmed_fingerprint: String,
 ) -> crate::errors::AppResult<PackExportResult> {
-    let output_path = grants.consume(PathUse::PackWrite, &output_path, &window)?.to_string_lossy().into_owned();
+    let output = grants.consume(PathUse::PackWrite, &output_path, &window)?;
     let _operation = state.operation.lock().await;
     let instance = instances::instance(&state.snapshot()?, &instance_id)?;
-    let task = state.control.begin_with_display("export", &instance_id, "导出 Modrinth 整合包", &instance.name)?;
-    let result=async {
-        let root=state.games.require_directory_stopped(Path::new(&instance.game_directory),Some(&instance_id),false)?;
-        let output=checked_absolute(Path::new(&output_path))?;
-        if output.extension().and_then(|s|s.to_str()).is_none_or(|s|!s.eq_ignore_ascii_case("mrpack")) {
-            return Err("整合包导出路径须以 .mrpack 结尾".into());
-        }
-        if output.exists()||output.starts_with(&root){return Err("导出目标已存在或位于实例内部，请另选文件名和目录".into());}
-        let plan = build_shared_export_plan(&state, &instance, &root, options).await?;
-        if plan.preview.fingerprint != confirmed_fingerprint {
-            return Err("instance.exportPreviewChanged".into());
-        }
-        let SharedExportPlan { preview, files, index_files, raw_files } = plan;
-        let warnings = preview.excluded_files.iter().filter(|file| file.reason != "notSelected")
-            .map(|file| file.path.clone()).collect::<Vec<_>>();
-        let index=PackIndex{format_version:1,game:"minecraft".into(),version_id:uuid::Uuid::new_v4().to_string(),name:name.unwrap_or_else(||instance.name.clone()),
-            summary:Some("Exported by VoxelightLauncher; mods are download references, never bundled without permission.".into()),files:index_files,dependencies:instance_dependencies(&state,&instance)?};
-        let parent=output.parent().ok_or("导出目录无效")?;checked_absolute(parent)?;fs::create_dir_all(parent).map_err(|e|e.to_string())?;
-        let temporary=safe_join(parent,&format!(".mrpack-export-{}.part",uuid::Uuid::new_v4()))?;
-        let write_result:Result<(),String>=async {
-            let file=fs::OpenOptions::new().create_new(true).write(true).open(&temporary).map_err(|e|e.to_string())?;
-            let mut zip=ZipWriter::new(file);let options=SimpleFileOptions::default().compression_method(CompressionMethod::Deflated).unix_permissions(0o644);
-            zip.start_file("modrinth.index.json",options).map_err(|e|e.to_string())?;zip.write_all(&serde_json::to_vec_pretty(&index).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-            for record in &raw_files{
-                state.control.checkpoint().await?;
-                zip.start_file(format!("overrides/{}",record.relative),options.large_file(record.size >= u32::MAX as u64)).map_err(|e|e.to_string())?;
-                std::io::copy(&mut fs::File::open(safe_join(&root,&record.relative)?).map_err(|e|e.to_string())?,&mut zip).map_err(|e|e.to_string())?;
-            }
-            zip.finish().map_err(|e|e.to_string())?.sync_all().map_err(|e|e.to_string())?;
-            let verify_root = root.clone();
-            let latest = tokio::task::spawn_blocking(move || instances::collect_files(&verify_root))
-                .await.map_err(|error| error.to_string())??;
-            if latest != files { return Err("导出期间实例发生变化，请关闭游戏后重试".into()); }
-            if output.exists(){return Err("导出期间出现同名文件，现有文件未覆盖".into());}
-            instances::publish_archive_file(&temporary,&output).map_err(|e|e.to_string())
-        }.await;
-        if write_result.is_err(){let _=fs::remove_file(&temporary);}write_result?;
-        Ok(PackExportResult{path:output.to_string_lossy().into_owned(),download_files:index.files.len(),override_files:raw_files.len(),warnings})
-    }.await;
+    let task = state.control.begin_with_display(
+        "export",
+        &instance_id,
+        "导出 Modrinth 整合包",
+        &instance.name,
+    )?;
+    let result = export_confirmed_shared_pack(
+        &state,
+        &instance,
+        &output,
+        name,
+        options,
+        &confirmed_fingerprint,
+    )
+    .await;
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
     result.map_err(crate::errors::expected)
 }
 
+async fn export_confirmed_shared_pack(
+    state: &LauncherState,
+    instance: &Instance,
+    output: &Path,
+    name: Option<String>,
+    options: SharedExportOptions,
+    confirmed_fingerprint: &str,
+) -> Result<PackExportResult, String> {
+    let config = state.snapshot()?.config;
+    let directory = crate::minecraft::game_directory(&config, &instance.version_id, Some(instance))?;
+    let root = state.games.require_directory_stopped(&directory, Some(&instance.id), false)?;
+    let output = checked_absolute(output)?;
+    if output
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_none_or(|s| !s.eq_ignore_ascii_case("mrpack"))
+    {
+        return Err("整合包导出路径须以 .mrpack 结尾".into());
+    }
+    if output.exists() || output.starts_with(&root) {
+        return Err("导出目标已存在或位于实例内部，请另选文件名和目录".into());
+    }
+    let plan = build_shared_export_plan(state, instance, &root, options).await?;
+    if plan.preview.fingerprint != confirmed_fingerprint {
+        return Err("instance.exportPreviewChanged".into());
+    }
+    let SharedExportPlan {
+        preview,
+        files,
+        index_files,
+        raw_files,
+    } = plan;
+    let warnings = preview
+        .excluded_files
+        .iter()
+        .filter(|file| file.reason != "notSelected")
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    let index=PackIndex{format_version:1,game:"minecraft".into(),version_id:uuid::Uuid::new_v4().to_string(),name:name.unwrap_or_else(||instance.name.clone()),
+            summary:Some("Exported by VoxelightLauncher; mods are download references, never bundled without permission.".into()),files:index_files,dependencies:instance_dependencies(state,instance)?};
+    let parent = output.parent().ok_or("导出目录无效")?;
+    checked_absolute(parent)?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let temporary = safe_join(
+        parent,
+        &format!(".mrpack-export-{}.part", uuid::Uuid::new_v4()),
+    )?;
+    let write_result: Result<(), String> = async {
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|e| e.to_string())?;
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+        zip.start_file("modrinth.index.json", options)
+            .map_err(|e| e.to_string())?;
+        zip.write_all(&serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        for record in &raw_files {
+            state.control.checkpoint().await?;
+            zip.start_file(
+                format!("overrides/{}", record.relative),
+                options.large_file(record.size >= u32::MAX as u64),
+            )
+            .map_err(|e| e.to_string())?;
+            std::io::copy(
+                &mut fs::File::open(safe_join(&root, &record.relative)?)
+                    .map_err(|e| e.to_string())?,
+                &mut zip,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        zip.finish()
+            .map_err(|e| e.to_string())?
+            .sync_all()
+            .map_err(|e| e.to_string())?;
+        let verify_root = root.clone();
+        let latest = tokio::task::spawn_blocking(move || instances::collect_files(&verify_root))
+            .await
+            .map_err(|error| error.to_string())??;
+        if latest != files {
+            return Err("导出期间实例发生变化，请关闭游戏后重试".into());
+        }
+        if output.exists() {
+            return Err("导出期间出现同名文件，现有文件未覆盖".into());
+        }
+        instances::publish_archive_file(&temporary, &output).map_err(|e| e.to_string())
+    }
+    .await;
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result?;
+    Ok(PackExportResult {
+        path: output.to_string_lossy().into_owned(),
+        download_files: index.files.len(),
+        override_files: raw_files.len(),
+        warnings,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shared_export_fixture(root: &Path) -> (LauncherState, Instance) {
+        let profile = root.join("profile");
+        let game = root.join("game");
+        fs::create_dir(&profile).unwrap();
+        fs::create_dir(&game).unwrap();
+        for (name, content) in [
+            (
+                ".launcher-pack.json",
+                r#"{"dependencies":{"minecraft":"1.21.1"}}"#,
+            ),
+            ("config/ordinary.toml", "volume=20"),
+            ("config/account-token.json", "inert test fixture"),
+            ("saves/Example/level.dat", "test save"),
+        ] {
+            let path = game.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        let instance = Instance {
+            id: "shared-test".into(),
+            name: "Shared test".into(),
+            version_id: "1.21.1".into(),
+            game_directory: game.to_string_lossy().into_owned(),
+            ..Instance::default()
+        };
+        let state = LauncherState::test_fixture(
+            profile,
+            crate::models::Persisted {
+                config: crate::models::Config {
+                    game_directory: root.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                instances: vec![instance.clone()],
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        (state, instance)
+    }
+
     #[test]
-    fn c5_shared_default_never_includes_user_configs_and_preview_lists_files() {
-        let mods = [FileRecord { relative: "mods/example.jar".into(), size: 4, sha256: "known".into() }];
-        let records = mods.into_iter().chain([
-            FileRecord { relative: "config/ordinary.toml".into(), size: 8, sha256: "present".into() },
-            FileRecord { relative: "config/account-token.json".into(), size: 8, sha256: "present".into() },
-        ]).collect::<Vec<_>>();
-        let preview = records.iter().filter(|record| is_mod(&record.relative)
-            || include_shared_config(record, None)).map(|record| record.relative.as_str()).collect::<Vec<_>>();
-        assert_eq!(preview, vec!["mods/example.jar"], "implicit shared export copied ordinary user settings");
+    fn h11_shared_export_plan_lists_actual_default_and_opt_in_files() {
+        let fixture = instances::StagingDirectory::create(test_root()).unwrap();
+        let (state, instance) = shared_export_fixture(fixture.path());
+        let root = Path::new(&instance.game_directory);
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let plan =
+                build_shared_export_plan(&state, &instance, root, SharedExportOptions::default())
+                    .await
+                    .unwrap();
+            assert_eq!(plan.preview.bundled_files, ["modrinth.index.json"]);
+            assert!(plan.preview.download_references.is_empty());
+            assert_eq!(
+                plan.preview
+                    .excluded_files
+                    .iter()
+                    .map(|file| (file.path.as_str(), file.reason))
+                    .collect::<Vec<_>>(),
+                [
+                    (".launcher-pack.json", "notSelected"),
+                    ("config/account-token.json", "credentialName"),
+                    ("config/ordinary.toml", "notSelected"),
+                    ("saves/Example/level.dat", "notSelected"),
+                ]
+            );
+
+            let with_configs = build_shared_export_plan(
+                &state,
+                &instance,
+                root,
+                SharedExportOptions {
+                    include_configs: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                with_configs.preview.bundled_files,
+                ["modrinth.index.json", "overrides/config/ordinary.toml"]
+            );
+            assert!(with_configs
+                .preview
+                .excluded_files
+                .iter()
+                .any(|file| file.path == "config/account-token.json"
+                    && file.reason == "credentialName"));
+            assert_ne!(with_configs.preview.fingerprint, plan.preview.fingerprint);
+        });
+    }
+
+    #[test]
+    fn h11_shared_export_rejects_stale_fingerprint_then_writes_reconfirmed_content() {
+        let fixture = instances::StagingDirectory::create(test_root()).unwrap();
+        let (state, instance) = shared_export_fixture(fixture.path());
+        let root = Path::new(&instance.game_directory);
+        let output = fixture.path().canonicalize().unwrap().join("shared.mrpack");
+        let options = SharedExportOptions {
+            include_configs: true,
+            ..Default::default()
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let approved = build_shared_export_plan(&state, &instance, root, options)
+                .await
+                .unwrap()
+                .preview;
+            // The file contents change without any change in path or length.
+            fs::write(root.join("config/ordinary.toml"), "volume=21").unwrap();
+            let failure = export_confirmed_shared_pack(
+                &state,
+                &instance,
+                &output,
+                None,
+                options,
+                &approved.fingerprint,
+            )
+            .await
+            .err()
+            .expect("a stale confirmation must reject the export");
+            assert_eq!(failure, "instance.exportPreviewChanged");
+            assert!(!output.exists());
+            assert!(fs::read_dir(fixture.path()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".mrpack-export-")
+            }));
+
+            let refreshed = build_shared_export_plan(&state, &instance, root, options)
+                .await
+                .unwrap()
+                .preview;
+            assert_ne!(refreshed.fingerprint, approved.fingerprint);
+            let result = export_confirmed_shared_pack(
+                &state,
+                &instance,
+                &output,
+                None,
+                options,
+                &refreshed.fingerprint,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.download_files, 0);
+            assert_eq!(result.override_files, 1);
+            let mut zip = ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+            assert_eq!(zip.len(), 2);
+            let mut index = String::new();
+            zip.by_name("modrinth.index.json")
+                .unwrap()
+                .read_to_string(&mut index)
+                .unwrap();
+            let index: Value = serde_json::from_str(&index).unwrap();
+            assert_eq!(index["dependencies"]["minecraft"], "1.21.1");
+            let mut contents = String::new();
+            zip.by_name("overrides/config/ordinary.toml")
+                .unwrap()
+                .read_to_string(&mut contents)
+                .unwrap();
+            assert_eq!(contents, "volume=21");
+        });
     }
 
     fn test_root() -> PathBuf {

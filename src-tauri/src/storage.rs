@@ -187,20 +187,60 @@ impl std::fmt::Display for ProfileLoadError {
 
 impl std::error::Error for ProfileLoadError {}
 
-pub(crate) fn display_profile_path(directory: &Path) -> String {
+/// Java and other child processes use ordinary DOS or UNC paths. Keep the
+/// canonical form for identity checks, but do not put a verbatim path on a
+/// command line or pass it as the child working directory.
+pub(crate) fn to_process_path(path: &Path) -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
-        // A canonical Windows disk path uses extended syntax; show people
-        // the familiar notation without changing the path used for real I/O.
-        let path = directory.to_string_lossy();
-        if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
-            return format!(r"\\{unc}");
-        }
-        if let Some(local) = path.strip_prefix(r"\\?\") {
-            return local.to_owned();
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use std::path::{Component, Prefix};
+
+        if let Some(Component::Prefix(prefix)) = path.components().next() {
+            let units = path.as_os_str().encode_wide();
+            let ordinary: Vec<u16> = match prefix.kind() {
+                Prefix::VerbatimDisk(_) => units.skip(4).collect(),
+                Prefix::VerbatimUNC(..) => [b'\\' as u16; 2].into_iter().chain(units.skip(8)).collect(),
+                Prefix::Verbatim(_) | Prefix::DeviceNS(_) => {
+                    return Err("不能将 Windows 设备路径用作启动器目录或进程参数。".into());
+                }
+                _ => return Ok(path.to_owned()),
+            };
+            // Ordinary Windows paths can reinterpret these names. Never
+            // silently target a different file when removing verbatim syntax.
+            let extended_tail = path.components().skip(1);
+            if extended_tail.into_iter().any(|part| match part {
+                Component::Normal(name) => {
+                    name.encode_wide().last().is_some_and(|c| c == b'.' as u16 || c == b' ' as u16)
+                        || name.encode_wide().any(|c| c == b'/' as u16)
+                        || Path::new(name).file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| {
+                            let stem = stem.split('.').next().unwrap_or(stem).trim_end();
+                            let upper = stem.to_ascii_uppercase();
+                            matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+                                || ["COM", "LPT"].iter().any(|prefix| upper.strip_prefix(prefix).is_some_and(
+                                    |n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+                                ))
+                        })
+                }
+                Component::CurDir | Component::ParentDir => true,
+                _ => false,
+            }) {
+                return Err("此 Windows 扩展路径无法安全转换为普通路径。".into());
+            }
+            return Ok(PathBuf::from(OsString::from_wide(&ordinary)));
         }
     }
-    directory.display().to_string()
+    Ok(path.to_owned())
+}
+
+pub(crate) fn process_path_text(path: &Path) -> Result<String, String> {
+    to_process_path(path)?.into_os_string().into_string()
+        .map_err(|_| "Java 路径无法表示为文本。".into())
+}
+
+pub(crate) fn display_profile_path(directory: &Path) -> String {
+    to_process_path(directory).as_deref().unwrap_or(directory).display().to_string()
 }
 
 fn unavailable(error: impl ToString) -> ProfileLoadError {
@@ -390,8 +430,8 @@ impl LauncherState {
         });
         let recovery = StorageRecovery {
             reason: failure.recovery_reason(),
-            primary_directory: primary.as_ref().map(|p| p.display().to_string()),
-            primary_state_path: primary_state_path.as_ref().map(|p| p.display().to_string()),
+            primary_directory: primary.as_deref().map(display_profile_path),
+            primary_state_path: primary_state_path.as_deref().map(display_profile_path),
             primary_state_retained: retained,
         };
         eprintln!(
@@ -411,10 +451,11 @@ impl LauncherState {
 
     fn load_from(data_dir: PathBuf) -> Result<Self, ProfileLoadError> {
         fs::create_dir_all(&data_dir).map_err(unavailable)?;
-        // Canonicalize before opening the sidecar so alternate spellings share
-        // the same lock and future IO uses the resolved directory.
-        let data_dir = std::fs::canonicalize(data_dir).map_err(unavailable)?;
-        let profile_lock = open_profile_lock(&data_dir)?;
+        // Alternate spellings must acquire the same lock. Paths derived from
+        // this directory are also passed to Java, so keep ordinary spelling.
+        let identity = std::fs::canonicalize(data_dir).map_err(unavailable)?;
+        let data_dir = to_process_path(&identity).map_err(unavailable)?;
+        let profile_lock = open_profile_lock(&identity)?;
         let stored = state_contents(&data_dir)?;
         let (mut data, revision, retained_fields, mut needs_write) = match stored {
             Some((raw, stamp)) => {
@@ -1204,6 +1245,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn r4_profile_uses_ordinary_paths_but_retains_its_lock() {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/core-tests")
+                .join(format!("r4-profile-{}", uuid::Uuid::new_v4())),
+        ).unwrap();
+        let path = root.path().join("profile with spaces");
+        fs::create_dir_all(&path).unwrap();
+        let identity = path.canonicalize().unwrap();
+        let state = LauncherState::load_from(identity.clone()).unwrap();
+        assert!(matches!(LauncherState::load_from(path.clone()), Err(ProfileLoadError::InUse(_))));
+        assert_eq!(state.data_dir, path);
+        assert!(!state.data_dir.join("cache/example.jar").to_string_lossy().starts_with(r"\\?\"));
+    }
+
+    #[test]
     fn unavailable_primary_storage_falls_back_without_panicking() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target")
@@ -1216,7 +1273,7 @@ mod tests {
 
         let state =
             LauncherState::load_with_fallback(Ok(primary), || Ok(fallback.clone())).unwrap();
-        assert_eq!(state.data_dir, fs::canonicalize(&fallback).unwrap());
+        assert_eq!(fs::canonicalize(&state.data_dir).unwrap(), fs::canonicalize(&fallback).unwrap());
         assert!(fallback.join("state.json").exists());
 
         drop(state);

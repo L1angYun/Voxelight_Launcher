@@ -4,6 +4,12 @@
   "save": "保存设置",
   "reset": "撤销更改",
   "unsaved": "有未保存的更改；不保存离开时，外观预览会恢复。",
+  "saveResult": {
+    "appearanceSaved": "外观已保存。",
+    "appearanceFailed": "外观未保存。",
+    "otherSaved": "其他设置已保存。",
+    "otherFailed": "其他设置未保存。"
+  },
   "sections": "设置分组",
   "section": {
     "general": "通用",

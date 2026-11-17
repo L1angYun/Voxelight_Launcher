@@ -14,7 +14,6 @@
     "game.notRunning": "没有找到当前选择对应的运行游戏。",
     "game.exited": "游戏已退出（退出码 {{code}}）。",
     "preparation.cancelRequested": "已请求取消准备任务。",
-    "settings.saved": "设置已保存。",
     "versions.unavailable": "无法获取版本列表，请检查网络后重试。",
     "instance.installed": "实例已安装完成。"
   },

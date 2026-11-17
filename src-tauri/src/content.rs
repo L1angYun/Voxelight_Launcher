@@ -305,7 +305,7 @@ async fn load_default_skin(
         _ => return Err("默认角色仅支持 steve 或 alex".into()),
     };
     let config = state.snapshot()?.config;
-    let root = instances::checked_absolute(Path::new(&config.game_directory))?;
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
     let preview = instances::checked_absolute(&state.data_dir.join("preview-cache"))?;
     let source = config.download_source.as_str();
     let (source_version, metadata) =
@@ -507,8 +507,11 @@ fn backup_world_inner(
     if !safe_join(&world, "level.dat")?.is_file() {
         return Err("世界目录缺少 level.dat".into());
     }
-    let output = instances::checked_absolute(output)?;
-    if output.starts_with(&world) {
+    let output = instances::checked_absolute(&crate::storage::to_process_path(output)?)?;
+    let parent = output.parent().ok_or("备份目录无效")?;
+    let parent_identity = crate::processes::canonical_game_directory(parent)?;
+    let world_identity = crate::processes::canonical_game_directory(&world)?;
+    if crate::processes::directory_tail(&parent_identity, &world_identity).is_some() {
         return Err("备份文件不能写入正在备份的世界目录".into());
     }
     if output.exists() {
@@ -522,7 +525,6 @@ fn backup_world_inner(
     }
     let files = instances::collect_files(&world)?;
     let total = files.iter().map(|file| file.size).sum();
-    let parent = output.parent().ok_or("备份目录无效")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let temporary = safe_join(
         parent,
@@ -1041,6 +1043,29 @@ mod tests {
         fs::write(&path, encoder.finish().unwrap()).unwrap();
         assert!(read_level(&path).err().unwrap().contains("解压超出"));
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn r4_world_backup_rejects_output_inside_source_using_the_granted_parent() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let fixture = root();
+            let game = fixture.join("game");
+            let world = game.join("SaVeS").join("Example");
+            fs::create_dir_all(&world).unwrap();
+            fs::write(world.join("level.dat"), b"owned fixture").unwrap();
+            let output = world.canonicalize().unwrap().join("Backup.zip");
+            let state = LauncherState::test_fixture(
+                fixture.join("profile"), crate::models::Persisted::default(), crate::storage::test_client()
+            );
+            let error = tokio::task::spawn_blocking(move || backup_world_inner(&state, &game, "Example", &output))
+                .await.unwrap().err();
+            let published = world.join("Backup.zip").exists();
+            fs::remove_dir_all(&fixture).unwrap();
+            assert!(!published, "archive was published inside the world");
+            assert!(error.is_some_and(|error| error.contains("不能写入正在备份的世界目录")));
+        });
+    }
+
     #[test]
     fn world_backup_and_import_roundtrip_never_replace_original_world() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {

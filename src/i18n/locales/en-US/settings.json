@@ -4,6 +4,12 @@
   "save": "Save settings",
   "reset": "Reset changes",
   "unsaved": "You have unsaved changes. Appearance preview reverts if you leave without saving.",
+  "saveResult": {
+    "appearanceSaved": "Appearance saved.",
+    "appearanceFailed": "Appearance was not saved.",
+    "otherSaved": "Other settings saved.",
+    "otherFailed": "Other settings were not saved."
+  },
   "sections": "Settings sections",
   "section": {
     "general": "General",

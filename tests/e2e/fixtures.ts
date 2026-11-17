@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import type { WorldMaterial, WorldSceneId } from "../../src/components/world/types";
-import type { Instance } from "../../src/lib/launcher";
+import { appearanceFields, type Instance } from "../../src/lib/launcher";
 import type { DownloadTask } from "../../src/features/downloads/useDownloadTasks";
 
 export async function installLauncherFixture(
@@ -28,9 +28,10 @@ export async function installLauncherFixture(
     stress?: boolean;
     launchDelay?: number;
     manualLaunchCompletion?: boolean;
+    settingsOperationLocked?: boolean;
   } = {},
 ) {
-  await page.addInitScript((options) => {
+  await page.addInitScript(({ options, appearanceKeys }) => {
     const texture = (color: string, cape = false) => {
       const canvas = document.createElement("canvas");
       canvas.width = 64;
@@ -223,6 +224,7 @@ export async function installLauncherFixture(
       ...history,
     ] : [];
     const calls: { name: string; args?: Record<string, unknown> }[] = [];
+    let settingsOperationLocked = options.settingsOperationLocked ?? false;
     const callbacks = new Map<number, (value: unknown) => void>();
     const listeners = new Map<string, Map<number, number>>();
     const cancelledTasks = new Set<string>();
@@ -286,7 +288,7 @@ export async function installLauncherFixture(
       };
     };
     Object.assign(window, {
-      __appearanceFixtures: { skins, calls },
+      __appearanceFixtures: { skins, calls, releaseSettingsOperation: () => { settingsOperationLocked = false; } },
       isTauri: true,
       __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
       __TAURI_INTERNALS__: {
@@ -394,11 +396,15 @@ export async function installLauncherFixture(
           }
           if (name === "save_appearance_config") {
             Object.assign(config, args?.patch);
-            return config;
+            return { ...config };
           }
           if (name === "save_config") {
-            Object.assign(config, args?.config);
-            return config;
+            if (settingsOperationLocked) throw { code: "config.busy", params: {} };
+            const appearance = args?.preserveAppearance === true
+              ? Object.fromEntries(appearanceKeys.map((key) => [key, config[key]]))
+              : {};
+            Object.assign(config, args?.config, appearance);
+            return { ...config };
           }
           if (name === "list_versions")
             return {
@@ -599,5 +605,5 @@ export async function installLauncherFixture(
         },
       },
     });
-  }, options);
+  }, { options, appearanceKeys: [...appearanceFields, "customBackground"] as const });
 }

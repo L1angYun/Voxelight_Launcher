@@ -35,7 +35,7 @@ impl PathUse {
     }
 
     fn game_directory(path: &Path) -> Result<PathBuf, String> {
-        crate::processes::canonical_game_directory(path)
+        crate::processes::configured_game_root(path)
     }
 
     fn title(self) -> &'static str {

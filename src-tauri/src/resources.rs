@@ -852,9 +852,8 @@ pub(crate) fn resource_target(
 ) -> AppResult<ResourceTarget> {
     let data = state.snapshot()?;
     let directory = resource_directory(&data, version_id, instance_id, kind)?;
-    let root = Path::new(&data.config.game_directory);
-    reject_links(root)?;
-    let (minecraft, detected_loader) = context_for_version(root, version_id)?;
+    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory))?;
+    let (minecraft, detected_loader) = context_for_version(&root, version_id)?;
     let loader = if kind == ResourceKind::Mod {
         Some(detected_loader.ok_or_else(|| {
             AppError::new("resource.loaderRequired")
@@ -906,8 +905,8 @@ pub(crate) fn resource_context(
 ) -> AppResult<ResourceContext> {
     let data = state.snapshot()?;
     resource_directory(&data, version_id, instance_id, ResourceKind::Mod)?;
-    let (game_version, loader) =
-        context_for_version(Path::new(&data.config.game_directory), version_id)?;
+    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory))?;
+    let (game_version, loader) = context_for_version(&root, version_id)?;
     Ok(ResourceContext {
         game_version,
         loader,
@@ -970,10 +969,10 @@ fn target_candidates(
 ) -> AppResult<Vec<crate::resource_targets::TargetCandidate>> {
     let data = state.snapshot()?;
     let running = state.games.snapshot()?;
-    let root = Path::new(&data.config.game_directory);
+    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory)).ok();
     let mut candidates = Vec::new();
     for instance in &data.instances {
-        let context = version_context(root, &instance.version_id).ok();
+        let context = root.as_deref().and_then(|root| version_context(root, &instance.version_id).ok());
         candidates.push(crate::resource_targets::TargetCandidate {
             kind: "instance".into(),
             instance_id: Some(instance.id.clone()),
@@ -994,7 +993,7 @@ fn target_candidates(
         if instance_versions.contains(version.id.as_str()) {
             continue;
         }
-        let context = version_context(root, &version.id).ok();
+        let context = root.as_deref().and_then(|root| version_context(root, &version.id).ok());
         candidates.push(crate::resource_targets::TargetCandidate {
             kind: "version".into(),
             instance_id: None,

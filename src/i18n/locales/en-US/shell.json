@@ -14,7 +14,6 @@
     "game.notRunning": "No running game matches the current selection.",
     "game.exited": "Game exited (code {{code}}).",
     "preparation.cancelRequested": "Preparation cancellation requested.",
-    "settings.saved": "Settings saved.",
     "versions.unavailable": "Version list unavailable. Check your connection and retry.",
     "instance.installed": "Instance installed."
   },
