@@ -1078,13 +1078,6 @@ async fn download_once(
         .map_err(|error| format!("保存已校验文件失败：{error}"))
 }
 
-pub(crate) async fn ensure_download(
-    client: &reqwest::Client,
-    file: &Download,
-) -> Result<bool, String> {
-    ensure_download_with_control(client, file, None).await
-}
-
 pub(crate) async fn ensure_download_with_control(
     client: &reqwest::Client,
     file: &Download,
@@ -4597,10 +4590,14 @@ mod tests {
                 Some(&format!("versions/{latest}/{latest}.jar")),
             )
             .unwrap();
-            assert!(ensure_download(&state.client, &file).await.unwrap());
+            assert!(ensure_download_with_control(&state.client, &file, None)
+                .await
+                .unwrap());
             assert!(file_valid(&file).await.unwrap());
             assert!(
-                !ensure_download(&state.client, &file).await.unwrap(),
+                !ensure_download_with_control(&state.client, &file, None)
+                    .await
+                    .unwrap(),
                 "verified existing file should be reused"
             );
             eprintln!(

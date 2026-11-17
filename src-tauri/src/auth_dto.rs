@@ -85,5 +85,4 @@ pub struct GameCredentials {
     pub xuid: Option<String>,
     pub client_id: Option<String>,
     pub authlib_server: Option<String>,
-    pub expires_at: i64,
 }

@@ -632,16 +632,6 @@ fn clone_inner(state: &LauncherState, instance_id: &str, name: &str) -> Result<I
     })
 }
 
-pub(crate) fn write_archive(
-    source: &Path,
-    output: &Path,
-    files: &[FileRecord],
-    manifest_name: &str,
-    manifest: &[u8],
-) -> Result<(), String> {
-    write_archive_controlled(source, output, files, manifest_name, manifest, None)
-}
-
 fn backup_file_options(size: u64) -> SimpleFileOptions {
     let large = size >= 4_000_000_000;
     SimpleFileOptions::default()
@@ -1584,7 +1574,10 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let output = root.join("my-backup.zip");
         fs::write(&output, b"original backup").unwrap();
-        assert!(write_archive(&root, &output, &[], "launcher-backup.json", b"{}").is_err());
+        assert!(
+            write_archive_controlled(&root, &output, &[], "launcher-backup.json", b"{}", None)
+                .is_err()
+        );
         assert_eq!(fs::read(&output).unwrap(), b"original backup");
         assert!(
             root.is_absolute()

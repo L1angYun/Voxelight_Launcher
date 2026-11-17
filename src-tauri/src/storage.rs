@@ -338,6 +338,12 @@ fn state_stamp(raw: &Value, bytes: &[u8]) -> Result<StateStamp, ProfileLoadError
     })
 }
 
+/// Return the JSON body without a single optional byte-order mark at offset zero.
+/// Use the original bytes for stamps and other comparisons against the file on disk.
+pub(crate) fn json_body(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes)
+}
+
 fn state_contents(directory: &Path) -> Result<Option<(Value, StateStamp)>, ProfileLoadError> {
     let path = safe_join(directory, STATE_FILE).map_err(unavailable)?;
     match fs::symlink_metadata(&path) {
@@ -348,7 +354,7 @@ fn state_contents(directory: &Path) -> Result<Option<(Value, StateStamp)>, Profi
     }
     match fs::read(path) {
         Ok(bytes) => {
-            let raw = serde_json::from_slice(&bytes)
+            let raw = serde_json::from_slice(json_body(&bytes))
                 .map_err(|error| ProfileLoadError::Corrupt(error.to_string()))?;
             let stamp = state_stamp(&raw, &bytes)?;
             Ok(Some((raw, stamp)))
@@ -1110,6 +1116,72 @@ mod tests {
             );
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    fn bom_state_fixture() -> (crate::instances::StagingDirectory, Vec<u8>, Vec<u8>) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/core-tests")
+            .join(format!("profile-bom-{}", uuid::Uuid::new_v4()));
+        let root = crate::instances::StagingDirectory::create(path).unwrap();
+        let primary = root.path().join("primary");
+        fs::create_dir(&primary).unwrap();
+        let mut value = serde_json::to_value(Persisted::default()).unwrap();
+        value["writeGeneration"] = Value::from(7);
+        let body = serde_json::to_vec(&value).unwrap();
+        let with_bom = [b"\xEF\xBB\xBF".as_slice(), &body].concat();
+        fs::write(primary.join(STATE_FILE), &with_bom).unwrap();
+        (root, body, with_bom)
+    }
+
+    #[test]
+    fn state_json_with_utf8_bom_loads_as_primary() {
+        let (root, _, with_bom) = bom_state_fixture();
+        let primary = root.path().join("primary");
+        let fallback = root.path().join("fallback");
+        let file = primary.join(STATE_FILE);
+        let state = LauncherState::load_with_fallback(Ok(primary.clone()), || Ok(fallback.clone())).unwrap();
+        assert_eq!(state.data_dir, primary);
+        assert!(state.storage_status().recovery.is_none());
+        assert!(!fallback.exists());
+        assert_eq!(fs::read(&file).unwrap(), with_bom, "loading should not rewrite a BOM");
+        state.update(|data| {
+            data.config.theme = "dark".into();
+            Ok(())
+        }).unwrap();
+        let bytes = fs::read(&file).unwrap();
+        assert_eq!(bytes[0], b'{');
+        let saved: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved["config"]["theme"], "dark");
+        assert_eq!(saved["writeGeneration"], 8);
+    }
+
+    #[test]
+    fn state_json_bom_changes_are_still_raw_byte_conflicts() {
+        let (root, body, _) = bom_state_fixture();
+        let primary = root.path().join("primary");
+        let file = primary.join(STATE_FILE);
+        let state = LauncherState::load_from(primary).unwrap();
+        fs::write(&file, &body).unwrap();
+        let error = state.update(|data| {
+            data.config.theme = "dark".into();
+            Ok(())
+        }).unwrap_err();
+        assert_eq!(error, crate::errors::STORAGE_STATE_CHANGED);
+        assert_eq!(fs::read(&file).unwrap(), body);
+    }
+
+    #[test]
+    fn state_json_bom_does_not_hide_truncation_or_strip_another_bom() {
+        let (root, body, _) = bom_state_fixture();
+        let primary = root.path().join("primary");
+        let file = primary.join(STATE_FILE);
+        let bom = b"\xEF\xBB\xBF";
+        for prefix in [b"\xEF\xBB\xBF\xEF\xBB\xBF".as_slice(), b" \xEF\xBB\xBF"] {
+            fs::write(&file, [prefix, &body].concat()).unwrap();
+            assert!(matches!(state_contents(&primary), Err(ProfileLoadError::Corrupt(_))));
+        }
+        fs::write(&file, [bom.as_slice(), b"{"].concat()).unwrap();
+        assert!(matches!(state_contents(&primary), Err(ProfileLoadError::Corrupt(_))));
     }
 
     #[test]

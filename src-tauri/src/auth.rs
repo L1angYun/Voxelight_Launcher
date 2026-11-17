@@ -928,7 +928,6 @@ impl AuthService {
                 xuid: record.xuid,
                 client_id: record.microsoft_client_id,
                 authlib_server: record.authlib_server,
-                expires_at: record.expires_at.unwrap_or(0),
             })
         })
     }
