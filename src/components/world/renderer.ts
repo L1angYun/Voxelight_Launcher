@@ -268,7 +268,9 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     return [Math.max(2, Math.round(cssWidth * scale)), Math.max(2, Math.round(cssHeight * scale))];
   }
   function allocateSurface(width: number, height: number) {
-    const count = samples();
+    // The static tier submits one frame at DPR 1; 4x color+depth renderbuffers
+    // would stay resident for the whole Lite session for that single frame.
+    const count = tier.kind === "static" ? 0 : samples();
     try { return createSurface(width, height, count); }
     catch (error) { if (!count) throw error; return createSurface(width, height, 0); }
   }

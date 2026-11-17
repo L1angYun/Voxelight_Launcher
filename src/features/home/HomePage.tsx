@@ -295,6 +295,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
                 model={onlineAccount ? accountAppearance.model : defaultSkin.model}
                 deferMs={returning && tier !== "none" ? MOTION.delay.characterMs : 0}
                 paused={staticScene || (anyRunning && characterResting)}
+                freeze={staticScene}
                 animation={currentAnimation}
                 headPointer={anyRunning ? null : headPointer}
                 label={previewLabel}
