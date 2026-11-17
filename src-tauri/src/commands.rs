@@ -976,7 +976,7 @@ mod scoped_settings_save_tests {
     fn failed_config_persistence_never_publishes_download_limit() {
         let (root, state) = owned_profile();
         let file = root.path().join("state.json");
-        fs::create_dir(&file).unwrap(); // denies the real commit rename, not merely validation
+        fs::create_dir(&file).unwrap(); // A non-file fails the current-state check before writing or renaming.
         let mut draft = state.snapshot().unwrap().config;
         draft.download_limit_kib = 1024;
         assert!(save_config_inner(&state, draft.clone()).is_err());

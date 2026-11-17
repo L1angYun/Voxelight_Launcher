@@ -111,6 +111,12 @@ for (const theme of ["dark", "light"] as const) for (const effects of ["full", "
           return { labels, renderer: debug ? String(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)) : null,
             dpr: devicePixelRatio, theme: document.documentElement.dataset.theme, effects: document.documentElement.dataset.effects };
       });
+      // The popup can be fully opaque while its owning dialog is still
+      // fading. Sample after the full text paint has reached its final state.
+      await expect.poll(async () => {
+        const { labels } = await collect();
+        return labels.length > 0 && labels.every(label => label.opacity === 1);
+      }, { message: "all labels and their ancestors reach full opacity before sampling" }).toBe(true);
       const frames = [];
       for (let frame = 0; frame < 3; frame++) {
         if (frame) await page.waitForTimeout(250);

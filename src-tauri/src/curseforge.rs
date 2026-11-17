@@ -264,7 +264,7 @@ pub struct SearchResult {
     pub hits: Vec<SearchProject>,
 }
 
-fn project_id(value: &str) -> Result<u64, String> {
+pub(crate) fn project_id(value: &str) -> Result<u64, String> {
     if value.is_empty() || value.len() > 10 || !value.bytes().all(|b| b.is_ascii_digit()) {
         return Err("CurseForge 项目标识须为正整数".into());
     }
@@ -854,16 +854,17 @@ pub async fn install_curseforge_resource(
     instance_id: Option<String>,
     resource_type: String,
     file_id: Option<u64>,
+    task_id: String,
 ) -> AppResult<ResourceInstall> {
-    let id = self::project_id(&project_id)?;
-    let kind = ResourceKind::parse(&resource_type)?;
-    let _operation = state.operation.lock().await;
-    crate::resources::require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
-    let task = state
-        .control
-        .begin("resource", &project_id, "安装 CurseForge 资源")?;
-    let result: AppResult<ResourceInstall> = async {
-        state.control.checkpoint().await?;
+    use crate::downloads::{ResourceRequest, ResourceSource, ResourceTarget};
+    let request = ResourceRequest {
+        source: ResourceSource::Curseforge, project_id: project_id.clone(), resource_type: resource_type.clone(),
+        target: ResourceTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id },
+    };
+    crate::resources::with_reserved_resource_task(&state, &task_id, request, async {
+        let id = self::project_id(&project_id)?;
+        let kind = ResourceKind::parse(&resource_type)?;
+        crate::resources::require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
         let target =
             crate::resources::resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         crate::resources::resource_transactions::require_no_pending(&target.directory)?;
@@ -928,16 +929,7 @@ pub async fn install_curseforge_resource(
                 .then(|| "光影文件已安装；游戏内仍需 Iris、OptiFine 或兼容加载器才能启用。".into()),
             update_id: None,
         })
-    }
-    .await;
-    state.control.finish(
-        &task,
-        result
-            .as_ref()
-            .err()
-            .map(|error| error.detail.as_deref().unwrap_or(&error.code)),
-    );
-    result
+    }).await
 }
 
 #[cfg(test)]

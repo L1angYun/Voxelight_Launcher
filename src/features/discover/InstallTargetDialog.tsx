@@ -14,23 +14,24 @@ import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { Segmented } from "../../components/ui/Segmented";
 import { Select } from "../../components/ui/Select";
 import type { Loader, LoaderVersion } from "../library/types";
-import type { DownloadTaskSnapshot } from "../downloads/useDownloadTasks";
 import { errorText } from "../library/utils";
 import type { ResourceCreateRequest, ResourceTargetFlow, TargetRow } from "./types";
 
 const loaderNames: Record<Loader, string> = { vanilla: "Vanilla", fabric: "Fabric", neoforge: "NeoForge", forge: "Forge", quilt: "Quilt" };
 const rowKey = (row: TargetRow) => row.instanceId ? "instance:" + row.instanceId : "version:" + row.versionId;
 
-export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCreateInstance, onDownloads }: {
+export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCancel, onCreateInstance, onDownloads }: {
   flow?: ResourceTargetFlow;
   onClose: () => void;
   onInstall: (row: TargetRow) => Promise<void>;
   onCreate: (request: ResourceCreateRequest) => Promise<void>;
+  onCancel: (flowId: number) => Promise<void>;
   onCreateInstance: () => void;
   onDownloads?: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const { resourceProgress: progress, manifest } = useLauncher();
+  const { resourceProgress, manifest } = useLauncher();
+  const progress = flow?.taskId && resourceProgress?.taskId === flow.taskId ? resourceProgress : null;
   const id = useId();
   const [choice, setChoice] = useState("");
   const [loader, setLoader] = useState<Loader>("fabric");
@@ -96,10 +97,7 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCrea
     if (!flow || cancelling) return;
     setCancelling(true); setActionError("");
     try {
-      const { tasks } = await command<DownloadTaskSnapshot>("list_download_tasks");
-      const matching = tasks.filter(task => task.kind === "resource" && task.target === flow.project.project_id && ["running", "paused"].includes(task.status));
-      if (matching.length === 1) await command("cancel_download_task", { taskId: matching[0].id });
-      else setActionError(t("discover:installTarget.waitForTask"));
+      await onCancel(flow.id);
     } catch (cause) { setActionError(errorText(normalizeError(cause).code, t)); }
     finally { setCancelling(false); }
   }

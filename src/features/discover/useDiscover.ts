@@ -2,9 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { command, searchResources, type ResourceProject } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { normalizeError, type LauncherError } from "../../lib/errors";
-import type { DiscoverType, ResourceContext, ResourceCreateRequest, ResourceInstanceResult, ResourceProjectDetails, ResourceSource, ResourceTargetFlow, ResourceTargetPlan, TargetRow } from "./types";
+import type { DiscoverType, ResourceContext, ResourceCreateRequest, ResourceInstanceResult, ResourceProjectDetails, ResourceSource, ResourceTargetFlow, ResourceTargetPlan, ResourceTaskTarget, TargetRow } from "./types";
 
 const targetErrors = new Set(["resource.loaderRequired", "resource.noCompatibleVersion", "resource.versionMissing"]);
+
+interface InstallRequest {
+  flowId: number;
+  reservation: Promise<string>;
+  id?: string;
+  cancellation?: Promise<void>;
+}
 
 interface DiscoverFeedback { error: LauncherError; kind: "info" | "error"; retry?: () => void }
 export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFeedback?: (feedback: DiscoverFeedback) => void } = {}) {
@@ -29,7 +36,7 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
   const searchGeneration = useRef(0);
   const detailGeneration = useRef(0);
   const targetGeneration = useRef(0);
-  const activeInstall = useRef(false);
+  const activeInstall = useRef<InstallRequest>(undefined);
   const contextKey = JSON.stringify([source, resourceType, search, selectedVersionId, selectedInstance?.id]);
   const selectionKey = JSON.stringify([selectedVersionId, selectedInstance?.id]);
   const latestContext = useRef(contextKey);
@@ -126,21 +133,63 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
     else setTargetFlow(next);
   }
 
+  function reserveInstall(flow: ResourceTargetFlow, target: ResourceTaskTarget) {
+    const request: InstallRequest = {
+      flowId: flow.id,
+      reservation: Promise.resolve().then(() => command<string>("reserve_resource_task", {
+        request: { source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType, target },
+      })),
+    };
+    activeInstall.current = request;
+    return request;
+  }
+
+  async function reservedId(request: InstallRequest) {
+    const id = await request.reservation;
+    request.id = id;
+    if (request.cancellation) {
+      await request.cancellation;
+      throw { code: "download.cancelled" };
+    }
+    setTargetFlow(current => current?.id === request.flowId ? { ...current, taskId: id } : current);
+    return id;
+  }
+
+  async function cancelInstall(flowId: number) {
+    const request = activeInstall.current;
+    if (!request || request.flowId !== flowId) return;
+    request.cancellation ??= request.reservation.then(async id => {
+      await command("cancel_download_task", { taskId: id });
+    });
+    try { await request.cancellation; }
+    finally { request.cancellation = undefined; }
+  }
+
+  function releaseUnclaimed(request: InstallRequest, error: LauncherError) {
+    if (request.id && !request.cancellation && error.code !== "download.cancelled") {
+      // Dispatch may fail before the command claims its reservation. The
+      // request ID cannot name another installation of the same project.
+      void command("cancel_download_task", { taskId: request.id }).catch(() => {});
+    }
+  }
+
   async function executeInstall(flow: ResourceTargetFlow, row: TargetRow) {
     if (activeInstall.current) return;
-    activeInstall.current = true;
+    const request = reserveInstall(flow, { mode: "existing", versionId: row.versionId, instanceId: row.instanceId ?? undefined });
     const flowContext = latestContext.current;
-    setTargetFlow(current => current?.id === flow.id ? { ...flow, open: current.open && current.status !== "resolving", status: "installing" } : current);
+    setTargetFlow(current => current?.id === flow.id ? { ...flow, taskId: undefined, open: current.open && current.status !== "resolving", status: "installing" } : current);
     await run("resource.install", async () => {
       try {
+        const taskId = await reservedId(request);
         await command(flow.source === "modrinth" ? "install_resource" : "install_curseforge_resource", {
-          projectId: flow.project.project_id, versionId: row.versionId, instanceId: row.instanceId ?? undefined, resourceType: flow.resourceType,
+          projectId: flow.project.project_id, versionId: row.versionId, instanceId: row.instanceId ?? undefined, resourceType: flow.resourceType, taskId,
         });
         if (row.instanceId) selectInstance(row.instanceId); else selectVersion(row.versionId);
         reportNotice("resourceInstalled");
         setTargetFlow(current => current?.id === flow.id ? { ...current, open: false, status: "choose" } : current);
       } catch (cause) {
         const error = normalizeError(cause);
+        releaseUnclaimed(request, error);
         if (targetErrors.has(error.code) && latestContext.current === flowContext && targetGeneration.current === flow.id) {
           if (flow.source === "curseforge") setTargetFlow({ ...flow, open: true, status: "curseforge", error });
           else {
@@ -152,7 +201,7 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
           }
         } else reportFeedback({ error, kind: error.code === "download.cancelled" ? "info" : "error" });
         setTargetFlow(current => current?.id === flow.id && current.status === "installing" ? { ...current, status: "choose" } : current);
-      } finally { activeInstall.current = false; }
+      } finally { if (activeInstall.current === request) activeInstall.current = undefined; }
     });
   }
 
@@ -172,23 +221,25 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
 
   async function installInto(row: TargetRow) { if (targetFlow) await executeInstall(targetFlow, row); }
 
-  async function createAndInstall(request: ResourceCreateRequest) {
+  async function createAndInstall(creation: ResourceCreateRequest) {
     const flow = targetFlow;
     if (!flow || flow.source !== "modrinth" || activeInstall.current) return;
-    activeInstall.current = true;
-    setTargetFlow({ ...flow, status: "creating", error: undefined });
+    const request = reserveInstall(flow, { mode: "create", ...creation });
+    setTargetFlow({ ...flow, taskId: undefined, status: "creating", error: undefined });
     await run("resource.install", async () => {
       try {
-        const result = await command<ResourceInstanceResult>("create_instance_for_resource", { source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType, ...request });
+        const taskId = await reservedId(request);
+        const result = await command<ResourceInstanceResult>("create_instance_for_resource", { source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType, ...creation, taskId });
         await reload(); selectVersion(result.instance.versionId); selectInstance(result.instance.id); reportNotice("resourceInstalledNew");
         setTargetFlow(current => current?.id === flow.id ? { ...current, open: false, status: "choose" } : current);
       } catch (cause) {
         const error = normalizeError(cause);
+        releaseUnclaimed(request, error);
         if (error.code === "resource.installAfterCreate" && typeof error.params.instanceId === "string") {
           await reload();
           if (typeof error.params.versionId === "string") selectVersion(error.params.versionId);
           selectInstance(error.params.instanceId);
-          const row: TargetRow = { kind: "instance", instanceId: error.params.instanceId, versionId: typeof error.params.versionId === "string" ? error.params.versionId : "", name: String(error.params.instanceName ?? request.name), gameVersion: request.gameVersion, loader: request.loader, compatible: true };
+          const row: TargetRow = { kind: "instance", instanceId: error.params.instanceId, versionId: typeof error.params.versionId === "string" ? error.params.versionId : "", name: String(error.params.instanceName ?? creation.name), gameVersion: creation.gameVersion, loader: creation.loader, compatible: true };
           reportFeedback({ error, kind: "error", retry: () => {
             void (async () => {
               let target = row;
@@ -207,7 +258,7 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
           reportFeedback({ error, kind: error.code === "download.cancelled" ? "info" : "error" });
           setTargetFlow(current => current?.id === flow.id ? { ...current, status: "choose" } : current);
         }
-      } finally { activeInstall.current = false; }
+      } finally { if (activeInstall.current === request) activeInstall.current = undefined; }
     });
   }
 
@@ -220,6 +271,6 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
   return { source, setSource, resourceType, setResourceType, query, setQuery, search, setSearch,
     resources, loading, stale, resultKey: result.key, error, notice, feedback, clearFeedback, context,
     selectedProject, details, detailsLoading, detailsError, modpack, closeModpack,
-    targetFlow, closeTarget, installInto, createAndInstall,
+    targetFlow, closeTarget, installInto, createAndInstall, cancelInstall,
     loadProject, closeProject, installProject, installed, clearNotice };
 }

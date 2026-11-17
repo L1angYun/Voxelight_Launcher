@@ -59,10 +59,48 @@ enum RunSignal {
     Finished,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ResourceRequest {
+    pub source: ResourceSource,
+    pub project_id: String,
+    pub resource_type: String,
+    pub target: ResourceTarget,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ResourceSource {
+    Modrinth,
+    Curseforge,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+pub(crate) enum ResourceTarget {
+    Existing {
+        version_id: String,
+        instance_id: Option<String>,
+        file_id: Option<u64>,
+    },
+    Create {
+        game_version: String,
+        loader: String,
+        loader_version: Option<String>,
+        name: String,
+    },
+}
+
+#[derive(PartialEq)]
+enum Reservation {
+    Launch { instance_id: Option<String> },
+    Resource(ResourceRequest),
+}
+
 struct PendingTask {
     signal: watch::Sender<RunSignal>,
-    launch_instance: Option<String>,
-    launch_claimed: bool,
+    reservation: Option<Reservation>,
+    claimed: bool,
     starting_game: bool,
 }
 
@@ -246,7 +284,7 @@ impl DownloadControl {
         target: &str,
         label: &str,
         display_target: Option<&str>,
-        launch_instance: Option<String>,
+        reservation: Option<Reservation>,
         start_now: bool,
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
@@ -284,8 +322,8 @@ impl DownloadControl {
                 id.clone(),
                 PendingTask {
                     signal: watch::channel(RunSignal::Ready).0,
-                    launch_instance,
-                    launch_claimed: false,
+                    reservation,
+                    claimed: false,
                     starting_game: false,
                 },
             );
@@ -318,7 +356,7 @@ impl DownloadControl {
             version,
             &format!("启动 Minecraft {version}"),
             None,
-            instance,
+            Some(Reservation::Launch { instance_id: instance }),
             false,
         )
     }
@@ -329,23 +367,44 @@ impl DownloadControl {
         version: &str,
         instance: Option<&str>,
     ) -> Result<(), String> {
+        self.claim(id, "launch", version, &Reservation::Launch {
+            instance_id: instance.map(str::to_owned),
+        })
+    }
+
+    pub(crate) fn reserve_resource(&self, request: ResourceRequest) -> Result<String, String> {
+        let label = match (&request.source, &request.target) {
+            (ResourceSource::Modrinth, ResourceTarget::Create { .. }) => "创建实例并安装资源",
+            (ResourceSource::Modrinth, _) => "安装 Modrinth 资源及必需前置",
+            (ResourceSource::Curseforge, _) => "安装 CurseForge 资源",
+        };
+        let project_id = request.project_id.clone();
+        self.create_job("resource", &project_id, label, None, Some(Reservation::Resource(request)), false)
+    }
+
+    pub(crate) fn claim_resource(&self, id: &str, request: ResourceRequest) -> Result<(), String> {
+        let project_id = request.project_id.clone();
+        self.claim(id, "resource", &project_id, &Reservation::Resource(request))
+    }
+
+    fn claim(&self, id: &str, kind: &str, target: &str, reservation: &Reservation) -> Result<(), String> {
         let mut state = self.scheduler.lock().map_err(|_| "下载任务状态异常")?;
         let job = state
             .jobs
             .iter()
             .find(|job| job.id == id)
             .ok_or("任务不存在")?;
-        if job.kind != "launch" || job.target != version {
+        if job.kind != kind || job.target != target {
             return Err("任务不存在".into());
         }
         if job.status == "cancelled" {
             return Err(CANCELLED.into());
         }
         let live = state.live.get_mut(id).ok_or("任务不存在")?;
-        if live.launch_instance.as_deref() != instance || live.launch_claimed {
+        if live.reservation.as_ref() != Some(reservation) || live.claimed {
             return Err("任务不存在".into());
         }
-        live.launch_claimed = true;
+        live.claimed = true;
         Ok(())
     }
 

@@ -51,8 +51,9 @@ function PageStage({ page, direction, firstHome = false, children }: { page: Nav
 
 function AppShell() {
   const { t } = useTranslation();
-  const [page, setPage] = useState<NavigationPage>("home");
-  const [direction, setDirection] = useState(1);
+  const [{ page, direction, visit }, setNavigation] = useState<{
+    page: NavigationPage; direction: number; visit: number;
+  }>({ page: "home", direction: 1, visit: 0 });
   const [navResetTick, setNavResetTick] = useState(0);
   const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
@@ -60,6 +61,24 @@ function AppShell() {
   const { bootstrapped, bootstrapFailed, data, reload, run, activeAccount, accountAppearance, config, preparing, progress, running, gamePid } = useLauncher();
   const world = useMemo(() => deriveWorldState({ preparing, progress, running, gamePid }), [preparing, progress, running, gamePid]);
   const { effects, reducedMotion, highContrast } = useAppearance();
+
+  function navigate(nextPage: NavigationPage, fixedDirection?: number) {
+    if (nextPage === page) {
+      setNavResetTick(tick => tick + 1);
+      mainRef.current?.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+    if (nextPage !== "home") hasLeftHome.current = true;
+    const order = navigationRegistry.ids();
+    // Key each visit, not just each route: in wait mode an outgoing stage
+    // must finish its exit even when the route is requested again meanwhile.
+    setNavigation(current => current.page === nextPage ? current : {
+      page: nextPage,
+      direction: fixedDirection ?? (order.indexOf(nextPage) >= order.indexOf(current.page) ? 1 : -1),
+      visit: current.visit + 1,
+    });
+  }
+
   return (
     <>
       <LauncherNoticeBridge />
@@ -80,17 +99,7 @@ function AppShell() {
           data-world-front="0" data-motion="reduced" data-paused="true" />}
         <FloatingNav
           page={page}
-          onNavigate={(nextPage) => {
-            if (nextPage === page) {
-              setNavResetTick(tick => tick + 1);
-              mainRef.current?.scrollTo({ top: 0, behavior: "auto" });
-              return;
-            }
-            const order = navigationRegistry.ids();
-            setDirection(order.indexOf(nextPage) >= order.indexOf(page) ? 1 : -1);
-            if (nextPage !== "home") hasLeftHome.current = true;
-            setPage(nextPage);
-          }}
+          onNavigate={navigate}
           implemented={implementedPages}
           activeTaskCount={downloadTasks.activeCount}
           accountName={activeAccount?.username}
@@ -104,7 +113,7 @@ function AppShell() {
             onExitComplete={() => mainRef.current?.scrollTo({ top: 0, behavior: "auto" })}>
           {!bootstrapped && !bootstrapFailed ? <motion.div key="boot" className="vx-bootstrap-state" exit={{ opacity: 0 }} transition={{ duration: 0 }}>
             <LoadingStatus active>{t("common:status.loading")}</LoadingStatus>
-          </motion.div> : <PageStage key={page} page={page} direction={direction} firstHome={page === "home" && !hasLeftHome.current}>
+          </motion.div> : <PageStage key={visit} page={page} direction={direction} firstHome={page === "home" && !hasLeftHome.current}>
           <PageErrorBoundary
             page={page}
             title={t("common:errors.internalUnexpected")}
@@ -113,7 +122,7 @@ function AppShell() {
           >
             {page === "home" ? <HomePage returning={hasLeftHome.current} /> : null}
             {page === "library" ? <LibraryPage navResetTick={navResetTick} /> : null}
-            {page === "discover" ? <DiscoverPage onDownloads={() => { setDirection(1); setPage("downloads"); }} /> : null}
+            {page === "discover" ? <DiscoverPage onDownloads={() => navigate("downloads", 1)} /> : null}
             {page === "multiplayer" ? <MultiplayerPage /> : null}
             {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
             {page === "accounts" ? <AccountsPage /> : null}

@@ -55,6 +55,9 @@ export interface ResourceTargetPlan {
   unsupportedReason?: "datapack" | "noSupportedLoader" | "noVersions" | "noReleaseVersions" | "manifestUnavailable" | null;
 }
 export interface ResourceCreateRequest { loader: Loader; gameVersion: string; loaderVersion?: string; name: string }
+export type ResourceTaskTarget =
+  | { mode: "existing"; versionId: string; instanceId?: string }
+  | ({ mode: "create" } & ResourceCreateRequest);
 export interface ResourceInstanceResult { instance: Instance; install: unknown }
 export interface ResourceTargetFlow {
   id: number;
@@ -64,5 +67,6 @@ export interface ResourceTargetFlow {
   source: ResourceSource;
   resourceType: DiscoverType;
   plan?: ResourceTargetPlan;
+  taskId?: string;
   error?: LauncherError;
 }

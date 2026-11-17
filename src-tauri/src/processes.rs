@@ -527,12 +527,6 @@ pub fn export_diagnostics(
     let diagnosis =
         diagnose_instance_inner(state.inner().as_ref(), version_id.clone(), instance_id.clone())?;
     let destination = Path::new(&output_path);
-    if !destination.is_absolute() || destination.extension().is_none_or(|e| e != "txt") {
-        return Err("请选择绝对路径的 .txt 诊断报告文件".into());
-    }
-    if destination.exists() {
-        return Err("报告文件已存在，请选择新文件名以保留原文件".into());
-    }
     let (title, reason, suggestions) = diagnosis.kind.report_text();
     let report = format!(
         concat!(
@@ -554,6 +548,11 @@ pub fn export_diagnostics(
     Ok(output_path)
 }
 fn write_diagnostics_file(destination: &Path, report: &[u8]) -> Result<(), String> {
+    if !destination.is_absolute()
+        || !destination.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+    {
+        return Err("请选择绝对路径的 .txt 诊断报告文件".into());
+    }
     let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(destination)
         .map_err(|error| if error.kind() == io::ErrorKind::AlreadyExists {
             "报告文件已存在，请选择新文件名以保留原文件".to_owned()
@@ -605,6 +604,38 @@ mod tests {
             "links below the approved root must remain forbidden");
     }
     use super::*;
+
+    #[test]
+    fn diagnostics_report_accepts_mixed_case_txt_and_leaves_other_extensions_unwritten() {
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/diagnostic-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let not_txt = fixture.path().join("report.txt.bak");
+        assert_eq!(
+            write_diagnostics_file(&not_txt, b"not a report"),
+            Err("请选择绝对路径的 .txt 诊断报告文件".into()),
+        );
+        assert!(!not_txt.exists());
+        let report = fixture.path().join("Report.TxT");
+        write_diagnostics_file(&report, b"diagnostics").unwrap();
+        assert_eq!(std::fs::read(report).unwrap(), b"diagnostics");
+    }
+
+    #[test]
+    fn diagnostics_create_new_preserves_an_existing_file() {
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/diagnostic-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let report = fixture.path().join("Existing.TXT");
+        std::fs::write(&report, b"previous report").unwrap();
+        assert_eq!(
+            write_diagnostics_file(&report, b"replacement"),
+            Err("报告文件已存在，请选择新文件名以保留原文件".into()),
+        );
+        assert_eq!(std::fs::read(&report).unwrap(), b"previous report");
+    }
 
     const STOP_FIXTURE_DIR: &str = "VOXELIGHT_M09_OWNED_TEST_DIR";
 

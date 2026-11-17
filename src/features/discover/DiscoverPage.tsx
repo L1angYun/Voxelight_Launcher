@@ -41,7 +41,7 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
     source, setSource, resourceType, setResourceType, query, setQuery, setSearch,
     resources, loading, stale, resultKey, error, selectedProject, details, detailsLoading, detailsError,
     modpack, closeModpack, loadProject, closeProject, installProject, installed,
-    targetFlow, closeTarget, installInto, createAndInstall, context,
+    targetFlow, closeTarget, installInto, createAndInstall, cancelInstall, context,
   } = discover;
   const createOpen = Boolean(modpack || creating);
   const lastModpack = useRef<typeof modpack>(undefined);
@@ -117,7 +117,7 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
         </section>
       </div>
       <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} onInstall={() => selectedProject && installProject(selectedProject)} onClose={closeProject} />
-      <InstallTargetDialog flow={targetFlow} onClose={closeTarget} onInstall={installInto} onCreate={createAndInstall}
+      <InstallTargetDialog flow={targetFlow} onClose={closeTarget} onInstall={installInto} onCreate={createAndInstall} onCancel={cancelInstall}
         onCreateInstance={() => setCreating(true)} onDownloads={onDownloads} />
       <CreateInstanceDialog
         project={displayedModpack?.source === "modrinth" ? displayedModpack.project : undefined}

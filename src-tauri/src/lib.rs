@@ -250,6 +250,7 @@ pub fn run() {
             loaders::list_loader_versions,
             loaders::install_loader,
             downloads::reserve_launch_task,
+            resources::reserve_resource_task,
             downloads::list_download_tasks,
             downloads::set_download_paused,
             downloads::cancel_download_task,

@@ -1522,9 +1522,8 @@ async fn official_metadata_at_paths(
                 match publish_official_profile(id, &local_path, &bytes, &ownership_manifests).await
                 {
                     Ok(()) => {}
-                    // A mirror can return a separately trusted revision whose
-                    // bytes do not match a truncated official-origin profile.
-                    // Try the next permitted chain instead of stopping there.
+                    // A valid local profile can match a different permitted
+                    // manifest revision. Try that chain before reporting a conflict.
                     Err(error)
                         if error == format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX) =>
                     {
@@ -1572,15 +1571,12 @@ fn previously_verified_profile(manifests: &[Value], id: &str, previous: &[u8]) -
     })
 }
 
-fn looks_like_truncated_official_profile(id: &str, previous: &[u8], verified: &[u8]) -> bool {
-    // A name or a short JSON fragment does not establish origin. Requiring a
-    // meaningful prefix of the trusted response saves interrupted downloads,
-    // while ambiguous or edited files stay at their original path.
-    previous.len() >= 96
-        && verified.len() > previous.len()
-        && verified.starts_with(previous)
-        && parse_json(previous).is_err()
-        && parse_json(verified).is_ok_and(|metadata| metadata["id"].as_str() == Some(id))
+fn is_valid_profile_json(bytes: &[u8]) -> bool {
+    // Only validate syntax here. Valid custom files may have numbers or
+    // nesting that the Value parser cannot represent. They are still user
+    // content, not corrupt bytes that we can move aside.
+    std::str::from_utf8(bytes).is_ok()
+        && serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_ok()
 }
 
 async fn publish_official_profile(
@@ -1593,24 +1589,19 @@ async fn publish_official_profile(
     if previous.as_deref() == Some(verified) {
         return Ok(());
     }
+    // The caller verified both this ID's manifest entry and the response's
+    // SHA-1. Broken data keeps its original bytes in quarantine. Valid JSON
+    // may be a custom profile, so only an earlier verified copy may move.
+    let corrupt = previous.as_deref().is_some_and(|bytes| !is_valid_profile_json(bytes));
     if let Some(previous) = previous.as_deref() {
-        if !looks_like_truncated_official_profile(id, previous, verified)
-            && !previously_verified_profile(ownership_manifests, id, previous)
-        {
+        if !corrupt && !previously_verified_profile(ownership_manifests, id, previous) {
             return Err(format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX));
         }
     }
 
     // Reserve our staging/quarantine name exclusively on the same volume.
     // Nothing from the old profile is removed until the replacement is ready.
-    let tag = if previous
-        .as_deref()
-        .is_some_and(|bytes| parse_json(bytes).is_err())
-    {
-        "corrupt"
-    } else {
-        "previous"
-    };
+    let tag = if corrupt { "corrupt" } else { "previous" };
     let transaction = path.with_extension(format!("json.{tag}-{}", uuid::Uuid::new_v4()));
     tokio::fs::create_dir(&transaction)
         .await
@@ -3186,6 +3177,59 @@ mod tests {
     }
 
     #[test]
+    fn m07_native_extraction_rejects_links_traversal_and_expansion_before_writing() {
+        use std::io::Write;
+        use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+        for (case, expected) in [
+            ("link", "符号链接"),
+            ("relative", "越界"),
+            ("declared-size", "解压超出大小限制"),
+        ] {
+            let fixture = crate::instances::StagingDirectory::create(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("target/core-tests")
+                    .join(uuid::Uuid::new_v4().to_string()),
+            ).unwrap();
+            let root = fixture.path();
+            let payload = root.join("libraries/fixture");
+            fs::create_dir_all(&payload).unwrap();
+            let mut archive = ZipWriter::new(fs::File::create(payload.join("natives.jar")).unwrap());
+            let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            match case {
+                "link" => archive.add_symlink("native.dll", "other-fixture.dll", options).unwrap(),
+                "relative" => {
+                    archive.start_file("../owned-outside-marker.dll", options).unwrap();
+                    archive.write_all(b"fixture").unwrap();
+                }
+                "declared-size" => {
+                    archive.start_file("native.dll", options).unwrap();
+                    let block = vec![0; 1024 * 1024];
+                    for _ in 0..128 {
+                        archive.write_all(&block).unwrap();
+                    }
+                    archive.write_all(&[0]).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            drop(archive.finish().unwrap());
+            let metadata = json!({"libraries":[{
+                "natives":{"windows":"test-native"},
+                "downloads":{"classifiers":{"test-native":{
+                    "url":"https://libraries.minecraft.net/fixture/natives.jar",
+                    "path":"fixture/natives.jar",
+                    "sha1":"1111111111111111111111111111111111111111",
+                    "size":1,
+                }}}
+            }]});
+            let natives = root.join("owned-native-destination");
+            let error = extract_natives(&metadata, root, &natives).unwrap_err();
+            assert!(error.contains(expected), "{case}: {error}");
+            assert_eq!(fs::read_dir(&natives).unwrap().count(), 0, "{case}");
+            assert!(!root.join("owned-outside-marker.dll").exists(), "{case}");
+        }
+    }
+
+    #[test]
     fn m08_scan_rejects_oversized_version_profile_before_parsing_it() {
         let fixture = crate::instances::StagingDirectory::create(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3399,8 +3443,66 @@ mod tests {
         });
     }
 
+    fn assert_manifest_listed_damage_is_quarantined(damaged: &[u8]) {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("verification-damaged-profile");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let canonical = br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#;
+            let path = root.join("versions/source-test/source-test.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, damaged).unwrap();
+            let manifest = manifest_fixture(vec![json!({
+                "id": "source-test",
+                "url": "https://piston-meta.mojang.com/v1/packages/source-test.json",
+                "sha1": format!("{:x}", Sha1::digest(canonical)),
+            })]);
+            let server = TestServer::new(&[
+                ("/piston-meta.mojang.com/mc/game/version_manifest_v2.json", 200, &manifest),
+                ("/piston-meta.mojang.com/v1/packages/source-test.json", 200, canonical),
+            ]);
+            let resolver = server.resolver();
+            let result = official_metadata_with_resolver(&state, "source-test", &root, "official", &resolver).await;
+            let installed = fs::read(&path).unwrap();
+            let originals: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().filter_map(|entry| {
+                let entry = entry.unwrap();
+                entry.file_name().to_string_lossy().starts_with("source-test.json.corrupt-")
+                    .then(|| fs::read(entry.path().join("original.json")).unwrap())
+            }).collect();
+            let requests = server.requests().len();
+            drop(resolver);
+            drop(server);
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+            assert_eq!(result.unwrap()["id"], "source-test");
+            assert_eq!(installed, canonical);
+            assert_eq!(originals.as_slice(), [damaged]);
+            assert_eq!(requests, 2);
+        });
+    }
+
     #[test]
-    fn official_lookup_never_replaces_unknown_broken_or_valid_custom_profiles_at_official_id() {
+    fn h07_manifest_listed_empty_profile_is_quarantined() {
+        assert_manifest_listed_damage_is_quarantined(b"");
+    }
+
+    #[test]
+    fn h07_manifest_listed_nul_filled_profile_is_quarantined() {
+        assert_manifest_listed_damage_is_quarantined(&[0; 4096]);
+    }
+
+    #[test]
+    fn h07_manifest_listed_non_json_profile_is_quarantined() {
+        assert_manifest_listed_damage_is_quarantined(b"unparseable bytes");
+    }
+
+    #[test]
+    fn h07_manifest_listed_short_truncated_profile_is_quarantined() {
+        assert_manifest_listed_damage_is_quarantined(br#"{"id":"source-test","mainClass":"net"#);
+    }
+
+    #[test]
+    fn official_lookup_keeps_valid_custom_profiles_at_official_id() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let directory = source_test_directory("preserve-custom-profile");
             let state = source_test_state(&directory.join("data"));
@@ -3418,7 +3520,13 @@ mod tests {
             let resolver = server.resolver();
             let path = root.join("versions/source-test/source-test.json");
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            for custom in [&br#"{"id":"#[..], &br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","libraries":[],"arguments":{"game":["--custom"]}}"#[..]] {
+            let deep_valid = format!("{}0{}", "[".repeat(140), "]".repeat(140));
+            for custom in [
+                &br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","libraries":[],"arguments":{"game":["--custom"]}}"#[..],
+                &b"null"[..],
+                &b"1e1024"[..],
+                deep_valid.as_bytes(),
+            ] {
                 fs::write(&path, custom).unwrap();
                 let error = official_metadata_with_resolver(&state, "source-test", &root, "official", &resolver).await.unwrap_err();
                 let localized = crate::errors::expected(error);

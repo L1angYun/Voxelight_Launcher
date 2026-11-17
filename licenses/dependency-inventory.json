@@ -7463,12 +7463,12 @@
     },
     {
       "name": "zip",
-      "version": "9.2.2",
+      "version": "9.2.3",
       "license": "MIT",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/cargo/zip@9.2.2/LICENSE"
+        "licenses/cargo/zip@9.2.3/LICENSE"
       ]
     },
     {

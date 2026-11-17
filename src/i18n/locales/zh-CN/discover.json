@@ -48,7 +48,6 @@
     "creating": "正在创建实例并安装资源…",
     "downloads": "在下载中查看",
     "cancel": "取消安装",
-    "waitForTask": "安装任务尚未开始，请稍后再取消。",
     "curseforge": "请先创建兼容的实例，再选择该实例安装此 CurseForge 项目。",
     "reason": {
       "vanilla": "原版，无法加载模组",

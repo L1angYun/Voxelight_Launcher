@@ -675,6 +675,63 @@ mod tests {
         assert_servers_file_limit(false, "服务器列表文件过大");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn m08_servers_rejects_oversized_file_without_reading_its_data() {
+        // Read-transfer counters are per process. The isolated child runs
+        // only this test, so other tests cannot inflate the measured reads.
+        const CHILD: &str = "VOXELIGHT_M08_COUNTED_READ_CHILD";
+        const TEST: &str = "servers::tests::m08_servers_rejects_oversized_file_without_reading_its_data";
+        if std::env::var_os(CHILD).is_none() {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, "1")
+                .output().unwrap();
+            assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+            return;
+        }
+
+        #[repr(C)]
+        #[derive(Default)]
+        struct IoCounters {
+            reads: u64,
+            writes: u64,
+            others: u64,
+            read_bytes: u64,
+            write_bytes: u64,
+            other_bytes: u64,
+        }
+        #[link(name = "Kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn GetProcessIoCounters(process: *mut std::ffi::c_void, counters: *mut IoCounters) -> i32;
+        }
+        let read_bytes = || {
+            let mut counters = IoCounters::default();
+            // The handle is the current process pseudo-handle; counters has
+            // the exact Win32 IO_COUNTERS layout and lives for the call.
+            assert_ne!(unsafe { GetProcessIoCounters(GetCurrentProcess(), &mut counters) }, 0);
+            counters.read_bytes
+        };
+
+        let sandbox = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/server-read-counter").join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&sandbox).unwrap();
+        let path = sandbox.join("servers.dat");
+        let limit = 16 * 1024 * 1024;
+        // Growing EOF avoids writing a full-size fixture.
+        fs::File::create(&path).unwrap().set_len(limit + 1).unwrap();
+        let before = read_bytes();
+        let error = read_servers(&ServerTarget { path: path.clone(), version_id: "A", instance_id: None }).err();
+        let transferred = read_bytes() - before;
+        let unchanged = fs::metadata(&path).unwrap().len();
+        fs::remove_dir_all(&sandbox).unwrap();
+        assert_eq!(error.as_deref(), Some("服务器列表文件过大"));
+        assert_eq!(unchanged, limit + 1);
+        eprintln!("oversized servers.dat read transferred {transferred} bytes");
+        assert!(transferred < 64 * 1024, "read {transferred} bytes before rejecting oversized file");
+    }
+
     #[test]
     fn m08_servers_gzip_rejects_decoded_bytes_beyond_sixteen_mib() {
         assert_servers_file_limit(true, "服务器列表解压过大");

@@ -1,5 +1,6 @@
 //! Modrinth installation and resource management share the launcher's game directory rules.
 use crate::{
+    downloads::{ResourceRequest, ResourceSource, ResourceTarget as ReservedTarget, CANCELLED},
     errors::{expected, AppError, AppResult},
     models::{
         Instance, Persisted, ResourceDependency, ResourceProject, ResourceProjectDetails,
@@ -14,6 +15,7 @@ use sha2::{Digest, Sha512};
 use std::{
     collections::HashSet,
     fs,
+    future::Future,
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
@@ -1096,15 +1098,65 @@ fn after_create_error(error: AppError, instance: Option<&Instance>) -> AppError 
     }
 }
 
-fn finish_resource_task(
+fn finish_resource_task(state: &LauncherState, task: &str, error: Option<&AppError>) {
+    state.control.finish(task, error.map(|error| error.detail.as_deref().unwrap_or(&error.code)));
+}
+
+#[tauri::command]
+pub async fn reserve_resource_task(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    request: ResourceRequest,
+) -> AppResult<String> {
+    let kind = ResourceKind::parse(&request.resource_type)?;
+    match request.source {
+        ResourceSource::Modrinth => identifier(&request.project_id)?,
+        ResourceSource::Curseforge => { crate::curseforge::project_id(&request.project_id)?; }
+    }
+    match &request.target {
+        ReservedTarget::Existing { version_id, instance_id, file_id } => {
+            validate_id(version_id)?;
+            if let Some(instance_id) = instance_id { validate_id(instance_id)?; }
+            if let Some(file) = file_id {
+                if request.source != ResourceSource::Curseforge || !(1..=u64::from(u32::MAX)).contains(file) {
+                    return Err("资源文件标识无效".into());
+                }
+            }
+        }
+        ReservedTarget::Create { game_version, loader, loader_version, name } => {
+            if request.source != ResourceSource::Modrinth { return Err("不支持为该来源创建实例".into()); }
+            validate_id(game_version)?;
+            validate_id(loader)?;
+            if !["fabric", "quilt", "forge", "neoforge"].contains(&loader.as_str())
+                && !(loader == "vanilla" && kind != ResourceKind::Mod)
+            {
+                return Err(no_compatible_version(game_version, Some(loader)));
+            }
+            if let Some(version) = loader_version.as_deref().filter(|version| !version.is_empty()) {
+                validate_id(version)?;
+            }
+            crate::commands::validate_instance_name(name)?;
+        }
+    }
+    Ok(state.control.reserve_resource(request)?)
+}
+
+pub(crate) async fn with_reserved_resource_task<T>(
     state: &LauncherState,
-    task: &str,
-    error: Option<&AppError>,
-) {
-    state.control.finish(
-        task,
-        error.map(|error| error.detail.as_deref().unwrap_or(&error.code)),
-    );
+    id: &str,
+    request: ResourceRequest,
+    task: impl Future<Output = AppResult<T>>,
+) -> AppResult<T> {
+    state.control.claim_resource(id, request)?;
+    let _operation = state.control.wait_for_turn(&state.operation, id).await?;
+    if !state.control.activate(id) {
+        return Err(CANCELLED.into());
+    }
+    let result = async {
+        state.control.checkpoint().await?;
+        task.await
+    }.await;
+    finish_resource_task(state, id, result.as_ref().err());
+    result
 }
 
 async fn create_resource_instance_then_install<F, Fut>(
@@ -1140,34 +1192,19 @@ pub async fn create_instance_for_resource(
     loader: String,
     loader_version: Option<String>,
     name: String,
+    task_id: String,
 ) -> AppResult<ResourceInstanceResult> {
     require_modrinth(&source)?;
-    let kind = ResourceKind::parse(&resource_type)?;
-    identifier(&project_id)?;
-    validate_id(&game_version)?;
-    validate_id(&loader)?;
-    if !["fabric", "quilt", "forge", "neoforge"].contains(&loader.as_str())
-        && !(loader == "vanilla" && kind != ResourceKind::Mod)
-    {
-        return Err(no_compatible_version(&game_version, Some(&loader)));
-    }
-    if let Some(version) = loader_version
-        .as_deref()
-        .filter(|version| !version.is_empty())
-    {
-        validate_id(version)?;
-    }
-    let name = crate::commands::validate_instance_name(&name)?;
-    let _operation = state.operation.lock().await;
-    let task = state.control.begin(
-        "resource",
-        &project_id,
-        &format!("创建 {loader} {game_version} 实例并安装资源"),
-    )?;
-    let progress = ResourceProgress::new(Some(&app), &game_version);
-    progress.stage(&state, "resource-preflight", "检查资源及必需前置");
-    let result: AppResult<ResourceInstanceResult> = async {
-        state.control.checkpoint().await?;
+    let request = ResourceRequest {
+        source: ResourceSource::Modrinth, project_id: project_id.clone(), resource_type: resource_type.clone(),
+        target: ReservedTarget::Create { game_version: game_version.clone(), loader: loader.clone(),
+            loader_version: loader_version.clone(), name: name.clone() },
+    };
+    with_reserved_resource_task(&state, &task_id, request, async {
+        let kind = ResourceKind::parse(&resource_type)?;
+        let name = crate::commands::validate_instance_name(&name)?;
+        let progress = ResourceProgress::new(Some(&app), &game_version);
+        progress.stage(&state, "resource-preflight", "检查资源及必需前置");
         let api = client(false)?;
         let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
         if project.project_type != kind.project_type() {
@@ -1247,10 +1284,7 @@ pub async fn create_instance_for_resource(
             },
         )
         .await
-    }
-    .await;
-    finish_resource_task(&state, &task, result.as_ref().err());
-    result
+    }).await
 }
 
 fn history_target(
@@ -1270,18 +1304,17 @@ pub async fn install_resource(
     version_id: String,
     instance_id: Option<String>,
     resource_type: String,
+    task_id: String,
 ) -> AppResult<ResourceInstall> {
-    let kind = ResourceKind::parse(&resource_type)?;
-    identifier(&project_id)?;
-    let _operation = state.operation.lock().await;
-    require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
-    let task = state
-        .control
-        .begin("resource", &project_id, "安装 Modrinth 资源及必需前置")?;
-    let progress = ResourceProgress::new(Some(&app), &version_id);
-    progress.stage(&state, "resource-plan", "检查资源安装位置");
-    let result: AppResult<ResourceInstall> = async {
-        state.control.checkpoint().await?;
+    let request = ResourceRequest {
+        source: ResourceSource::Modrinth, project_id: project_id.clone(), resource_type: resource_type.clone(),
+        target: ReservedTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id: None },
+    };
+    with_reserved_resource_task(&state, &task_id, request, async {
+        let kind = ResourceKind::parse(&resource_type)?;
+        require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
+        let progress = ResourceProgress::new(Some(&app), &version_id);
+        progress.stage(&state, "resource-plan", "检查资源安装位置");
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         let api = client(false)?;
         let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
@@ -1310,7 +1343,7 @@ pub async fn install_resource(
         if version.project_id != project.id {
             return Err("Modrinth 版本与项目标识不一致".into());
         }
-        resource_transactions::install(
+        let result = resource_transactions::install(
             state.inner(),
             &target.directory,
             &target.minecraft,
@@ -1320,16 +1353,10 @@ pub async fn install_resource(
             kind,
             true,
             Some(&progress),
-        )
-        .await
-        .map_err(expected)
-    }
-    .await;
-    if result.is_ok() {
+        ).await?;
         progress.emit(&state, "complete", 1, 1, 0, 0, "资源安装完成");
-    }
-    finish_resource_task(&state, &task, result.as_ref().err());
-    result
+        Ok(result)
+    }).await
 }
 
 #[tauri::command]
@@ -1582,6 +1609,47 @@ pub async fn toggle_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discover_cancel_queued_own_task_without_touching_another_same_project() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (root, state) = resource_fixture();
+            let guard = state.operation.lock().await;
+            let request = |instance_id: &str| ResourceRequest {
+                source: ResourceSource::Modrinth,
+                project_id: "same-project".into(),
+                resource_type: "mod".into(),
+                target: ReservedTarget::Existing {
+                    version_id: "fabric-test".into(),
+                    instance_id: Some(instance_id.into()),
+                    file_id: None,
+                },
+            };
+            let existing = state.control.reserve_resource(request("running-instance")).unwrap();
+            assert!(state.control.activate(&existing));
+            let own = state.control.reserve_resource(request("waiting-instance")).unwrap();
+            assert!(state.control.claim_resource(&own, request("running-instance")).is_err());
+            {
+                let started = with_reserved_resource_task(&state, &own, request("waiting-instance"), async {
+                    panic!("the cancelled request must not start");
+                    #[allow(unreachable_code)]
+                    Ok::<(), AppError>(())
+                });
+                tokio::pin!(started);
+                assert!(futures_util::poll!(&mut started).is_pending(), "install must wait on the operation lock");
+                assert!(state.control.claim_resource(&own, request("waiting-instance")).is_err(), "a claim is single-use");
+                state.control.cancel(&own);
+                let error = tokio::time::timeout(Duration::from_secs(1), started).await.unwrap().unwrap_err();
+                assert_eq!(error.code, "download.cancelled");
+            }
+            assert_eq!(state.control.list().iter().find(|row| row.id == existing).unwrap().status, "running");
+            assert_eq!(state.control.list().iter().find(|row| row.id == own).unwrap().status, "cancelled");
+            state.control.finish(&existing, None);
+            drop(guard);
+            drop(state);
+            cleanup_fixture(root);
+        });
+    }
 
     fn resource_fixture() -> (PathBuf, Arc<LauncherState>) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

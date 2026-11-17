@@ -58,6 +58,7 @@ commands.allow = [
   "install_java",
   "install_version",
   "reserve_launch_task",
+  "reserve_resource_task",
   "launch_game",
   "stop_game",
 ]

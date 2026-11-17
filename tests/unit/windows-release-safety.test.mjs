@@ -73,6 +73,76 @@ $result | ConvertTo-Json -Compress
   assert.match(result.error, /cannot verify.*dedicated Windows account or VM/i);
 });
 
+test("B01 clean-extract instructions document the verified direct Debug link command", () => {
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  const verification = readme.slice(readme.indexOf("## Verification"));
+  const paragraph = verification.match(/^To verify a released source ZIP,.*$/m)?.[0];
+  assert.ok(paragraph, "The released source ZIP instructions should be written explicitly");
+  assert.ok(paragraph.includes("npm run tauri -- build --no-bundle --no-sign --debug -- --locked"), paragraph);
+  assert.doesNotMatch(paragraph, /build\.ps1 -NoBundle/);
+});
+
+test("H09 registered path contract matches the current NSIS template and retains the legacy vendor name", windowsOnly, () => {
+  const config = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
+  const nsis = readFileSync(join(root, "src-tauri", config.bundle.windows.nsis.template), "utf8");
+  const nsisValue = name => {
+    const match = [...nsis.matchAll(/^!define (\w+) "([^"]+)"$/gm)].find(([, id]) => id === name);
+    assert.ok(match, "Missing NSIS definition: " + name);
+    return match[2];
+  };
+  const vars = {
+    PRODUCTNAME: config.productName,
+    MANUFACTURER: config.bundle.publisher ?? config.identifier.split(".")[1],
+  };
+  const expand = value => value.replace(/\x24\{(\w+)\}/g, (_, name) => vars[name] ?? expand(nsisValue(name)));
+  assert.equal(nsisValue("PRODUCTNAME"), "{{product_name}}");
+  assert.equal(nsisValue("MANUFACTURER"), "{{manufacturer}}");
+  const paths = probePowerShell(String.raw`
+. (Join-Path $root 'scripts/installer-safety.ps1')
+$config = Get-Content -Raw (Join-Path $root 'src-tauri/tauri.conf.json') | ConvertFrom-Json
+Get-VoxelightInstallerRegistryPaths $config.productName | ConvertTo-Json -Compress
+`);
+  assert.equal(paths.UninstallKey, expand(nsisValue("UNINSTKEY")));
+  assert.deepEqual(paths.VendorKeys, [
+    expand(nsisValue("MANUPRODUCTKEY")),
+    'Software\\' + config.productName + '\\' + config.productName,
+  ]);
+});
+
+test("H09 reads existing and absent paths through the native read-only registry scanner", windowsOnly, () => {
+  const result = probePowerShell(String.raw`
+. (Join-Path $root 'scripts/installer-safety.ps1')
+$missing = 'SOFTWARE\Voxelight-No-Registry-Fixture-' + [Guid]::NewGuid()
+# Built-in Windows keys used as read-only fixtures. No installer keys are queried.
+$userKey = 'Control Panel\Desktop'
+$keyOnly = 'HARDWARE\DESCRIPTION\System'
+$withDefault = 'SOFTWARE\Classes\.exe'
+$r = @{
+  existingUserKey = @(Get-VoxelightInstallRegistration 'Voxelight read-only fixture' -Paths @{
+    UninstallKey = $userKey; VendorKeys = @($missing)
+  })
+  existingKey = @(Get-VoxelightInstallRegistration 'Voxelight read-only fixture' -Paths @{
+    UninstallKey = $keyOnly; VendorKeys = @($missing)
+  })
+  existingDefault = @(Get-VoxelightInstallRegistration 'Voxelight read-only fixture' -Paths @{
+    UninstallKey = $missing; VendorKeys = @($missing, $withDefault)
+  })
+  missingDefault = @(Get-VoxelightInstallRegistration 'Voxelight read-only fixture' -Paths @{
+    UninstallKey = $missing; VendorKeys = @($keyOnly)
+  })
+  absent = @(Get-VoxelightInstallRegistration 'Voxelight read-only fixture' -Paths @{
+    UninstallKey = $missing; VendorKeys = @($missing)
+  })
+}
+$r | ConvertTo-Json -Compress
+`);
+  assert.match(result.existingUserKey.join(","), /^CurrentUser\/(?:Registry64|Registry32|Default)\/Control Panel\\Desktop$/i);
+  assert.match(result.existingKey.join(","), /^LocalMachine\/(?:Registry64|Registry32|Default)\/HARDWARE\\DESCRIPTION\\System$/i);
+  assert.match(result.existingDefault.join(","), /^(?:CurrentUser|LocalMachine)\/(?:Registry64|Registry32|Default)\/SOFTWARE\\Classes\\\.exe$/i);
+  assert.deepEqual(result.missingDefault, []);
+  assert.deepEqual(result.absent, []);
+});
+
 test("M13 signing only the receipt targets uses certificate selection and no password", windowsOnly, () => {
   const result = probePowerShell(String.raw`
 $desktop = Read-ScriptAst 'scripts/desktop.ps1'

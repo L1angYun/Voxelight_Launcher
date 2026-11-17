@@ -358,9 +358,11 @@ async fn fetch_verified(
 }
 
 /// Validate all ZIP member paths, case collisions, symlinks and total expanded size before extraction.
+#[cfg(test)]
 fn inspect_zip(archive: &Path) -> Result<(), String> {
     inspect_zip_limits(archive, MAX_ZIP_BYTES, MAX_ZIP_BYTES, MAX_ZIP_BYTES)
 }
+#[cfg(test)]
 fn inspect_zip_limits(
     archive: &Path,
     archive_limit: u64,
@@ -434,7 +436,8 @@ fn archive_relative(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn extract_zip_layer(
+#[cfg(test)]
+fn extract_zip_layer(
     archive: &Path,
     destination: &Path,
     prefix: &str,

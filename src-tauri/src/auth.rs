@@ -1702,7 +1702,7 @@ mod tests {
         let state_path = state.data_dir.join("state.json");
         let preserved = state.data_dir.join("fixture-preserved-state.json");
         std::fs::rename(&state_path, &preserved).unwrap();
-        std::fs::create_dir(&state_path).unwrap(); // deterministic, harmless rename failure
+        std::fs::create_dir(&state_path).unwrap(); // A non-file fails the current-state check before writing or renaming.
         crate::commands::remove_account_inner(&state, &auth, id.clone()).unwrap_err();
         let still_registered = state
             .snapshot()

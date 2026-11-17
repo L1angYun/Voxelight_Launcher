@@ -153,6 +153,7 @@ beforeEach(() => {
     if (name === "resolve_resource_targets") return resourcePlan;
     if (name === "list_loader_versions") return [{ id: "0.16.9", stable: true, recommended: true }];
     if (name === "list_download_tasks") return { revision: 0, tasks: [] };
+    if (name === "reserve_resource_task") return "resource-task";
     if (name === "create_instance_for_resource") return { instance: { ...mockLauncher.data.instances[0], id: "new", versionId: fabricVersion, name: "Sodium" }, install: {} };
     if (name === "search_curseforge") return { hits: [project] };
     if (name === "install_resource" || name === "install_curseforge_resource") return { name: "Sodium", fileName: "sodium.jar", path: "fixture/sodium.jar" };
@@ -292,7 +293,7 @@ describe("DiscoverPage", () => {
     const install = freshCard.querySelector<HTMLButtonElement>('button[aria-label*="安装"]')!;
     expect(install.disabled).toBe(false);
     await act(async () => install.click());
-    expect(commandMock).toHaveBeenCalledWith("install_resource", { projectId: "iris", versionId: "1.21.1", instanceId: "fixture-world", resourceType: "mod" });
+    expect(commandMock).toHaveBeenCalledWith("install_resource", { projectId: "iris", versionId: "1.21.1", instanceId: "fixture-world", resourceType: "mod", taskId: "resource-task" });
   });
 
   it("keeps same-source results visible but inert until the new type finishes loading", async () => {
@@ -360,7 +361,7 @@ describe("DiscoverPage", () => {
     const projectCard = container.querySelector('[data-project-id="sodium"]')!;
     expect(projectCard.querySelector('button[aria-label*="合成测试世界"]')).not.toBeNull();
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("安装"))!.click());
-    expect(commandMock).toHaveBeenCalledWith("install_resource", { projectId: "sodium", versionId: "1.21.1", instanceId: "fixture-world", resourceType: "mod" });
+    expect(commandMock).toHaveBeenCalledWith("install_resource", { projectId: "sodium", versionId: "1.21.1", instanceId: "fixture-world", resourceType: "mod", taskId: "resource-task" });
     expect(container.textContent).toContain("资源已安装");
   });
 
@@ -471,7 +472,7 @@ describe("resource target installation", () => {
     resourcePlan = plan(false);
     await render(); await installCard();
     await act(async () => dialogButton("创建并安装")?.click());
-    expect(commandMock).toHaveBeenCalledWith("create_instance_for_resource", { source: "modrinth", projectId: "sodium", resourceType: "mod", loader: "fabric", gameVersion: "1.21.1", loaderVersion: "0.16.9", name: "Sodium" });
+    expect(commandMock).toHaveBeenCalledWith("create_instance_for_resource", { source: "modrinth", projectId: "sodium", resourceType: "mod", loader: "fabric", gameVersion: "1.21.1", loaderVersion: "0.16.9", name: "Sodium", taskId: "resource-task" });
     expect(mockLauncher.reload).toHaveBeenCalled();
     expect(mockLauncher.selectInstance).toHaveBeenCalledWith("new");
     expect(vi.mocked(mockLauncher.reload)).toHaveBeenCalledBefore(vi.mocked(mockLauncher.selectInstance));
@@ -484,7 +485,7 @@ describe("resource target installation", () => {
     expect(container.querySelector('.vx-install-target [role="radio"][aria-checked="true"]')?.textContent).toContain("Fabric 世界");
     expect(container.querySelector('.vx-install-target details')?.textContent).toContain("原版，无法加载模组");
     await act(async () => dialogButton("安装到 Fabric 世界")?.click());
-    expect(commandMock).toHaveBeenCalledWith("install_resource", { projectId: "sodium", versionId: fabricVersion, instanceId: "fabric", resourceType: "mod" });
+    expect(commandMock).toHaveBeenCalledWith("install_resource", { projectId: "sodium", versionId: fabricVersion, instanceId: "fabric", resourceType: "mod", taskId: "resource-task" });
   });
   it("keeps compatible selected targets as one-click installation", async () => {
     await render(); await installCard();
@@ -576,18 +577,50 @@ describe("resource target installation", () => {
     expect(container.querySelector<HTMLDialogElement>('.vx-install-target')?.open).not.toBe(true);
     expect(commandMock).not.toHaveBeenCalledWith("install_resource", expect.anything());
   });
-  it("cancels only the matching resource task including when paused", async () => {
+  it("cancels its queued creation without cancelling another installation of the same project", async () => {
     resourcePlan = plan(false);
     const dispatch = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => {
+      if (name === "reserve_resource_task") return "owned-next-install";
       if (name === "create_instance_for_resource") return await new Promise(() => {});
-      if (name === "list_download_tasks") return { revision: 2, tasks: [{ id: "unrelated", kind: "install", target: "1.21.1", status: "running" }, { id: "matched", kind: "resource", target: "sodium", status: "paused" }] };
+      if (name === "list_download_tasks") return { revision: 2, tasks: [
+        { id: "other-current-install", kind: "resource", target: "sodium", status: "paused" },
+        { id: "owned-next-install", kind: "resource", target: "sodium", status: "queued" },
+      ] };
       return dispatch(name, args);
     });
     await render(); await installCard();
     await act(async () => dialogButton("创建并安装")?.click());
     await act(async () => dialogButton("取消安装")?.click());
-    expect(commandMock).toHaveBeenCalledWith("cancel_download_task", { taskId: "matched" });
+    expect(commandMock.mock.calls.filter(([name]) => name === "cancel_download_task")).toEqual([
+      ["cancel_download_task", { taskId: "owned-next-install" }],
+    ]);
+    expect(commandMock).not.toHaveBeenCalledWith("list_download_tasks", expect.anything());
+    expect(commandMock).toHaveBeenCalledWith("create_instance_for_resource", expect.objectContaining({ taskId: "owned-next-install" }));
+  });
+  it("cancels a pending reservation before dispatching the existing-target installation", async () => {
+    resourcePlan = plan(false);
+    resourcePlan.targets.push({ ...resourcePlan.targets[0], instanceId: "fabric", versionId: fabricVersion,
+      name: "Fabric 世界", loader: "fabric", compatible: true, reason: undefined });
+    const dispatch = commandMock.getMockImplementation()!;
+    let release!: (id: string) => void;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "reserve_resource_task") return await new Promise<string>(resolve => { release = resolve; });
+      if (name === "install_resource") return await new Promise(() => {});
+      if (name === "list_download_tasks") return { revision: 1, tasks: [
+        { id: "other-active-install", kind: "resource", target: "sodium", status: "running" },
+      ] };
+      return dispatch(name, args);
+    });
+    await render(); await installCard();
+    await act(async () => dialogButton("安装到 Fabric 世界")?.click());
+    await act(async () => dialogButton("取消安装")?.click());
+    expect(commandMock.mock.calls.some(([name]) => name === "install_resource" || name === "cancel_download_task")).toBe(false);
+    await act(async () => release("cancel-before-dispatch"));
+    expect(commandMock.mock.calls.filter(([name]) => name === "cancel_download_task")).toEqual([
+      ["cancel_download_task", { taskId: "cancel-before-dispatch" }],
+    ]);
+    expect(commandMock).not.toHaveBeenCalledWith("install_resource", expect.anything());
   });
   it("loads details without requiring an installed target", async () => {
     mockLauncher.selectedVersionId = ""; mockLauncher.selectedInstance = undefined;

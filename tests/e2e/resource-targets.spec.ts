@@ -161,6 +161,23 @@ test("R3-3 cancel during fixture loader stage addresses its own task and registe
   await page.screenshot({ path: info.outputPath("cancelled-target.png") });
 });
 
+test("R4 verification cancels the reserved queued resource without touching another running copy", async ({ page }) => {
+  await installLauncherFixture(page, { noInstances: true, queuedResourceBehindSameProject: true });
+  await remote(page); await open(page); await install(page);
+  const dialog = targetDialog(page);
+  await dialog.getByRole("button", { name: "创建并安装", exact: true }).click();
+  await expect.poll(async () => (await calls(page)).find(call => call.name === "create_instance_for_resource")?.args?.taskId).toBe("fixture-resource-1");
+  await dialog.getByRole("button", { name: "取消安装", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "创建并安装", exact: true })).toBeVisible();
+  const commands = await calls(page);
+  expect(commands.findIndex(call => call.name === "reserve_resource_task")).toBeLessThan(commands.findIndex(call => call.name === "create_instance_for_resource"));
+  expect(commands.filter(call => call.name === "cancel_download_task").map(call => call.args?.taskId)).toEqual(["fixture-resource-1"]);
+  const { tasks } = await page.evaluate(() => (window as unknown as { __TAURI_INTERNALS__: {
+    invoke: (name: string) => Promise<{ tasks: { id: string; status: string }[] }> } }).__TAURI_INTERNALS__.invoke("list_download_tasks"));
+  expect(tasks.find(task => task.id === "fixture-other-resource")?.status).toBe("running");
+  expect(tasks.find(task => task.id === "fixture-resource-1")?.status).toBe("cancelled");
+});
+
 test("R3-3 Downloads navigation does not cancel the combined install or lose the resulting selection", async ({ page }, info) => {
   await installLauncherFixture(page, { noInstances: true, resourceCreateDelay: 2000 });
   await remote(page); await open(page); await install(page);

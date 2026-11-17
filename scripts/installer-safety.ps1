@@ -1,8 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
-function Get-VoxelightInstallRegistration([string]$ProductName) {
-    $uninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\$ProductName"
-    $vendorKeys = @("Software\voxelight\$ProductName", "Software\$ProductName\$ProductName")
+function Get-VoxelightInstallerRegistryPaths([string]$ProductName) {
+    return @{
+        UninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\$ProductName"
+        VendorKeys = @("Software\voxelight\$ProductName", "Software\$ProductName\$ProductName")
+    }
+}
+
+function Get-VoxelightInstallRegistration(
+    [string]$ProductName,
+    [hashtable]$Paths = (Get-VoxelightInstallerRegistryPaths $ProductName)
+) {
+    $uninstallKey = $Paths.UninstallKey
+    $vendorKeys = $Paths.VendorKeys
     $views = if ([Environment]::Is64BitOperatingSystem) { @('Registry64', 'Registry32') } else { @('Default') }
     foreach ($hive in @('CurrentUser', 'LocalMachine')) {
         foreach ($view in $views) {

@@ -448,22 +448,35 @@ fn commit_using(
     journal: &mut Journal,
     publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
-    checked_absolute(directory)?;
-    checked_absolute(transaction)?;
-    let next = safe_join(transaction, "next")?;
-    let before = safe_join(transaction, "before")?;
-    let expected_before = journal.before_exists.then_some(&journal.before);
-    if snapshot(directory)?.as_ref() != expected_before {
-        return Err("下载期间原资源目录发生变化，已停止提交".into());
-    }
-    if snapshot(&next)?.as_ref() != Some(&journal.after) {
-        return Err("暂存目录校验失败，原资源未改变".into());
-    }
-    if present(&before)? {
-        return Err("事务备份目录已存在，原资源未改变".into());
-    }
-    journal.status = "committing".into();
-    save_journal(path, journal)?;
+    let preflight = (|| -> Result<_, String> {
+        checked_absolute(directory)?;
+        checked_absolute(transaction)?;
+        let next = safe_join(transaction, "next")?;
+        let before = safe_join(transaction, "before")?;
+        let expected_before = journal.before_exists.then_some(&journal.before);
+        if snapshot(directory)?.as_ref() != expected_before {
+            return Err("下载期间原资源目录发生变化，已停止提交".into());
+        }
+        if snapshot(&next)?.as_ref() != Some(&journal.after) {
+            return Err("暂存目录校验失败，原资源未改变".into());
+        }
+        if present(&before)? {
+            return Err("事务备份目录已存在，原资源未改变".into());
+        }
+        journal.status = "committing".into();
+        save_journal(path, journal)?;
+        Ok((next, before))
+    })();
+    let (next, before) = match preflight {
+        Ok(paths) => paths,
+        Err(error) => {
+            // No live files have moved yet. End a known aborted attempt;
+            // keep staged recoverable when interrupted or if logging fails.
+            journal.status = "failed".into();
+            let _ = save_journal(path, journal);
+            return Err(error);
+        }
+    };
     if journal.before_exists {
         if let Err(error) = rename_to_vacant(directory, &before) {
             journal.status = "failed".into();
@@ -1176,6 +1189,37 @@ mod tests {
         cleanup(&root);
     }
     #[test]
+    fn h05_aborted_preflight_closes_the_journal_and_leaves_writers_unblocked() {
+        for (case, expected) in [
+            ("live-changed", "原资源目录发生变化"),
+            ("stage-changed", "暂存目录校验失败"),
+            ("before-exists", "事务备份目录已存在"),
+        ] {
+            let (root, live, transaction, path, mut journal) = setup();
+            save_journal(&path, &journal).unwrap();
+            assert!(require_no_pending(&live).is_err(), "a crashed staged transaction is recoverable");
+            match case {
+                "live-changed" => fs::write(live.join("user-edit.jar"), b"user change").unwrap(),
+                "stage-changed" => fs::remove_file(transaction.join("next/new.jar")).unwrap(),
+                "before-exists" => fs::create_dir(transaction.join("before")).unwrap(),
+                _ => unreachable!(),
+            }
+            let original_files = inventory(&live).unwrap();
+            let err = commit_using(&live, &transaction, &path, &mut journal, |_, _| {
+                panic!("preflight failure must not reach publication")
+            }).unwrap_err();
+            let after = inventory(&live).unwrap();
+            let persisted = read_journal(&path, &live).unwrap();
+            let pending = require_no_pending(&live);
+            cleanup(&root);
+            assert!(err.contains(expected), "{case}: {err}");
+            assert_eq!(after, original_files, "{case}");
+            assert_eq!(persisted.status, "failed", "{case}");
+            assert!(pending.is_ok(), "{case}: {pending:?}");
+        }
+    }
+
+    #[test]
     fn publishing_failure_restores_the_complete_original_directory() {
         let (root, directory, transaction, path, mut journal) = setup();
         assert!(
@@ -1477,23 +1521,25 @@ mod tests {
             .split_once("#[cfg(test)]")
             .unwrap()
             .0;
-        for (command, body, target, side_effect) in [
+        for (command, body, acquire, target, side_effect) in [
             (
                 "local",
                 local,
+                "state.operation.lock().await",
                 "let directory = safe_join(&root, folder)?",
                 "fs::create_dir_all(&directory)",
             ),
             (
                 "CurseForge",
                 curseforge,
+                "with_reserved_resource_task",
                 "crate::resources::resource_target(&state",
                 "let key = service_key(&state)?",
             ),
         ] {
             let guarded = body.find("require_no_pending").expect(command);
             assert!(
-                body.find("state.operation.lock().await").unwrap() < guarded,
+                body.find(acquire).unwrap() < guarded,
                 "{command}"
             );
             assert!(body.find(target).unwrap() < guarded, "{command}");

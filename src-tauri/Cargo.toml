@@ -28,11 +28,12 @@ futures-util = "0.3"
 sha1 = "0.10"
 sha2 = "0.10"
 base64 = "0.22"
-flate2 = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 fastnbt = "2"
 md5 = "0.7"
 uuid = { version = "1", features = ["v4"] }
-zip = { version = "=9.2.2", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
+# ZIP enables flate2 without selecting a codec; the direct dependency selects the Rust backend.
+zip = { version = "=9.2.3", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 regex = "1"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

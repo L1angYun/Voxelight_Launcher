@@ -15,6 +15,7 @@ export async function installLauncherFixture(
     instances?: Partial<Instance>[];
     instanceLoader?: "fabric";
     resourceCreateDelay?: number;
+    queuedResourceBehindSameProject?: boolean;
     resourceManifestUnavailable?: boolean;
     resourceGameVersions?: string[];
     firstInstanceName?: string;
@@ -241,6 +242,8 @@ export async function installLauncherFixture(
     }>();
     const exportPreviews = new Map<string, { instanceId: string; options: Record<string, boolean> }>();
     let previewSequence = 0;
+    const resourceReservations = new Map<string, Record<string, unknown>>();
+    let nextResourceId = 0;
     const launchReservations = new Map<string, { versionId: string; instanceId?: string }>();
     const cancelLaunches = new Map<string, () => void>();
     let taskRevision = 0, nextLaunchId = 0;
@@ -250,6 +253,28 @@ export async function installLauncherFixture(
       for (const [id, callbackId] of listeners.get(event) ?? []) {
         callbacks.get(callbackId)?.({ event, id, payload: structuredClone(payload) });
       }
+    };
+    const resourceTask = (id: string, project: string, status: DownloadTask["status"]): DownloadTask => ({
+      id, kind: "resource", target: project, label: "合成安装资源", status, stage: "queued",
+      completed: 0, total: 0, bytesCompleted: 0, bytesTotal: 0, message: "",
+      createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+    });
+    const claimResource = (args: Record<string, unknown> | undefined, source: string, mode: "existing" | "create") => {
+      const taskId = String(args?.taskId);
+      if (cancelledTasks.has(taskId)) throw { code: "download.cancelled", params: {} };
+      const request = resourceReservations.get(taskId);
+      const target = request?.target as Record<string, unknown> | undefined;
+      const fields = mode === "create" ? ["gameVersion", "loader", "loaderVersion", "name"] : ["versionId", "instanceId", "fileId"];
+      if (request?.source !== source || request?.projectId !== args?.projectId ||
+        request?.resourceType !== args?.resourceType || target?.mode !== mode ||
+        fields.some(field => target?.[field] !== args?.[field])) throw { code: "download.notFound", params: {} };
+      resourceReservations.delete(taskId);
+      return downloadTasks.find(item => item.id === taskId)!;
+    };
+    const finishResource = (task: DownloadTask, status: "completed" | "failed") => {
+      task.status = status;
+      task.stage = status === "completed" ? "complete" : "failed";
+      publishTasks();
     };
     const resourceContext = (versionId: string, instanceId?: string) => {
       const instance = instances.find(item => item.id === instanceId);
@@ -446,24 +471,47 @@ export async function installLauncherFixture(
                 : undefined,
             };
           }
-          if (name === "install_resource") {
-            const context = resourceContext(String(args?.versionId), args?.instanceId as string | undefined);
-            if (args?.resourceType === "mod" && !context.loader) throw { code: "resource.loaderRequired", params: { versionId: args?.versionId } };
-            if (!(options.resourceGameVersions ?? ["1.21.1"]).includes(context.gameVersion)) throw { code: "resource.noCompatibleVersion", params: context };
-            const target = instances.find(item => item.id === args?.instanceId)?.gameDirectory ?? "C:\\SyntheticFixture";
-            return { name: String(args?.projectId), fileName: "fabric-api-fixture.jar", path: target + "\\mods\\fabric-api-fixture.jar" };
+          if (name === "reserve_resource_task") {
+            const request = args?.request as Record<string, unknown>;
+            const id = "fixture-resource-" + ++nextResourceId;
+            const projectId = String(request.projectId);
+            if (options.queuedResourceBehindSameProject && !downloadTasks.some(task => task.id === "fixture-other-resource")) {
+              downloadTasks.unshift(resourceTask("fixture-other-resource", projectId, "running"));
+            }
+            resourceReservations.set(id, structuredClone(request));
+            downloadTasks.unshift(resourceTask(id, projectId, "queued"));
+            publishTasks();
+            return id;
+          }
+          if (name === "install_resource" || name === "install_curseforge_resource") {
+            const task = claimResource(args, name === "install_resource" ? "modrinth" : "curseforge", "existing");
+            task.status = "running";
+            publishTasks();
+            try {
+              const context = resourceContext(String(args?.versionId), args?.instanceId as string | undefined);
+              if (args?.resourceType === "mod" && !context.loader) throw { code: "resource.loaderRequired", params: { versionId: args?.versionId } };
+              if (!(options.resourceGameVersions ?? ["1.21.1"]).includes(context.gameVersion)) throw { code: "resource.noCompatibleVersion", params: context };
+              const target = instances.find(item => item.id === args?.instanceId)?.gameDirectory ?? "C:\\SyntheticFixture";
+              finishResource(task, "completed");
+              return { name: String(args?.projectId), fileName: "fabric-api-fixture.jar", path: target + "\\mods\\fabric-api-fixture.jar" };
+            } catch (error) {
+              finishResource(task, "failed");
+              throw error;
+            }
           }
           if (name === "create_instance_for_resource") {
-            const task: DownloadTask = { id: `fixture-resource-${downloadTasks.length + 1}`, kind: "resource", target: String(args?.projectId),
-              label: "合成安装资源", status: "running", stage: "loader-libraries", completed: 1, total: 3, bytesCompleted: 0, bytesTotal: 0,
-              message: "合成加载器安装进度", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
-            downloadTasks.unshift(task);
-            publishTasks();
-            emit("launcher://progress", { taskId: task.id, operation: task.kind, versionId: "fixture-new", stage: task.stage, completed: 1, total: 3, bytesCompleted: 0, bytesTotal: 0, message: task.message });
-            await new Promise(resolve => setTimeout(resolve, options.resourceCreateDelay ?? 100));
-            if (cancelledTasks.has(task.id)) {
-              task.status = "cancelled"; task.stage = "cancelled"; publishTasks();
-              throw { code: "download.cancelled", params: {} };
+            const task = claimResource(args, "modrinth", "create");
+            const cancellation = new Promise<never>((_resolve, reject) => {
+              cancelLaunches.set(task.id, () => reject({ code: "download.cancelled", params: {} }));
+            });
+            try {
+              if (options.queuedResourceBehindSameProject) await cancellation;
+              Object.assign(task, { status: "running", stage: "loader-libraries", completed: 1, total: 3, message: "合成加载器安装进度" });
+              publishTasks();
+              emit("launcher://progress", { taskId: task.id, operation: task.kind, versionId: "fixture-new", stage: task.stage, completed: 1, total: 3, bytesCompleted: 0, bytesTotal: 0, message: task.message });
+              await Promise.race([cancellation, new Promise(resolve => setTimeout(resolve, options.resourceCreateDelay ?? 100))]);
+            } finally {
+              cancelLaunches.delete(task.id);
             }
             const loader = String(args?.loader ?? "fabric"), game = String(args?.gameVersion);
             const versionId = loader === "vanilla" ? game : `${loader}-loader-${String(args?.loaderVersion ?? "0.16.9")}-${game}`;
@@ -486,6 +534,7 @@ export async function installLauncherFixture(
             if (!task) throw { code: "download.notFound", params: {} };
             if (name === "cancel_download_task" && ["queued", "running", "paused"].includes(task.status)) {
               cancelledTasks.add(taskId);
+              resourceReservations.delete(taskId);
               task.status = "cancelled";
               task.stage = "cancelled";
               cancelLaunches.get(taskId)?.();

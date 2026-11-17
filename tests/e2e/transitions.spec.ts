@@ -531,6 +531,49 @@ if (HARDWARE) {
     await settle(page);
   });
 
+  test("transitions: re-requesting the outgoing route does not revive its old page stage", async ({ page }) => {
+    await prepare(page);
+    await navigate(page, "library");
+
+    // Revisit the outgoing route as soon as its exit starts, before any
+    // compositor delay can change the order of the navigation requests.
+    const observation = await page.evaluate(() => new Promise<{ revived: boolean; intermediate: boolean }>((resolve, reject) => {
+      const outgoing = document.querySelector<HTMLElement>('#main-content > [data-page-stage="library"]')!;
+      const main = outgoing.parentElement!;
+      let revisited = false;
+      let revived = false;
+      let intermediate = false;
+      const press = (route: string) => document.querySelector<HTMLButtonElement>(`nav button[data-page="${route}"]`)!.click();
+      const observer = new MutationObserver(() => {
+        intermediate ||= Boolean(main.querySelector('[data-page-stage="discover"]'));
+        if (!revisited && outgoing.dataset.exiting === "true") {
+          revisited = true;
+          press("library");
+          // React commits this input before the next task. Do not release the
+          // final request until the revisit can visibly revive the old stage.
+          window.setTimeout(() => {
+            revived = outgoing.isConnected && !outgoing.inert;
+            press("downloads");
+          }, 0);
+        }
+        if (main.querySelector('[data-page-stage="downloads"]')) {
+          window.clearTimeout(timeout);
+          observer.disconnect();
+          resolve({ revived, intermediate });
+        }
+      });
+      const timeout = window.setTimeout(() => {
+        observer.disconnect();
+        reject(new Error("The last requested Downloads page never mounted"));
+      }, 5000);
+      observer.observe(main, { attributes: true, attributeFilter: ["data-exiting"], childList: true, subtree: true });
+      press("discover");
+    }));
+    expect(observation).toEqual({ revived: false, intermediate: false });
+    await expect(page.locator('#main-content > [data-page-stage="downloads"]')).toBeVisible();
+    await settle(page);
+  });
+
   test("transitions: nav current page returns the main scroll to the top", async ({ page }, info) => {
     await prepare(page, { instanceCount: 48 });
     await navigate(page, "library");
