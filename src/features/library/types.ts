@@ -85,10 +85,10 @@ export interface RecoverInstanceRestoreResult {
   preservedDirectory: string | null;
   previousBackup: InstanceBackup | null;
 }
+export type DiagnosisKind = "memory" | "java" | "mods" | "graphics" | "directory" | "unknown" | "empty";
+
 export interface Diagnosis {
-  title: string;
-  reason: string;
-  suggestions: string[];
+  kind: DiagnosisKind;
   logPath?: string | null;
   excerpt: string;
 }

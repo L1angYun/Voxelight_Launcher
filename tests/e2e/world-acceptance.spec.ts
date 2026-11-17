@@ -260,7 +260,7 @@ const targets: ContrastTarget[] = [
 const previewSourceTarget: ContrastTarget = { name: "preview source", selector: ".vx-home__preview-source", minimum: 4.5 };
 
 interface FixtureControl { progress(fraction: number): void; completeLaunch(): void }
-type ControlledWindow = Window & { __worldAcceptanceFixture?: FixtureControl };
+type ControlledWindow = Window & { __worldAcceptanceFixture?: FixtureControl; __completeFixtureLaunch?: () => void };
 
 /** Control transport completion and emit the same progress event the real controller consumes. */
 async function installControlledLaunch(page: Page) {
@@ -271,8 +271,7 @@ async function installControlledLaunch(page: Page) {
     }
     const host = window as unknown as { __TAURI_INTERNALS__?: FixtureApi };
     const callbacks = new Map<number, (value: unknown) => void>();
-    let progressHandler = 0, launchTaskId = "", finish = () => {};
-    const completion = new Promise<void>(resolve => { finish = resolve; });
+    let progressHandler = 0, launchTaskId = "";
     const wrapped = new WeakSet<FixtureApi>();
     function attach(api: FixtureApi) {
       if (wrapped.has(api)) return;
@@ -282,9 +281,7 @@ async function installControlledLaunch(page: Page) {
       api.invoke = async (name, args) => {
         if (name === "plugin:event|listen" && args?.event === "launcher://progress") progressHandler = Number(args.handler);
         if (name === "launch_game") launchTaskId = String(args?.taskId);
-        const result = await invoke(name, args);
-        if (name === "launch_game") await completion;
-        return result;
+        return invoke(name, args);
       };
     }
     // Playwright does not guarantee ordering across init scripts. Hook either
@@ -294,7 +291,11 @@ async function installControlledLaunch(page: Page) {
       get: () => api, set(value: FixtureApi) { api = value; attach(value); } });
     if (api) attach(api);
     (window as ControlledWindow).__worldAcceptanceFixture = {
-      completeLaunch: () => finish(),
+      completeLaunch: () => {
+        const finish = (window as ControlledWindow).__completeFixtureLaunch;
+        if (!finish) throw new Error("Manual launch completion was not configured");
+        finish();
+      },
       progress(fraction) {
         const completed = Math.round(fraction * 100);
         const callback = callbacks.get(progressHandler);
@@ -412,7 +413,7 @@ for (const theme of ["dark", "light"] as const) for (const [width, height] of [[
     page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
     await page.setViewportSize({ width, height });
     await page.emulateMedia({ reducedMotion: "no-preference", contrast: "no-preference" });
-    await installLauncherFixture(page, { theme, effects: "full", worldScene: "horizon", worldMaterial: "lattice", launchDelay: 0 });
+    await installLauncherFixture(page, { theme, effects: "full", worldScene: "horizon", worldMaterial: "lattice", manualLaunchCompletion: true });
     await installControlledLaunch(page);
     const recorder = await prepareIntroContrast(page, targets);
     let intro: WorldContrastReport;

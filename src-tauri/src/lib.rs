@@ -19,6 +19,7 @@ mod models;
 mod modpacks;
 mod path_grants;
 mod platform;
+mod process_output;
 mod processes;
 mod resource_targets;
 mod resources;

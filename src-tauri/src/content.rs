@@ -633,7 +633,8 @@ fn inspect_world_archive(path: &Path) -> Result<String, String> {
     let mut candidates = Vec::new();
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        let name = entry.name().trim_end_matches('/');
+        let entry_name = entry.name().map_err(|e| e.to_string())?;
+        let name = entry_name.trim_end_matches('/');
         if name.is_empty() {
             continue;
         }
@@ -715,7 +716,8 @@ fn import_world_inner(
     for index in 0..archive.len() {
         instances::sync_checkpoint(state)?;
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        let Some(relative) = entry.name().strip_prefix(&prefix).map(str::to_owned) else {
+        let entry_name = entry.name().map_err(|e| e.to_string())?;
+        let Some(relative) = entry_name.strip_prefix(&prefix).map(str::to_owned) else {
             continue;
         };
         if relative.is_empty() || entry.is_dir() {

@@ -19,86 +19,124 @@ export function CreateInstanceDialog({
   onInstalled,
   initialMode = "version",
   project,
+  curseforgePack,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInstalled: (versionId: string, instanceId?: string) => void | Promise<void>;
   initialMode?: "version" | "import";
   project?: ResourceProject;
+  curseforgePack?: ResourceProject;
 }) {
   const { t } = useTranslation();
   const modeId = useId();
   const { manifest: initialManifest, run, reload, selectInstance, selectVersion, busy } = useLauncher();
-  const [mode, setMode] = useState<"version" | "import" | "modpack">(project ? "modpack" : initialMode);
+  const [creationMode, setMode] = useState<"version" | "import">(initialMode);
+  const mode = curseforgePack ? "import" : project ? "modpack" : creationMode;
+  const projectName = (curseforgePack ?? project)?.title;
   const [manifest, setManifest] = useState<VersionManifest | undefined>(initialManifest ?? undefined);
   const [channel, setChannel] = useState("release");
   const [gameVersion, setGameVersion] = useState("");
   const [loader, setLoader] = useState<Loader>("vanilla");
   const [loaderVersions, setLoaderVersions] = useState<LoaderVersion[]>([]);
   const [loaderVersion, setLoaderVersion] = useState("");
+  const [loaderResponseKey, setLoaderResponseKey] = useState("");
   const [loaderLoading, setLoaderLoading] = useState(false);
-  const [instanceName, setInstanceName] = useState(project?.title ?? "");
+  const [instanceName, setInstanceName] = useState(projectName ?? "");
   const [curseforgeKey, setCurseforgeKey] = useState("");
   const [packChoice, setPackChoice] = useState<{ projectId: string; versions: ModpackVersion[]; selected: string }>({ projectId: "", versions: [], selected: "" });
   const [includeOptional, setIncludeOptional] = useState(false);
   const [error, setError] = useState("");
-  const generation = useRef(0);
-  const metadataGeneration = useRef(0);
-  const metadataContext = useRef({ open: isOpen, projectId: project?.project_id });
-  metadataContext.current = { open: isOpen, projectId: project?.project_id };
+  const [manifestState, setManifestState] = useState<"idle" | "pending" | "ready" | "failed">("idle");
+  const [loaderFailure, setLoaderFailure] = useState("");
+  const [packState, setPackState] = useState<"idle" | "pending" | "ready" | "failed">("idle");
+  const [manifestAttempt, retryManifest] = useState(0);
+  const [loaderAttempt, retryLoader] = useState(0);
+  const [packAttempt, retryPack] = useState(0);
+  const loaderGeneration = useRef(0);
+  const packGeneration = useRef(0);
+  const manifestGeneration = useRef(0);
+  const loaderKey = `${loader}:${gameVersion}`;
+  const requestContext = useRef({ isOpen, mode, loaderKey, projectId: project?.project_id });
+  requestContext.current = { isOpen, mode, loaderKey, projectId: project?.project_id };
   // A different project must never expose the last dialog's install choice,
   // including the render before its opening effect has reset the request.
   const packVersions = packChoice.projectId === project?.project_id ? packChoice.versions : [];
   const packVersion = packChoice.projectId === project?.project_id ? packChoice.selected : "";
+  const manifestChoices = manifest?.versions.some(version => version.type === channel) || Boolean(manifest?.latestRelease);
+  const names: Record<Loader, string> = { vanilla: t("library:vanilla"), fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge" };
+  const loaderReady = loaderResponseKey === loaderKey && !loaderLoading && loaderFailure !== loaderKey;
+  // Keep the mounted control's previous text during its collapse; it remains inert and cannot submit.
+  const displayLoaderChoice = loaderReady || loader === "vanilla";
+  const validSelection = Boolean(gameVersion && (loader === "vanilla" || loaderReady && loaderVersion));
+  const noManifestVersions = manifestState === "ready" && !manifestChoices;
+  const noPackVersions = packState === "ready" && packVersions.length === 0;
+  const retry = (handler: () => void) => <Button type="button" size="sm" variant="ghost" onClick={handler}>{t("common:actions.retry")}</Button>;
 
   useEffect(() => {
-    const request = ++metadataGeneration.current;
     if (!isOpen) return;
-    const current = () => request === metadataGeneration.current && metadataContext.current.open
-      && metadataContext.current.projectId === project?.project_id;
-    setMode(project ? "modpack" : initialMode);
-    setInstanceName(project?.title ?? "");
+    setMode(initialMode);
+    setInstanceName(projectName ?? "");
     setError("");
-    setGameVersion((current) => current || initialManifest?.latestRelease || "");
-    void command<VersionManifest>("list_versions").then((value) => {
-      if (current()) setManifest(value);
-    }).catch((cause) => { if (current()) setError(String(cause)); });
-    if (project) {
-      // Reopening the same project intentionally fetches a fresh list. Closing
-      // preserves the current display for exit; opening disables old choices.
-      setPackChoice({ projectId: project.project_id, versions: [], selected: "" });
-      void command<ModpackVersion[]>("list_modpack_versions", { projectId: project.project_id }).then((versions) => {
-        if (current()) setPackChoice({ projectId: project.project_id, versions, selected: versions[0]?.id ?? "" });
-      }).catch((cause) => { if (current()) setError(String(cause)); });
-    }
-    return () => { metadataGeneration.current++; };
-  }, [initialManifest?.latestRelease, initialMode, isOpen, project]);
+    setGameVersion(current => current || initialManifest?.latestRelease || "");
+  }, [initialMode, isOpen, projectName]);
 
   useEffect(() => {
-    if (loader === "vanilla" || !gameVersion) return;
-    const request = ++generation.current;
+    const request = ++manifestGeneration.current;
+    if (!isOpen || mode !== "version") return;
+    const current = () => request === manifestGeneration.current && requestContext.current.isOpen && requestContext.current.mode === "version";
+    setManifestState("pending");
+    void command<VersionManifest>("list_versions").then(value => {
+      if (!current()) return;
+      setManifest(value);
+      setGameVersion(selected => selected || value.latestRelease || "");
+      setManifestState("ready");
+    }).catch(() => { if (current()) setManifestState("failed"); });
+    return () => { ++manifestGeneration.current; };
+  }, [isOpen, manifestAttempt, mode]);
+
+  useEffect(() => {
+    const request = ++packGeneration.current;
+    if (!isOpen || !project || mode !== "modpack") return;
+    const projectId = project.project_id;
+    const current = () => request === packGeneration.current && requestContext.current.isOpen
+      && requestContext.current.projectId === projectId && requestContext.current.mode === "modpack";
+    setPackState("pending");
+    setPackChoice({ projectId, versions: [], selected: "" });
+    void command<ModpackVersion[]>("list_modpack_versions", { projectId }).then(versions => {
+      if (!current()) return;
+      setPackChoice({ projectId, versions, selected: versions[0]?.id ?? "" });
+      setPackState("ready");
+    }).catch(() => { if (current()) setPackState("failed"); });
+    return () => { ++packGeneration.current; };
+  }, [isOpen, mode, packAttempt, project?.project_id]);
+
+  useEffect(() => {
+    const request = ++loaderGeneration.current;
+    if (!isOpen || mode !== "version" || loader === "vanilla" || !gameVersion) return;
+    const current = () => request === loaderGeneration.current && requestContext.current.isOpen
+      && requestContext.current.mode === "version" && requestContext.current.loaderKey === loaderKey;
+    setLoaderFailure("");
     setLoaderLoading(true);
     setLoaderVersions([]);
     setLoaderVersion("");
-    void command<LoaderVersion[]>("list_loader_versions", { loader, gameVersion }).then((versions) => {
-      if (request !== generation.current) return;
+    void command<LoaderVersion[]>("list_loader_versions", { loader, gameVersion }).then(versions => {
+      if (!current()) return;
       setLoaderVersions(versions);
       setLoaderVersion((versions.find((version) => version.recommended) ?? versions.find((version) => version.stable) ?? versions[0])?.id ?? "");
-      setLoaderLoading(false);
-    }).catch((cause) => {
-      if (request === generation.current) {
-        setError(String(cause));
-        setLoaderLoading(false);
-      }
-    });
-    return () => {
-      generation.current++;
-    };
-  }, [gameVersion, loader]);
+    }).catch(() => { if (current()) setLoaderFailure(loaderKey); })
+      .finally(() => {
+        if (current()) {
+          setLoaderResponseKey(loaderKey);
+          setLoaderLoading(false);
+        }
+      });
+    return () => { ++loaderGeneration.current; };
+  }, [gameVersion, isOpen, loader, loaderAttempt, loaderKey, mode]);
 
   async function install(event: FormEvent) {
     event.preventDefault();
-    if (busy || !gameVersion || (loader !== "vanilla" && !loaderVersion)) return;
+    if (busy || !validSelection) return;
     await run("instance.install", async () => {
       let versionId = gameVersion;
       if (loader === "vanilla") await command("install_version", { versionId: gameVersion });
@@ -114,9 +152,11 @@ export function CreateInstanceDialog({
   }
 
   async function importPack() {
+    setError("");
     await run("instance.import", async () => {
       const path = await pickLauncherPath("packRead");
       if (!path) return;
+      if (curseforgePack && !/\.zip$/i.test(path)) { setError(t("discover:curseforgeZipRequired")); return; }
       const result = await command<PackResult>("import_modpack", {
         path,
         name: instanceName.trim() || undefined,
@@ -130,7 +170,7 @@ export function CreateInstanceDialog({
 
   async function installModpack(event: FormEvent) {
     event.preventDefault();
-    if (!isOpen || busy || !project || !packVersion || !instanceName.trim()) return;
+    if (!isOpen || busy || !project || packState !== "ready" || !packVersion || !instanceName.trim()) return;
     await run("instance.modpack", async () => {
       const result = await command<PackResult>("install_modrinth_modpack", {
         projectId: project.project_id,
@@ -149,18 +189,18 @@ export function CreateInstanceDialog({
       open={isOpen}
       onOpenChange={onOpenChange}
       title={title}
-      description={t("library:createDescription")}
+      description={t(curseforgePack ? "discover:curseforgeZipHint" : "library:createDescription")}
       closeLabel={t("common:actions.close")}
       className="vx-create-dialog"
-      footer={mode === "version" ? <Button variant="primary" type="submit" form={`${modeId}-create-instance-form`} onClick={install} disabled={busy !== "" || !gameVersion || (loader !== "vanilla" && !loaderVersion)}>{t("library:installPrepare")}</Button> : mode === "modpack" ? <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={busy !== "" || !packVersion || !instanceName.trim()}>{t("library:installModpack")}</Button> : <Button variant="secondary" onClick={() => void importPack()}>{t("library:importPack")}</Button>}
+      footer={mode === "version" ? <Button variant="primary" type="submit" form={`${modeId}-create-instance-form`} onClick={install} disabled={busy !== "" || !validSelection}>{t("library:installPrepare")}</Button> : mode === "modpack" ? <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={busy !== "" || packState !== "ready" || !packVersion || !instanceName.trim()}>{t("library:installModpack")}</Button> : <Button variant="secondary" onClick={() => void importPack()}>{t(curseforgePack ? "discover:importCurseforgeZip" : "library:importPack")}</Button>}
     >
-      {!project ? <Segmented semantic="tabs" label={t("library:createModes")} value={mode} onChange={setMode}
+      {!projectName ? <Segmented semantic="tabs" label={t("library:createModes")} value={creationMode} onChange={setMode}
         idPrefix={`${modeId}-mode`} panelId={`${modeId}-panel`}
         options={[{ value: "version", label: t("library:versionMode") }, { value: "import", label: t("library:importMode") }]} />
-        : <p className="vx-create-project">{project.title}</p>}
+        : <p className="vx-create-project">{projectName}</p>}
       {error ? <p role="alert">{error}</p> : null}
-      <SectionPanel selectionKey={mode} className="vx-create-panel" role={!project ? "tabpanel" : undefined}
-        id={`${modeId}-panel`} aria-labelledby={!project ? `${modeId}-mode-${mode}` : undefined}>
+      <SectionPanel selectionKey={mode} className="vx-create-panel" role={!projectName ? "tabpanel" : undefined}
+        id={`${modeId}-panel`} aria-labelledby={!projectName ? `${modeId}-mode-${mode}` : undefined}>
       {mode === "version" ? (
         <form id={`${modeId}-create-instance-form`} className="vx-form-stack" onSubmit={install}>
           <Segmented semantic="toggle" label={t("library:channel")} value={channel}
@@ -173,6 +213,11 @@ export function CreateInstanceDialog({
               ...(manifest?.versions.filter((version) => version.type === channel && version.id !== manifest.latestRelease).map((version) => ({ value: version.id, label: version.id })) ?? []),
             ]} />
           </Field>
+          {manifestState === "pending" && !manifestChoices
+            ? <LoadingStatus active>{t("library:createMetadata.loadingGame")}</LoadingStatus> : null}
+          {manifestState === "failed" || noManifestVersions ? <div className="vx-action-row">
+            <span role={manifestState === "failed" ? "alert" : "status"}>{t(manifestState === "failed" ? "library:createMetadata.failedGame" : "library:createMetadata.emptyGame")}</span>
+            {retry(() => retryManifest(value => value + 1))}</div> : null}
           <div className="vx-create-loader-group">
           <Field label={t("library:loader")}>
             <Segmented semantic="toggle" label={t("library:loader")} value={loader} onChange={setLoader}
@@ -181,11 +226,14 @@ export function CreateInstanceDialog({
           <div className="vx-create-loader-slot" data-expanded={loader !== "vanilla"}
             inert={loader === "vanilla" || !isOpen || undefined} aria-hidden={loader === "vanilla" || !isOpen || undefined}>
           <div className="vx-create-loader-slot__content">
-          <Field label={t("library:loaderVersion")} htmlFor={`${modeId}-create-loader-version`}><Select id={`${modeId}-create-loader-version`} aria-label={t("library:loaderVersion")} value={loaderVersion} onChange={setLoaderVersion} disabled={!isOpen || loader === "vanilla" || loaderLoading || !loaderVersions.length} required options={[
-            { value: "", label: loaderLoading ? "\u00a0" : t("library:noLoaderVersions") },
-            ...loaderVersions.map((version) => ({ value: version.id, label: `${version.id}${version.recommended ? ` / ${t("library:recommended")}` : ""}` })),
+          <Field label={t("library:loaderVersion")} htmlFor={`${modeId}-create-loader-version`}><Select id={`${modeId}-create-loader-version`} aria-label={t("library:loaderVersion")} value={displayLoaderChoice ? loaderVersion : ""} onChange={setLoaderVersion} disabled={!isOpen || loader === "vanilla" || !loaderReady || !loaderVersions.length} required options={[
+            { value: "", label: displayLoaderChoice ? t("library:noLoaderVersions") : "\u00a0" },
+            ...(displayLoaderChoice ? loaderVersions.map((version) => ({ value: version.id, label: `${version.id}${version.recommended ? ` / ${t("library:recommended")}` : ""}` })) : []),
           ]} /></Field>
           <LoadingStatus active={loader !== "vanilla" && loaderLoading} className="vx-create-loader-status">{t("common:status.loading")}</LoadingStatus>
+          {loader !== "vanilla" && (loaderFailure === loaderKey || loaderReady && !loaderVersions.length) ? <div className="vx-action-row">
+            {loaderFailure === loaderKey ? <span role="alert">{t("library:createMetadata.failedLoader", { loader: names[loader] })}</span> : null}
+            {retry(() => retryLoader(value => value + 1))}</div> : null}
           </div>
           </div>
           </div>
@@ -201,7 +249,11 @@ export function CreateInstanceDialog({
       ) : null}
       {mode === "modpack" && project ? (
         <form id={`${modeId}-create-modpack-form`} className="vx-form-stack" onSubmit={installModpack}>
-          <Field label={t("library:modpackVersion")} htmlFor={`${modeId}-create-pack-version`}><Select id={`${modeId}-create-pack-version`} aria-label={t("library:modpackVersion")} value={packVersion} onChange={(selected) => setPackChoice((current) => current.projectId === project.project_id && current.versions.some((version) => version.id === selected) ? { ...current, selected } : current)} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
+          <Field label={t("library:modpackVersion")} htmlFor={`${modeId}-create-pack-version`}><Select id={`${modeId}-create-pack-version`} aria-label={t("library:modpackVersion")} value={packVersion} disabled={!isOpen || packState !== "ready" || noPackVersions} onChange={(selected) => setPackChoice((current) => current.projectId === project.project_id && current.versions.some((version) => version.id === selected) ? { ...current, selected } : current)} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
+          {packState === "pending" ? <LoadingStatus active>{t("library:createMetadata.loadingPack")}</LoadingStatus> : null}
+          {packState === "failed" || noPackVersions ? <div className="vx-action-row">
+            <span role={packState === "failed" ? "alert" : "status"}>{t(packState === "failed" ? "library:createMetadata.failedPack" : "library:createMetadata.emptyPack")}</span>
+            {retry(() => retryPack(value => value + 1))}</div> : null}
           <Field label={t("library:instanceName")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} required maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} /></Field>
           <label className="vx-check-row"><input type="checkbox" checked={includeOptional} onChange={(event) => setIncludeOptional(event.target.checked)} /> {t("library:includeOptional")}</label>
         </form>

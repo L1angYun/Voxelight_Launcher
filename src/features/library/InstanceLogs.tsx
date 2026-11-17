@@ -17,6 +17,14 @@ export function InstanceLogs({ versionId, instanceId }: { versionId: string; ins
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  const kind = result?.kind ?? "unknown";
+  const diagnosis = result ? {
+    title: t(`library:diagnosis.${kind}.title`),
+    reason: t(`library:diagnosis.${kind}.reason`),
+    suggestions: [t(`library:diagnosis.${kind}.firstSuggestion`),
+      ...(kind === "empty" ? [] : [t(`library:diagnosis.${kind}.secondSuggestion`)])],
+  } : null;
+
   async function analyze() {
     setBusy(true);
     setError("");
@@ -51,7 +59,7 @@ export function InstanceLogs({ versionId, instanceId }: { versionId: string; ins
       </div>
       {error ? <p role="alert">{errorText(error, t)}</p> : null}
       {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}
-      {result ? <section className="vx-detail-section"><h2>{result.title}</h2><p>{result.reason}</p><ul>{result.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul>{result.excerpt ? <details><summary>{t("library:logExcerpt")}</summary><pre>{result.excerpt}</pre></details> : null}</section> : <EmptyState title={t("library:noDiagnosisYet")} description={t("library:noDiagnosisDescription")} />}
+      {result && diagnosis ? <section className="vx-detail-section"><h2>{diagnosis.title}</h2><p>{diagnosis.reason}</p><ul>{diagnosis.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul>{result.excerpt ? <details><summary>{t("library:logExcerpt")}</summary><pre>{result.excerpt}</pre></details> : null}</section> : <EmptyState title={t("library:noDiagnosisYet")} description={t("library:noDiagnosisDescription")} />}
       <section className="vx-detail-section"><h2>{t("library:launcherLogs")}</h2><pre className="vx-log-view" role="log">{logs.length ? logs.map((entry, index) => `[${entry.timestamp}] ${entry.message}${index === logs.length - 1 ? "" : "\n"}`).join("") : t("library:noLogs")}</pre></section>
     </div>
   );

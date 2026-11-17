@@ -367,6 +367,16 @@ fn inspect_zip_limits(
     total_limit: u64,
     file_limit: u64,
 ) -> Result<(), String> {
+    inspect_zip_limits_controlled(archive, archive_limit, total_limit, file_limit, None)
+}
+
+fn inspect_zip_limits_controlled(
+    archive: &Path,
+    archive_limit: u64,
+    total_limit: u64,
+    file_limit: u64,
+    state: Option<&LauncherState>,
+) -> Result<(), String> {
     checked_absolute(archive)?;
     if fs::metadata(archive).map_err(|e| e.to_string())?.len() > archive_limit {
         return Err("压缩包大小超过此导入类型的限制".into());
@@ -379,8 +389,10 @@ fn inspect_zip_limits(
     let mut total = 0u64;
     let mut seen = HashSet::new();
     for n in 0..zip.len() {
+        if let Some(state) = state { instances::sync_checkpoint(state)?; }
         let file = zip.by_index(n).map_err(|e| e.to_string())?;
-        let name = file.name().trim_end_matches('/');
+        let entry_name = file.name().map_err(|e| e.to_string())?;
+        let name = entry_name.trim_end_matches('/');
         if name.is_empty() {
             continue;
         }
@@ -437,7 +449,7 @@ pub(crate) fn extract_zip_controlled(
     skip: &[&str],
     state: Option<&LauncherState>,
 ) -> Result<(), String> {
-    inspect_zip(archive)?;
+    inspect_zip_limits_controlled(archive, MAX_ZIP_BYTES, MAX_ZIP_BYTES, MAX_ZIP_BYTES, state)?;
     checked_absolute(destination)?;
     let mut zip = ZipArchive::new(fs::File::open(archive).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -446,7 +458,7 @@ pub(crate) fn extract_zip_controlled(
             tokio::runtime::Handle::current().block_on(state.control.checkpoint())?;
         }
         let mut entry = zip.by_index(n).map_err(|e| e.to_string())?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
         let Some(relative) = name.strip_prefix(prefix) else {
             continue;
         };
@@ -861,15 +873,22 @@ async fn import_inner(
     key: Option<String>,
     optional: bool,
 ) -> Result<PackImportResult, String> {
-    inspect_zip(archive)?;
-    if !has_entry(archive, "launcher-backup.json")? {
-        inspect_zip_limits(
-            archive,
-            MAX_ARCHIVE_BYTES,
-            MAX_PACK_BYTES,
-            MAX_ARCHIVE_BYTES,
-        )?;
-    }
+    let source = archive.to_owned();
+    let inspect_state = state.clone();
+    let (personal, modrinth, curse) = tokio::task::spawn_blocking(move || {
+        instances::sync_checkpoint(&inspect_state)?;
+        inspect_zip_limits_controlled(&source, MAX_ZIP_BYTES, MAX_ZIP_BYTES, MAX_ZIP_BYTES, Some(&inspect_state))?;
+        let personal = has_entry(&source, "launcher-backup.json")?;
+        if !personal {
+            inspect_zip_limits_controlled(&source, MAX_ARCHIVE_BYTES, MAX_PACK_BYTES, MAX_ARCHIVE_BYTES, Some(&inspect_state))?;
+        }
+        instances::sync_checkpoint(&inspect_state)?;
+        Ok::<_, String>((
+            personal,
+            has_entry(&source, "modrinth.index.json")?,
+            has_entry(&source, "manifest.json")?,
+        ))
+    }).await.map_err(|error| error.to_string())??;
     let root = instances::instance_root(state)?;
     let token = uuid::Uuid::new_v4().to_string();
     let stage_name = safe_join(&root, &format!(".pack-staging-{token}"))?;
@@ -879,21 +898,22 @@ async fn import_inner(
     }
     let mut owned_stage = instances::StagingDirectory::create(stage_name)?;
     let stage = owned_stage.path();
-    let (index, downloaded, skipped, warnings) = if has_entry(archive, "modrinth.index.json")? {
+    let (index, downloaded, skipped, warnings) = if modrinth {
         mrpack_into(state, archive, stage, optional).await?
-    } else if has_entry(archive, "manifest.json")? {
+    } else if curse {
         curse_into(state, archive, stage, key, optional).await?
-    } else if has_entry(archive, "launcher-backup.json")? {
+    } else if personal {
         return import_personal_backup(app, state, archive, &mut owned_stage, &final_dir, name).await;
     } else {
         return Err("无法识别整合包。支持 .mrpack、CurseForge manifest.zip 和本启动器带清单的个人备份 ZIP；普通未知 ZIP 不会盲目覆盖游戏目录。".into());
     };
-    if instances::collect_files(stage)?
-        .iter()
-        .map(|f| f.size)
-        .sum::<u64>()
-        > MAX_PACK_BYTES
-    {
+    let inventory_state = state.clone();
+    let inventory_stage = stage.to_owned();
+    let expanded = tokio::task::spawn_blocking(move || {
+        let files = instances::collect_files_controlled(&inventory_stage, Some(&inventory_state))?;
+        Ok::<_, String>(files.iter().map(|f| f.size).sum::<u64>())
+    }).await.map_err(|error| error.to_string())??;
+    if expanded > MAX_PACK_BYTES {
         return Err("整合包下载与覆盖文件合计超过 8 GiB".into());
     }
     let (version_id, loader, loader_version) =
@@ -942,31 +962,24 @@ async fn import_personal_backup(
     name: Option<String>,
 ) -> Result<PackImportResult, String> {
     let stage = owned_stage.path();
-    let metadata: Value = zip_json(archive, "launcher-backup.json")?;
-    if metadata["formatVersion"] != 1 {
-        return Err("不支持此个人备份格式".into());
-    }
-    let old: Instance =
-        serde_json::from_value(metadata["instance"].clone()).map_err(|_| "个人备份缺少实例信息")?;
-    let files: Vec<FileRecord> = serde_json::from_value(metadata["files"].clone())
-        .map_err(|_| "个人备份缺少文件校验清单")?;
     let arc = state.clone();
     let path = archive.to_owned();
     let destination = stage.to_owned();
-    tokio::task::spawn_blocking(move || {
-        extract_zip_controlled(
-            &path,
-            &destination,
-            "",
-            &["launcher-backup.json"],
-            Some(&arc),
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    if instances::collect_files(stage)? != files {
-        return Err("个人备份内容校验失败，现有实例未改变".into());
-    }
+    let metadata: Value = tokio::task::spawn_blocking(move || {
+        let metadata: Value = zip_json(&path, "launcher-backup.json")?;
+        if metadata["formatVersion"] != 1 {
+            return Err("不支持此个人备份格式".into());
+        }
+        let files: Vec<FileRecord> = serde_json::from_value(metadata["files"].clone())
+            .map_err(|_| "个人备份缺少文件校验清单")?;
+        extract_zip_controlled(&path, &destination, "", &["launcher-backup.json"], Some(&arc))?;
+        if instances::collect_files_controlled(&destination, Some(&arc))? != files {
+            return Err("个人备份内容校验失败，现有实例未改变".into());
+        }
+        Ok::<_, String>(metadata)
+    }).await.map_err(|error| error.to_string())??;
+    let old: Instance =
+        serde_json::from_value(metadata["instance"].clone()).map_err(|_| "个人备份缺少实例信息")?;
     let old_value = serde_json::to_value(&old).map_err(|e| e.to_string())?;
     let deps=serde_json::from_value::<BTreeMap<String,String>>(metadata["dependencies"].clone()).ok().filter(|v|!v.is_empty())
         .or_else(|| {
@@ -1485,6 +1498,28 @@ mod tests {
             assert!(inspect_zip(&zip).is_err(), "{name}");
         }
         assert!(!root.parent().unwrap().join("escape.txt").exists());
+        cleanup(&root);
+    }
+    #[test]
+    fn reserved_windows_destination_declines_entire_pack_before_touching_staging() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let pack = root.join("pack.zip");
+        let stage = root.join("stage");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("existing.txt"), b"preserved").unwrap();
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let mut zip = ZipWriter::new(fs::File::create(&pack).unwrap());
+        for member in ["overrides/ordinary.txt", "overrides/AUX.txt"] {
+            zip.start_file(member, options).unwrap();
+            zip.write_all(b"inert fixture").unwrap();
+        }
+        zip.finish().unwrap();
+        assert!(extract_zip_layer(&pack, &stage, "overrides/", &[]).is_err());
+        let files = fs::read_dir(&stage).unwrap().map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(files, [std::ffi::OsString::from("existing.txt")]);
+        assert_eq!(fs::read(stage.join("existing.txt")).unwrap(), b"preserved");
         cleanup(&root);
     }
     #[test]

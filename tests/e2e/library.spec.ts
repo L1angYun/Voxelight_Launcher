@@ -19,7 +19,7 @@ test("library opens instance details and preserves launch and management flows",
   await expect(page.getByText("此实例暂无世界", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "日志", exact: true }).click();
   await page.getByRole("button", { name: "分析最近错误", exact: true }).click();
-  await expect(page.getByText("没有发现需要处理的启动错误。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "还没有日志", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "设置", exact: true }).click();
   await expect(page.getByLabel("实例名称", { exact: true })).toHaveValue("合成测试世界");
   await page.setViewportSize({ width: 1050, height: 720 });

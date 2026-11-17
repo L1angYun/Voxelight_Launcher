@@ -17,6 +17,8 @@ use std::{
 };
 use tauri::State;
 
+const MAX_SERVERS_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerEntry {
@@ -122,8 +124,8 @@ fn target<'a>(
 }
 
 fn read_servers(target: &ServerTarget<'_>) -> Result<ServerFile, String> {
-    let bytes = match fs::read(&target.path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(&target.path) {
+        Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(ServerFile {
                 root: HashMap::new(),
@@ -133,7 +135,15 @@ fn read_servers(target: &ServerTarget<'_>) -> Result<ServerFile, String> {
         }
         Err(error) => return Err(error.to_string()),
     };
-    if bytes.len() > 16 * 1024 * 1024 {
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_SERVERS_FILE_BYTES {
+        return Err("服务器列表文件过大".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SERVERS_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_SERVERS_FILE_BYTES {
         return Err("服务器列表文件过大".into());
     }
     let gzip = bytes.starts_with(&[31, 139]);
@@ -141,10 +151,10 @@ fn read_servers(target: &ServerTarget<'_>) -> Result<ServerFile, String> {
     let data = if gzip {
         let mut out = Vec::new();
         flate2::read::GzDecoder::new(&bytes[..])
-            .take(16 * 1024 * 1024 + 1)
+            .take(MAX_SERVERS_FILE_BYTES + 1)
             .read_to_end(&mut out)
             .map_err(|e| e.to_string())?;
-        if out.len() > 16 * 1024 * 1024 {
+        if out.len() as u64 > MAX_SERVERS_FILE_BYTES {
             return Err("服务器列表解压过大".into());
         }
         out

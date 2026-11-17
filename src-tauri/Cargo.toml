@@ -32,7 +32,7 @@ flate2 = "1"
 fastnbt = "2"
 md5 = "0.7"
 uuid = { version = "1", features = ["v4"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "=9.2.2", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 regex = "1"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

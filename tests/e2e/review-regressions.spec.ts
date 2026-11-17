@@ -20,6 +20,10 @@ test("resource and world writes keep instance and version-directory contexts dis
         return record(["C:\\SyntheticFixture\\world.zip"]);
       }
       if (name === "import_world") return record({ name: "ImportedFixture" });
+      if (name === "toggle_resource" && args?.fileName === "fixture.zip") return record({
+        name: "Synthetic pack", fileName: "fixture.zip.disabled", enabled: false, size: 1000,
+        path: "C:\\SyntheticFixture\\fixture.zip.disabled",
+      });
       const result = await original(name, args);
       if (name === "bootstrap") {
         const data = result as { installedVersions: Record<string, unknown>[] };

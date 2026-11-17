@@ -14,6 +14,7 @@
   "runtimeSummary": "Game version {{version}}, loader {{loader}}",
   "noVersions": "No installed versions",
   "noVersionsDescription": "Install a game version to manage its content, worlds, and logs here.",
+  "showMore": "Show {{count}} more ({{remaining}} remaining)",
   "search": "Search instances",
   "searchPlaceholder": "Search by name, version, or loader",
   "sort": "Sort",
@@ -202,6 +203,58 @@
       "credentialName": "Possible credential file",
       "unmappedJar": "Unmapped JAR",
       "unmapped": "No authorized download reference"
+    }
+  },
+  "createMetadata": {
+    "loadingGame": "Loading Minecraft versions…",
+    "failedGame": "Could not load Minecraft versions.",
+    "emptyGame": "No Minecraft versions are available.",
+    "failedLoader": "Could not load {{loader}} versions.",
+    "loadingPack": "Loading modpack versions…",
+    "failedPack": "Could not load this modpack’s versions.",
+    "emptyPack": "No versions are available for this modpack."
+  },
+  "diagnosis": {
+    "memory": {
+      "title": "Out of memory",
+      "reason": "The JVM could not allocate the memory it needed.",
+      "firstSuggestion": "Adjust this instance’s memory limit and close programs that use a lot of memory.",
+      "secondSuggestion": "Use 64-bit Java and stay within the available physical memory."
+    },
+    "java": {
+      "title": "Java version mismatch",
+      "reason": "This Java version cannot read the game or mod bytecode.",
+      "firstSuggestion": "Use automatic detection to select Java for this game version.",
+      "secondSuggestion": "Check which Java major version the modpack and mods require."
+    },
+    "mods": {
+      "title": "Mod dependencies or versions do not match",
+      "reason": "The loader reported missing dependencies or incompatible mods.",
+      "firstSuggestion": "Check the Minecraft and loader versions for your installed mods.",
+      "secondSuggestion": "Install required dependencies or disable recently added mods and try again."
+    },
+    "graphics": {
+      "title": "Graphics initialization failed",
+      "reason": "The game could not create the required graphics context.",
+      "firstSuggestion": "Update the graphics driver and check OpenGL support.",
+      "secondSuggestion": "On a laptop, try assigning Java to the dedicated GPU."
+    },
+    "directory": {
+      "title": "Game directory access failed",
+      "reason": "A permissions problem or another process blocked file access.",
+      "firstSuggestion": "Choose a game directory writable by the current user.",
+      "secondSuggestion": "Close other game processes using the same instance directory."
+    },
+    "unknown": {
+      "title": "Review the log for more details",
+      "reason": "No common failure matched. The log excerpt is available below.",
+      "firstSuggestion": "Look for Caused by and ERROR near the end of the log.",
+      "secondSuggestion": "Back up the instance, then disable recently added content and try again."
+    },
+    "empty": {
+      "title": "No logs yet",
+      "reason": "This game directory does not contain a log or crash report.",
+      "firstSuggestion": "Start the game once, then return here to analyze its log."
     }
   }
 }

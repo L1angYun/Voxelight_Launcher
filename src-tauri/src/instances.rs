@@ -21,6 +21,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const MAX_TREE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_TREE_FILES: usize = 100_000;
+const MAX_TREE_DEPTH: usize = 64;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct FileRecord {
@@ -251,7 +252,7 @@ pub(crate) fn collect_files(root: &Path) -> Result<Vec<FileRecord>, String> {
     collect_files_controlled(root, None)
 }
 
-fn collect_files_controlled(
+pub(crate) fn collect_files_controlled(
     root: &Path,
     control: Option<&LauncherState>,
 ) -> Result<Vec<FileRecord>, String> {
@@ -262,19 +263,28 @@ fn collect_files_controlled(
     fn visit(
         root: &Path,
         dir: &Path,
+        depth: usize,
         files: &mut Vec<FileRecord>,
         total: &mut u64,
+        walked: &mut usize,
         control: Option<&LauncherState>,
     ) -> Result<(), String> {
+        if depth > MAX_TREE_DEPTH {
+            return Err("实例目录层级超过 64，拒绝继续扫描".into());
+        }
         for entry in fs::read_dir(dir).map_err(|e| format!("无法读取实例目录：{e}"))? {
             if let Some(state) = control {
                 sync_checkpoint(state)?;
+            }
+            *walked += 1;
+            if *walked > MAX_TREE_FILES * 2 {
+                return Err("实例文件和目录超过 200000 项，请先整理后重试".into());
             }
             let path = entry.map_err(|e| e.to_string())?.path();
             checked_absolute(&path)?;
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             if metadata.is_dir() {
-                visit(root, &path, files, total, control)?;
+                visit(root, &path, depth + 1, files, total, walked, control)?;
             } else if metadata.is_file() {
                 if files.len() >= MAX_TREE_FILES {
                     return Err("实例文件超过 100000 个，请先整理后重试".into());
@@ -303,7 +313,7 @@ fn collect_files_controlled(
         Ok(())
     }
     let mut files = Vec::new();
-    visit(root, root, &mut files, &mut 0, control)?;
+    visit(root, root, 0, &mut files, &mut 0, &mut 0, control)?;
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     Ok(files)
 }
@@ -1498,6 +1508,21 @@ fn export_zip_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m08_file_inventory_declines_deep_empty_directories() {
+        let root = StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/instance-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let leaf = (0..65).fold(root.path().to_owned(), |path, _| path.join("d"));
+        std::fs::create_dir_all(leaf).unwrap();
+        let result = collect_files(root.path());
+        assert!(result.unwrap_err().contains("64"));
+    }
+
 
     #[test]
     fn clone_is_verified_and_existing_destination_is_preserved() {

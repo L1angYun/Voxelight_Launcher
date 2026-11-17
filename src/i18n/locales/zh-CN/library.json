@@ -14,6 +14,7 @@
   "runtimeSummary": "游戏版本 {{version}}，加载器 {{loader}}",
   "noVersions": "没有已安装的版本目录",
   "noVersionsDescription": "安装游戏版本后，可在这里管理该版本目录的内容、世界和日志。",
+  "showMore": "再显示 {{count}} 项（剩余 {{remaining}} 项）",
   "search": "搜索实例",
   "searchPlaceholder": "按名称、版本或加载器搜索",
   "sort": "排序",
@@ -202,6 +203,58 @@
       "credentialName": "可能含有凭据",
       "unmappedJar": "未映射的 JAR",
       "unmapped": "没有可用的下载引用"
+    }
+  },
+  "createMetadata": {
+    "loadingGame": "正在加载 Minecraft 版本…",
+    "failedGame": "无法加载 Minecraft 版本。",
+    "emptyGame": "暂无可用的 Minecraft 版本。",
+    "failedLoader": "无法加载 {{loader}} 版本。",
+    "loadingPack": "正在加载整合包版本…",
+    "failedPack": "无法加载此整合包的版本。",
+    "emptyPack": "此整合包暂无可用版本。"
+  },
+  "diagnosis": {
+    "memory": {
+      "title": "内存不足",
+      "reason": "JVM 无法分配需要的内存",
+      "firstSuggestion": "调整实例最大内存并关闭占用较高的程序",
+      "secondSuggestion": "使用 64 位 Java，避免分配超过物理内存的额度"
+    },
+    "java": {
+      "title": "Java 版本不匹配",
+      "reason": "当前 Java 无法读取游戏或模组的字节码",
+      "firstSuggestion": "使用自动检测选择适合此游戏版本的 Java",
+      "secondSuggestion": "检查整合包和模组要求的 Java 主版本"
+    },
+    "mods": {
+      "title": "模组依赖或版本冲突",
+      "reason": "加载器报告缺少依赖或不兼容模组",
+      "firstSuggestion": "在本地资源列表检查模组与 Minecraft、加载器的版本",
+      "secondSuggestion": "安装必需前置，或先禁用最近添加的模组再重试"
+    },
+    "graphics": {
+      "title": "图形初始化失败",
+      "reason": "游戏无法创建所需的图形上下文",
+      "firstSuggestion": "更新显卡驱动并检查 OpenGL 支持",
+      "secondSuggestion": "笔记本可尝试为 Java 选择独立显卡"
+    },
+    "directory": {
+      "title": "游戏目录访问失败",
+      "reason": "文件权限或占用导致访问失败",
+      "firstSuggestion": "选择当前用户可写的游戏目录",
+      "secondSuggestion": "关闭使用同一实例目录的其它游戏进程"
+    },
+    "unknown": {
+      "title": "需要进一步检查日志",
+      "reason": "暂未匹配到明确的常见故障，保留原始错误供排查",
+      "firstSuggestion": "查看日志尾部的 Caused by 和 ERROR",
+      "secondSuggestion": "可先备份实例，再禁用最近添加的资源重试"
+    },
+    "empty": {
+      "title": "还没有日志",
+      "reason": "此游戏环境尚未发现日志或崩溃报告",
+      "firstSuggestion": "启动一次游戏后，可在这里查看检查结果"
     }
   }
 }

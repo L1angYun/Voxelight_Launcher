@@ -10,6 +10,7 @@ import type { LauncherContextValue } from "../../app/controller/types";
 import { instanceTabRegistry } from "../../app/registry";
 import { LibraryPage } from "./LibraryPage";
 import { InstanceDetailPage } from "./InstanceDetailPage";
+import { InstanceLogs } from "./InstanceLogs";
 import { InstanceOverview } from "./InstanceOverview";
 import { InstanceContent } from "./InstanceContent";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
@@ -103,8 +104,8 @@ function fixture(): LauncherContextValue {
   };
 }
 
-async function render(node: React.ReactNode) {
-  const i18n = createLauncherI18n("zh-CN", "zh-CN");
+async function render(node: React.ReactNode, language = "zh-CN") {
+  const i18n = createLauncherI18n(language, language);
   await i18n.initPromise;
   await act(async () => root.render(createElement(I18nextProvider, { i18n }, node)));
 }
@@ -138,6 +139,56 @@ afterEach(() => {
 });
 
 describe("library and instance details", () => {
+  it("batches a large library without hiding search results or losing focus after drilling into a later card", async () => {
+    mockLauncher.data.instances = Array.from({ length: 500 }, (_, i) => ({
+      ...instance,
+      id: "bench-" + i,
+      name: i === 499 ? "稀有目标" : "合成世界 " + i,
+    }));
+    mockLauncher.data.installedVersions = Array.from({ length: 60 }, (_, i) => ({
+      ...mockLauncher.data.installedVersions[0],
+      id: "loaded-version-" + i,
+    }));
+    await render(createElement(LibraryPage));
+    const visible = () => Array.from(container.querySelectorAll<HTMLElement>("[data-instance-id]"));
+    const added = () => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("再显示"));
+    expect(visible()).toHaveLength(48);
+    expect(container.querySelector("[data-create-instance]")).not.toBeNull();
+    expect(added()?.textContent).toContain("452");
+    await act(async () => { added()?.click(); });
+    expect(visible()).toHaveLength(96);
+    const target = visible().at(-1)!;
+    const id = target.dataset.instanceId;
+    await act(async () => target.querySelector<HTMLButtonElement>(".vx-instance-card__select")!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".vx-detail-header button")!.click());
+    expect(visible()).toHaveLength(96);
+    expect(document.activeElement?.closest<HTMLElement>("[data-instance-id]")?.dataset.instanceId).toBe(id);
+
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='搜索实例']")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(input, "稀有");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(visible().map((node) => node.dataset.instanceId)).toEqual(["bench-499"]);
+    expect(added()).toBeUndefined();
+    await act(async () => {
+      setValue.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(visible()).toHaveLength(48);
+
+    const versionScope = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => (button.textContent?.trim() ?? "") === "版本目录")!;
+    await act(async () => versionScope.click());
+    expect(container.querySelectorAll("[data-version-directory]")).toHaveLength(48);
+    expect(added()?.textContent).toContain("12");
+    await act(async () => { added()?.click(); });
+    expect(container.querySelectorAll("[data-version-directory]")).toHaveLength(60);
+    expect(added()).toBeUndefined();
+  });
+
   it("does not give a background install the Library launch preparation controls", async () => {
     mockLauncher.busy = "instance.install";
     mockLauncher.progress = { taskId: "separate-install", operation: "install", stage: "assets", completed: 3, total: 10, bytesCompleted: 0, bytesTotal: 0, versionId: "1.21.1", message: "fixture" };
@@ -421,6 +472,82 @@ describe("library and instance details", () => {
   const packVersion = (id: string): ModpackVersion => ({ id, name: id, versionNumber: id, gameVersions: ["1.21.1"], loaders: ["fabric"], datePublished: "2026-01-01" });
   const packChoice = () => container.querySelector<HTMLButtonElement>('[role="combobox"][id$="-create-pack-version"]')!;
   const packInstall = () => container.querySelector<HTMLButtonElement>('.vx-dialog__footer button')!;
+
+  it("retries a failed version manifest in its own field without showing native diagnostics", async () => {
+    const manifest = mockLauncher.manifest!;
+    mockLauncher.manifest = null;
+    let attempts = 0;
+    commandMock.mockImplementation(async (name) => {
+      if (name !== "list_versions") return null;
+      if (++attempts === 1) throw new Error("fixture-native-diagnostic");
+      return manifest;
+    });
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }), "en-US");
+    expect(container.textContent).toContain("Could not load Minecraft versions.");
+    expect(container.textContent).not.toContain("fixture-native-diagnostic");
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === "Retry")!;
+    await act(async () => retry.click());
+    expect(attempts).toBe(2);
+    expect(container.querySelector('[role="combobox"][id$="-create-game-version"]')?.textContent).toContain("1.21.1");
+    expect(container.textContent).not.toContain("Could not load Minecraft versions.");
+  });
+
+  it("keeps loader errors local and retries without re-requesting Minecraft or an unrelated loader", async () => {
+    const manifest = vi.fn(() => mockLauncher.manifest);
+    let attempts = 0;
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_versions") return manifest();
+      if (name === "list_loader_versions" && ++attempts === 1) throw new Error("fixture-loader-diagnostic");
+      if (name === "list_loader_versions") return [{ id: "0.16.9", recommended: true, stable: true }];
+      return null;
+    });
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }), "en-US");
+    const loader = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Fabric")!;
+    await act(async () => loader.click());
+    const slot = container.querySelector(".vx-create-loader-slot")!;
+    expect(slot.textContent).toContain("Could not load Fabric versions.");
+    expect(container.textContent).not.toContain("fixture-loader-diagnostic");
+    const retry = [...slot.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === "Retry")!;
+    await act(async () => retry.click());
+    expect(container.querySelector('[role="combobox"][id$="-create-loader-version"]')?.textContent).toContain("0.16.9");
+    expect(manifest).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes an empty Modrinth release list from a failed request and retries just the pack", async () => {
+    const mystery = pack("mystery");
+    let attempts = 0;
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_modpack_versions") {
+        if (++attempts === 1) throw new Error("fixture-pack-diagnostic");
+        return [];
+      }
+      return mockLauncher.manifest;
+    });
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn(), project: mystery }), "en-US");
+    expect(container.textContent).toContain("Could not load this modpack’s versions.");
+    expect(container.textContent).not.toContain("fixture-pack-diagnostic");
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === "Retry")!;
+    await act(async () => retry.click());
+    expect(container.textContent).toContain("No versions are available for this modpack.");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(packInstall().disabled).toBe(true);
+    expect(commandMock.mock.calls.some(([name]) => name === "list_versions")).toBe(false);
+  });
+
+  it("localizes the diagnostic title and guidance but preserves the source log", async () => {
+    const excerpt = "[JVM] java.lang.OutOfMemoryError: sample log text";
+    commandMock.mockImplementation(async (name) => name === "diagnose_instance" ? {
+      kind: "memory", title: "内存不足", reason: "JVM 无法分配需要的内存", suggestions: ["调整实例最大内存并关闭占用较高的程序"],
+      excerpt, logPath: null,
+    } : null);
+    await render(createElement(InstanceLogs, { versionId: instance.versionId, instanceId: instance.id }), "en-US");
+    const analyze = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === "Analyze recent errors")!;
+    await act(async () => analyze.click());
+    expect(container.querySelector('h2')?.textContent).toBe("Out of memory");
+    expect(container.textContent).toContain("Use 64-bit Java");
+    expect(container.textContent).toContain(excerpt);
+    expect(container.textContent).not.toContain("内存不足");
+  });
 
   it("disables old pack choices while a different project loads and installs only its matching version", async () => {
     const a = pack("a"), b = pack("b");

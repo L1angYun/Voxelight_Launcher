@@ -27,6 +27,7 @@ export async function installLauncherFixture(
     worldMaterial?: WorldMaterial;
     stress?: boolean;
     launchDelay?: number;
+    manualLaunchCompletion?: boolean;
   } = {},
 ) {
   await page.addInitScript((options) => {
@@ -223,20 +224,37 @@ export async function installLauncherFixture(
     ] : [];
     const calls: { name: string; args?: Record<string, unknown> }[] = [];
     const callbacks = new Map<number, (value: unknown) => void>();
-    const listeners = new Map<string, number>();
+    const listeners = new Map<string, Map<number, number>>();
     const cancelledTasks = new Set<string>();
+    let finishFixtureLaunch = () => {};
+    const manualLaunchCompletion = options.manualLaunchCompletion
+      ? new Promise<void>(resolve => { finishFixtureLaunch = resolve; })
+      : null;
+    if (manualLaunchCompletion) {
+      Object.defineProperty(window, "__completeFixtureLaunch", { value: finishFixtureLaunch });
+    }
+    const runningGames = new Map<string, {
+      gameId: string; pid: number; versionId: string; instanceId: string | null;
+      gameDirectory: string; startedAt: string;
+    }>();
+    const exportPreviews = new Map<string, { instanceId: string; options: Record<string, boolean> }>();
+    let previewSequence = 0;
     const launchReservations = new Map<string, { versionId: string; instanceId?: string }>();
     const cancelLaunches = new Map<string, () => void>();
     let taskRevision = 0, nextLaunchId = 0;
     const taskSnapshot = () => ({ revision: taskRevision, tasks: structuredClone(downloadTasks) });
     const publishTasks = () => { ++taskRevision; emit("launcher://tasks", taskSnapshot()); };
-    const emit = (event: string, payload: unknown) => callbacks.get(listeners.get(event)!)?.({ event, id: 1, payload: structuredClone(payload) });
+    const emit = (event: string, payload: unknown) => {
+      for (const [id, callbackId] of listeners.get(event) ?? []) {
+        callbacks.get(callbackId)?.({ event, id, payload: structuredClone(payload) });
+      }
+    };
     const resourceContext = (versionId: string, instanceId?: string) => {
       const instance = instances.find(item => item.id === instanceId);
       const loader = versionId.startsWith("fabric-loader-") || instance?.loader === "fabric" ? "fabric" : null;
       return { gameVersion: versionId.startsWith("fabric-loader-") ? versionId.split("-").at(-1)! : versionId, loader };
     };
-    let nextCallback = 0;
+    let nextCallback = 0, nextListener = 0;
     const profile = (id: string) => {
       const account = accounts.find((item) => item.id === id)!;
       return {
@@ -281,8 +299,23 @@ export async function installLauncherFixture(
         invoke: async (name: string, args?: Record<string, unknown>) => {
           calls.push({ name, args });
           if (name === "plugin:event|listen") {
-            listeners.set(String(args?.event), Number(args?.handler));
-            return nextCallback;
+            const event = String(args?.event), handler = Number(args?.handler);
+            if (!callbacks.has(handler)) throw new Error("Unregistered fixture callback");
+            const id = ++nextListener;
+            const handlers = listeners.get(event) ?? new Map<number, number>();
+            handlers.set(id, handler);
+            listeners.set(event, handlers);
+            return id;
+          }
+          if (name === "plugin:event|unlisten") {
+            const event = String(args?.event);
+            const handlers = listeners.get(event);
+            const id = Number(args?.eventId);
+            const handler = handlers?.get(id);
+            if (handler !== undefined) callbacks.delete(handler);
+            handlers?.delete(id);
+            if (!handlers?.size) listeners.delete(event);
+            return null;
           }
           if (name === "choose_launcher_path") {
             const files: Record<string, string> = {
@@ -298,10 +331,28 @@ export async function installLauncherFixture(
             if (!path) throw new Error("Fixture received an unknown native path purpose");
             return [path];
           }
-          if (name === "plan_modrinth_export") return {
-            downloadReferences: ["mods/synthetic.jar"], bundledFiles: ["modrinth.index.json"],
-            excludedFiles: [{ path: "config/example.toml", reason: "notSelected" }], fingerprint: "synthetic-share-fingerprint",
-          };
+          if (name === "plan_modrinth_export") {
+            const instanceId = String(args?.instanceId);
+            if (!instances.some(instance => instance.id === instanceId)) throw new Error("Fixture instance does not exist");
+            const options = (args?.options ?? {}) as Record<string, boolean>;
+            const fingerprint = `synthetic-share-${++previewSequence}`;
+            exportPreviews.set(fingerprint, { instanceId, options: structuredClone(options) });
+            return {
+              downloadReferences: ["mods/synthetic.jar"],
+              bundledFiles: options.includeConfigs ? ["modrinth.index.json", "overrides/config/example.toml"] : ["modrinth.index.json"],
+              excludedFiles: options.includeConfigs ? [] : [{ path: "config/example.toml", reason: "notSelected" }],
+              fingerprint,
+            };
+          }
+          if (name === "export_modrinth_modpack") {
+            const plan = exportPreviews.get(String(args?.confirmedFingerprint));
+            const options = (args?.options ?? {}) as Record<string, boolean>;
+            const keys = new Set([...Object.keys(options), ...Object.keys(plan?.options ?? {})]);
+            if (!plan || plan.instanceId !== args?.instanceId || [...keys].some(key => options[key] !== plan.options[key])) {
+              throw { code: "instance.exportPreviewChanged", params: {}, detail: "instance.exportPreviewChanged" };
+            }
+            return { path: String(args?.outputPath), downloadFiles: 1, overrideFiles: plan.options.includeConfigs ? 1 : 0, warnings: [] };
+          }
           if (name === "bootstrap")
             return {
               config: { ...config },
@@ -336,9 +387,10 @@ export async function installLauncherFixture(
               : value;
           }
           if (name === "select_account") {
+            if (!accounts.some((account) => account.id === args?.accountId)) throw new Error("Fixture account does not exist");
             for (const account of accounts)
               account.isSelected = account.id === args?.accountId;
-            return null;
+            return structuredClone(accounts);
           }
           if (name === "save_appearance_config") {
             Object.assign(config, args?.patch);
@@ -355,7 +407,7 @@ export async function installLauncherFixture(
               versions: [],
             };
           if (name === "get_service_status")
-            return { curseforgeConfigured: false };
+            return { curseforgeConfigured: false, microsoftConfigured: false };
           if (name === "get_resource_context")
             return resourceContext(String(args?.versionId ?? ""), args?.instanceId as string | undefined);
           if (name === "list_loader_versions")
@@ -478,7 +530,12 @@ export async function installLauncherFixture(
               },
             ];
           if (name === "check_resource_updates") return [];
-          if (name === "get_crash_diagnosis") return null;
+          if (name === "diagnose_instance") return { kind: "empty", logPath: null, excerpt: "" };
+          if (name === "get_system_appearance") return {
+            accentColor: "#b4f17a", animationsEnabled: true, advancedEffectsEnabled: true, locale: options.language ?? "zh-CN",
+          };
+          if (name === "cancel_auth_login") return null;
+          if (name === "list_running_games") return structuredClone([...runningGames.values()]);
           if (name === "reserve_launch_task") {
             const id = `fixture-launch-${++nextLaunchId}`;
             const versionId = String(args?.versionId), instanceId = args?.instanceId as string | undefined;
@@ -504,7 +561,7 @@ export async function installLauncherFixture(
             emit("launcher://progress", { taskId, operation: "launch", versionId: reservation.versionId, stage: task.stage,
               completed: task.completed, total: task.total, bytesCompleted: 0, bytesTotal: 0, message: task.message });
             // Retain the original timer even after cancel to ensure its late resolve has no launch effect.
-            const work = new Promise<void>(resolve => setTimeout(resolve, options.launchDelay ?? 1600));
+            const work = manualLaunchCompletion ?? new Promise<void>(resolve => setTimeout(resolve, options.launchDelay ?? 1600));
             const cancellation = new Promise<never>((_resolve, reject) => {
               cancelLaunches.set(taskId, () => reject({ code: "download.cancelled", params: {} }));
             });
@@ -512,16 +569,33 @@ export async function installLauncherFixture(
             finally { cancelLaunches.delete(taskId); }
             task.status = "completed"; task.stage = "complete"; task.completed = task.total;
             publishTasks();
-            return { gameId: `fixture-game-${taskId}`, pid: 12345 };
+            const gameId = `fixture-game-${taskId}`;
+            const instance = instances.find(candidate => candidate.id === reservation.instanceId);
+            const gameDirectory = instance?.gameDirectory ?? (config.versionIsolation
+              ? `${config.gameDirectory}\\versions\\${reservation.versionId}` : config.gameDirectory);
+            const game = { gameId, pid: 12345, versionId: reservation.versionId,
+              instanceId: reservation.instanceId ?? null, gameDirectory, startedAt: new Date().toISOString() };
+            runningGames.set(gameId, game);
+            emit("launcher://games", [...runningGames.values()]);
+            return { gameId, pid: game.pid, versionId: game.versionId, gameDirectory };
           }
           if (name === "stop_game") {
-            if (!String(args?.gameId).startsWith("fixture-game-")) throw { code: "game.notRunning" };
+            const gameId = String(args?.gameId);
+            const game = runningGames.get(gameId);
+            if (!game) throw { code: "game.notRunning", params: {} };
+            runningGames.delete(gameId);
+            emit("launcher://games", [...runningGames.values()]);
+            // Match native: controller processes the successful Stop response before the exit notification.
+            setTimeout(() => emit("launcher://game-exit", { gameId, pid: game.pid, code: 0 }), 0);
             return { status: "stopped" };
           }
           if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
-          if (name.startsWith("list_") || name === "read_managed_server_logs")
-            return [];
-          return null;
+          // These concrete query fixtures deliberately represent empty records.
+          if ([
+            "list_local_resources", "list_modpack_versions", "list_resource_update_history",
+            "list_screenshots", "list_servers", "list_worlds", "read_managed_server_logs",
+          ].includes(name)) return [];
+          throw new Error(`Unhandled launcher fixture IPC: ${name}`);
         },
       },
     });

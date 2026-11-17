@@ -297,96 +297,130 @@ async fn confirm_force_stop(webview: &tauri::WebviewWindow, zh: bool) -> bool {
     wait.await.unwrap_or(false)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum DiagnosisKind {
+    Memory,
+    Java,
+    Mods,
+    Graphics,
+    Directory,
+    Unknown,
+    Empty,
+}
+
+impl DiagnosisKind {
+    // Retain the existing plain-text report format. The UI translates the stable kind itself.
+    fn report_text(self) -> (&'static str, &'static str, &'static [&'static str]) {
+        match self {
+            Self::Memory => (
+                "内存不足",
+                "JVM 无法分配需要的内存",
+                &[
+                    "调整实例最大内存并关闭占用较高的程序",
+                    "使用 64 位 Java，避免分配超过物理内存的额度",
+                ],
+            ),
+            Self::Java => (
+                "Java 版本不匹配",
+                "当前 Java 无法读取游戏或模组的字节码",
+                &[
+                    "使用自动检测选择适合此游戏版本的 Java",
+                    "检查整合包和模组要求的 Java 主版本",
+                ],
+            ),
+            Self::Mods => (
+                "模组依赖或版本冲突",
+                "加载器报告缺少依赖或不兼容模组",
+                &[
+                    "在本地资源列表检查模组与 Minecraft、加载器的版本",
+                    "安装必需前置，或先禁用最近添加的模组再重试",
+                ],
+            ),
+            Self::Graphics => (
+                "图形初始化失败",
+                "游戏无法创建所需的图形上下文",
+                &[
+                    "更新显卡驱动并检查 OpenGL 支持",
+                    "笔记本可尝试为 Java 选择独立显卡",
+                ],
+            ),
+            Self::Directory => (
+                "游戏目录访问失败",
+                "文件权限或占用导致访问失败",
+                &[
+                    "选择当前用户可写的游戏目录",
+                    "关闭使用同一实例目录的其它游戏进程",
+                ],
+            ),
+            Self::Unknown => (
+                "需要进一步检查日志",
+                "暂未匹配到明确的常见故障，保留原始错误供排查",
+                &[
+                    "查看日志尾部的 Caused by 和 ERROR",
+                    "可先备份实例，再禁用最近添加的资源重试",
+                ],
+            ),
+            Self::Empty => (
+                "还没有日志",
+                "此游戏环境尚未发现日志或崩溃报告",
+                &["启动一次游戏后，可在这里查看检查结果"],
+            ),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnosis {
-    pub title: String,
-    pub reason: String,
-    pub suggestions: Vec<String>,
+    kind: DiagnosisKind,
     pub log_path: Option<String>,
     pub excerpt: String,
 }
-fn classify(text: &str) -> (String, String, Vec<String>) {
+
+fn classify(text: &str) -> DiagnosisKind {
+    if text.is_empty() {
+        return DiagnosisKind::Empty;
+    }
     let lower = text.to_ascii_lowercase();
-    let (t, r, s) = if lower.contains("outofmemoryerror")
-        || lower.contains("could not reserve enough space")
-    {
-        (
-            "内存不足",
-            "JVM 无法分配需要的内存",
-            vec![
-                "调整实例最大内存并关闭占用较高的程序",
-                "使用 64 位 Java，避免分配超过物理内存的额度",
-            ],
-        )
+    if lower.contains("outofmemoryerror") || lower.contains("could not reserve enough space") {
+        DiagnosisKind::Memory
     } else if lower.contains("unsupportedclassversionerror") || lower.contains("class file version")
     {
-        (
-            "Java 版本不匹配",
-            "当前 Java 无法读取游戏或模组的字节码",
-            vec![
-                "使用自动检测选择适合此游戏版本的 Java",
-                "检查整合包和模组要求的 Java 主版本",
-            ],
-        )
+        DiagnosisKind::Java
     } else if lower.contains("modresolutionexception")
         || lower.contains("missing mandatory dependencies")
         || lower.contains("incompatible mods")
     {
-        (
-            "模组依赖或版本冲突",
-            "加载器报告缺少依赖或不兼容模组",
-            vec![
-                "在本地资源列表检查模组与 Minecraft、加载器的版本",
-                "安装必需前置，或先禁用最近添加的模组再重试",
-            ],
-        )
+        DiagnosisKind::Mods
     } else if lower.contains("glfw error") || lower.contains("opengl") && lower.contains("failed") {
-        (
-            "图形初始化失败",
-            "游戏无法创建所需的图形上下文",
-            vec![
-                "更新显卡驱动并检查 OpenGL 支持",
-                "笔记本可尝试为 Java 选择独立显卡",
-            ],
-        )
+        DiagnosisKind::Graphics
     } else if lower.contains("accessexception")
         || lower.contains("access is denied")
         || lower.contains("accessdeniedexception")
     {
-        (
-            "游戏目录访问失败",
-            "文件权限或占用导致访问失败",
-            vec![
-                "选择当前用户可写的游戏目录",
-                "关闭使用同一实例目录的其它游戏进程",
-            ],
-        )
+        DiagnosisKind::Directory
     } else {
-        (
-            "需要进一步检查日志",
-            "暂未匹配到明确的常见故障，保留原始错误供排查",
-            vec![
-                "查看日志尾部的 Caused by 和 ERROR",
-                "可先备份实例，再禁用最近添加的资源重试",
-            ],
-        )
-    };
-    (
-        t.into(),
-        r.into(),
-        s.into_iter().map(str::to_owned).collect(),
-    )
+        DiagnosisKind::Unknown
+    }
 }
 pub fn redact(text: &str) -> String {
-    let bearer = regex::Regex::new(r#"(?i)(authorization[\s"':=]+)(?:bearer\s+)?([^\s,;"']+)"#)
-        .expect("constant regex");
-    let text = bearer.replace_all(text, "${1}[已隐藏]");
-    let pattern=regex::Regex::new(r#"(?i)((?:access[_-]?token|refresh[_-]?token|authorization|client[_-]?secret|password|x-api-key)[\s"':=]+)([^\s,;"']+)"#).expect("constant regex");
-    let text = pattern.replace_all(&text, "${1}[已隐藏]");
-    let client_id = regex::Regex::new(r#"(?i)(--clientId[\s,'\"=]+|clientid=)([^\s,;\"'\]]+)"#)
-        .expect("constant regex");
-    client_id.replace_all(&text, "${1}[已隐藏]").into_owned()
+    use std::sync::LazyLock;
+    static BEARER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(authorization[\s"':=]+)(?:bearer\s+)?([^\s,;"']+)"#)
+            .expect("constant regex")
+    });
+    static SECRET: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)((?:access[_-]?token|refresh[_-]?token|authorization|client[_-]?secret|password|x-api-key)[\s"':=]+)([^\s,;"']+)"#)
+            .expect("constant regex")
+    });
+    static CLIENT_ID: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(--clientId[\s,'\"=]+|clientid=)([^\s,;\"'\]]+)"#)
+            .expect("constant regex")
+    });
+    let text = BEARER.replace_all(text, "${1}[已隐藏]");
+    let text = SECRET.replace_all(&text, "${1}[已隐藏]");
+    CLIENT_ID.replace_all(&text, "${1}[已隐藏]").into_owned()
 }
 #[tauri::command]
 pub fn diagnose_instance(
@@ -394,11 +428,11 @@ pub fn diagnose_instance(
     version_id: String,
     instance_id: Option<String>,
 ) -> AppResult<Diagnosis> {
-    diagnose_instance_inner(state, version_id, instance_id).map_err(expected)
+    diagnose_instance_inner(state.inner().as_ref(), version_id, instance_id).map_err(expected)
 }
 
 fn diagnose_instance_inner(
-    state: State<'_, Arc<LauncherState>>,
+    state: &LauncherState,
     version_id: String,
     instance_id: Option<String>,
 ) -> Result<Diagnosis, String> {
@@ -441,20 +475,9 @@ fn diagnose_instance_inner(
     } else {
         String::new()
     };
-    let (title, reason, suggestions) = if text.is_empty() {
-        (
-            "还没有日志".into(),
-            "此游戏环境尚未发现日志或崩溃报告".into(),
-            vec!["启动一次游戏后，可在这里查看检查结果".into()],
-        )
-    } else {
-        classify(&text)
-    };
     let excerpt = redact(&text);
     Ok(Diagnosis {
-        title,
-        reason,
-        suggestions,
+        kind: classify(&text),
         log_path: path.map(|p| p.to_string_lossy().into_owned()),
         excerpt,
     })
@@ -470,7 +493,7 @@ pub fn export_diagnostics(
 ) -> crate::errors::AppResult<String> {
     let output_path = grants.consume(PathUse::Diagnostics, &output_path, &window)?.to_string_lossy().into_owned();
     let diagnosis =
-        diagnose_instance_inner(state.clone(), version_id.clone(), instance_id.clone())?;
+        diagnose_instance_inner(state.inner().as_ref(), version_id.clone(), instance_id.clone())?;
     let destination = Path::new(&output_path);
     if !destination.is_absolute() || destination.extension().is_none_or(|e| e != "txt") {
         return Err("请选择绝对路径的 .txt 诊断报告文件".into());
@@ -478,6 +501,7 @@ pub fn export_diagnostics(
     if destination.exists() {
         return Err("报告文件已存在，请选择新文件名以保留原文件".into());
     }
+    let (title, reason, suggestions) = diagnosis.kind.report_text();
     let report = format!(
         concat!(
             "Voxelight Launcher ",
@@ -489,9 +513,9 @@ pub fn export_diagnostics(
         chrono::Utc::now().to_rfc3339(),
         version_id,
         instance_id,
-        diagnosis.title,
-        diagnosis.reason,
-        diagnosis.suggestions.join("\n"),
+        title,
+        reason,
+        suggestions.join("\n"),
         diagnosis.excerpt
     );
     write_diagnostics_file(destination, report.as_bytes())?;
@@ -650,6 +674,33 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_ipc_publishes_a_stable_kind_and_preserves_the_log_excerpt() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/diagnostic-tests").join(uuid::Uuid::new_v4().to_string());
+        let data = root.join("data");
+        let game = root.join("game");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(game.join("logs")).unwrap();
+        let sample = "Synthetic Java fixture: java.lang.OutOfMemoryError";
+        std::fs::write(game.join("logs/latest.log"), sample).unwrap();
+        let state = LauncherState::test_fixture(
+            data, crate::models::Persisted::default(), crate::storage::test_client(),
+        );
+        state.update(|profile| {
+            profile.config.game_directory = game.display().to_string();
+            profile.config.version_isolation = false;
+            Ok(())
+        }).unwrap();
+        let diagnosis = diagnose_instance_inner(&state, "1.21.1".into(), None).unwrap();
+        let payload = serde_json::to_value(diagnosis).unwrap();
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(payload["kind"], "memory");
+        assert_eq!(payload["excerpt"], sample);
+        assert!(payload.get("title").is_none(), "native diagnostics should not send locale-specific titles");
+    }
+
+    #[test]
     fn diagnostics_redact_client_id_arguments_and_assignments() {
         const ID: &str = "11111111-1111-1111-1111-111111111111";
         for input in [
@@ -667,11 +718,19 @@ mod tests {
 
     #[test]
     fn diagnostics_identify_jvm_and_mod_failures_and_redact_credentials() {
-        assert!(classify("java.lang.OutOfMemoryError: Java heap space")
-            .0
-            .contains("内存"));
-        assert!(classify("UnsupportedClassVersionError").0.contains("Java"));
-        assert!(classify("ModResolutionException").0.contains("模组"));
+        assert_eq!(
+            classify("java.lang.OutOfMemoryError: Java heap space"),
+            DiagnosisKind::Memory
+        );
+        assert_eq!(
+            classify("UnsupportedClassVersionError"),
+            DiagnosisKind::Java
+        );
+        assert_eq!(classify("ModResolutionException"), DiagnosisKind::Mods);
+        assert_eq!(classify("GLFW error"), DiagnosisKind::Graphics);
+        assert_eq!(classify("AccessDeniedException"), DiagnosisKind::Directory);
+        assert_eq!(classify("Unclassified fixture"), DiagnosisKind::Unknown);
+        assert_eq!(classify(""), DiagnosisKind::Empty);
         let value = redact("access_token=secret123 Authorization: Bearer123 password=private");
         assert!(
             !value.contains("secret123")

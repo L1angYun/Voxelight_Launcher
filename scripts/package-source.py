@@ -64,6 +64,7 @@ REQUIRED = ROOT_FILES | {f"src-tauri/{name}" for name in TAURI_FILES} | {
     "src-tauri/capabilities/default.json",
     "src-tauri/permissions/launcher.toml",
     "src-tauri/src/game_process.rs",
+    "src-tauri/src/process_output.rs",
     "src-tauri/src/path_grants.rs",
     "src/lib/nativePaths.ts",
     "src-tauri/icons/32x32.png",

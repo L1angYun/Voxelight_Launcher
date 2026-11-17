@@ -8,7 +8,6 @@ use sha1::{Digest, Sha1};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    io::Write,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -18,9 +17,12 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+pub(crate) use crate::process_output::next_process_line;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 
 pub const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const VERSION_PROFILE_BYTES: u64 = 8 * 1024 * 1024;
+const VERSION_PROFILE_TOO_LARGE: &str = "版本元数据大小超过 8 MiB";
 
 pub fn game_directory(
     config: &Config,
@@ -56,46 +58,11 @@ pub fn log(app: &AppHandle, state: &LauncherState, level: &str, message: impl In
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
     let directory = state.data_dir.join("logs");
-    if fs::create_dir_all(&directory).is_ok() {
-        if let Ok(mut file) = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(directory.join(format!(
-                "launcher-{}.log",
-                chrono::Utc::now().format("%Y-%m-%d")
-            )))
-        {
-            let _ = writeln!(
-                file,
-                "{} [{}] {}",
-                event.timestamp, event.level, event.message
-            );
-        }
-    }
+    let _ = crate::process_output::append_log(
+        &directory,
+        &format!("{} [{}] {}\n", event.timestamp, event.level, event.message),
+    );
     let _ = app.emit("launcher://log", event);
-}
-
-pub(crate) async fn next_process_line<R>(reader: &mut R) -> Result<Option<String>, String>
-where
-    R: tokio::io::AsyncBufRead + Unpin,
-{
-    let mut bytes = Vec::new();
-    if reader
-        .read_until(b'\n', &mut bytes)
-        .await
-        .map_err(|e| e.to_string())?
-        == 0
-    {
-        return Ok(None);
-    }
-    let mut line = String::from_utf8_lossy(&bytes).into_owned();
-    if line.ends_with('\n') {
-        line.pop();
-        if line.ends_with('\r') {
-            line.pop();
-        }
-    }
-    Ok(Some(line))
 }
 
 pub fn progress(
@@ -632,9 +599,7 @@ pub(crate) fn resolve_local_metadata(root: &Path, id: &str) -> Result<Value, Str
             return Err("版本继承循环或超过 16 层".into());
         }
         let path = safe_join(root, &format!("versions/{current}/{current}.json"))?;
-        let metadata = parse_json(
-            &fs::read(&path).map_err(|_| format!("缺少继承版本 {current}，请先安装原版"))?,
-        )?;
+        let metadata = parse_json(&read_local_profile(&path, &current)?)?;
         if metadata["id"].as_str() != Some(current.as_str()) {
             return Err(format!("版本目录与元数据 ID 不匹配：{current}"));
         }
@@ -653,6 +618,29 @@ pub(crate) fn resolve_local_metadata(root: &Path, id: &str) -> Result<Value, Str
         }
     }
     merge_chain(chain)
+}
+
+fn read_local_profile(path: &Path, id: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = fs::File::open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("缺少继承版本 {id}，请先安装原版")
+        } else {
+            format!("读取版本元数据失败：{error}")
+        }
+    })?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > VERSION_PROFILE_BYTES {
+        return Err(VERSION_PROFILE_TOO_LARGE.into());
+    }
+    let mut bytes = Vec::new();
+    file.take(VERSION_PROFILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > VERSION_PROFILE_BYTES {
+        return Err(VERSION_PROFILE_TOO_LARGE.into());
+    }
+    Ok(bytes)
 }
 
 pub(crate) async fn resolve_metadata(
@@ -1512,11 +1500,23 @@ async fn official_metadata_at_paths(
 }
 
 async fn read_version_profile(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    match tokio::fs::read(path).await {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("读取版本元数据失败：{error}")),
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取版本元数据失败：{error}")),
+    };
+    let metadata = file.metadata().await.map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > VERSION_PROFILE_BYTES {
+        return Err(VERSION_PROFILE_TOO_LARGE.into());
     }
+    let mut bytes = Vec::new();
+    file.take(VERSION_PROFILE_BYTES + 1)
+        .read_to_end(&mut bytes).await
+        .map_err(|error| format!("读取版本元数据失败：{error}"))?;
+    if bytes.len() as u64 > VERSION_PROFILE_BYTES {
+        return Err(VERSION_PROFILE_TOO_LARGE.into());
+    }
+    Ok(Some(bytes))
 }
 
 fn previously_verified_profile(manifests: &[Value], id: &str, previous: &[u8]) -> bool {
@@ -2272,10 +2272,11 @@ pub async fn install_java(
 }
 
 fn extract_natives(metadata: &Value, root: &Path, natives: &Path) -> Result<(), String> {
+    let native_libraries = metadata["libraries"].as_array().ok_or("依赖列表无效")?;
     fs::create_dir_all(natives).map_err(|e| e.to_string())?;
     let libraries = safe_join(root, "libraries")?;
     let mut expanded = 0u64;
-    for library in metadata["libraries"].as_array().ok_or("依赖列表无效")? {
+    for library in native_libraries {
         if !rules_allow(library.get("rules")) {
             continue;
         }
@@ -2287,7 +2288,7 @@ fn extract_natives(metadata: &Value, root: &Path, natives: &Path) -> Result<(), 
             zip::ZipArchive::new(input).map_err(|e| format!("原生依赖 ZIP 无效：{e}"))?;
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-            let name = entry.name().to_string();
+            let name = entry.name().map_err(|e| e.to_string())?.into_owned();
             if entry.is_dir() || name.starts_with("META-INF/") {
                 continue;
             }
@@ -2652,10 +2653,8 @@ async fn launch_prepared(
         log(&app, &state, "warn", format!("此游戏版本建议 Java {recommended}，正在使用 Java {}；若旧版依赖报错，请改用匹配的运行时", java.major));
     }
     fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
-    let natives = safe_join(
-        &root,
-        &format!("versions/{id}/natives/run-{}", uuid::Uuid::new_v4()),
-    )?;
+    let mut launch_scratch = crate::process_output::LaunchScratch::create(&game_dir)?;
+    let natives = launch_scratch.natives()?;
     extract_natives(&metadata, &root, &natives)?;
     let game_assets = materialize_legacy_assets(&metadata, &root, &game_dir)?;
     let classpath = build_classpath(&metadata, &root, &id)?;
@@ -2776,7 +2775,7 @@ async fn launch_prepared(
     {
         arguments.push(format!(
             "-Djava.io.tmpdir={}",
-            crate::storage::runtime_temp_directory(&game_dir)?.display()
+            launch_scratch.java_temp()?.display()
         ));
     }
     if let Some(values) = metadata["arguments"].get("jvm") {
@@ -2841,16 +2840,12 @@ async fn launch_prepared(
     let mut command = tokio::process::Command::new(&java.path);
     if java.major >= 9 {
         // Java's response file avoids Windows' 32 KiB process command-line limit.
-        let argument_file = safe_join(
-            &root,
-            &format!("versions/{id}/.launcher-{}.args", uuid::Uuid::new_v4()),
-        )?;
         let content = arguments[..jvm_argument_count]
             .iter()
             .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\"")))
             .collect::<Vec<_>>()
             .join("\n");
-        fs::write(&argument_file, content).map_err(|e| format!("写入 Java 参数文件失败：{e}"))?;
+        let argument_file = launch_scratch.write_args(&content)?;
         command.arg(format!("@{}", argument_file.display()));
         command.args(&arguments[jvm_argument_count..]);
     } else {
@@ -2866,7 +2861,13 @@ async fn launch_prepared(
     let mut child = state.control.start_game(&task_id, || {
         command.spawn().map_err(|e| format!("启动 Java 失败：{e}"))
     }).await?;
-    let pid = child.id().ok_or("Java 进程未提供 PID")?;
+    launch_scratch.started();
+    let Some(pid) = child.id() else {
+        if child.wait().await.is_ok() {
+            launch_scratch.finished();
+        }
+        return Err("Java 进程未提供 PID".into());
+    };
     log(
         &app,
         &state,
@@ -2932,6 +2933,11 @@ async fn launch_prepared(
     let id_for_exit = game_id.clone();
     tauri::async_runtime::spawn(async move {
         let status = process.wait().await;
+        if status.is_ok() {
+            launch_scratch.finished();
+        }
+        // A failed/dropped wait retains the scratch files: Java may still be live.
+        drop(launch_scratch);
         // The actor owns the child until exit, including when force was approved.
         // Remove only this identity; the PID may now be used for another game.
         match status {
@@ -3132,6 +3138,58 @@ mod tests {
             assert!(!installed);
         });
     }
+
+    #[test]
+    fn m07_child_reader_drops_an_oversized_record_without_losing_the_next_line() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut source = Vec::from([b'x'; 64 * 1024 + 19]);
+            source.extend_from_slice(b"\r\nfollowing valid line\r\n");
+            let mut reader = tokio::io::BufReader::with_capacity(13, source.as_slice());
+            let first = next_process_line(&mut reader).await.unwrap().unwrap();
+            assert!(first.len() < 256 && !first.contains("xxxxxxxx"));
+            assert_eq!(next_process_line(&mut reader).await.unwrap().as_deref(), Some("following valid line"));
+            assert_eq!(next_process_line(&mut reader).await.unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn m07_unusable_native_metadata_does_not_create_an_extraction_directory() {
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let root = fixture.path();
+        let natives = root.join("owned-new-run");
+        let failure = extract_natives(&serde_json::json!({}), root, &natives);
+        let scratch_exists = natives.exists();
+        assert!(failure.is_err());
+        assert!(!scratch_exists, "aborted native preparation left an extraction directory");
+    }
+
+    #[test]
+    fn m08_scan_rejects_oversized_version_profile_before_parsing_it() {
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let root = fixture.path();
+        let profile = root.join("versions/test-release");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("test-release.jar"), []).unwrap();
+        let json = profile.join("test-release.json");
+        let mut bytes = br#"{"id":"test-release","mainClass":"net.minecraft.client.main.Main"}"#.to_vec();
+        bytes.resize(8 * 1024 * 1024 + 1, b' ');
+        std::fs::write(&json, &bytes).unwrap();
+        let versions = scan_versions(&Config { game_directory: root.to_string_lossy().into_owned(), ..Config::default() });
+        assert_eq!(versions.len(), 1);
+        assert!(!versions[0].launchable);
+        assert!(versions[0].reason.as_deref().unwrap().contains("8 MiB"));
+    }
+
 
     struct TestServer {
         address: String,

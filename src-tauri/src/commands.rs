@@ -16,11 +16,15 @@ use tauri_plugin_opener::OpenerExt;
 type Shared<'a> = State<'a, Arc<LauncherState>>;
 
 #[tauri::command]
-pub fn bootstrap(state: Shared<'_>) -> Result<Value, String> {
+pub async fn bootstrap(state: Shared<'_>) -> Result<Value, String> {
     let data = state.snapshot()?;
+    let scan_config = data.config.clone();
+    let installed_versions = tokio::task::spawn_blocking(move || minecraft::scan_versions(&scan_config))
+        .await
+        .map_err(|error| format!("扫描本地版本失败：{error}"))?;
     Ok(json!({
         "config": data.config, "accounts": data.accounts, "instances": data.instances,
-        "installedVersions": minecraft::scan_versions(&data.config),
+        "installedVersions": installed_versions,
         "capabilities": bootstrap_capabilities(builtin_client_id()),
         "storage":state.storage_status(),
     }))
@@ -249,8 +253,11 @@ pub async fn list_versions(state: Shared<'_>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn scan_versions(state: Shared<'_>) -> Result<Vec<InstalledVersion>, String> {
-    Ok(minecraft::scan_versions(&state.snapshot()?.config))
+pub async fn scan_versions(state: Shared<'_>) -> Result<Vec<InstalledVersion>, String> {
+    let config = state.snapshot()?.config;
+    tokio::task::spawn_blocking(move || minecraft::scan_versions(&config))
+        .await
+        .map_err(|error| format!("扫描本地版本失败：{error}"))
 }
 
 #[tauri::command]

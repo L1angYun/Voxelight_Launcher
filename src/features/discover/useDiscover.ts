@@ -22,7 +22,8 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
   const [details, setDetails] = useState<ResourceProjectDetails>();
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState("");
-  const [modpackProject, setModpackProject] = useState<ResourceProject>();
+  const [modpack, setModpack] = useState<{ project: ResourceProject; source: ResourceSource }>();
+  const closeModpack = useCallback(() => setModpack(undefined), []);
   const [targetFlow, setTargetFlow] = useState<ResourceTargetFlow>();
   const [resolvedContext, setResolvedContext] = useState<{ key: string; value?: ResourceContext }>();
   const searchGeneration = useRef(0);
@@ -157,7 +158,7 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
 
   async function installProject(project: ResourceProject) {
     if (!canUseProject(project) || activeInstall.current) return;
-    if (resourceType === "modpack") { setModpackProject(project); return; }
+    if (resourceType === "modpack") { setModpack({ project, source }); return; }
     const flow: ResourceTargetFlow = { id: ++targetGeneration.current, open: true, status: "resolving", source, resourceType, project };
     if (source === "curseforge") {
       if (!selectedVersionId) { setTargetFlow({ ...flow, status: "curseforge", error: normalizeError({ code: "resource.versionMissing" }) }); return; }
@@ -213,12 +214,12 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
   const installed = useCallback(async (versionId: string, instanceId?: string) => {
     await reload();
     if (instanceId) selectInstance(instanceId); else selectVersion(versionId);
-    setModpackProject(undefined); reportNotice("instanceInstalled");
-  }, [reload, selectInstance, selectVersion]);
+    closeModpack(); reportNotice("instanceInstalled");
+  }, [closeModpack, reload, selectInstance, selectVersion]);
 
   return { source, setSource, resourceType, setResourceType, query, setQuery, search, setSearch,
     resources, loading, stale, resultKey: result.key, error, notice, feedback, clearFeedback, context,
-    selectedProject, details, detailsLoading, detailsError, modpackProject, setModpackProject,
+    selectedProject, details, detailsLoading, detailsError, modpack, closeModpack,
     targetFlow, closeTarget, installInto, createAndInstall,
     loadProject, closeProject, installProject, installed, clearNotice };
 }

@@ -33,6 +33,7 @@ import type { Instance, InstalledVersion } from "../../lib/launcher";
 import "./library-grid.css";
 
 type DetailKind = "instance" | "version-directory";
+const LIBRARY_BATCH = 48;
 
 export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
   const { t } = useTranslation();
@@ -64,6 +65,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("recent");
   const [view, setView] = useState<"grid" | "list">("grid");
+  const [visibleLimit, setVisibleLimit] = useState(LIBRARY_BATCH);
   const [selectedId, setSelectedId] = useState<string>();
   const [selectedVersionDirectory, setSelectedVersionDirectory] =
     useState<string>();
@@ -101,6 +103,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
       setSelectedId(undefined);
       setSelectedVersionDirectory(undefined);
       if (actualDetailKey) return;
+      setVisibleLimit(LIBRARY_BATCH);
     }
 
     const previous = previousDetail.current;
@@ -171,6 +174,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
           a.id.localeCompare(b.id, undefined, { numeric: true }),
         );
   }, [data.installedVersions, query, sort]);
+  const remainingCount = Math.max(0, (scope === "versions" ? versions.length : instances.length) - visibleLimit);
 
   async function launchInstance(instance: Instance) {
     selectInstance(instance.id);
@@ -213,7 +217,8 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
       <PageHeader title={t("library:title")}
         description={scope === "versions" ? t("library:subtitleVersions", { count: scopeCount }) : t("library:subtitle", { count: scopeCount })}
         actions={<Segmented semantic="toggle" className="vx-library-scope" label={t("library:scopeLabel")} value={scope}
-          onChange={setScope} options={[{value:"instances",label:t("library:scope.instances")},{value:"versions",label:t("library:scope.versions")}]} />} />
+          onChange={(value) => { setScope(value); setVisibleLimit(LIBRARY_BATCH); }}
+          options={[{value:"instances",label:t("library:scope.instances")},{value:"versions",label:t("library:scope.versions")}]} />} />
       <div className="vx-library-commandbar">
         <label className="vx-search">
           <Search size={16} aria-hidden="true" />
@@ -226,7 +231,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
             value={query}
             onFocus={() => setSearching(true)}
             onBlur={() => setSearching(false)}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => { setQuery(event.target.value); setVisibleLimit(LIBRARY_BATCH); }}
             placeholder={
               scope === "versions"
                 ? t("library:searchVersionsPlaceholder")
@@ -239,7 +244,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
             className="vx-library-sort-select"
             aria-label={t("library:sort")}
             value={sort}
-            onChange={setSort}
+            onChange={(value) => { setSort(value); setVisibleLimit(LIBRARY_BATCH); }}
             options={[
               { value: "recent", label: t("library:sortRecent") },
               { value: "name", label: t("library:sortName") },
@@ -273,7 +278,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
       {scope === "versions" ? (
         versions.length ? (
           <div className={`vx-instance-sheet vx-instance-sheet--${view}`}>
-            {versions.map((version) => (
+            {versions.slice(0, visibleLimit).map((version) => (
               <VersionDirectoryCard
                 key={version.id}
                 version={version}
@@ -298,7 +303,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
             }
             action={
               query ? (
-                <Button variant="ghost" onClick={() => setQuery("")}>
+                <Button variant="ghost" onClick={() => { setQuery(""); setVisibleLimit(LIBRARY_BATCH); }}>
                   {t("library:clearSearch")}
                 </Button>
               ) : undefined
@@ -311,7 +316,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
         </div>
       ) : instances.length ? (
         <div className={`vx-instance-sheet vx-instance-sheet--${view}`}>
-          {instances.map((instance) => (
+          {instances.slice(0, visibleLimit).map((instance) => (
             <InstanceCard
               key={instance.id}
               instance={instance}
@@ -333,13 +338,18 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
           title={t("library:noSearchResults")}
           description={t("library:noSearchDescription")}
           action={
-            <Button variant="ghost" onClick={() => setQuery("")}>
+            <Button variant="ghost" onClick={() => { setQuery(""); setVisibleLimit(LIBRARY_BATCH); }}>
               {t("library:clearSearch")}
             </Button>
           }
         />
       )}
       </SectionPanel>
+      {remainingCount > 0 && (
+        <Button variant="secondary" size="md" onClick={() => setVisibleLimit(limit => limit + LIBRARY_BATCH)}>
+          {t("library:showMore", { count: Math.min(LIBRARY_BATCH, remainingCount), remaining: remainingCount })}
+        </Button>
+      )}
       <CreateInstanceDialog
         open={createOpen}
         onOpenChange={setCreateOpen}

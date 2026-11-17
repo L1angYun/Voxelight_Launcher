@@ -840,72 +840,72 @@
     },
     {
       "name": "@vitest/expect",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:@vitest/expect@4.1.11",
+      "source": "npm:@vitest/expect@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest--expect@4.1.11/LICENSE"
+        "licenses/npm/vitest--expect@4.1.12/LICENSE"
       ]
     },
     {
       "name": "@vitest/mocker",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:@vitest/mocker@4.1.11",
+      "source": "npm:@vitest/mocker@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest--mocker@4.1.11/LICENSE"
+        "licenses/npm/vitest--mocker@4.1.12/LICENSE"
       ]
     },
     {
       "name": "@vitest/pretty-format",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:@vitest/pretty-format@4.1.11",
+      "source": "npm:@vitest/pretty-format@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest--pretty-format@4.1.11/LICENSE"
+        "licenses/npm/vitest--pretty-format@4.1.12/LICENSE"
       ]
     },
     {
       "name": "@vitest/runner",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:@vitest/runner@4.1.11",
+      "source": "npm:@vitest/runner@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest--runner@4.1.11/LICENSE"
+        "licenses/npm/vitest--runner@4.1.12/LICENSE"
       ]
     },
     {
       "name": "@vitest/snapshot",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:@vitest/snapshot@4.1.11",
+      "source": "npm:@vitest/snapshot@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest--snapshot@4.1.11/LICENSE"
+        "licenses/npm/vitest--snapshot@4.1.12/LICENSE"
       ]
     },
     {
       "name": "@vitest/spy",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:@vitest/spy@4.1.11",
+      "source": "npm:@vitest/spy@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest--spy@4.1.11/LICENSE"
+        "licenses/npm/vitest--spy@4.1.12/LICENSE"
       ]
     },
     {
       "name": "@vitest/utils",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:@vitest/utils@4.1.11",
+      "source": "npm:@vitest/utils@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest--utils@4.1.11/LICENSE"
+        "licenses/npm/vitest--utils@4.1.12/LICENSE"
       ]
     },
     {
@@ -971,17 +971,6 @@
       "notices": [
         "licenses/cargo/anyhow@1.0.104/LICENSE-APACHE",
         "licenses/cargo/anyhow@1.0.104/LICENSE-MIT"
-      ]
-    },
-    {
-      "name": "arbitrary",
-      "version": "1.5.0",
-      "license": "MIT OR Apache-2.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "noticeType": "package-notice",
-      "notices": [
-        "licenses/cargo/arbitrary@1.5.0/LICENSE-APACHE",
-        "licenses/cargo/arbitrary@1.5.0/LICENSE-MIT"
       ]
     },
     {
@@ -1829,17 +1818,6 @@
       "notices": [
         "licenses/cargo/deranged@0.5.9/LICENSE-Apache",
         "licenses/cargo/deranged@0.5.9/LICENSE-MIT"
-      ]
-    },
-    {
-      "name": "derive_arbitrary",
-      "version": "1.5.0",
-      "license": "MIT OR Apache-2.0",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "noticeType": "package-notice",
-      "notices": [
-        "licenses/cargo/derive_arbitrary@1.5.0/LICENSE-APACHE",
-        "licenses/cargo/derive_arbitrary@1.5.0/LICENSE-MIT"
       ]
     },
     {
@@ -3856,6 +3834,16 @@
       "noticeType": "package-notice",
       "notices": [
         "licenses/cargo/new_debug_unreachable@1.0.6/LICENSE-MIT"
+      ]
+    },
+    {
+      "name": "nix",
+      "version": "0.31.3",
+      "license": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "noticeType": "package-notice",
+      "notices": [
+        "licenses/cargo/nix@0.31.3/LICENSE"
       ]
     },
     {
@@ -6232,6 +6220,17 @@
       ]
     },
     {
+      "name": "typed-path",
+      "version": "0.13.0",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "noticeType": "package-notice",
+      "notices": [
+        "licenses/cargo/typed-path@0.13.0/LICENSE-APACHE",
+        "licenses/cargo/typed-path@0.13.0/LICENSE-MIT"
+      ]
+    },
+    {
       "name": "typeid",
       "version": "1.0.3",
       "license": "MIT OR Apache-2.0",
@@ -6415,12 +6414,12 @@
     },
     {
       "name": "vitest",
-      "version": "4.1.11",
+      "version": "4.1.12",
       "license": "MIT",
-      "source": "npm:vitest@4.1.11",
+      "source": "npm:vitest@4.1.12",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/npm/vitest@4.1.11/LICENSE.md"
+        "licenses/npm/vitest@4.1.12/LICENSE.md"
       ]
     },
     {
@@ -7464,12 +7463,12 @@
     },
     {
       "name": "zip",
-      "version": "2.6.1",
+      "version": "9.2.2",
       "license": "MIT",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "noticeType": "package-notice",
       "notices": [
-        "licenses/cargo/zip@2.6.1/LICENSE"
+        "licenses/cargo/zip@9.2.2/LICENSE"
       ]
     },
     {
