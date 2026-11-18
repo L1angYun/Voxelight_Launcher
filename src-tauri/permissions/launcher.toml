@@ -113,6 +113,7 @@ commands.allow = [
   "create_instance_for_resource",
   "install_resource",
   "list_local_resources",
+  "read_local_mod_icon",
   "toggle_resource",
   "check_resource_updates",
   "update_resource",

@@ -148,6 +148,10 @@ fn png_data(path: &Path, limit: u64) -> Result<String, String> {
         return Err("PNG 图片超出大小限制".into());
     }
     let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    png_preview_data(&bytes, 16384)
+}
+
+pub(crate) fn png_preview_data(bytes: &[u8], max_dimension: u32) -> Result<String, String> {
     if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
         return Err("图片不是有效 PNG".into());
     }
@@ -155,8 +159,8 @@ fn png_data(path: &Path, limit: u64) -> Result<String, String> {
     let height = u32::from_be_bytes(bytes[20..24].try_into().map_err(|_| "PNG 高度无效")?);
     if width == 0
         || height == 0
-        || width > 16384
-        || height > 16384
+        || width > max_dimension
+        || height > max_dimension
         || u64::from(width) * u64::from(height) > 64 * 1024 * 1024
     {
         return Err("PNG 像素尺寸超出预览限制".into());

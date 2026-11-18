@@ -13,6 +13,13 @@ interface InstallRequest {
   cancellation?: Promise<void>;
 }
 
+function filePin(flow: ResourceTargetFlow) {
+  if (flow.pinnedVersionId === undefined) return {};
+  return flow.source === "modrinth"
+    ? { resourceVersionId: flow.pinnedVersionId }
+    : { fileId: Number(flow.pinnedVersionId) };
+}
+
 interface DiscoverFeedback { error: LauncherError; kind: "info" | "error"; retry?: () => void }
 export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFeedback?: (feedback: DiscoverFeedback) => void } = {}) {
   const { selectedVersionId, selectedInstance, run, reload, selectInstance, selectVersion } = useLauncher();
@@ -125,7 +132,7 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
   }, [canUseProject, contextKey, resourceType, selectedInstance?.id, selectedVersionId, source]);
 
   async function resolveTargets(flow: ResourceTargetFlow, trySelected: boolean, key = contextKey) {
-    const plan = await command<ResourceTargetPlan>("resolve_resource_targets", { source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType });
+    const plan = await command<ResourceTargetPlan>("resolve_resource_targets", { ...{ source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType }, ...filePin(flow) });
     if (targetGeneration.current !== flow.id || latestContext.current !== key) return;
     const next = { ...flow, plan, status: "choose" as const, open: true, error: undefined };
     const selected = plan.targets.find(row => row.compatible && row.versionId === selectedVersionId && (row.instanceId ?? undefined) === selectedInstance?.id);
@@ -175,14 +182,15 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
 
   async function executeInstall(flow: ResourceTargetFlow, row: TargetRow) {
     if (activeInstall.current) return;
-    const request = reserveInstall(flow, { mode: "existing", versionId: row.versionId, instanceId: row.instanceId ?? undefined });
+    const pin = filePin(flow);
+    const request = reserveInstall(flow, { mode: "existing", versionId: row.versionId, instanceId: row.instanceId ?? undefined, ...pin });
     const flowContext = latestContext.current;
     setTargetFlow(current => current?.id === flow.id ? { ...flow, taskId: undefined, open: current.open && current.status !== "resolving", status: "installing" } : current);
     await run("resource.install", async () => {
       try {
         const taskId = await reservedId(request);
         await command(flow.source === "modrinth" ? "install_resource" : "install_curseforge_resource", {
-          projectId: flow.project.project_id, versionId: row.versionId, instanceId: row.instanceId ?? undefined, resourceType: flow.resourceType, taskId,
+          projectId: flow.project.project_id, versionId: row.versionId, instanceId: row.instanceId ?? undefined, resourceType: flow.resourceType, taskId, ...pin,
         });
         if (row.instanceId) selectInstance(row.instanceId); else selectVersion(row.versionId);
         reportNotice("resourceInstalled");
@@ -191,7 +199,7 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
         const error = normalizeError(cause);
         releaseUnclaimed(request, error);
         if (targetErrors.has(error.code) && latestContext.current === flowContext && targetGeneration.current === flow.id) {
-          if (flow.source === "curseforge") setTargetFlow({ ...flow, open: true, status: "curseforge", error });
+          if (flow.source === "curseforge" && flow.pinnedVersionId === undefined) setTargetFlow({ ...flow, open: true, status: "curseforge", error });
           else {
             const next = { ...flow, id: ++targetGeneration.current, status: "resolving" as const };
             try { await resolveTargets(next, false); }
@@ -205,11 +213,13 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
     });
   }
 
-  async function installProject(project: ResourceProject) {
+  async function installProject(project: ResourceProject, pinnedVersionId?: string) {
     if (!canUseProject(project) || activeInstall.current) return;
     if (resourceType === "modpack") { setModpack({ project, source }); return; }
-    const flow: ResourceTargetFlow = { id: ++targetGeneration.current, open: true, status: "resolving", source, resourceType, project };
-    if (source === "curseforge") {
+    if (source === "curseforge" && pinnedVersionId !== undefined &&
+      (!/^[1-9]\d*$/.test(pinnedVersionId) || Number(pinnedVersionId) > 0xffff_ffff)) return;
+    const flow: ResourceTargetFlow = { id: ++targetGeneration.current, open: true, status: "resolving", source, resourceType, project, pinnedVersionId };
+    if (source === "curseforge" && pinnedVersionId === undefined) {
       if (!selectedVersionId) { setTargetFlow({ ...flow, status: "curseforge", error: normalizeError({ code: "resource.versionMissing" }) }); return; }
       await executeInstall(flow, { kind: selectedInstance ? "instance" : "version", instanceId: selectedInstance?.id, versionId: selectedVersionId, name: selectedInstance?.name ?? selectedVersionId, gameVersion: context?.gameVersion ?? "", loader: context?.loader ?? null, compatible: true });
       return;
@@ -223,13 +233,14 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
 
   async function createAndInstall(creation: ResourceCreateRequest) {
     const flow = targetFlow;
-    if (!flow || flow.source !== "modrinth" || activeInstall.current) return;
-    const request = reserveInstall(flow, { mode: "create", ...creation });
+    if (!flow || activeInstall.current) return;
+    const target = { ...creation, ...filePin(flow) };
+    const request = reserveInstall(flow, { mode: "create", ...target });
     setTargetFlow({ ...flow, taskId: undefined, status: "creating", error: undefined });
     await run("resource.install", async () => {
       try {
         const taskId = await reservedId(request);
-        const result = await command<ResourceInstanceResult>("create_instance_for_resource", { source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType, ...creation, taskId });
+        const result = await command<ResourceInstanceResult>("create_instance_for_resource", { source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType, ...target, taskId });
         await reload(); selectVersion(result.instance.versionId); selectInstance(result.instance.id); reportNotice("resourceInstalledNew");
         setTargetFlow(current => current?.id === flow.id ? { ...current, open: false, status: "choose" } : current);
       } catch (cause) {
@@ -244,7 +255,7 @@ export function useDiscover(callbacks: { onNotice?: (code: string) => void; onFe
             void (async () => {
               let target = row;
               if (!target.versionId) {
-                const plan = await command<ResourceTargetPlan>("resolve_resource_targets", { source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType });
+                const plan = await command<ResourceTargetPlan>("resolve_resource_targets", { ...{ source: flow.source, projectId: flow.project.project_id, resourceType: flow.resourceType }, ...filePin(flow) });
                 const retained = plan.targets.find(candidate => candidate.instanceId === row.instanceId && candidate.compatible);
                 if (!retained) throw normalizeError({ code: "resource.versionMissing" });
                 target = retained;

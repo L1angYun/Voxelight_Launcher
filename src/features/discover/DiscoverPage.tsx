@@ -116,7 +116,7 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
           </SectionPanel>
         </section>
       </div>
-      <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} onInstall={() => selectedProject && installProject(selectedProject)} onClose={closeProject} />
+      <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} hasTarget={Boolean(selectedVersionId)} onInstall={() => selectedProject && installProject(selectedProject)} onInstallVersion={versionId => { if (selectedProject) void installProject(selectedProject, versionId); }} onClose={closeProject} />
       <InstallTargetDialog flow={targetFlow} onClose={closeTarget} onInstall={installInto} onCreate={createAndInstall} onCancel={cancelInstall}
         onCreateInstance={() => setCreating(true)} onDownloads={onDownloads} />
       <CreateInstanceDialog

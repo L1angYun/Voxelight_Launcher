@@ -5,7 +5,20 @@ export type ResourceKind = "mod" | "resourcepack" | "shader";
 export type ResourceView = "files" | "updates" | "history";
 export type Loader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge";
 
+export interface LocalModMetadata {
+  loader: "fabric" | "quilt" | "forge" | "neoforge" | "legacyForge";
+  modId: string;
+  name: string;
+  version: string;
+  description: string;
+  authors: string[];
+  hasIcon: boolean;
+  dependencies: { id: string; kind: "required" | "optional" | "incompatible"; range: string }[];
+  additionalMods: number;
+}
+
 export interface LocalResource {
+  metadata?: LocalModMetadata;
   name: string;
   fileName: string;
   path: string;

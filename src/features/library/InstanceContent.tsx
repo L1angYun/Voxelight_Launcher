@@ -1,5 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { useId } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { command } from "../../lib/launcher";
+import type { LocalResource } from "./types";
 import { Download, History, RefreshCw, Upload } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
@@ -10,6 +12,42 @@ import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { useResourceManager } from "./useInstanceContent";
 import { errorText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
+
+function LocalModIcon({ fileName, versionId, instanceId }: { fileName: string; versionId: string; instanceId?: string }) {
+  const container = useRef<HTMLSpanElement>(null);
+  const [icon, setIcon] = useState<string | null>(null);
+  useEffect(() => {
+    const target = container.current;
+    if (!target || typeof IntersectionObserver === "undefined") return;
+    let disposed = false;
+    let started = false;
+    const observer = new IntersectionObserver((entries) => {
+      if (disposed || started || !entries.some((entry) => entry.isIntersecting)) return;
+      started = true;
+      observer.disconnect();
+      void command<string | null>("read_local_mod_icon", { fileName, versionId, instanceId }).then((value) => {
+        if (!disposed && value?.startsWith("data:image/png;base64,")) setIcon(value);
+      }).catch(() => {});
+    });
+    observer.observe(target.closest(".vx-resource-row") ?? target);
+    return () => { disposed = true; observer.disconnect(); };
+  }, [fileName, versionId, instanceId]);
+  return <span ref={container} aria-hidden="true">{icon ? <img src={icon} alt="" width={24} height={24} onError={() => setIcon(null)} /> : null}</span>;
+}
+
+function LocalFileName({ file, versionId, instanceId }: { file: LocalResource; versionId: string; instanceId?: string }) {
+  const { t, i18n } = useTranslation();
+  const meta = file.metadata;
+  const details = [meta?.version, ...(meta?.authors ?? [])].filter(Boolean).join(" · ");
+  return <div>
+    {meta?.hasIcon ? <LocalModIcon key={`${versionId}:${instanceId ?? ""}:${file.fileName}`} fileName={file.fileName} versionId={versionId} instanceId={instanceId} /> : null}
+    <strong>{meta?.name || file.name}</strong>
+    <small>{file.fileName} · {sizeText(file.size, i18n.language)}{details ? ` · ${details}` : ""}</small>
+    {meta?.dependencies.map((dep, i) => <span key={`${dep.id}:${i}`} className="vx-dependency-kind" data-kind={dep.kind}>
+      {t(`discover:dependency.${dep.kind}`)} · {dep.id}{dep.range ? ` ${dep.range}` : ""}
+    </span>)}
+  </div>;
+}
 
 export function InstanceContent({ versionId, instanceId }: { versionId: string; instanceId?: string }) {
   const { t, i18n } = useTranslation();
@@ -49,7 +87,7 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
       {view === "files" ? (
         files.length ? <div className="vx-resource-list">{files.map((file) => (
           <div className="vx-resource-row" key={file.fileName}>
-            <div><strong>{file.name}</strong><small>{file.fileName} · {sizeText(file.size, i18n.language)}</small></div>
+            <LocalFileName file={file} versionId={versionId} instanceId={instanceId} />
             <Button variant={file.enabled ? "secondary" : "ghost"} aria-pressed={file.enabled} onClick={() => void manager.toggle(file)}>{file.enabled ? t("library:enabled") : t("library:disabled")}</Button>
           </div>
         ))}</div> : showEmpty ? <EmptyState title={t("library:noResources")} description={t("library:noResourcesDescription")} /> : null

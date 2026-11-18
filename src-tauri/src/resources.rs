@@ -162,7 +162,7 @@ pub(super) struct ResourceProgress {
 }
 
 impl ResourceProgress {
-    fn new(app: Option<&AppHandle>, version_id: &str) -> Self {
+    pub(crate) fn new(app: Option<&AppHandle>, version_id: &str) -> Self {
         Self {
             app: app.cloned(),
             version_id: version_id.into(),
@@ -195,7 +195,7 @@ impl ResourceProgress {
         }
     }
 
-    fn stage(&self, state: &LauncherState, stage: &str, message: &str) {
+    pub(crate) fn stage(&self, state: &LauncherState, stage: &str, message: &str) {
         self.emit(state, stage, 0, 0, 0, 0, message);
     }
 }
@@ -208,6 +208,8 @@ pub struct LocalResource {
     pub path: String,
     pub enabled: bool,
     pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metadata: Option<crate::mod_metadata::ModMetadata>,
 }
 
 /// Uses the same version/instance selection as JVM launching.
@@ -252,7 +254,7 @@ fn reject_links(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn linked(metadata: &fs::Metadata) -> bool {
+pub(crate) fn linked(metadata: &fs::Metadata) -> bool {
     let is_link = metadata.file_type().is_symlink();
     #[cfg(windows)]
     {
@@ -970,7 +972,7 @@ pub(crate) fn require_resource_stopped(
     Ok(())
 }
 
-fn target_candidates(
+pub(crate) fn target_candidates(
     state: &LauncherState,
 ) -> AppResult<Vec<crate::resource_targets::TargetCandidate>> {
     let data = state.snapshot()?;
@@ -1029,14 +1031,26 @@ pub async fn resolve_resource_targets(
     source: String,
     project_id: String,
     resource_type: String,
+    resource_version_id: Option<String>,
+    file_id: Option<u64>,
 ) -> AppResult<crate::resource_targets::ResourceTargetPlan> {
+    if source == "curseforge" && resource_version_id.is_none() {
+        let file_id = file_id.ok_or_else(|| expected("请选择要安装的 CurseForge 文件"))?;
+        return crate::curseforge::resolve_pinned_targets(&state, &project_id, &resource_type, file_id).await;
+    }
     require_modrinth(&source)?;
+    if file_id.is_some() { return Err(expected("资源文件标识无效")); }
     let kind = ResourceKind::parse(&resource_type)?;
     identifier(&project_id)?;
+    if let Some(id) = resource_version_id.as_deref() { identifier(id)?; }
     let api = client(false)?;
     let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
     if project.project_type != kind.project_type() {
         return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
+    }
+    if let Some(id) = resource_version_id.as_deref() {
+        let version = fetch_pinned_modrinth_version(&api, id, &project.id, kind).await?;
+        return resolve_plan(&state, &project, std::slice::from_ref(&version), kind, true, crate::minecraft::manifest(&state)).await;
     }
     let versions = all_project_versions(&api, &project.id).await?;
     resolve_resource_targets_inner(
@@ -1056,11 +1070,12 @@ async fn resolve_resource_targets_inner(
     kind: ResourceKind,
     manifest: impl std::future::Future<Output = Result<Value, String>>,
 ) -> AppResult<crate::resource_targets::ResourceTargetPlan> {
-    let metadata: Vec<_> = versions.iter().map(version_lite).collect();
-    // A release manifest is needed to suggest a new profile, not to install
-    // into a target whose local game/loader metadata is already compatible.
-    let manifest = manifest.await.ok();
-    let manifest = manifest
+    resolve_plan(state, project, versions, kind, false, manifest).await
+}
+
+pub(crate) fn manifest_releases(manifest: Result<Value, String>) -> Vec<(String, String)> {
+    let manifest = manifest.ok();
+    manifest
         .as_ref()
         .and_then(|manifest| manifest["versions"].as_array())
         .into_iter()
@@ -1071,13 +1086,36 @@ async fn resolve_resource_targets_inner(
                 version["type"].as_str()?.to_owned(),
             ))
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>()
+}
+
+async fn resolve_plan(
+    state: &LauncherState,
+    project: &Project,
+    versions: &[Version],
+    kind: ResourceKind,
+    pinned: bool,
+    manifest: impl std::future::Future<Output = Result<Value, String>>,
+) -> AppResult<crate::resource_targets::ResourceTargetPlan> {
+    let metadata: Vec<_> = versions.iter().map(version_lite).collect();
+    // A release manifest is needed to suggest a new profile, not to install
+    // into a target whose local game/loader metadata is already compatible.
+    let manifest = manifest_releases(manifest.await);
+    let targets = target_candidates(state)?;
+    if pinned {
+        let [version] = metadata.as_slice() else {
+            return Err(expected("Modrinth 项目或版本不存在"));
+        };
+        return Ok(crate::resource_targets::build_pinned_plan(
+            &project.id, &project.title, &project.project_type, kind, &targets, version, &manifest,
+        ));
+    }
     Ok(crate::resource_targets::build_plan(
         &project.id,
         &project.title,
         &project.project_type,
         kind,
-        &target_candidates(state)?,
+        &targets,
         &metadata,
         &manifest,
     ))
@@ -1111,23 +1149,40 @@ pub async fn reserve_resource_task(
     state: tauri::State<'_, Arc<LauncherState>>,
     request: ResourceRequest,
 ) -> AppResult<String> {
+    validate_resource_request(&request)?;
+    Ok(state.control.reserve_resource(request)?)
+}
+
+fn validate_resource_request(request: &ResourceRequest) -> AppResult<()> {
     let kind = ResourceKind::parse(&request.resource_type)?;
     match request.source {
         ResourceSource::Modrinth => identifier(&request.project_id)?,
         ResourceSource::Curseforge => { crate::curseforge::project_id(&request.project_id)?; }
     }
     match &request.target {
-        ReservedTarget::Existing { version_id, instance_id, file_id } => {
+        ReservedTarget::Existing { version_id, instance_id, file_id, resource_version_id } => {
             validate_id(version_id)?;
             if let Some(instance_id) = instance_id { validate_id(instance_id)?; }
+            if let Some(pinned) = resource_version_id {
+                if request.source != ResourceSource::Modrinth || file_id.is_some() {
+                    return Err("资源文件标识无效".into());
+                }
+                identifier(pinned)?;
+            }
             if let Some(file) = file_id {
                 if request.source != ResourceSource::Curseforge || !(1..=u64::from(u32::MAX)).contains(file) {
                     return Err("资源文件标识无效".into());
                 }
             }
         }
-        ReservedTarget::Create { game_version, loader, loader_version, name } => {
-            if request.source != ResourceSource::Modrinth { return Err("不支持为该来源创建实例".into()); }
+        ReservedTarget::Create { game_version, loader, loader_version, name, resource_version_id, file_id } => {
+            match request.source {
+                ResourceSource::Modrinth if file_id.is_none() => {
+                    if let Some(id) = resource_version_id { identifier(id)?; }
+                }
+                ResourceSource::Curseforge if resource_version_id.is_none() && file_id.is_some_and(|id| (1..=u64::from(u32::MAX)).contains(&id)) => {}
+                _ => return Err("资源文件标识无效".into()),
+            }
             validate_id(game_version)?;
             validate_id(loader)?;
             if !["fabric", "quilt", "forge", "neoforge"].contains(&loader.as_str())
@@ -1141,7 +1196,7 @@ pub async fn reserve_resource_task(
             crate::commands::validate_instance_name(name)?;
         }
     }
-    Ok(state.control.reserve_resource(request)?)
+    Ok(())
 }
 
 pub(crate) async fn with_reserved_resource_task<T>(
@@ -1163,7 +1218,7 @@ pub(crate) async fn with_reserved_resource_task<T>(
     result
 }
 
-async fn create_resource_instance_then_install<F, Fut>(
+pub(crate) async fn create_resource_instance_then_install<F, Fut>(
     state: &LauncherState,
     name: String,
     version_id: String,
@@ -1192,17 +1247,24 @@ pub async fn create_instance_for_resource(
     source: String,
     project_id: String,
     resource_type: String,
+    resource_version_id: Option<String>,
+    file_id: Option<u64>,
     game_version: String,
     loader: String,
     loader_version: Option<String>,
     name: String,
     task_id: String,
 ) -> AppResult<ResourceInstanceResult> {
+    if source == "curseforge" && resource_version_id.is_none() {
+        let file_id = file_id.ok_or_else(|| expected("请选择要安装的 CurseForge 文件"))?;
+        return crate::curseforge::create_with_pinned_file(state.inner(), &app, &task_id, &project_id, &resource_type, file_id, &game_version, &loader, loader_version.as_deref(), &name).await;
+    }
     require_modrinth(&source)?;
+    if file_id.is_some() { return Err(expected("资源文件标识无效")); }
     let request = ResourceRequest {
         source: ResourceSource::Modrinth, project_id: project_id.clone(), resource_type: resource_type.clone(),
         target: ReservedTarget::Create { game_version: game_version.clone(), loader: loader.clone(),
-            loader_version: loader_version.clone(), name: name.clone() },
+            loader_version: loader_version.clone(), name: name.clone(), file_id: None, resource_version_id: resource_version_id.clone() },
     };
     with_reserved_resource_task(&state, &task_id, request, async {
         let kind = ResourceKind::parse(&resource_type)?;
@@ -1215,18 +1277,27 @@ pub async fn create_instance_for_resource(
             return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
         }
         let resource_loader = (kind == ResourceKind::Mod).then_some(loader.as_str());
-        let versions = project_versions(&api, &project.id, &game_version, resource_loader).await?;
-        let metadata: Vec<_> = versions.iter().map(version_lite).collect();
-        let chosen =
-            crate::resource_targets::validate_request(&metadata, kind, &loader, &game_version)?;
-        let selected = versions
-            .iter()
-            .find(|version| version.id == chosen.id)
-            .cloned()
-            .ok_or_else(|| no_compatible_version(&game_version, resource_loader))?;
-        if selected.project_id != project.id {
-            return Err(expected("Modrinth 版本与项目标识不一致"));
-        }
+        let selected = if let Some(id) = resource_version_id.as_deref() {
+            let selected = fetch_pinned_modrinth_version(&api, id, &project.id, kind).await?;
+            crate::resource_targets::validate_pinned_creation_pair(
+                &version_lite(&selected), kind, &loader, &game_version,
+            )?;
+            selected
+        } else {
+            let versions = project_versions(&api, &project.id, &game_version, resource_loader).await?;
+            let metadata: Vec<_> = versions.iter().map(version_lite).collect();
+            let chosen =
+                crate::resource_targets::validate_request(&metadata, kind, &loader, &game_version)?;
+            let selected = versions
+                .iter()
+                .find(|version| version.id == chosen.id)
+                .cloned()
+                .ok_or_else(|| no_compatible_version(&game_version, resource_loader))?;
+            if selected.project_id != project.id {
+                return Err(expected("Modrinth 版本与项目标识不一致"));
+            }
+            selected
+        };
         resource_transactions::preflight(
             &state,
             &api,
@@ -1260,6 +1331,7 @@ pub async fn create_instance_for_resource(
             name.clone(),
             version_id.clone(),
             move |instance| async move {
+                require_resource_stopped(&install_state, &version_id, Some(&instance.id))?;
                 let target =
                     resource_target(&install_state, &version_id, Some(&instance.id), kind)?;
                 let resource_progress = ResourceProgress::new(Some(&install_app), &version_id);
@@ -1300,6 +1372,70 @@ fn history_target(
     resource_directory(&state.snapshot()?, version_id, instance_id, kind)
 }
 
+
+async fn fetch_pinned_modrinth_version(
+    api: &reqwest::Client,
+    id: &str,
+    project_id: &str,
+    kind: ResourceKind,
+) -> AppResult<Version> {
+    identifier(id)?;
+    let version = api_json(api, &format!("version/{id}"), &[]).await?;
+    validate_pinned_file(&version, id, project_id, kind)?;
+    Ok(version)
+}
+
+fn validate_pinned_file(version: &Version, requested: &str, project_id: &str, kind: ResourceKind) -> AppResult<()> {
+    if version.project_id != project_id || version.id != requested {
+        return Err("Modrinth 版本与项目标识不一致".into());
+    }
+    if !kind.accepts(&primary_file(version)?.filename) {
+        return Err("资源文件扩展名与目标分类不一致".into());
+    }
+    Ok(())
+}
+
+fn validate_pinned_version(
+    version: Version,
+    requested: &str,
+    project_id: &str,
+    kind: ResourceKind,
+    minecraft: &str,
+    loader: Option<&str>,
+) -> AppResult<Version> {
+    validate_pinned_file(&version, requested, project_id, kind)?;
+    if !compatible(&version, minecraft, loader) || kind == ResourceKind::Mod && loader.is_none() {
+        return Err(no_compatible_version(minecraft, loader));
+    }
+    crate::resource_targets::validate_request(&[version_lite(&version)], kind, loader.unwrap_or("vanilla"), minecraft)?;
+    Ok(version)
+}
+
+async fn select_modrinth_install_version(
+    api: &reqwest::Client,
+    project_id: &str,
+    kind: ResourceKind,
+    minecraft: &str,
+    loader: Option<&str>,
+    resource_version_id: Option<&str>,
+) -> AppResult<Version> {
+    if let Some(id) = resource_version_id {
+        let version = fetch_pinned_modrinth_version(api, id, project_id, kind).await?;
+        return validate_pinned_version(version, id, project_id, kind, minecraft, loader);
+    }
+    let versions = project_versions(api, project_id, minecraft, loader).await?;
+    let metadata: Vec<_> = versions.iter().map(version_lite).collect();
+    let chosen = crate::resource_targets::validate_request(
+        &metadata, kind, loader.unwrap_or("vanilla"), minecraft,
+    )?;
+    let version = versions.into_iter().find(|version| version.id == chosen.id)
+        .ok_or_else(|| no_compatible_version(minecraft, loader))?;
+    if version.project_id != project_id {
+        return Err("Modrinth 版本与项目标识不一致".into());
+    }
+    Ok(version)
+}
+
 #[tauri::command]
 pub async fn install_resource(
     app: AppHandle,
@@ -1308,11 +1444,12 @@ pub async fn install_resource(
     version_id: String,
     instance_id: Option<String>,
     resource_type: String,
+    resource_version_id: Option<String>,
     task_id: String,
 ) -> AppResult<ResourceInstall> {
     let request = ResourceRequest {
         source: ResourceSource::Modrinth, project_id: project_id.clone(), resource_type: resource_type.clone(),
-        target: ReservedTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id: None },
+        target: ReservedTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id: None, resource_version_id: resource_version_id.clone(), },
     };
     with_reserved_resource_task(&state, &task_id, request, async {
         let kind = ResourceKind::parse(&resource_type)?;
@@ -1325,28 +1462,9 @@ pub async fn install_resource(
         if project.project_type != kind.project_type() {
             return Err("资源项目类型与所选分类不一致，已拒绝安装".into());
         }
-        let versions = project_versions(
-            &api,
-            &project.id,
-            &target.minecraft,
-            target.loader.as_deref(),
-        )
-        .await?;
-        let metadata: Vec<_> = versions.iter().map(version_lite).collect();
-        let chosen = crate::resource_targets::validate_request(
-            &metadata,
-            kind,
-            target.loader.as_deref().unwrap_or("vanilla"),
-            &target.minecraft,
-        )?;
-        let version = versions
-            .iter()
-            .find(|version| version.id == chosen.id)
-            .cloned()
-            .ok_or_else(|| no_compatible_version(&target.minecraft, target.loader.as_deref()))?;
-        if version.project_id != project.id {
-            return Err("Modrinth 版本与项目标识不一致".into());
-        }
+        let version = select_modrinth_install_version(
+            &api, &project.id, kind, &target.minecraft, target.loader.as_deref(), resource_version_id.as_deref(),
+        ).await?;
         let result = resource_transactions::install(
             state.inner(),
             &target.directory,
@@ -1531,6 +1649,8 @@ fn local_resource(path: PathBuf, kind: ResourceKind) -> Result<Option<LocalResou
         path: path.to_string_lossy().into_owned(),
         enabled,
         size: metadata.len(),
+        metadata: matches!(kind, ResourceKind::Mod)
+            .then(|| crate::mod_metadata::cached_metadata(&path, &metadata)).flatten(),
     }))
 }
 
@@ -1559,13 +1679,22 @@ async fn list_local_resources_inner(
         instance_id.as_deref(),
         kind,
     )?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || list_local_resources_blocking(&state, &directory, kind))
+        .await.map_err(|_| "资源目录读取任务意外中止")?
+}
+
+fn list_local_resources_blocking(
+    state: &LauncherState, directory: &Path, kind: ResourceKind,
+) -> Result<Vec<LocalResource>, String> {
     if !directory.exists() {
         return Ok(Vec::new());
     }
-    reject_links(&directory)?;
+    reject_links(directory)?;
     let mut result = Vec::new();
     for entry in fs::read_dir(&directory).map_err(|_| "无法读取资源目录，请检查访问权限")?
     {
+        crate::instances::sync_checkpoint(state)?;
         let entry = entry.map_err(|_| "读取资源目录失败")?;
         if let Some(resource) = local_resource(entry.path(), kind)? {
             result.push(resource);
@@ -1573,6 +1702,29 @@ async fn list_local_resources_inner(
     }
     result.sort_by_key(|resource| resource.file_name.to_ascii_lowercase());
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn read_local_mod_icon(
+    state: tauri::State<'_, Arc<LauncherState>>, version_id: String, instance_id: Option<String>, file_name: String,
+) -> AppResult<Option<String>> {
+    let data = state.snapshot()?;
+    tokio::task::spawn_blocking(move || read_local_mod_icon_blocking(&data, &version_id, instance_id.as_deref(), &file_name))
+        .await.map_err(|_| expected("模组图标读取任务意外中止"))?.map_err(expected)
+}
+
+fn read_local_mod_icon_blocking(
+    data: &Persisted, version_id: &str, instance_id: Option<&str>, file_name: &str,
+) -> Result<Option<String>, String> {
+    validate_id(file_name)?;
+    let original = if file_name.to_ascii_lowercase().ends_with(".disabled") {
+        &file_name[..file_name.len() - ".disabled".len()]
+    } else { file_name };
+    if !ResourceKind::Mod.accepts(original) { return Ok(None); }
+    let directory = resource_directory(data, version_id, instance_id, ResourceKind::Mod)?;
+    reject_links(&directory)?;
+    let path = safe_join(&directory, file_name)?;
+    Ok(crate::mod_metadata::read_icon(&path))
 }
 
 #[tauri::command]
@@ -1631,7 +1783,7 @@ mod tests {
             target: ReservedTarget::Existing {
                 version_id: instance.version_id.clone(),
                 instance_id: Some(instance.id.clone()),
-                file_id: None,
+                file_id: None, resource_version_id: None,
             },
         };
         let task_id = fixture.state.control.reserve_resource(request.clone()).unwrap();
@@ -1652,6 +1804,43 @@ mod tests {
             });
         assert!(!directory.exists(), "no installer artifact or staging directory");
     }
+
+    #[test]
+    fn a4_pinned_create_writers_keep_reservation_preflight_and_same_root_order() {
+        fn section<'a>(source: &'a str, marker: &str) -> &'a str {
+            let (_, tail) = source.split_once(marker).unwrap_or_else(|| panic!("missing {marker}"));
+            tail.split_once("\n}").unwrap_or_else(|| panic!("unterminated {marker}")).0
+        }
+        fn ordered(body: &str, markers: &[&str]) {
+            let mut remaining = body;
+            for marker in markers {
+                let (_, next) = remaining.split_once(marker).unwrap_or_else(|| panic!("missing or out of order: {marker}"));
+                remaining = next;
+            }
+        }
+        let mr = include_str!("resources.rs");
+        let cf = include_str!("curseforge.rs");
+        ordered(section(mr, "pub(crate) async fn with_reserved_resource_task<"), &[
+            "claim_resource(id, request)", "wait_for_turn(&state.operation, id).await", "task.await",
+        ]);
+        ordered(section(mr, "pub async fn create_instance_for_resource("), &[
+            "with_reserved_resource_task(", "let api = client(", "fetch_pinned_modrinth_version(",
+            "validate_pinned_creation_pair(", "resource_transactions::preflight(", "install_loader_inner(",
+            "create_resource_instance_then_install(", "require_resource_stopped(", "resource_target(",
+            "resource_transactions::install(",
+        ]);
+        ordered(section(cf, "pub(crate) async fn create_with_pinned_file("), &[
+            "with_reserved_resource_task(", "let key = service_key(", "get_pinned_file(",
+            "validate_pinned_creation_pair(", "can_create_pinned(", "install_loader_inner(",
+            "create_resource_instance_then_install(", "require_resource_stopped(", "resource_target(",
+            "resource_transactions::require_no_pending(", "let path = download(",
+        ]);
+        ordered(section(mr, "async fn create_resource_instance_then_install<"), &[
+            "state.control.checkpoint().await", "create_instance_inner(",
+            "state.control.checkpoint().await", "install(instance.clone()).await",
+        ]);
+    }
+
 
     #[test]
     fn a4_resource_writers_take_the_operation_lock_and_check_running_before_the_writer() {
@@ -1679,6 +1868,178 @@ mod tests {
         );
     }
 
+
+
+
+    #[test]
+    fn u1264_curseforge_create_reservation_requires_the_exact_pinned_file() {
+        let request = |file: Option<u64>| {
+            let mut payload = serde_json::json!({
+                "source": "curseforge", "projectId": "90210", "resourceType": "mod",
+                "target": { "mode": "create", "gameVersion": "1.20.1", "loader": "quilt", "name": "Fixture" },
+            });
+            if let Some(file) = file { payload["target"]["fileId"] = file.into(); }
+            serde_json::from_value::<ResourceRequest>(payload).expect("Create must retain the exact CurseForge file")
+        };
+        let old = request(Some(8675309));
+        validate_resource_request(&old).unwrap();
+        assert!(validate_resource_request(&request(None)).is_err());
+        assert!(validate_resource_request(&request(Some(0))).is_err());
+        assert!(validate_resource_request(&request(Some(u64::from(u32::MAX) + 1))).is_err());
+        let control = crate::downloads::DownloadControl::default();
+        let id = control.reserve_resource(old.clone()).unwrap();
+        assert!(control.claim_resource(&id, request(None)).is_err());
+        assert!(control.claim_resource(&id, request(Some(8675310))).is_err());
+        control.claim_resource(&id, old.clone()).unwrap();
+        assert!(control.claim_resource(&id, old).is_err());
+    }
+
+    #[test]
+    fn u1264_create_reservation_requires_the_exact_pinned_file() {
+        let request = |pin: Option<&str>| {
+            let mut payload = serde_json::json!({
+                "source": "modrinth", "projectId": "fixture-project", "resourceType": "mod",
+                "target": { "mode": "create", "gameVersion": "1.20.1", "loader": "quilt", "name": "Fixture" },
+            });
+            if let Some(pin) = pin {
+                payload["target"]["resourceVersionId"] = serde_json::json!(pin);
+            }
+            serde_json::from_value::<ResourceRequest>(payload)
+                .expect("Create must deserialize the selected historical version into the task identity")
+        };
+        let control = crate::downloads::DownloadControl::default();
+        let old = request(Some("older-release"));
+        validate_resource_request(&old).unwrap();
+        let id = control.reserve_resource(old.clone()).unwrap();
+        assert!(control.claim_resource(&id, request(None)).is_err());
+        assert!(control.claim_resource(&id, request(Some("newer-release"))).is_err());
+        control.claim_resource(&id, old.clone()).unwrap();
+        assert!(control.claim_resource(&id, old).is_err());
+    }
+
+    #[test]
+    fn u1264_reserved_modrinth_version_is_part_of_the_single_use_claim() {
+        let request = |pin: Option<&str>| {
+            let mut value = serde_json::json!({
+                "source":"modrinth", "projectId":"fixture-project", "resourceType":"mod",
+                "target":{"mode":"existing", "versionId":"1.21.1", "instanceId":"fixture-instance"}
+            });
+            if let Some(pin) = pin {
+                value["target"]["resourceVersionId"] = serde_json::json!(pin);
+            }
+            serde_json::from_value::<ResourceRequest>(value)
+                .expect("resource version is explicit in the reservation contract")
+        };
+
+        let control = crate::downloads::DownloadControl::default();
+        let pinned = request(Some("older-release"));
+        let reservation = control.reserve_resource(pinned.clone()).unwrap();
+        assert!(control.claim_resource(&reservation, request(None)).is_err());
+        assert!(control.claim_resource(&reservation, request(Some("newer-release"))).is_err());
+        control.claim_resource(&reservation, pinned.clone()).unwrap();
+        assert!(control.claim_resource(&reservation, pinned).is_err());
+    }
+
+
+    #[test]
+    fn u1264_reservation_validates_the_pinned_identity_by_source() {
+        let request = |source, file_id, pin| {
+            serde_json::from_value::<ResourceRequest>(serde_json::json!({
+                "source": source, "projectId": if source == "modrinth" {"example"} else {"123"},
+                "resourceType":"mod",
+                "target":{"mode":"existing", "versionId":"1.21.1",
+                    "fileId":file_id, "resourceVersionId":pin}
+            }))
+            .unwrap()
+        };
+        for args in [
+            ("modrinth", Some(2_u64), None),
+            ("curseforge", None, Some("historic")),
+            ("modrinth", Some(2), Some("historic")),
+            ("modrinth", None, Some("malformed/id")),
+            ("curseforge", Some(u64::from(u32::MAX) + 1), None),
+        ] {
+            assert!(validate_resource_request(&request(args.0, args.1, args.2)).is_err());
+        }
+        for args in [
+            ("modrinth", None, Some("historic")),
+            ("curseforge", Some(2), None),
+            ("modrinth", None, None),
+            ("curseforge", None, None),
+        ] {
+            validate_resource_request(&request(args.0, args.1, args.2)).unwrap();
+        }
+    }
+
+    fn pinned_fixture(id: &str, project: &str, game: &str, loader: &str, file: &str) -> Version {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "project_id": project, "game_versions": [game], "loaders": [loader],
+            "version_type": "release",
+            "files": [{"filename": file, "url": "https://cdn.modrinth.com/fixture",
+                "primary": true, "size": 1, "hashes": {"sha512": "0".repeat(128)}}]
+        })).unwrap()
+    }
+
+    #[test]
+    fn u1264_pinned_validator_rejects_project_response_identity_loader_game_and_file_mismatches() {
+        let check = |version| validate_pinned_version(
+            version, "older", "project", ResourceKind::Mod, "1.21.1", Some("fabric"),
+        );
+        let wrong_project = check(pinned_fixture("older", "different", "1.21.1", "fabric", "a.jar"))
+            .err().unwrap();
+        assert_eq!(wrong_project.detail.as_deref(), Some("Modrinth 版本与项目标识不一致"));
+        let wrong_response = check(pinned_fixture("different", "project", "1.21.1", "fabric", "a.jar"))
+            .err().unwrap();
+        assert_eq!(wrong_response.detail.as_deref(), Some("Modrinth 版本与项目标识不一致"));
+        for (game, loader) in [("1.20.1", "fabric"), ("1.21.1", "forge")] {
+            let error = check(pinned_fixture("older", "project", game, loader, "a.jar"))
+                .err().unwrap();
+            assert_eq!(error.code, "resource.noCompatibleVersion");
+        }
+        assert!(check(pinned_fixture("older", "project", "1.21.1", "fabric", "a.zip")).is_err());
+        assert_eq!(check(pinned_fixture("older", "project", "1.21.1", "fabric", "a.jar")).unwrap().id, "older");
+    }
+
+    #[test]
+    fn u1264_pinned_plan_exposes_only_targets_compatible_with_the_requested_version() {
+        let (root, state) = resource_fixture();
+        let project = serde_json::from_value(serde_json::json!({
+            "id":"fixture-project", "title":"Fixture resource", "project_type":"mod"
+        })).unwrap();
+        let versions = [
+            pinned_fixture("older", "fixture-project", "1.20.1", "fabric", "old.jar"),
+            pinned_fixture("newer", "fixture-project", "1.21.1", "fabric", "new.jar"),
+        ];
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let target = |pin: Option<&str>| {
+            let selected = if pin == Some("older") { &versions[..1] } else { versions.as_slice() };
+            rt.block_on(resolve_plan(
+                &state, &project, selected, ResourceKind::Mod, pin.is_some(),
+                std::future::ready(Ok(serde_json::json!({"versions": [
+                    {"id": "1.21.1", "type":"release"}, {"id":"1.20.1", "type":"release"}
+                ]}))),
+            )).unwrap()
+        };
+        let all = target(None);
+        assert!(all.targets.iter().any(|row| row.compatible && row.resource_version_id.as_deref() == Some("newer")));
+        let old = target(Some("older"));
+        assert!(!old.targets.iter().any(|row| row.compatible));
+        assert_eq!(old.suggestion.unwrap().game_version, "1.20.1");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn u1264_pinned_install_uses_the_same_reserved_h06_and_journal_boundaries() {
+        let (_, body) = include_str!("resources.rs").split_once("pub async fn install_resource(").unwrap();
+        let (body, _) = body.split_once("\n}").unwrap();
+        let reserve = body.find("with_reserved_resource_task(").unwrap();
+        let h06 = body.find("require_resource_stopped(").unwrap();
+        let validate = body.find("select_modrinth_install_version(").unwrap();
+        let write = body.find("resource_transactions::install(").unwrap();
+        assert!(reserve < h06 && h06 < validate && validate < write);
+    }
+
     #[test]
     fn discover_cancel_queued_own_task_without_touching_another_same_project() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -1691,7 +2052,7 @@ mod tests {
                 target: ReservedTarget::Existing {
                     version_id: "fabric-test".into(),
                     instance_id: Some(instance_id.into()),
-                    file_id: None,
+                    file_id: None, resource_version_id: None,
                 },
             };
             let existing = state.control.reserve_resource(request("running-instance")).unwrap();
@@ -2592,5 +2953,148 @@ mod tests {
         assert!(details.versions.iter().all(|version| version.compatible));
         assert_eq!(details.dependencies[0].kind, "required");
         assert_eq!(details.dependencies[1].kind, "unknown");
+    }
+}
+
+#[cfg(test)]
+mod local_metadata_regression {
+    use super::*;
+    use std::io::Write;
+    fn with_jar(entries: &[(&str, &[u8])], verify: impl FnOnce(&Path, serde_json::Value)) {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/core-tests")
+            .join(format!("vx-mod-metadata-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(folder.join("mods")).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let _cleanup = Cleanup(folder.clone());
+        let path = folder.join("mods/fixture.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        for (name, contents) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(contents).unwrap();
+        }
+        zip.finish().unwrap();
+        let file = local_resource(path.clone(), ResourceKind::Mod).unwrap().unwrap();
+        verify(&path, serde_json::to_value(file).unwrap());
+    }
+
+    #[test]
+    fn local_mod_metadata_exposes_fabric_name_version_authors_and_safe_icon_reference() {
+        with_jar(&[("fabric.mod.json", br#"{"id":"visible","name":"Visible Name","version":"3.1","authors":["Alice",{"name":"Bob"}],"icon":{"16":"assets/16.png","32":"assets/32.png"},"depends":{"minecraft":"*","fixture-api":">=1"}}"#)], |_, value| {
+            assert_eq!(value["metadata"]["name"], "Visible Name");
+            assert_eq!(value["metadata"]["version"], "3.1");
+            assert_eq!(value["metadata"]["authors"], serde_json::json!(["Alice", "Bob"]));
+            assert_eq!(value["metadata"]["dependencies"].as_array().unwrap().len(), 1);
+            assert_eq!(value["metadata"]["dependencies"][0]["id"], "fixture-api");
+            assert_eq!(value["metadata"]["hasIcon"], true);
+            assert!(value["metadata"].get("icon").is_none());
+        });
+    }
+
+    #[test]
+    fn local_mod_metadata_supports_quilt_and_both_legacy_shapes() {
+        with_jar(&[("quilt.mod.json", br#"{"quilt_loader":{"id":"quilt-demo","version":"4","metadata":{"name":"Quilt Demo","contributors":{"Ana":"Owner"}},"depends":["fixture-a",{"id":"fixture-b","versions":["1","2"],"optional":true}]}}"#)], |_, value| {
+            assert_eq!(value["metadata"]["loader"], "quilt");
+            assert_eq!(value["metadata"]["name"], "Quilt Demo");
+            assert_eq!(value["metadata"]["dependencies"][1]["kind"], "optional");
+        });
+        for json in [r#"[{"modid":"demo","name":"Legacy"}]"#, r#"{"modListVersion":2,"modList":[{"modid":"demo","name":"Legacy"}]}"#] {
+            with_jar(&[("mcmod.info", json.as_bytes())], |_, value| {
+                assert_eq!(value["metadata"]["loader"], "legacyForge");
+                assert_eq!(value["metadata"]["name"], "Legacy");
+            });
+        }
+    }
+
+    #[test]
+    fn local_mod_metadata_reads_forge_and_neoforge_toml_without_a_dependency() {
+        let forge = ["[[mods]]", "modId='demo'", "version='${file.jarVersion}'", "displayName = 'Demo'", "description='''First", "Second'''", "authors=[\"Ana, Jr.\", 'Bob#',] # comment", "[[mods]]", "modId='other'", "[[dependencies.demo]]", "modId='fixture-a'", "mandatory=true", "versionRange='[1,2)'", "[[dependencies.demo]]", "modId='fixture-b'", "mandatory=false"].join("\n");
+        let manifest = b"Manifest-Version: 1.0\r\nImplementation-Version: 3.5\r\n";
+        with_jar(&[("META-INF/mods.toml", forge.as_bytes()), ("META-INF/MANIFEST.MF", manifest)], |_, value| {
+            let meta = &value["metadata"];
+            assert_eq!(meta["version"], "3.5");
+            assert_eq!(meta["description"], "First\nSecond");
+            assert_eq!(meta["authors"], serde_json::json!(["Ana, Jr.", "Bob#"]));
+            assert_eq!(meta["additionalMods"], 1);
+            assert_eq!(meta["dependencies"][0]["kind"], "required");
+            assert_eq!(meta["dependencies"][1]["kind"], "optional");
+        });
+        let neo = b"[[mods]]\nmodId='demo'\n[[dependencies.demo]]\nmodId='fixture-a'\ntype='required'\n";
+        with_jar(&[("META-INF/neoforge.mods.toml", neo)], |_, value| {
+            assert_eq!(value["metadata"]["loader"], "neoforge");
+            assert_eq!(value["metadata"]["dependencies"][0]["kind"], "required");
+        });
+    }
+
+    #[test]
+    fn local_mod_metadata_keeps_file_rows_when_metadata_is_unusable() {
+        let oversized = vec![b' '; 256 * 1024 + 1];
+        for bytes in [b"incomplete json".as_slice(), oversized.as_slice()] {
+            with_jar(&[("fabric.mod.json", bytes)], |_, value| {
+                assert_eq!(value["name"], "fixture.jar");
+                assert!(value.get("metadata").is_none());
+            });
+        }
+        with_jar(&[("fabric.mod.json", br#"{"id":"demo","icon":"../x.png"}"#)], |_, value| {
+            assert_eq!(value["metadata"]["hasIcon"], false);
+        });
+    }
+
+    #[test]
+    fn local_mod_icon_uses_only_the_selected_game_root_and_a_safe_jar_basename() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aW9sAAAAASUVORK5CYII=";
+        let image = STANDARD.decode(png).unwrap();
+        with_jar(&[("fabric.mod.json", br#"{"id":"demo","icon":"assets/icon.png"}"#), ("assets/icon.png", &image)], |path, value| {
+            let parent = path.parent().unwrap();
+            let mut data = Persisted::default();
+            data.config.game_directory = parent.parent().unwrap().to_string_lossy().into_owned();
+            data.config.version_isolation = false;
+            assert!(value["metadata"].get("icon").is_none());
+            let read = |name| read_local_mod_icon_blocking(&data, "1.21.1", None, name);
+            let expected_png = format!("data:image/png;base64,{png}");
+            assert_eq!(read("fixture.jar").unwrap().as_deref(), Some(expected_png.as_str()));
+            assert!(read("fixture.zip").unwrap().is_none());
+            assert!(read("missing.jar").unwrap().is_none());
+            assert!(read("../fixture.jar").is_err());
+            assert!(read("C:\\fixture.jar").is_err());
+            assert!(read("fixture.jar:stream").is_err());
+            assert!(read_local_mod_icon_blocking(&data, "1.21.1", Some("unknown"), "fixture.jar").is_err());
+            let disabled = parent.join("fixture.jar.disabled");
+            fs::copy(path, &disabled).unwrap();
+            assert_eq!(read("fixture.jar.disabled").unwrap().as_deref(), Some(expected_png.as_str()));
+            let outside = parent.parent().unwrap().join("outside.jar");
+            fs::copy(path, &outside).unwrap();
+            let linked = parent.join("linked.jar");
+            #[cfg(unix)]
+            let made_link = std::os::unix::fs::symlink(&outside, &linked);
+            #[cfg(windows)]
+            let made_link = std::os::windows::fs::symlink_file(&outside, &linked);
+            #[cfg(any(unix, windows))]
+            if made_link.is_ok() {
+                assert!(read("linked.jar").is_err());
+            }
+        });
+    }
+
+    #[test]
+    fn local_mod_icon_keeps_archive_limits_and_requires_a_bounded_png_header() {
+        let metadata = br#"{"id":"demo","icon":"icon.png"}"#;
+        let oversized_bytes = vec![0; 512 * 1024 + 1];
+        let mut oversized_dimension = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        oversized_dimension.extend(1025_u32.to_be_bytes());
+        oversized_dimension.extend(1_u32.to_be_bytes());
+        for bad in [b"not a PNG".as_slice(), oversized_bytes.as_slice(), oversized_dimension.as_slice()] {
+            with_jar(&[("fabric.mod.json", metadata), ("icon.png", bad)], |path, value| {
+                assert_eq!(value["metadata"]["modId"], "demo");
+                assert!(crate::mod_metadata::read_icon(path).is_none());
+            });
+        }
+        with_jar(&[("fabric.mod.json", metadata), ("icon.png", b"not a PNG"), ("../outside.txt", b"outside")], |path, value| {
+            assert_eq!(value["name"], "fixture.jar");
+            assert!(value.get("metadata").is_none());
+            assert!(crate::mod_metadata::read_icon(path).is_none());
+        });
     }
 }

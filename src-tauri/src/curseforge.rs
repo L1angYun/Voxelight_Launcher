@@ -841,6 +841,155 @@ async fn download(
     result
 }
 
+use crate::resource_targets::{ResourceTargetPlan, VersionLite};
+
+async fn get_pinned_file(
+    client: &reqwest::Client,
+    key: &str,
+    project_id: &str,
+    resource_type: &str,
+    file_id: u64,
+    kind: ResourceKind,
+) -> AppResult<(Project, CfFile)> {
+    let id = self::project_id(project_id)?;
+    if !(1..=u64::from(u32::MAX)).contains(&file_id) {
+        return Err("CurseForge 文件标识无效".into());
+    }
+    let project: Response<Project> = api(client, key, &format!("mods/{id}"), &[]).await?;
+    if project.data.id != id || project.data.game_id != 432 || project.data.class_id != Some(class_id(resource_type)?) {
+        return Err("CurseForge 项目身份、游戏或分类不一致".into());
+    }
+    let file: Response<CfFile> = api(client, key, &format!("mods/{id}/files/{file_id}"), &[]).await?;
+    validate_pinned_file(&project.data, &file.data, file_id, kind)?;
+    Ok((project.data, file.data))
+}
+
+fn validate_pinned_file(project: &Project, file: &CfFile, file_id: u64, kind: ResourceKind) -> Result<(), String> {
+    if file.id != file_id || file.mod_id != project.id {
+        return Err("CurseForge 文件不属于所选项目".into());
+    }
+    if !file.is_available || file.is_server_pack || (file.game_id != 0 && file.game_id != 432) {
+        return Err("CurseForge 文件不可用于 Minecraft 客户端".into());
+    }
+    validate_id(&file.file_name)?;
+    if !kind.accepts(&file.file_name) {
+        return Err("CurseForge 文件类型与资源分类不匹配".into());
+    }
+    if file.file_length == 0 || file.file_length > MAX_FILE {
+        return Err("CurseForge 文件大小无效或超过 1 GiB".into());
+    }
+    if project.allow_mod_distribution == Some(false) {
+        return Err(distribution_error(project, file));
+    }
+    let url = file.download_url.as_deref().filter(|url| !url.is_empty())
+        .ok_or_else(|| distribution_error(project, file))?;
+    download_url(url)?;
+    expected_hashes(file)?;
+    Ok(())
+}
+
+fn pinned_metadata(file: &CfFile, kind: ResourceKind) -> VersionLite {
+    let mut loaders: Vec<_> = file.game_versions.iter().filter_map(|tag| {
+        let tag = tag.to_ascii_lowercase();
+        matches!(tag.as_str(), "fabric" | "quilt" | "forge" | "neoforge" | "iris" | "optifine" | "vanilla")
+            .then_some(tag)
+    }).collect();
+    // A CurseForge resource-pack ZIP with no loader/renderer tags uses the
+    // vanilla resource-pack format. Do not apply that inference to mods/shaders.
+    if kind == ResourceKind::ResourcePack && loaders.is_empty() {
+        loaders.push("vanilla".into());
+    }
+    VersionLite { id: file.id.to_string(), game_versions: file.game_versions.clone(), loaders,
+        version_type: "release".into(), date_published: file.file_date.clone() }
+}
+
+fn can_create_pinned(file: &CfFile) -> bool {
+    // CurseForge's current install command checks installed dependencies; it
+    // does not install them. A blank instance cannot satisfy a required file.
+    !file.dependencies.iter().any(|dep| dep.relation_type == 3)
+}
+
+pub(crate) async fn resolve_pinned_targets(
+    state: &LauncherState,
+    project_id: &str,
+    resource_type: &str,
+    file_id: u64,
+) -> AppResult<ResourceTargetPlan> {
+    let kind = ResourceKind::parse(resource_type)?;
+    let key = service_key(state)?;
+    let client = api_client()?;
+    let (project, file) = get_pinned_file(&client, &key, project_id, resource_type, file_id, kind).await?;
+    let manifest = crate::resources::manifest_releases(crate::minecraft::manifest(state).await);
+    let targets = crate::resources::target_candidates(state)?;
+    let mut plan = crate::resource_targets::build_pinned_plan(
+        project_id, &project.name, resource_type, kind, &targets, &pinned_metadata(&file, kind), &manifest,
+    );
+    if !can_create_pinned(&file) {
+        plan.suggestion = None;
+        if !plan.targets.iter().any(|row| row.compatible) {
+            plan.unsupported_reason = Some("curseforgeRequiredDependencies".into());
+        }
+    }
+    Ok(plan)
+}
+
+pub(crate) async fn create_with_pinned_file(
+    state: &Arc<LauncherState>,
+    app: &tauri::AppHandle,
+    task_id: &str,
+    project_id: &str,
+    resource_type: &str,
+    file_id: u64,
+    game_version: &str,
+    loader: &str,
+    loader_version: Option<&str>,
+    name: &str,
+) -> AppResult<crate::resources::ResourceInstanceResult> {
+    use crate::downloads::{ResourceRequest, ResourceSource, ResourceTarget};
+    use crate::resources::{create_resource_instance_then_install, require_resource_stopped, resource_target,
+        with_reserved_resource_task, ResourceProgress};
+    let request = ResourceRequest {
+        source: ResourceSource::Curseforge, project_id: project_id.into(), resource_type: resource_type.into(),
+        target: ResourceTarget::Create { game_version: game_version.into(), loader: loader.into(),
+            loader_version: loader_version.map(str::to_owned), name: name.into(), file_id: Some(file_id), resource_version_id: None },
+    };
+    with_reserved_resource_task(state, task_id, request, async {
+        let kind = ResourceKind::parse(resource_type)?;
+        let name = crate::commands::validate_instance_name(name)?;
+        let progress = ResourceProgress::new(Some(app), game_version);
+        progress.stage(state, "resource-preflight", "检查资源及必需前置");
+        let key = service_key(state)?;
+        let client = api_client()?;
+        let (project, file) = get_pinned_file(&client, &key, project_id, resource_type, file_id, kind).await?;
+        crate::resource_targets::validate_pinned_creation_pair(&pinned_metadata(&file, kind), kind, loader, game_version)?;
+        if !can_create_pinned(&file) {
+            return Err(expected("请先为兼容实例安装此 CurseForge 文件的必需前置，再选择同一个文件重试。"));
+        }
+        state.control.checkpoint().await?;
+        progress.stage(state, "resource-loader", "安装 Minecraft 及加载器");
+        let version_id = if loader == "vanilla" {
+            crate::minecraft::install(state, app, game_version).await?;
+            game_version.to_owned()
+        } else {
+            crate::loaders::install_loader_inner(state, app, loader, game_version, loader_version.unwrap_or("latest")).await?.version_id
+        };
+        progress.stage(state, "resource-create", "创建实例");
+        create_resource_instance_then_install(state, name, version_id.clone(), move |instance| async move {
+            require_resource_stopped(state, &version_id, Some(&instance.id))?;
+            let target = resource_target(state, &version_id, Some(&instance.id), kind)?;
+            crate::resources::resource_transactions::require_no_pending(&target.directory)?;
+            let path = download(state, &project, &file, &target.directory, kind).await?;
+            progress.stage(state, "complete", "实例及资源安装完成");
+            Ok(ResourceInstall {
+                name: project.name, file_name: file.file_name, path: path.to_string_lossy().into_owned(),
+                warning: (kind == ResourceKind::Shader).then(|| "光影文件已安装；游戏内仍需 Iris、OptiFine 或兼容加载器才能启用。".into()),
+                update_id: None,
+            })
+        }).await
+    }).await
+}
+
+
 #[tauri::command]
 pub async fn install_curseforge_resource(
     state: State<'_, Arc<LauncherState>>,
@@ -854,7 +1003,7 @@ pub async fn install_curseforge_resource(
     use crate::downloads::{ResourceRequest, ResourceSource, ResourceTarget};
     let request = ResourceRequest {
         source: ResourceSource::Curseforge, project_id: project_id.clone(), resource_type: resource_type.clone(),
-        target: ResourceTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id },
+        target: ResourceTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id, resource_version_id: None },
     };
     crate::resources::with_reserved_resource_task(&state, &task_id, request, async {
         let id = self::project_id(&project_id)?;
@@ -938,6 +1087,31 @@ mod tests {
             "gameVersions":["1.21.1","Fabric"],"dependencies":[{"modId":789,"relationType":3}]
         })).unwrap()
     }
+    #[test]
+    fn u1264_curseforge_creation_uses_only_exact_eligible_file_metadata() {
+        let mut project: Project = serde_json::from_value(serde_json::json!({
+            "id":456,"gameId":432,"name":"Fixture","slug":"fixture","summary":"Fixture",
+            "classId":6,"downloadCount":0.0,"authors":[],"allowModDistribution":true
+        })).unwrap();
+        let mut file = example();
+        let kind = ResourceKind::Mod;
+        validate_pinned_file(&project, &file, 123, kind).unwrap();
+        assert!(validate_pinned_file(&project, &file, 124, kind).is_err());
+        assert!(validate_pinned_file(&project, &file, 123, ResourceKind::Shader).is_err());
+        assert!(!can_create_pinned(&file));
+        file.dependencies[0].relation_type = 2;
+        assert!(can_create_pinned(&file));
+        let metadata = pinned_metadata(&file, kind);
+        crate::resource_targets::validate_pinned_creation_pair(&metadata, kind, "fabric", "1.21.1").unwrap();
+        assert!(crate::resource_targets::validate_pinned_creation_pair(&metadata, kind, "quilt", "1.21.1").is_err());
+        assert!(crate::resource_targets::validate_pinned_creation_pair(&metadata, kind, "fabric", "1.21.2").is_err());
+        project.allow_mod_distribution = Some(false);
+        assert!(validate_pinned_file(&project, &file, 123, kind).is_err());
+        project.allow_mod_distribution = Some(true);
+        file.file_name = "../outside.jar".into();
+        assert!(validate_pinned_file(&project, &file, 123, kind).is_err());
+    }
+
     #[test]
     fn curseforge_details_without_a_target_keep_available_versions() {
         let project: Project = serde_json::from_value(serde_json::json!({

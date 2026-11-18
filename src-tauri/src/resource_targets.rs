@@ -84,8 +84,21 @@ pub(crate) fn build_plan(
     versions: &[VersionLite],
     manifest: &[(String, String)],
 ) -> ResourceTargetPlan {
+    assemble_plan(project_id, title, project_type, kind, candidates, versions, manifest,
+        suggest(versions, manifest, kind, title))
+}
+
+fn assemble_plan(
+    project_id: &str,
+    title: &str,
+    project_type: &str,
+    kind: ResourceKind,
+    candidates: &[TargetCandidate],
+    versions: &[VersionLite],
+    manifest: &[(String, String)],
+    suggestion: Option<NewInstanceSuggestion>,
+) -> ResourceTargetPlan {
     let targets = rows(candidates, versions, kind);
-    let suggestion = suggest(versions, manifest, kind, title);
     let manifest_unavailable = manifest.is_empty();
     let unsupported_reason = if versions.is_empty() {
         Some("noVersions")
@@ -193,6 +206,67 @@ pub(crate) fn rows(
             .then_with(|| right_played.cmp(left_played))
     });
     planned.into_iter().map(|(row, _)| row).collect()
+}
+
+
+pub(crate) fn build_pinned_plan(
+    project_id: &str,
+    title: &str,
+    project_type: &str,
+    kind: ResourceKind,
+    candidates: &[TargetCandidate],
+    version: &VersionLite,
+    manifest: &[(String, String)],
+) -> ResourceTargetPlan {
+    let mut plan = assemble_plan(project_id, title, project_type, kind, candidates, std::slice::from_ref(version), manifest,
+        suggest_pinned(version, manifest, kind, title));
+    if plan.unsupported_reason.as_deref() == Some("noReleaseVersions")
+        && !MOD_LOADERS.into_iter().chain(["vanilla"]).any(|loader| supports_pinned_loader(version, kind, loader))
+    {
+        plan.unsupported_reason = Some("noPinnedCreationLoader".into());
+    }
+    plan
+}
+
+fn supports_pinned_loader(version: &VersionLite, kind: ResourceKind, loader: &str) -> bool {
+    let declares = |tag: &str| version.loaders.iter().any(|value| value == tag);
+    if MOD_LOADERS.contains(&loader) && declares(loader) {
+        return true;
+    }
+    match kind {
+        ResourceKind::Mod => false,
+        ResourceKind::ResourcePack => loader == "vanilla" && (declares("minecraft") || declares("vanilla")),
+        // The UI still warns that the renderer itself must be installed.
+        ResourceKind::Shader => loader == "fabric" && declares("iris"),
+    }
+}
+
+fn suggest_pinned(
+    version: &VersionLite,
+    manifest: &[(String, String)],
+    kind: ResourceKind,
+    title: &str,
+) -> Option<NewInstanceSuggestion> {
+    let games = ordered_games(std::iter::once(version), manifest);
+    let game_version = games.first()?.clone();
+    let matrix: Vec<_> = MOD_LOADERS.into_iter().chain(["vanilla"])
+        .filter(|loader| supports_pinned_loader(version, kind, loader))
+        .map(|loader| LoaderMatrix { loader: loader.into(), game_versions: games.clone() })
+        .collect();
+    let loader = matrix.first()?.loader.clone();
+    Some(NewInstanceSuggestion { loader, game_version, name: title.trim().chars().take(80).collect(), matrix })
+}
+
+pub(crate) fn validate_pinned_creation_pair(
+    version: &VersionLite,
+    kind: ResourceKind,
+    loader: &str,
+    game: &str,
+) -> AppResult<()> {
+    (supports_pinned_loader(version, kind, loader) && version.game_versions.iter().any(|value| value == game))
+        .then_some(())
+        .ok_or_else(|| AppError::new("resource.noCompatibleVersion")
+            .with_param("gameVersion", game).with_param("loader", loader))
 }
 
 pub(crate) fn suggest(
@@ -339,6 +413,29 @@ mod tests {
             last_played: None,
             running: false,
         }
+    }
+
+
+    #[test]
+    fn u1264_pinned_creation_matrix_and_validation_use_only_the_exact_file() {
+        let old = version("older", &["quilt"], &["1.20.1", "future-snapshot"]);
+        let plan = build_pinned_plan("fixture", "Fixture", "mod", ResourceKind::Mod, &[], &old, &manifest());
+        let suggestion = plan.suggestion.unwrap();
+        assert_eq!((suggestion.loader.as_str(), suggestion.game_version.as_str()), ("quilt", "1.20.1"));
+        assert_eq!(suggestion.matrix.len(), 1);
+        assert_eq!(suggestion.matrix[0].game_versions, ["1.20.1"]);
+        assert!(validate_pinned_creation_pair(&old, ResourceKind::Mod, "quilt", "1.20.1").is_ok());
+        assert!(validate_pinned_creation_pair(&old, ResourceKind::Mod, "quilt", "1.21.1").is_err());
+        assert!(validate_pinned_creation_pair(&old, ResourceKind::Mod, "fabric", "1.20.1").is_err());
+
+        let pack = version("pack", &["minecraft"], &["1.20.1"]);
+        assert!(validate_pinned_creation_pair(&pack, ResourceKind::ResourcePack, "vanilla", "1.20.1").is_ok());
+        assert!(validate_pinned_creation_pair(&pack, ResourceKind::ResourcePack, "quilt", "1.20.1").is_err());
+        let shader = version("shader", &["optifine"], &["1.20.1"]);
+        let unsupported = build_pinned_plan("fixture", "Fixture", "shader", ResourceKind::Shader, &[], &shader, &manifest());
+        assert!(unsupported.suggestion.is_none());
+        assert_eq!(unsupported.unsupported_reason.as_deref(), Some("noPinnedCreationLoader"));
+        assert!(validate_pinned_creation_pair(&shader, ResourceKind::Shader, "fabric", "1.20.1").is_err());
     }
 
     #[test]

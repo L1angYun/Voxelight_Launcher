@@ -18,6 +18,7 @@ mod loaders;
 mod minecraft;
 mod memory;
 mod models;
+mod mod_metadata;
 mod modpacks;
 mod path_grants;
 mod platform;
@@ -238,6 +239,7 @@ pub fn run() {
             resources::get_modrinth_project_details,
             curseforge::get_curseforge_project_details,
             resources::list_local_resources,
+            resources::read_local_mod_icon,
             resources::toggle_resource,
             resources::check_resource_updates,
             resources::update_resource,

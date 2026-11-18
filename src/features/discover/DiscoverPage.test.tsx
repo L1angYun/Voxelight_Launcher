@@ -176,6 +176,146 @@ afterEach(() => {
 });
 
 describe("DiscoverPage", () => {
+
+  it.each(["modrinth", "curseforge"] as const)("pins the selected historical %s file in both IPC calls", async (source) => {
+    const dispatched = commandMock.getMockImplementation()!;
+    const historical = source === "modrinth" ? "older-release" : "8675309";
+    const pinned = source === "modrinth" ? { resourceVersionId: historical } : { fileId: Number(historical) };
+    const chosen = { ...details.versions[0], id: historical, name: "Historical version" };
+    const incompatible = { ...chosen, id: source === "modrinth" ? "incompatible" : "8675310", name: "Incompatible version", compatible: false };
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_modrinth_project_details" || name === "get_curseforge_project_details") {
+        return { ...details, versions: [chosen, incompatible] };
+      }
+      return dispatched(name, args);
+    });
+
+    await render();
+    if (source === "curseforge") {
+      await act(async () => container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="来源"]')!.click());
+      await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="curseforge"]')!.click());
+    }
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.includes("查看详情"))!.click());
+    const rows = [...container.querySelectorAll<HTMLElement>(".vx-project-details .vx-resource-row")];
+    const rejected = rows.find(row => row.textContent?.includes("Incompatible version"))?.querySelector("button");
+    const accepted = rows.find(row => row.textContent?.includes("Historical version"))?.querySelector("button");
+    expect(rejected?.disabled).toBe(true);
+    expect(accepted?.disabled).toBe(false);
+    await act(async () => accepted!.click());
+
+    expect(commandMock).toHaveBeenCalledWith("reserve_resource_task", { request: {
+      source, projectId: "sodium", resourceType: "mod",
+      target: { mode: "existing", versionId: "1.21.1", instanceId: "fixture-world", ...pinned },
+    } });
+    expect(commandMock).toHaveBeenCalledWith(source === "modrinth" ? "install_resource" : "install_curseforge_resource", {
+      projectId: "sodium", versionId: "1.21.1", instanceId: "fixture-world", resourceType: "mod", taskId: "resource-task", ...pinned,
+    });
+    if (source === "modrinth") {
+      expect(commandMock).toHaveBeenCalledWith("resolve_resource_targets", {
+        source, projectId: "sodium", resourceType: "mod", ...pinned,
+      });
+    }
+  });
+
+
+
+  it("uses the selected CurseForge file when creating a compatible new instance", async () => {
+    mockLauncher.selectedVersionId = "";
+    mockLauncher.selectedInstance = undefined;
+    const cf = { ...project, project_id: "90210" };
+    const dispatch = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "search_curseforge") return { hits: [cf] };
+      if (name === "get_curseforge_project_details") return { ...details, project: cf,
+        versions: [{ ...details.versions[0], id: "8675309", compatible: false, loaders: ["quilt"], gameVersions: ["1.20.1"] }] };
+      if (name === "resolve_resource_targets" && args?.fileId === 8675309) return { ...plan(false), projectId: "90210",
+        suggestion: { loader: "quilt", gameVersion: "1.20.1", name: "Sodium", matrix: [{ loader: "quilt", gameVersions: ["1.20.1"] }] } };
+      if (name === "list_loader_versions") return [{ id: "0.26.0", stable: true, recommended: true }];
+      return dispatch(name, args);
+    });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="来源"]')!.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="curseforge"]')!.click());
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.includes("查看详情"))!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".vx-project-details .vx-resource-row button")!.click());
+    expect(commandMock).toHaveBeenCalledWith("resolve_resource_targets", { source: "curseforge", projectId: "90210", resourceType: "mod", fileId: 8675309 });
+    const dialog = container.querySelector<HTMLDialogElement>(".vx-install-target")!;
+    expect(dialog.querySelector('[aria-label="加载器"]')?.textContent).toBe("Quilt");
+    expect(dialog.querySelector('[aria-label="游戏版本"]')?.textContent).toContain("1.20.1");
+    await act(async () => dialogButton("创建并安装").click());
+    const exact = { gameVersion: "1.20.1", loader: "quilt", loaderVersion: "0.26.0", name: "Sodium", fileId: 8675309 };
+    expect(commandMock).toHaveBeenCalledWith("reserve_resource_task", { request: {
+      source: "curseforge", projectId: "90210", resourceType: "mod", target: { mode: "create", ...exact },
+    } });
+    expect(commandMock).toHaveBeenCalledWith("create_instance_for_resource", {
+      source: "curseforge", projectId: "90210", resourceType: "mod", taskId: "resource-task", ...exact,
+    });
+    expect(commandMock.mock.calls.some(([name]) => name === "install_curseforge_resource")).toBe(false);
+  });
+
+  it("retains a historical file through new-instance planning, reserve, and install", async () => {
+    mockLauncher.selectedVersionId = "";
+    mockLauncher.selectedInstance = undefined;
+    const pinnedSuggestion = { loader: "quilt" as const, gameVersion: "1.20.1", name: "Sodium",
+      matrix: [{ loader: "quilt" as const, gameVersions: ["1.20.1"] }] };
+    const dispatch = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_modrinth_project_details") return {
+        ...details, versions: [{ ...details.versions[0], id: "older", compatible: false,
+          loaders: ["quilt"], gameVersions: ["1.20.1"] }],
+      };
+      if (name === "list_loader_versions") return [{ id: "0.26.0", stable: true, recommended: true }];
+      if (name === "resolve_resource_targets" && args?.resourceVersionId === "older") {
+        return { ...plan(false), suggestion: pinnedSuggestion };
+      }
+      return dispatch(name, args);
+    });
+    await render();
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.includes("查看详情"))!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".vx-project-details .vx-resource-row button")!.click());
+
+    const dialog = container.querySelector<HTMLDialogElement>(".vx-install-target")!;
+    expect(dialog.open).toBe(true);
+    expect(dialog.querySelector('[aria-label="加载器"]')?.textContent).toBe("Quilt");
+    expect(dialog.querySelector('[aria-label="游戏版本"]')?.textContent).toContain("1.20.1");
+    expect(commandMock).toHaveBeenCalledWith("resolve_resource_targets", {
+      source: "modrinth", projectId: "sodium", resourceType: "mod", resourceVersionId: "older",
+    });
+
+    await act(async () => dialogButton("创建并安装").click());
+    expect(commandMock).toHaveBeenCalledWith("reserve_resource_task", { request: {
+      source: "modrinth", projectId: "sodium", resourceType: "mod",
+      target: expect.objectContaining({ mode: "create", loader: "quilt", loaderVersion: "0.26.0", gameVersion: "1.20.1", resourceVersionId: "older" }),
+    } });
+    expect(commandMock).toHaveBeenCalledWith("create_instance_for_resource", expect.objectContaining({
+      source: "modrinth", projectId: "sodium", resourceType: "mod", taskId: "resource-task",
+      loader: "quilt", loaderVersion: "0.26.0", gameVersion: "1.20.1", resourceVersionId: "older",
+    }));
+  });
+
+  it("opens a Modrinth target picker for the historical version without a selected instance or game version", async () => {
+    mockLauncher.selectedVersionId = "";
+    mockLauncher.selectedInstance = undefined;
+    const dispatched = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_modrinth_project_details") {
+        return { ...details, versions: [{ ...details.versions[0], id: "older", compatible: false }] };
+      }
+      return dispatched(name, args);
+    });
+    await render();
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.includes("查看详情"))!.click());
+    const install = container.querySelector<HTMLButtonElement>(".vx-project-details .vx-resource-row button");
+    expect(install?.disabled).toBe(false);
+    await act(async () => install!.click());
+    expect(commandMock).toHaveBeenCalledWith("resolve_resource_targets", {
+      source: "modrinth", projectId: "sodium", resourceType: "mod", resourceVersionId: "older",
+    });
+    expect(commandMock).not.toHaveBeenCalledWith("reserve_resource_task", expect.anything());
+    expect(container.querySelector<HTMLDialogElement>(".vx-install-target")?.open).toBe(true);
+  });
+
+
   it.each(["card", "details"] as const)("routes a CurseForge modpack from %s only through local ZIP import", async (entry) => {
     const release = { id: "pack-fixture", name: "Example release", versionNumber: "1.0", gameVersions: ["1.21.1"], loaders: ["fabric"], datePublished: "2026-01-01" };
     const pack = { ...project, project_type: "modpack", project_id: "90210", title: "Example CurseForge pack" };
@@ -343,7 +483,7 @@ describe("DiscoverPage", () => {
     expect(commandMock).toHaveBeenCalledWith("get_modrinth_project_details", { projectId: "sodium", versionId: "1.21.1", instanceId: "fixture-world", resourceType: "mod" });
     expect(container.textContent).toContain("1.0");
     expect(container.textContent).toContain("未知关系");
-    expect(container.textContent).not.toContain("必需");
+    expect([...container.querySelectorAll(".vx-dependency-kind")].map(node => node.textContent)).toEqual(["未知关系"]);
   });
 
   it("switches source without losing the selected instance", async () => {

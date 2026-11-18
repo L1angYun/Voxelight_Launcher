@@ -218,6 +218,55 @@ describe("library and instance details", () => {
     expect(select.getAttribute("aria-current")).toBe("true");
     select.focus(); expect(document.activeElement).toBe(select);
   });
+  it("uses local mod metadata and falls back to the filename for other jars", async () => {
+    commandMock.mockImplementation(async (name) => name === "list_local_resources" ? [
+      { name: "file-a.jar", fileName: "file-a.jar", path: "file-a.jar", enabled: true, size: 1,
+        metadata: { loader: "fabric", modId: "fixture", name: "Visible Fixture Mod", version: "3.1.0",
+          authors: ["Alice"], hasIcon: false, dependencies: [], additionalMods: 0 } },
+      { name: "file-b.jar", fileName: "file-b.jar", path: "file-b.jar", enabled: true, size: 2 },
+    ] : []);
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const rows = [...container.querySelectorAll(".vx-resource-row")];
+    expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual(["Visible Fixture Mod", "file-b.jar"]);
+    expect(rows[0].querySelector("small")?.textContent).toContain("3.1.0 · Alice");
+  });
+  it("loads a visible mod icon once and falls back when the browser cannot decode it", async () => {
+    let intersect: ((visible: boolean) => void) | undefined;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      observe = observe;
+      disconnect = disconnect;
+      constructor(callback: IntersectionObserverCallback) {
+        intersect = (visible) => callback([{ isIntersecting: visible } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      }
+    });
+    try {
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? [{
+        name: "file-a.jar", fileName: "file-a.jar", path: "file-a.jar", enabled: true, size: 1,
+        metadata: { loader: "fabric", modId: "fixture", name: "Visible Fixture Mod", version: "3.1.0",
+          authors: ["Alice"], hasIcon: true, dependencies: [], additionalMods: 0 },
+      }] : name === "read_local_mod_icon" ? "data:image/png;base64,broken" : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      const row = container.querySelector(".vx-resource-row")!;
+      expect(observe).toHaveBeenCalledWith(row);
+      await act(async () => intersect!(false));
+      expect(commandMock.mock.calls.filter(([name]) => name === "read_local_mod_icon")).toHaveLength(0);
+      await act(async () => { intersect!(true); intersect!(true); });
+      expect(commandMock.mock.calls.filter(([name]) => name === "read_local_mod_icon")).toEqual([
+        ["read_local_mod_icon", { versionId: "1.21.1", instanceId: instance.id, fileName: "file-a.jar" }],
+      ]);
+      const image = row.querySelector("img")!;
+      expect(image.getAttribute("src")).toBe("data:image/png;base64,broken");
+      expect(image.getAttribute("alt")).toBe("");
+      await act(async () => image.dispatchEvent(new Event("error")));
+      expect(row.querySelector("img")).toBeNull();
+      expect(row.textContent).toContain("Visible Fixture Mod");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not announce an empty resource folder before its first request starts", async () => {
     commandMock.mockImplementation(() => new Promise(() => {}));
     let emptyOnFirstCommit: boolean | undefined;

@@ -264,7 +264,7 @@ export async function installLauncherFixture(
       if (cancelledTasks.has(taskId)) throw { code: "download.cancelled", params: {} };
       const request = resourceReservations.get(taskId);
       const target = request?.target as Record<string, unknown> | undefined;
-      const fields = mode === "create" ? ["gameVersion", "loader", "loaderVersion", "name"] : ["versionId", "instanceId", "fileId"];
+      const fields = mode === "create" ? ["gameVersion", "loader", "loaderVersion", "name", "resourceVersionId", "fileId"] : ["versionId", "instanceId", "fileId", "resourceVersionId"];
       if (request?.source !== source || request?.projectId !== args?.projectId ||
         request?.resourceType !== args?.resourceType || target?.mode !== mode ||
         fields.some(field => target?.[field] !== args?.[field])) throw { code: "download.notFound", params: {} };

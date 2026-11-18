@@ -35,6 +35,7 @@ describe("Tauri IPC registration contract", () => {
 
   it("registers resource transaction and managed server capabilities", () => {
     const expected = [
+      "read_local_mod_icon",
       "check_resource_updates",
       "update_resource",
       "list_resource_update_history",

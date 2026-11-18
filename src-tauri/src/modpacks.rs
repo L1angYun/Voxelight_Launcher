@@ -229,13 +229,30 @@ fn hashes(path: &Path) -> Result<(String, String, u64), String> {
     ))
 }
 
+struct VerifiedPackFile {
+    downloaded: bool,
+    sha1: String,
+    sha512: String,
+    size: u64,
+}
+
+impl VerifiedPackFile {
+    fn receipt(downloaded: bool, (sha1, sha512, size): (String, String, u64)) -> Self {
+        Self { downloaded, sha1, sha512, size }
+    }
+
+    fn lock_entry(self, path: String) -> LockedPackFile {
+        LockedPackFile { path, sha1: self.sha1, sha512: self.sha512, size: self.size }
+    }
+}
+
 async fn fetch_verified(
     state: &LauncherState,
     urls: &[String],
     target: &Path,
     size: u64,
     expected: &BTreeMap<String, String>,
-) -> Result<bool, String> {
+) -> Result<VerifiedPackFile, String> {
     if size == 0 || size > MAX_ARCHIVE_BYTES {
         return Err("单个整合包文件大小无效或超过 2 GiB".into());
     }
@@ -259,7 +276,8 @@ async fn fetch_verified(
         .ok_or("文件缺少校验值")?
         .to_ascii_lowercase();
     let cache = safe_join(&cache_root, &format!("{cache_key}.bin"))?;
-    if cache.is_file() && matches(&hashes(&cache)?) {
+    let cached = if cache.is_file() { Some(hashes(&cache)?) } else { None };
+    if let Some(values) = cached.filter(&matches) {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -267,7 +285,7 @@ async fn fetch_verified(
             return Err("整合包文件目标已存在".into());
         }
         fs::copy(&cache, target).map_err(|e| e.to_string())?;
-        return Ok(false);
+        return Ok(VerifiedPackFile::receipt(false, values));
     }
     let network = client(true)?;
     let mut last_error = "整合包没有受支持的下载地址".to_owned();
@@ -284,7 +302,7 @@ async fn fetch_verified(
             &cache_root,
             &format!(".pack-download-{}.part", uuid::Uuid::new_v4()),
         )?;
-        let result: Result<(), String> = async {
+        let result: Result<(String, String, u64), String> = async {
             let response = network
                 .get(parsed)
                 .send()
@@ -324,20 +342,17 @@ async fn fetch_verified(
             }
             output.sync_all().await.map_err(|e| e.to_string())?;
             drop(output);
-            if !matches(&(
-                format!("{:x}", a.finalize()),
-                format!("{:x}", b.finalize()),
-                count,
-            )) {
+            let values = (format!("{:x}", a.finalize()), format!("{:x}", b.finalize()), count);
+            if !matches(&values) {
                 return Err("整合包文件哈希或大小校验失败".into());
             }
             checked_absolute(&cache)?;
             fs::rename(&temporary, &cache).map_err(|e| e.to_string())?;
-            Ok(())
+            Ok(values)
         }
         .await;
         match result {
-            Ok(()) => {
+            Ok(values) => {
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
@@ -345,7 +360,7 @@ async fn fetch_verified(
                     return Err("整合包目标文件已存在，拒绝覆盖".into());
                 }
                 fs::copy(&cache, target).map_err(|e| e.to_string())?;
-                return Ok(true);
+                return Ok(VerifiedPackFile::receipt(true, values));
             }
             Err(error) => {
                 last_error = error;
@@ -385,6 +400,12 @@ fn inspect_zip_limits_controlled(
     }
     let mut zip = ZipArchive::new(fs::File::open(archive).map_err(|e| e.to_string())?)
         .map_err(|_| "文件不是有效 ZIP 压缩包")?;
+    inspect_zip_reader(&mut zip, total_limit, file_limit, state)
+}
+
+pub(crate) fn inspect_zip_reader<R: std::io::Read + std::io::Seek>(
+    zip: &mut ZipArchive<R>, total_limit: u64, file_limit: u64, state: Option<&LauncherState>,
+) -> Result<(), String> {
     if zip.len() > 100_000 {
         return Err("ZIP 文件数量超过限制".into());
     }
@@ -422,7 +443,7 @@ fn inspect_zip_limits_controlled(
     }
     Ok(())
 }
-fn archive_relative(value: &str) -> Result<(), String> {
+pub(crate) fn archive_relative(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value
             .split('/')
@@ -451,6 +472,17 @@ pub(crate) fn extract_zip_controlled(
     prefix: &str,
     skip: &[&str],
     state: Option<&LauncherState>,
+) -> Result<(), String> {
+    extract_zip_tracking(archive, destination, prefix, skip, state, None)
+}
+
+fn extract_zip_tracking(
+    archive: &Path,
+    destination: &Path,
+    prefix: &str,
+    skip: &[&str],
+    state: Option<&LauncherState>,
+    mut written_paths: Option<&mut HashSet<String>>,
 ) -> Result<(), String> {
     inspect_zip_limits_controlled(archive, MAX_ZIP_BYTES, MAX_ZIP_BYTES, MAX_ZIP_BYTES, state)?;
     checked_absolute(destination)?;
@@ -488,6 +520,9 @@ pub(crate) fn extract_zip_controlled(
             .map_err(|_| "ZIP 文件读取或 CRC 校验失败")?;
         if actual != expected {
             return Err("ZIP 条目大小不一致".into());
+        }
+        if let Some(paths) = written_paths.as_deref_mut() {
+            paths.insert(relative.to_lowercase());
         }
     }
     Ok(())
@@ -568,7 +603,7 @@ async fn mrpack_into(
     archive: &Path,
     stage: &Path,
     optional: bool,
-) -> Result<(PackIndex, usize, usize, Vec<String>), String> {
+) -> Result<StagedPack, String> {
     let index: PackIndex = zip_json(archive, "modrinth.index.json")?;
     if index.format_version != 1 || index.game != "minecraft" {
         return Err("不支持此 Modrinth 整合包格式或游戏".into());
@@ -581,6 +616,7 @@ async fn mrpack_into(
     let mut paths = HashSet::new();
     let mut downloaded = 0;
     let mut skipped = 0;
+    let mut files = Vec::new();
     for file in &index.files {
         state.control.checkpoint().await?;
         archive_relative(&file.path)?;
@@ -616,34 +652,44 @@ async fn mrpack_into(
         if total > MAX_PACK_BYTES {
             return Err("整合包下载总大小超过 8 GiB".into());
         }
-        if fetch_verified(
+        let materialized = fetch_verified(
             state,
             &file.downloads,
             &target,
             file.file_size,
             &file.hashes,
         )
-        .await?
-        {
+        .await?;
+        if materialized.downloaded {
             downloaded += 1;
         }
+        files.push(materialized.lock_entry(file.path.clone()));
     }
-    for prefix in ["overrides/", "client-overrides/"] {
-        let arc = state.clone();
-        let archive = archive.to_owned();
-        let stage = stage.to_owned();
-        let prefix = prefix.to_owned();
-        tokio::task::spawn_blocking(move || {
-            extract_zip_controlled(&archive, &stage, &prefix, &[], Some(&arc))
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-    }
+    let override_paths = extract_pack_overrides(state, archive, stage,
+        vec!["overrides/".into(), "client-overrides/".into()]).await?;
     let mut warnings = Vec::new();
     if skipped > 0 {
         warnings.push(format!("按选择跳过 {skipped} 个可选客户端文件"));
     }
-    Ok((index, downloaded, skipped, warnings))
+    Ok(StagedPack { index, downloaded, skipped, warnings, files, override_paths })
+}
+
+async fn extract_pack_overrides(
+    state: &Arc<LauncherState>,
+    archive: &Path,
+    stage: &Path,
+    prefixes: Vec<String>,
+) -> Result<HashSet<String>, String> {
+    let state = state.clone();
+    let archive = archive.to_owned();
+    let stage = stage.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let mut paths = HashSet::new();
+        for prefix in prefixes {
+            extract_zip_tracking(&archive, &stage, &prefix, &[], Some(&state), Some(&mut paths))?;
+        }
+        Ok(paths)
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[derive(Deserialize)]
@@ -714,7 +760,7 @@ async fn curse_into(
     stage: &Path,
     key: Option<String>,
     optional: bool,
-) -> Result<(PackIndex, usize, usize, Vec<String>), String> {
+) -> Result<StagedPack, String> {
     let manifest: CurseManifest = zip_json(archive, "manifest.json")?;
     if manifest.manifest_type != "minecraftModpack" || manifest.manifest_version != 1 {
         return Err("不支持此 CurseForge 清单格式".into());
@@ -751,6 +797,7 @@ async fn curse_into(
     let mut downloaded = 0;
     let mut skipped = 0;
     let mut seen = HashSet::new();
+    let mut files = Vec::new();
     for item in manifest.files {
         state.control.checkpoint().await?;
         if !item.required && !optional {
@@ -817,36 +864,31 @@ async fn curse_into(
         if total > MAX_PACK_BYTES {
             return Err("整合包总大小超过 8 GiB".into());
         }
-        if fetch_verified(
+        let target = safe_join(stage, &relative)?;
+        let materialized = fetch_verified(
             state,
             &[url],
-            &safe_join(stage, &relative)?,
+            &target,
             file.data.file_length,
             &expected,
         )
-        .await?
-        {
+        .await?;
+        if materialized.downloaded {
             downloaded += 1;
         }
+        // Alongside CurseForge's expected SHA-1, record SHA-512 computed during verification.
+        files.push(materialized.lock_entry(relative));
     }
     let prefix = manifest.overrides.trim_end_matches('/');
     safe_join(stage, prefix)?;
-    let arc = state.clone();
-    let archive = archive.to_owned();
-    let stage = stage.to_owned();
-    let prefix = format!("{prefix}/");
-    tokio::task::spawn_blocking(move || {
-        extract_zip_controlled(&archive, &stage, &prefix, &[], Some(&arc))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    let override_paths = extract_pack_overrides(state, archive, stage, vec![format!("{prefix}/")]).await?;
     let warnings = if skipped > 0 {
         vec![format!("按选择跳过 {skipped} 个可选文件")]
     } else {
         Vec::new()
     };
-    Ok((
-        PackIndex {
+    Ok(StagedPack {
+        index: PackIndex {
             format_version: 1,
             game: "minecraft".into(),
             version_id: "curseforge-import".into(),
@@ -858,7 +900,75 @@ async fn curse_into(
         downloaded,
         skipped,
         warnings,
-    ))
+        files,
+        override_paths,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum PackOrigin {
+    Modrinth {
+        project_id: String,
+        version_id: String,
+        version_number: String,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LockedPackFile {
+    path: String,
+    sha1: String,
+    sha512: String,
+    size: u64,
+}
+
+struct StagedPack {
+    index: PackIndex,
+    downloaded: usize,
+    skipped: usize,
+    warnings: Vec<String>,
+    files: Vec<LockedPackFile>,
+    override_paths: HashSet<String>,
+}
+
+fn write_import_lock(
+    stage: &Path,
+    staged: &StagedPack,
+    origin: Option<&PackOrigin>,
+    inventory: &[FileRecord],
+) -> Result<(), String> {
+    const LOCK: &str = ".launcher-pack.json";
+    let mut paths = HashSet::new();
+    for record in inventory {
+        let key = record.relative.to_lowercase();
+        if key == LOCK || !paths.insert(key) {
+            return Err("整合包的文件路径与锁文件冲突或大小写重复".into());
+        }
+    }
+    let overrides: Vec<_> = inventory
+        .iter()
+        .filter(|record| staged.override_paths.contains(&record.relative.to_lowercase()))
+        .collect();
+    let mut files: Vec<_> = staged.files.iter()
+        .filter(|file| !staged.override_paths.contains(&file.path.to_lowercase()))
+        .collect();
+    files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    let mut payload = json!({
+        "formatVersion": 2,
+        "name": staged.index.name,
+        "dependencies": staged.index.dependencies,
+        "files": files,
+        "overrides": overrides,
+    });
+    if let Some(origin) = origin {
+        payload["source"] = serde_json::to_value(origin).map_err(|e| e.to_string())?;
+    }
+    fs::OpenOptions::new().write(true).create_new(true)
+        .open(safe_join(stage, LOCK)?).map_err(|e| e.to_string())?
+        .write_all(&serde_json::to_vec_pretty(&payload).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
 }
 
 async fn import_inner(
@@ -868,6 +978,7 @@ async fn import_inner(
     name: Option<String>,
     key: Option<String>,
     optional: bool,
+    origin: Option<PackOrigin>,
 ) -> Result<PackImportResult, String> {
     let source = archive.to_owned();
     let inspect_state = state.clone();
@@ -894,7 +1005,7 @@ async fn import_inner(
     }
     let mut owned_stage = instances::StagingDirectory::create(stage_name)?;
     let stage = owned_stage.path();
-    let (index, downloaded, skipped, warnings) = if modrinth {
+    let staged = if modrinth {
         mrpack_into(state, archive, stage, optional).await?
     } else if curse {
         curse_into(state, archive, stage, key, optional).await?
@@ -905,24 +1016,18 @@ async fn import_inner(
     };
     let inventory_state = state.clone();
     let inventory_stage = stage.to_owned();
-    let expanded = tokio::task::spawn_blocking(move || {
-        let files = instances::collect_files_controlled(&inventory_stage, Some(&inventory_state))?;
-        Ok::<_, String>(files.iter().map(|f| f.size).sum::<u64>())
+    let inventory = tokio::task::spawn_blocking(move || {
+        instances::collect_files_controlled(&inventory_stage, Some(&inventory_state))
     }).await.map_err(|error| error.to_string())??;
+    let expanded = inventory.iter().map(|f| f.size).sum::<u64>();
+    let index = &staged.index;
     if expanded > MAX_PACK_BYTES {
         return Err("整合包下载与覆盖文件合计超过 8 GiB".into());
     }
     let (version_id, loader, loader_version) =
         install_dependencies(state, app, &index.dependencies).await?;
     state.control.checkpoint().await?;
-    fs::write(
-        safe_join(stage, ".launcher-pack.json")?,
-        serde_json::to_vec_pretty(
-            &json!({"formatVersion":1,"name":index.name,"dependencies":index.dependencies}),
-        )
-        .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    write_import_lock(stage, &staged, origin.as_ref().filter(|_| modrinth), &inventory)?;
     let instance = instances::build_instance(
         name.as_deref().unwrap_or(&index.name),
         &version_id,
@@ -930,6 +1035,7 @@ async fn import_inner(
         &loader,
         &loader_version,
     )?;
+    let StagedPack { downloaded, skipped, warnings, .. } = staged;
     if let Err(error) = owned_stage.publish(&final_dir) {
         return Err(format!(
             "无法提交整合包，完整暂存目录保留在 {}：{error}",
@@ -1068,6 +1174,7 @@ pub async fn import_modpack(
         name,
         curseforge_api_key,
         include_optional.unwrap_or(false),
+        None,
     )
     .await;
     state
@@ -1125,6 +1232,11 @@ pub async fn install_modrinth_modpack(
             name.or(Some(project.title)),
             None,
             include_optional.unwrap_or(false),
+            Some(PackOrigin::Modrinth {
+                project_id: project.id,
+                version_id: version.id,
+                version_number: version.version_number,
+            }),
         )
         .await
     }
@@ -1789,6 +1901,106 @@ mod tests {
                 .read_to_string(&mut contents)
                 .unwrap();
             assert_eq!(contents, "volume=21");
+        });
+    }
+
+    #[test]
+    fn local_v1_pack_lock_remains_readable() {
+        let root = test_root();
+        fs::create_dir_all(root.parent().unwrap()).unwrap();
+        let owned = instances::StagingDirectory::create(root).unwrap();
+        let (state, instance) = shared_export_fixture(owned.path());
+        fs::write(
+            Path::new(&instance.game_directory).join(".launcher-pack.json"),
+            r#"{"formatVersion":1,"name":"Legacy pack","dependencies":{"minecraft":"1.21.1","fabric-loader":"0.16.10"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            instance_dependencies(&state, &instance).unwrap(),
+            BTreeMap::from([
+                ("minecraft".into(), "1.21.1".into()),
+                ("fabric-loader".into(), "0.16.10".into()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn import_lock_v2_records_verified_files_final_overrides_and_online_provenance() {
+        tauri::async_runtime::block_on(async {
+            let root = test_root();
+            fs::create_dir_all(root.parent().unwrap()).unwrap();
+            let owned = instances::StagingDirectory::create(root).unwrap();
+            let root = owned.path();
+            let (state, _) = shared_export_fixture(root);
+            let state = Arc::new(state);
+            let cache = state.data_dir.join("pack-cache");
+            fs::create_dir(&cache).unwrap();
+            let mut entries = Vec::new();
+            for (path, client, contents) in [
+                ("mods/required.jar", "required", &b"required bytes"[..]),
+                ("mods/optional.jar", "optional", &b"optional bytes"[..]),
+                ("mods/unsupported.jar", "unsupported", &b"server-only bytes"[..]),
+                ("config/replaced.toml", "required", &b"remote config"[..]),
+            ] {
+                let sha1 = format!("{:x}", Sha1::digest(contents));
+                let sha512 = format!("{:x}", Sha512::digest(contents));
+                if client != "unsupported" {
+                    fs::write(cache.join(format!("{sha512}.bin")), contents).unwrap();
+                }
+                entries.push(json!({"path": path, "hashes": {"sha1": sha1, "sha512": sha512},
+                    "downloads": [], "fileSize": contents.len(), "env": {"client": client}}));
+            }
+            let archive = root.join("test.mrpack");
+            let mut zip = ZipWriter::new(fs::File::create(&archive).unwrap());
+            let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            zip.start_file("modrinth.index.json", options).unwrap();
+            zip.write_all(&serde_json::to_vec(&json!({"formatVersion": 1, "game": "minecraft",
+                "versionId": "local-index-version", "name": "Fixture pack", "files": entries,
+                "dependencies": {"minecraft": "1.21.1"}})).unwrap()).unwrap();
+            for (path, bytes) in [
+                ("overrides/config/replaced.toml", &b"shared config"[..]),
+                ("client-overrides/config/replaced.toml", &b"client config"[..]),
+                ("overrides/config/shared.toml", &b"shared only"[..]),
+            ] {
+                zip.start_file(path, options).unwrap();
+                zip.write_all(bytes).unwrap();
+            }
+            zip.finish().unwrap();
+            let origin = PackOrigin::Modrinth {
+                project_id: "test-project".into(),
+                version_id: "test-version".into(),
+                version_number: "2.0.0".into(),
+            };
+            for (include_optional, origin) in [(false, Some(&origin)), (true, None)] {
+                let stage = root.join(if include_optional { "local" } else { "online" });
+                fs::create_dir(&stage).unwrap();
+                let staged = mrpack_into(&state, &archive, &stage, include_optional).await.unwrap();
+                let inventory = instances::collect_files_controlled(&stage, None).unwrap();
+                write_import_lock(&stage, &staged, origin, &inventory).unwrap();
+                let lock: Value = serde_json::from_slice(&fs::read(stage.join(".launcher-pack.json")).unwrap()).unwrap();
+                assert_eq!(lock["formatVersion"], 2);
+                assert_eq!(lock["name"], "Fixture pack");
+                assert_eq!(lock["dependencies"], json!({"minecraft": "1.21.1"}));
+                if origin.is_some() {
+                    assert_eq!(lock["source"], json!({"kind": "modrinth", "projectId": "test-project",
+                        "versionId": "test-version", "versionNumber": "2.0.0"}));
+                } else {
+                    assert!(lock.get("source").is_none());
+                }
+                let mut expected = Vec::new();
+                for &i in if include_optional { &[1usize, 0][..] } else { &[0usize][..] } {
+                    let entry = &entries[i];
+                    expected.push(json!({"path": entry["path"], "sha1": entry["hashes"]["sha1"],
+                        "sha512": entry["hashes"]["sha512"], "size": entry["fileSize"]}));
+                }
+                assert_eq!(lock["files"], json!(expected));
+                let mut overrides = lock["overrides"].as_array().unwrap().clone();
+                overrides.sort_by(|a,b| a["relative"].as_str().cmp(&b["relative"].as_str()));
+                assert_eq!(overrides, vec![
+                    json!({"relative": "config/replaced.toml", "sha256": format!("{:x}", sha2::Sha256::digest(b"client config")), "size": 13}),
+                    json!({"relative": "config/shared.toml", "sha256": format!("{:x}", sha2::Sha256::digest(b"shared only")), "size": 11}),
+                ]);
+            }
         });
     }
 

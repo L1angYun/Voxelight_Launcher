@@ -82,12 +82,18 @@ pub(crate) enum ResourceTarget {
         version_id: String,
         instance_id: Option<String>,
         file_id: Option<u64>,
+        #[serde(default)]
+        resource_version_id: Option<String>,
     },
     Create {
         game_version: String,
         loader: String,
         loader_version: Option<String>,
         name: String,
+        #[serde(default)]
+        file_id: Option<u64>,
+        #[serde(default)]
+        resource_version_id: Option<String>,
     },
 }
 
@@ -374,7 +380,7 @@ impl DownloadControl {
 
     pub(crate) fn reserve_resource(&self, request: ResourceRequest) -> Result<String, String> {
         let label = match (&request.source, &request.target) {
-            (ResourceSource::Modrinth, ResourceTarget::Create { .. }) => "创建实例并安装资源",
+            (_, ResourceTarget::Create { .. }) => "创建实例并安装资源",
             (ResourceSource::Modrinth, _) => "安装 Modrinth 资源及必需前置",
             (ResourceSource::Curseforge, _) => "安装 CurseForge 资源",
         };

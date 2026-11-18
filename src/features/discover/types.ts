@@ -52,12 +52,12 @@ export interface ResourceTargetPlan {
   targets: TargetRow[];
   suggestion?: NewInstanceSuggestion | null;
   manifestUnavailable: boolean;
-  unsupportedReason?: "datapack" | "noSupportedLoader" | "noVersions" | "noReleaseVersions" | "manifestUnavailable" | null;
+  unsupportedReason?: "datapack" | "noSupportedLoader" | "noVersions" | "noReleaseVersions" | "noPinnedCreationLoader" | "curseforgeRequiredDependencies" | "manifestUnavailable" | null;
 }
 export interface ResourceCreateRequest { loader: Loader; gameVersion: string; loaderVersion?: string; name: string }
 export type ResourceTaskTarget =
-  | { mode: "existing"; versionId: string; instanceId?: string }
-  | ({ mode: "create" } & ResourceCreateRequest);
+  | { mode: "existing"; versionId: string; instanceId?: string; fileId?: number; resourceVersionId?: string }
+  | ({ mode: "create"; resourceVersionId?: string; fileId?: number } & ResourceCreateRequest);
 export interface ResourceInstanceResult { instance: Instance; install: unknown }
 export interface ResourceTargetFlow {
   id: number;
@@ -66,6 +66,7 @@ export interface ResourceTargetFlow {
   project: ResourceProject;
   source: ResourceSource;
   resourceType: DiscoverType;
+  pinnedVersionId?: string;
   plan?: ResourceTargetPlan;
   taskId?: string;
   error?: LauncherError;

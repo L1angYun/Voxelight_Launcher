@@ -1166,6 +1166,59 @@ mod tests {
         let path = journal_path(&history, &id).unwrap();
         (root, directory, transaction, path, journal)
     }
+
+    #[test]
+    fn u1264_downgrade_replaces_a_newer_file_and_the_committed_journal_can_rollback() {
+        let (root, directory, transaction, journal_path, mut journal) = setup();
+        let next = transaction.join("next");
+        fs::rename(directory.join("old.jar"), directory.join("current.jar")).unwrap();
+        fs::write(directory.join("current.jar"), b"latest bytes").unwrap();
+        fs::remove_file(next.join("new.jar")).unwrap();
+        fs::copy(directory.join("current.jar"), next.join("current.jar")).unwrap();
+
+        let version = |id, filename, stamp: &str| -> Version {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "project_id": "project", "game_versions": ["1.21.1"],
+                "loaders": ["fabric"], "version_type": "release", "date_published": stamp,
+                "files": [{
+                    "filename": filename, "url": "https://cdn.modrinth.com/test",
+                    "primary": true, "size": 1, "hashes": {"sha512": stamp}
+                }]
+            })).unwrap()
+        };
+        let locals = [LocalEntry {
+            file_name: "current.jar".into(), hash: "2026-02-01T00:00:00Z".into(), enabled: true,
+            version: Some(version("latest", "current.jar", "2026-02-01T00:00:00Z")),
+        }];
+        let pinned = super::super::validate_pinned_version(
+            version("historical", "historic.jar", "2026-01-01T00:00:00Z"),
+            "historical", "project", ResourceKind::Mod, "1.21.1", Some("fabric"),
+        ).unwrap();
+        let plan = actions(vec![Node { version: pinned, enabled: true }], &locals).unwrap();
+        let selected = &plan[0];
+        assert_eq!(selected.remove, ["current.jar"]);
+        assert_eq!(selected.destination, "historic.jar");
+        assert!(selected.keep.is_none());
+
+        // Provider files are synthetic, but this is the actual on-disk journal
+        // and the production commit/rollback pair used by installation.
+        for removed in &selected.remove {
+            fs::remove_file(next.join(removed)).unwrap();
+        }
+        fs::write(next.join(&selected.destination), b"historical bytes").unwrap();
+        journal.before = inventory(&directory).unwrap();
+        journal.after = inventory(&next).unwrap();
+        commit_using(&directory, &transaction, &journal_path, &mut journal, |from, to| fs::rename(from, to)).unwrap();
+        assert_eq!(read_journal(&journal_path, &directory).unwrap().status, "committed");
+        assert!(!directory.join("current.jar").exists());
+        assert_eq!(fs::read(directory.join("historic.jar")).unwrap(), b"historical bytes");
+        rollback(&directory, &journal.id).unwrap();
+        assert!(!directory.join("historic.jar").exists());
+        assert_eq!(fs::read(directory.join("current.jar")).unwrap(), b"latest bytes");
+        assert_eq!(fs::read(directory.join("unknown-user.jar")).unwrap(), b"private user jar");
+        cleanup(&root);
+    }
+
     #[test]
     fn real_directory_commit_and_rollback_preserve_unknown_jars() {
         let (root, directory, transaction, path, mut journal) = setup();
