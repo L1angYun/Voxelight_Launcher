@@ -5,15 +5,20 @@ import { command, type Instance } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
 import { Field } from "../../components/ui/Field";
+import { Segmented } from "../../components/ui/Segmented";
+import { MemoryOverviewHint } from "../settings/MemoryOverviewHint";
 
 export function InstanceSettings({ instance, onChanged }: { instance: Instance; onChanged: () => Promise<void> }) {
   const { t } = useTranslation();
   const { run } = useLauncher();
+  const fromInstance = (row: Instance) => row.memoryMode ?? (row.maxMemoryMb != null ? "manual" : "inherit");
+  const [memoryMode, setMemoryMode] = useState<"auto" | "manual" | "inherit">(fromInstance(instance));
   const [name, setName] = useState(instance.name);
   const [category, setCategory] = useState(instance.category);
   const [notes, setNotes] = useState(instance.notes);
   const [iconPath, setIconPath] = useState(instance.iconPath ?? "");
   const [maxMemoryMb, setMaxMemoryMb] = useState(instance.maxMemoryMb?.toString() ?? "");
+  const [minMemoryMb, setMinMemoryMb] = useState(instance.minMemoryMb?.toString() ?? "");
   const [javaPath, setJavaPath] = useState(instance.javaPath ?? "");
   const [jvmArguments, setJvmArguments] = useState(instance.jvmArguments ?? "");
   const [screenWidth, setScreenWidth] = useState(instance.screenWidth?.toString() ?? "");
@@ -25,6 +30,8 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     setNotes(instance.notes);
     setIconPath(instance.iconPath ?? "");
     setMaxMemoryMb(instance.maxMemoryMb?.toString() ?? "");
+    setMemoryMode(fromInstance(instance));
+    setMinMemoryMb(instance.minMemoryMb?.toString() ?? "");
     setJavaPath(instance.javaPath ?? "");
     setJvmArguments(instance.jvmArguments ?? "");
     setScreenWidth(instance.screenWidth?.toString() ?? "");
@@ -40,6 +47,9 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         category,
         notes,
         iconPath,
+        memoryMode,
+        minMemoryMb: minMemoryMb ? Number(minMemoryMb) : null,
+        clearMinMemory: !minMemoryMb,
         maxMemoryMb: maxMemoryMb ? Number(maxMemoryMb) : null,
         javaPath,
         jvmArguments,
@@ -53,6 +63,8 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
   const resetRuntime = () => void run("instance.resetRuntime", async () => {
     await command("update_instance", { instanceId: instance.id, resetRuntime: true });
     setMaxMemoryMb("");
+    setMemoryMode("inherit");
+    setMinMemoryMb("");
     setJavaPath("");
     setJvmArguments("");
     setScreenWidth("");
@@ -77,8 +89,16 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
       </section>
       <section className="vx-detail-section">
         <h2>{t("library:runtimeOverrides")}</h2>
+        <Segmented semantic="toggle" label={t("settings:memory.mode")} value={memoryMode}
+          options={[
+            { value: "inherit", label: t("settings:memory.inherit") },
+            { value: "auto", label: t("settings:memory.auto") },
+            { value: "manual", label: t("settings:memory.manual") },
+          ]} onChange={setMemoryMode} />
+        <MemoryOverviewHint instanceId={instance.id} />
         <div className="vx-form-two-columns">
-          <Field label={t("library:maxMemory")} htmlFor="instance-memory"><input id="instance-memory" type="number" min={512} max={65536} value={maxMemoryMb} onChange={(event) => setMaxMemoryMb(event.target.value)} /></Field>
+          <Field label={t("library:maxMemory")} htmlFor="instance-memory"><input id="instance-memory" type="number" min={512} max={65536} disabled={memoryMode !== "manual"} value={maxMemoryMb} onChange={(event) => setMaxMemoryMb(event.target.value)} /></Field>
+          <Field label={t("settings:memory.initial")} htmlFor="instance-min-memory"><input id="instance-min-memory" type="number" min={256} max={65536} value={minMemoryMb} onChange={(event) => setMinMemoryMb(event.target.value)} /></Field>
           <Field label={t("library:javaPath")} htmlFor="instance-java"><input id="instance-java" value={javaPath} onChange={(event) => setJavaPath(event.target.value)} /></Field>
           <Field label={t("library:windowWidth")} htmlFor="instance-width"><input id="instance-width" type="number" min={320} max={16384} value={screenWidth} onChange={(event) => setScreenWidth(event.target.value)} /></Field>
           <Field label={t("library:windowHeight")} htmlFor="instance-height"><input id="instance-height" type="number" min={240} max={16384} value={screenHeight} onChange={(event) => setScreenHeight(event.target.value)} /></Field>

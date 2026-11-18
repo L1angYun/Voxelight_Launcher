@@ -208,6 +208,8 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
     if config.game_directory.contains('\0') || config.java_path.contains('\0') {
         return Err("路径包含非法字符".into());
     }
+    crate::memory::validate_mode(&config.memory_mode)?;
+    crate::memory::validate_min(&config.memory_mode, config.min_memory_mb, config.max_memory_mb)?;
     if !(512..=65536).contains(&config.max_memory_mb) {
         return Err("最大内存需要在 512–65536 MB 之间".into());
     }
@@ -247,6 +249,11 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
             // An appearance save can interleave after the native path dialog.
             keep_saved_appearance(&mut config, &data.config);
         }
+        let previous = approved_against.unwrap_or(&data.config);
+        if previous.jvm_arguments != data.config.jvm_arguments && config.jvm_arguments == previous.jvm_arguments {
+            return Err(crate::errors::STORAGE_STATE_CHANGED.into());
+        }
+        crate::memory::validate_changed_heap_arguments(&previous.jvm_arguments, &config.jvm_arguments)?;
         data.config = config.clone();
         Ok(config)
     })?;

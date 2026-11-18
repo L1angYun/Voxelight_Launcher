@@ -579,7 +579,7 @@ pub(crate) fn version_context(
     Err("Minecraft 版本继承层级过深".into())
 }
 
-fn detect_loader(json: &Value) -> Option<&'static str> {
+pub(crate) fn detect_loader(json: &Value) -> Option<&'static str> {
     match json["launcherMetadata"]["loader"].as_str() {
         Some("fabric") => return Some("fabric"),
         Some("quilt") => return Some("quilt"),
@@ -636,23 +636,27 @@ fn file_sha512(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
-fn enabled_mod_hashes(directory: &Path) -> Result<HashSet<String>, String> {
-    if !directory.exists() {
-        return Ok(HashSet::new());
+/// Count enabled JARs without following links, hashing, or reading their contents.
+pub(crate) fn count_enabled_mods(directory: &Path) -> Result<usize, String> {
+    let metadata = match fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(_) => return Err("无法读取本地模组目录".into()),
+    };
+    if !metadata.is_dir() || linked(&metadata) {
+        return Err("本地模组目录必须是非链接目录".into());
     }
-    let mut hashes = HashSet::new();
+    let mut count = 0;
     for entry in fs::read_dir(directory).map_err(|_| "无法读取本地模组目录")? {
         let entry = entry.map_err(|_| "无法读取本地模组文件")?;
         let metadata = fs::symlink_metadata(entry.path()).map_err(|_| "无法读取模组文件信息")?;
-        if !metadata.is_file() || linked(&metadata) {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if ResourceKind::Mod.accepts(&name) {
-            hashes.insert(file_sha512(&entry.path())?);
+        if metadata.is_file() && !linked(&metadata)
+            && ResourceKind::Mod.accepts(&entry.file_name().to_string_lossy())
+        {
+            count += 1;
         }
     }
-    Ok(hashes)
+    Ok(count)
 }
 
 enum DownloadAttemptError {

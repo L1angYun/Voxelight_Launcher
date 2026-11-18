@@ -279,11 +279,28 @@ describe("global settings", () => {
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Game window width"]')!.value).toBe("1600");
   });
 
+  it("shows system memory and refreshes it only on demand", async () => {
+    const base = commandMock.getMockImplementation()!;
+    let reads = 0;
+    commandMock.mockImplementation(async (name, args) => name === "get_memory_overview" ? {
+      totalMb: 32768, availableMb: ++reads === 1 ? 16384 : 8192, recommendedMb: 4096,
+      effectiveMode: "manual", modCount: 0,
+    } : base(name, args));
+    await render();
+    await click("Java");
+    expect(container.textContent).toContain("System RAM: 32 GiB; available: 16 GiB; recommended: 4096 MiB.");
+    expect(reads).toBe(1);
+    await click("Refresh memory");
+    expect(container.textContent).toContain("available: 8 GiB");
+    expect(reads).toBe(2);
+  });
+
   it("detects Java and saves runtime, memory, JVM and auto-download settings", async () => {
     await render();
     await click("Java");
     await click("Detect Java");
     await click("Java 21");
+    await click("Manual memory");
     await fill("Maximum memory (MB)", "8192");
     await fill("JVM arguments", "-XX:+UseG1GC");
     await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Prepare Java automatically"]')!.click());
@@ -292,6 +309,7 @@ describe("global settings", () => {
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
       javaPath: "C:\\SyntheticFixture\\java.exe",
       maxMemoryMb: 8192,
+      memoryMode: "manual",
       jvmArguments: "-XX:+UseG1GC",
       javaAutoDownload: false,
     }), { preserveAppearance: true });

@@ -2,12 +2,19 @@ use serde::{Deserialize, Serialize};
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
+fn legacy_memory_mode() -> String {
+    "manual".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub game_directory: String,
     pub java_path: String,
     pub max_memory_mb: u32,
+    #[serde(default = "legacy_memory_mode")]
+    pub memory_mode: String,
+    pub min_memory_mb: Option<u32>,
     pub jvm_arguments: String,
     pub version_isolation: bool,
     pub theme: String,
@@ -43,6 +50,8 @@ impl Default for Config {
                 }),
             java_path: String::new(),
             max_memory_mb: 4096,
+            memory_mode: "auto".into(),
+            min_memory_mb: None,
             jvm_arguments: "-XX:+UseG1GC".into(),
             version_isolation: true,
             theme: "system".into(),
@@ -94,6 +103,8 @@ pub struct Instance {
     pub icon_path: Option<String>,
     pub notes: String,
     pub max_memory_mb: Option<u32>,
+    pub memory_mode: Option<String>,
+    pub min_memory_mb: Option<u32>,
     pub java_path: Option<String>,
     pub jvm_arguments: Option<String>,
     pub screen_width: Option<u32>,
@@ -144,6 +155,8 @@ pub struct JavaRuntime {
     pub path: String,
     pub version: String,
     pub major: u32,
+    #[serde(rename = "is64bit")]
+    pub is_64bit: bool,
 }
 
 #[derive(Clone, Serialize)]

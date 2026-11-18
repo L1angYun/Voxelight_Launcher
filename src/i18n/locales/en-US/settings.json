@@ -1,4 +1,14 @@
 {
+  "memory": {
+    "initial": "Initial memory (MiB)",
+    "initialHint": "Leave empty to let Java choose. Automatic allocation can lower this value when needed.",
+    "mode": "Memory allocation",
+    "auto": "Automatic memory",
+    "manual": "Manual memory",
+    "inherit": "Use global memory mode",
+    "overview": "System RAM: {{total}} GiB; available: {{available}} GiB; recommended: {{recommended}} MiB.",
+    "refresh": "Refresh memory"
+  },
   "title": "Settings",
   "subtitle": "Preview appearance changes, then save when you are ready.",
   "save": "Save settings",

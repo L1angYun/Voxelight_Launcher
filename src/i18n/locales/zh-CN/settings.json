@@ -1,4 +1,14 @@
 {
+  "memory": {
+    "initial": "初始内存（MiB）",
+    "initialHint": "留空时由 Java 选择；自动分配在需要时会降低此值。",
+    "mode": "内存分配",
+    "auto": "自动分配",
+    "manual": "手动分配",
+    "inherit": "继承全局设置",
+    "overview": "系统内存：{{total}} GiB；可用：{{available}} GiB；建议分配：{{recommended}} MiB。",
+    "refresh": "刷新内存"
+  },
   "title": "设置",
   "subtitle": "外观可先预览，确认后再保存。",
   "save": "保存设置",

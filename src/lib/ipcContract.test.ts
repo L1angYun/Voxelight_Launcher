@@ -53,6 +53,13 @@ describe("Tauri IPC registration contract", () => {
     expect(expected.filter((name) => !registered.has(name))).toEqual([]);
   });
 
+  it("registers the memory overview in the settings permission family", () => {
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const settings = permissions.split("[[permission]]").find((block) => block.includes('identifier = "launcher-settings"'));
+    expect(registered.has("get_memory_overview")).toBe(true);
+    expect(settings).toContain('"get_memory_overview"');
+  });
+
   it("exposes the new visual defaults and system appearance command", () => {
     expect(defaults).toMatchObject({
       effects: "full",

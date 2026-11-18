@@ -14,10 +14,20 @@ export interface SystemAppearance {
   locale: string;
 }
 
+export interface MemoryOverview {
+  totalMb: number | null;
+  availableMb: number | null;
+  recommendedMb: number;
+  effectiveMode: string;
+  modCount: number;
+}
+
 export interface Config {
   gameDirectory: string;
   javaPath: string;
   maxMemoryMb: number;
+  memoryMode: "auto" | "manual";
+  minMemoryMb?: number | null;
   jvmArguments: string;
   versionIsolation: boolean;
   theme: "dark" | "light" | "system";
@@ -72,6 +82,8 @@ export interface Instance {
   iconPath?: string | null;
   notes: string;
   maxMemoryMb?: number | null;
+  memoryMode?: "auto" | "manual" | null;
+  minMemoryMb?: number | null;
   javaPath?: string | null;
   jvmArguments?: string | null;
   screenWidth?: number | null;
@@ -118,6 +130,7 @@ export interface JavaRuntime {
   path: string;
   version: string;
   major: number;
+  is64bit: boolean;
 }
 export interface Bootstrap {
   config: Config;
@@ -178,6 +191,8 @@ export const defaults: Config = {
   gameDirectory: "",
   javaPath: "",
   maxMemoryMb: 4096,
+  memoryMode: "auto",
+  minMemoryMb: null,
   jvmArguments: "-XX:+UseG1GC",
   versionIsolation: true,
   theme: "system",

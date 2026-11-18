@@ -16,6 +16,7 @@ mod instances;
 mod integrity;
 mod loaders;
 mod minecraft;
+mod memory;
 mod models;
 mod modpacks;
 mod path_grants;
@@ -215,6 +216,7 @@ pub fn run() {
             path_grants::choose_launcher_path,
             commands::bootstrap,
             commands::get_config,
+            memory::get_memory_overview,
             commands::save_config,
             commands::save_appearance_config,
             commands::list_versions,

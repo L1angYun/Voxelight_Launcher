@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Search } from "lucide-react";
 import { command, type JavaRuntime } from "../../lib/launcher";
 import { Button } from "../../components/ui/Button";
+import { Segmented } from "../../components/ui/Segmented";
+import { MemoryOverviewHint } from "./MemoryOverviewHint";
 import type { SettingsSectionProps } from "./types";
 
 export function JavaSettings({ config, onChange, onError, onNotice }: SettingsSectionProps) {
@@ -43,10 +45,22 @@ export function JavaSettings({ config, onChange, onError, onNotice }: SettingsSe
             ))}
           </div>
         ) : null}
+        <Segmented semantic="toggle" label={t("settings:memory.mode")} value={config.memoryMode ?? "manual"}
+          options={[{ value: "auto", label: t("settings:memory.auto") }, { value: "manual", label: t("settings:memory.manual") }]}
+          onChange={(memoryMode) => onChange({ ...config, memoryMode })} />
+        <MemoryOverviewHint />
         <div className="vx-settings-fields">
           <label>
             {t("settings:fields.maxMemory")}
-            <input aria-label={t("settings:fields.maxMemory")} type="number" min={512} max={65536} step={512} value={config.maxMemoryMb} onChange={(event) => onChange({ ...config, maxMemoryMb: Number(event.target.value) })} />
+            <input aria-label={t("settings:fields.maxMemory")} type="number" min={512} max={65536} step={512} disabled={config.memoryMode === "auto"} value={config.maxMemoryMb} onChange={(event) => onChange({ ...config, maxMemoryMb: Number(event.target.value) })} />
+          </label>
+          <label>
+            {t("settings:memory.initial")}
+            <input aria-label={t("settings:memory.initial")} type="number" min={256} max={65536}
+              value={config.minMemoryMb ?? ""} onChange={(event) => onChange({ ...config,
+                minMemoryMb: event.target.value === "" ? null : Number(event.target.value),
+              })} />
+            <small>{t("settings:memory.initialHint")}</small>
           </label>
           <label>
             {t("settings:fields.jvmArguments")}

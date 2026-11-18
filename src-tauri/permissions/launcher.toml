@@ -16,6 +16,7 @@ identifier = "launcher-settings"
 description = "Allow the launcher settings commands in the local main window."
 commands.allow = [
   "get_config",
+  "get_memory_overview",
   "save_config",
   "save_appearance_config",
   "detect_java",

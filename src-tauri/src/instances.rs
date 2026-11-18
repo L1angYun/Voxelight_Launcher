@@ -472,6 +472,9 @@ pub async fn update_instance(
     notes: Option<String>,
     icon_path: Option<String>,
     max_memory_mb: Option<u32>,
+    memory_mode: Option<String>,
+    min_memory_mb: Option<u32>,
+    clear_min_memory: Option<bool>,
     java_path: Option<String>,
     jvm_arguments: Option<String>,
     screen_width: Option<u32>,
@@ -498,6 +501,8 @@ pub async fn update_instance(
     if reset_runtime.unwrap_or(false) {
         for field in [
             "maxMemoryMb",
+            "memoryMode",
+            "minMemoryMb",
             "javaPath",
             "jvmArguments",
             "screenWidth",
@@ -512,6 +517,27 @@ pub async fn update_instance(
         }
         changes.push(("maxMemoryMb".into(), json!(memory)));
     }
+    if let Some(mode) = memory_mode {
+        if mode == "inherit" {
+            changes.retain(|(key, _)| key != "maxMemoryMb");
+            changes.push(("maxMemoryMb".into(), Value::Null));
+            changes.push(("memoryMode".into(), Value::Null));
+        } else {
+            crate::memory::validate_mode(&mode)?;
+            changes.push(("memoryMode".into(), json!(mode)));
+        }
+    }
+    if clear_min_memory.unwrap_or(false) || min_memory_mb.is_some() {
+        changes.push(("minMemoryMb".into(), json!(min_memory_mb)));
+    }
+    let global = state.snapshot()?.config;
+    let mut candidate = current.clone();
+    replace_metadata(&mut candidate, &changes)?;
+    crate::memory::validate_min(
+        crate::memory::effective_mode(&global, Some(&candidate)),
+        crate::memory::effective_min(&global, Some(&candidate)),
+        crate::memory::manual_max(&global, Some(&candidate)),
+    )?;
     if let Some(java) = java_path {
         let java = java.trim();
         if java.is_empty() {
@@ -529,6 +555,7 @@ pub async fn update_instance(
             return Err("JVM 参数过长或包含非法字符".into());
         }
         shell_words::split(&args).map_err(|_| "JVM 参数引号不匹配")?;
+        crate::memory::validate_changed_heap_arguments(current.jvm_arguments.as_deref().unwrap_or(""), &args)?;
         changes.push((
             "jvmArguments".into(),
             if args.trim().is_empty() {

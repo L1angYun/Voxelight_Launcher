@@ -1932,6 +1932,17 @@ fn java_major(version: &str) -> Option<u32> {
     }
 }
 
+fn parse_java_version_output(text: &str) -> Option<(String, u32, bool)> {
+    let regex = regex::Regex::new(r#"(?:java|openjdk) version "([^"]+)""#).ok()?;
+    let version = regex.captures(text)?.get(1)?.as_str().to_owned();
+    let major = java_major(&version)?;
+    // Require a VM descriptor, rather than matching 64-Bit in an unrelated stderr line.
+    let is_64bit = text.lines().any(|line| {
+        line.contains("64-Bit") && (line.contains(" VM") || line.contains("J9"))
+    });
+    Some((version, major, is_64bit))
+}
+
 async fn inspect_java(path: PathBuf) -> Option<JavaRuntime> {
     let path = to_process_path(&path).ok()?;
     let mut command = tokio::process::Command::new(&path);
@@ -1953,13 +1964,12 @@ async fn inspect_java(path: PathBuf) -> Option<JavaRuntime> {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    let regex = regex::Regex::new(r#"(?:java|openjdk) version "([^"]+)""#).ok()?;
-    let version = regex.captures(&text)?.get(1)?.as_str().to_owned();
-    let major = java_major(&version)?;
+    let (version, major, is_64bit) = parse_java_version_output(&text)?;
     Some(JavaRuntime {
         path: path.to_string_lossy().into_owned(),
         version,
         major,
+        is_64bit,
     })
 }
 
@@ -2027,37 +2037,206 @@ pub async fn detect_java(config: &Config, data_dir: &Path) -> Vec<JavaRuntime> {
     runtimes
 }
 
-async fn select_java(config: &Config, data_dir: &Path, metadata: &Value) -> Result<JavaRuntime, String> {
+#[derive(Debug)]
+struct JavaConstraint {
+    required: u32,
+    min: u32,
+    hard_max: Option<u32>,
+    preferred_max: Option<u32>,
+    reason: &'static str,
+}
+
+impl JavaConstraint {
+    fn allows(&self, major: u32) -> bool {
+        major >= self.min && self.hard_max.is_none_or(|max| major <= max)
+    }
+
+    fn range(&self) -> String {
+        match self.hard_max {
+            Some(max) if self.min == max => format!("Java {max}"),
+            Some(max) => format!("Java {}–{max}", self.min),
+            None => format!("Java {} 或更高版本", self.min),
+        }
+    }
+
+    fn validate(&self) -> Result<(), JavaMismatch> {
+        if let Some(max) = self.hard_max.filter(|max| *max < self.min) {
+            return Err(JavaMismatch(format!(
+                "{}，但版本元数据要求 Java {}，最高只能使用 Java {max}。请检查游戏版本元数据",
+                self.reason, self.min
+            )));
+        }
+        Ok(())
+    }
+
+    fn preference_ceiling(&self) -> Option<u32> {
+        self.preferred_max.map(|max| max.max(self.min))
+    }
+}
+
+#[derive(Debug)]
+struct JavaMismatch(String);
+
+impl std::fmt::Display for JavaMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+fn numeric_release(id: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = id.split('.');
+    fn part(text: &str) -> Option<u32> {
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        text.parse().ok()
+    }
+    let major = part(parts.next()?)?;
+    let minor = part(parts.next()?)?;
+    let patch = part(parts.next().unwrap_or("0"))?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn java_constraint(metadata: &Value, loader: Option<&str>) -> JavaConstraint {
     let required = metadata["javaVersion"]["majorVersion"]
         .as_u64()
-        .unwrap_or(8) as u32;
-    let runtimes = detect_java(config, data_dir).await;
-    if !config.java_path.trim().is_empty() {
-        let runtime = runtimes
-            .iter()
-            .find(|runtime| runtime.path.eq_ignore_ascii_case(&config.java_path))
-            .ok_or("设置中的 Java 路径无效或无法运行；请重新扫描 Java")?;
-        if runtime.major < required {
-            return Err(format!(
-                "此版本最低需要 Java {required}，当前选择 Java {}。请在设置中选择较新的运行时",
-                runtime.major
-            ));
+        .and_then(|major| u32::try_from(major).ok())
+        .filter(|major| *major != 0)
+        .unwrap_or(8);
+    let legacy_wrapper = metadata["mainClass"].as_str() == Some("net.minecraft.launchwrapper.Launch")
+        && metadata["libraries"].as_array().is_some_and(|libraries| {
+            libraries.iter().any(|library| {
+                library["name"]
+                    .as_str()
+                    .and_then(|name| name.strip_prefix("net.minecraft:launchwrapper:"))
+                    .and_then(|coordinate| numeric_release(coordinate.split(':').next()?))
+                    .is_some_and(|version| version < (1, 13, 0))
+            })
+        });
+    let preferred_max = match loader {
+        Some("forge" | "neoforge") => metadata["_launcherBaseId"]
+            .as_str()
+            .and_then(numeric_release)
+            .and_then(|release| match release {
+                (1, 7, 10..) | (1, 8..=16, _) => Some(8),
+                (1, 17, _) => Some(16),
+                (1, 18..=19, _) | (1, 20, 0..=4) => Some(17),
+                release if release >= (1, 20, 5) => Some(21),
+                _ => None,
+            }),
+        _ => None,
+    };
+    let reason = if legacy_wrapper {
+        "此版本使用旧版 LaunchWrapper"
+    } else {
+        match (loader, preferred_max) {
+            (Some("forge"), Some(_)) => "此版本的 Forge 加载器",
+            (Some("neoforge"), Some(_)) => "此版本的 NeoForge 加载器",
+            _ => "此游戏版本",
         }
-        return Ok(runtime.clone());
+    };
+    JavaConstraint {
+        required,
+        min: required,
+        hard_max: legacy_wrapper.then_some(8),
+        preferred_max,
+        reason,
     }
+}
+
+fn pick_java(runtimes: &[JavaRuntime], constraint: &JavaConstraint) -> Result<JavaRuntime, JavaMismatch> {
+    constraint.validate()?;
     runtimes
         .iter()
-        .find(|runtime| runtime.major == required)
+        .filter(|java| constraint.allows(java.major))
+        .min_by_key(|java| (
+            java.major != constraint.required,
+            constraint.preference_ceiling().is_some_and(|max| java.major > max),
+            java.major,
+            !java.is_64bit,
+            java.path.as_str(),
+        ))
         .cloned()
-        .or_else(|| {
-            runtimes
-                .into_iter()
-                .filter(|runtime| runtime.major > required)
-                .min_by_key(|runtime| runtime.major)
-        })
         .ok_or_else(|| {
-            format!("未找到 Java {required} 或更高版本；请安装 64 位 Java 并在设置中选择")
+            let mut found: Vec<_> = runtimes.iter().map(|java| java.major).collect();
+            found.sort_unstable();
+            found.dedup();
+            let found = if found.is_empty() {
+                "无".to_owned()
+            } else {
+                found.iter().map(u32::to_string).collect::<Vec<_>>().join("、")
+            };
+            JavaMismatch(format!(
+                "{}需要 {}；检测到的 Java 主版本：{found}。请在设置中启用“自动准备 Java”，或安装兼容的 64 位 Java",
+                constraint.reason,
+                constraint.range(),
+            ))
         })
+}
+
+fn pick_configured_java(
+    runtimes: &[JavaRuntime],
+    configured_path: &str,
+    constraint: &JavaConstraint,
+) -> Result<JavaRuntime, JavaMismatch> {
+    if configured_path.trim().is_empty() {
+        return pick_java(runtimes, constraint);
+    }
+    constraint.validate()?;
+    let process_path = to_process_path(Path::new(configured_path)).map_err(JavaMismatch)?;
+    let runtime = runtimes
+        .iter()
+        .find(|runtime| runtime.path.eq_ignore_ascii_case(&process_path.to_string_lossy()))
+        .ok_or_else(|| JavaMismatch("设置中的 Java 路径无效或无法运行；请重新扫描 Java".into()))?;
+    if !constraint.allows(runtime.major) {
+        return Err(JavaMismatch(format!(
+            "{}需要 {}，当前选择 Java {}。请清空 Java 路径以自动选择，或安装兼容的 Java",
+            constraint.reason,
+            constraint.range(),
+            runtime.major,
+        )));
+    }
+    Ok(runtime.clone())
+}
+
+fn java_preference_warning(java: &JavaRuntime, constraint: &JavaConstraint) -> Option<String> {
+    let max = constraint.preferred_max.filter(|max| java.major > *max)?;
+    if constraint.min > max {
+        return Some(format!(
+            "{}建议使用不高于 Java {max} 的运行时，但版本元数据至少要求 Java {}，正在使用 Java {}",
+            constraint.reason, constraint.min, java.major
+        ));
+    }
+    Some(format!(
+        "{}建议使用不高于 Java {max} 的运行时，正在使用 Java {}；如果加载器报错，请改用匹配的 Java",
+        constraint.reason, java.major
+    ))
+}
+
+fn needs_official_install(
+    config: &Config,
+    selected: &Result<JavaRuntime, JavaMismatch>,
+    constraint: &JavaConstraint,
+) -> bool {
+    config.java_path.trim().is_empty()
+        && config.java_auto_download
+        && constraint.allows(constraint.required)
+        && !selected
+            .as_ref()
+            .is_ok_and(|java| java.major == constraint.required)
+}
+
+async fn select_java(
+    config: &Config,
+    data_dir: &Path,
+    constraint: &JavaConstraint,
+) -> Result<JavaRuntime, JavaMismatch> {
+    constraint.validate()?;
+    let runtimes = detect_java(config, data_dir).await;
+    pick_configured_java(&runtimes, &config.java_path, constraint)
 }
 
 const JAVA_RUNTIME_INDEX:&str="https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
@@ -2067,10 +2246,10 @@ async fn install_official_java(
     app: &AppHandle,
     metadata: &Value,
     config: &Config,
+    constraint: &JavaConstraint,
 ) -> Result<JavaRuntime, String> {
-    let required = metadata["javaVersion"]["majorVersion"]
-        .as_u64()
-        .unwrap_or(8) as u32;
+    constraint.validate().map_err(|error| error.to_string())?;
+    let required = constraint.required;
     let component = metadata["javaVersion"]["component"]
         .as_str()
         .or_else(|| match required {
@@ -2233,7 +2412,7 @@ async fn install_official_java(
     let java = inspect_java(java_path)
         .await
         .ok_or("官方Java文件校验通过，但java -version无法运行；请检查系统兼容性和文件权限")?;
-    if java.major != required {
+    if java.major != required || !constraint.allows(java.major) {
         return Err(format!(
             "官方Java实际主版本{}与游戏要求{required}不一致",
             java.major
@@ -2254,19 +2433,28 @@ pub(crate) async fn select_or_install_java(
     config: &Config,
     metadata: &Value,
 ) -> Result<JavaRuntime, String> {
-    let selected = select_java(config, &state.data_dir, metadata).await;
-    if !config.java_path.trim().is_empty() || !config.java_auto_download {
-        return selected;
+    // The managed vanilla server and loader installers pass Mojang metadata.
+    select_or_install_java_constrained(state, app, config, metadata, None).await
+}
+
+async fn select_or_install_java_constrained(
+    state: &LauncherState,
+    app: &AppHandle,
+    config: &Config,
+    metadata: &Value,
+    loader: Option<&str>,
+) -> Result<JavaRuntime, String> {
+    let constraint = java_constraint(metadata, loader);
+    let selected = select_java(config, &state.data_dir, &constraint).await;
+    let java = if needs_official_install(config, &selected, &constraint) {
+        install_official_java(state, app, metadata, config, &constraint).await?
+    } else {
+        selected.map_err(|error| error.to_string())?
+    };
+    if let Some(warning) = java_preference_warning(&java, &constraint) {
+        log(app, state, "warn", warning);
     }
-    let required = metadata["javaVersion"]["majorVersion"]
-        .as_u64()
-        .unwrap_or(8) as u32;
-    if let Ok(java) = &selected {
-        if java.major == required {
-            return selected;
-        }
-    }
-    install_official_java(state, app, metadata, config).await
+    Ok(java)
 }
 
 #[tauri::command]
@@ -2287,7 +2475,8 @@ pub async fn install_java(
         let config = state.snapshot()?.config;
         let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
         let metadata = resolve_metadata(&state, &game_version, &root).await?;
-        install_official_java(&state, &app, &metadata, &config).await
+        let constraint = java_constraint(&metadata, crate::resources::detect_loader(&metadata));
+        install_official_java(&state, &app, &metadata, &config, &constraint).await
     }
     .await;
     state
@@ -2664,13 +2853,11 @@ async fn launch_prepared(
     }
     let game_dir = game_directory(&snapshot.config, &id, instance)?;
     let (_, metadata) = install_with_config(&state, &app, &id, &snapshot.config).await?;
-    let java = select_or_install_java(&state, &app, &config, &metadata).await?;
-    let recommended = metadata["javaVersion"]["majorVersion"]
-        .as_u64()
-        .unwrap_or(8) as u32;
-    if java.major > recommended {
-        log(&app, &state, "warn", format!("此游戏版本建议 Java {recommended}，正在使用 Java {}；若旧版依赖报错，请改用匹配的运行时", java.major));
-    }
+    let loader = instance
+        .map(|instance| instance.loader.as_str())
+        .filter(|loader| matches!(*loader, "forge" | "neoforge" | "fabric" | "quilt"))
+        .or_else(|| crate::resources::detect_loader(&metadata));
+    let java = select_or_install_java_constrained(&state, &app, &config, &metadata, loader).await?;
     fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
     let mut launch_scratch = crate::process_output::LaunchScratch::create(&game_dir)?;
     let natives = launch_scratch.natives()?;
@@ -2742,14 +2929,41 @@ async fn launch_prepared(
     .map(|(k, v)| (k.into(), v.into()))
     .chain(java_path_variables(&game_dir, &assets, &game_assets, &natives, &libraries)?)
     .collect();
-    let mut arguments = vec![
-        format!("-Xmx{}M", config.max_memory_mb.clamp(512, 65536)),
-        "-Dfile.encoding=UTF-8".into(),
-    ];
+    let fallback_mb = crate::memory::manual_max(&snapshot.config, instance);
+    let max_memory_mb = if crate::memory::effective_mode(&snapshot.config, instance) == "auto" {
+        let (memory, mods) = match crate::resources::count_enabled_mods(&game_dir.join("mods")) {
+            Ok(count) => (crate::memory::system_memory(), count),
+            Err(error) => {
+                log(&app, &state, "warn", &error);
+                (None, 0)
+            }
+        };
+        let plan = crate::memory::auto_heap_mb(memory, loader, mods, java.is_64bit, fallback_mb);
+        let reason = match plan.reason {
+            crate::memory::HeapReason::Recommended => "按当前物理内存和启用模组数推荐",
+            crate::memory::HeapReason::LowAvailable => "当前可用内存不足，使用最低档",
+            crate::memory::HeapReason::ManualFallback => "无法读取自动分配所需数据，使用设置的备用值",
+            crate::memory::HeapReason::BitnessCap => "受 32 位 Java 上限约束",
+        };
+        log(&app, &state, "info", &format!("自动分配游戏内存：{} MiB（{reason}）", plan.max_mb));
+        plan.max_mb
+    } else {
+        fallback_mb
+    };
+    let (mut arguments, clamped_minimum) = crate::memory::memory_arguments(
+        max_memory_mb, crate::memory::effective_min(&snapshot.config, instance),
+    );
+    if clamped_minimum {
+        log(&app, &state, "warn", "初始游戏内存已降到本次启动的最大内存");
+    }
+    arguments.push("-Dfile.encoding=UTF-8".into());
     let custom = shell_words::split(&config.jvm_arguments)
         .map_err(|e| format!("自定义 JVM 参数引号不匹配：{e}"))?;
+    if custom.iter().any(|arg| crate::memory::is_memory_argument(arg)) {
+        log(&app, &state, "warn", "已忽略旧自定义 JVM 参数中的内存选项，请在内存设置中调整");
+    }
     for argument in &custom {
-        if argument.starts_with("-Xmx") || argument.starts_with("-Xms") {
+        if crate::memory::is_memory_argument(argument) {
             continue;
         }
         if !argument.starts_with('-')
@@ -4373,6 +4587,206 @@ mod tests {
             &json!([{ "action":"allow", "features":{"is_demo_user":false} }])
         )));
     }
+    fn legacy_wrapper_java(version: &str) -> Value {
+        json!({
+            "_launcherBaseId": "1.12.2",
+            "mainClass": "net.minecraft.launchwrapper.Launch",
+            "libraries": [{"name": format!("net.minecraft:launchwrapper:{version}")}],
+            "javaVersion": {"majorVersion": 8}
+        })
+    }
+
+    fn java_fixture(major: u32, is_64bit: bool) -> JavaRuntime {
+        JavaRuntime {
+            path: format!("C:/java/{major}/{}/bin/java.exe", if is_64bit { "x64" } else { "x86" }),
+            major,
+            version: major.to_string(),
+            is_64bit,
+        }
+    }
+
+    #[test]
+    fn u0826_launchwrapper_forge_1_12_2_caps_at_8() {
+        let mut metadata = legacy_wrapper_java("1.12");
+        let c = java_constraint(&metadata, Some("forge"));
+        assert_eq!(c.hard_max, Some(8));
+        assert_eq!(c.min, 8);
+        assert_eq!(java_constraint(&metadata, None).hard_max, Some(8));
+
+        for version in ["1.13", "1.13.0", "1.20", "garbage"] {
+            assert_eq!(java_constraint(&legacy_wrapper_java(version), Some("forge")).hard_max, None);
+        }
+        metadata["mainClass"] = json!("net.fabricmc.loader.impl.launch.knot.KnotClient");
+        assert_eq!(java_constraint(&metadata, Some("fabric")).hard_max, None);
+
+        metadata = legacy_wrapper_java("1.12");
+        metadata["libraries"] = json!([{"name": "example:launchwrapper:1.12"}]);
+        assert_eq!(java_constraint(&metadata, Some("forge")).hard_max, None);
+        metadata["libraries"] = json!([]);
+        assert_eq!(java_constraint(&metadata, Some("forge")).hard_max, None);
+    }
+
+    #[test]
+    fn u0826_pick_java_rejects_too_new_for_launchwrapper() {
+        let c = java_constraint(&legacy_wrapper_java("1.12"), Some("forge"));
+        let runtimes = [java_fixture(21, true), java_fixture(17, true), java_fixture(17, false)];
+        let error = pick_java(&runtimes, &c).unwrap_err().to_string();
+        assert!(error.contains("LaunchWrapper") && error.contains("Java 8"), "{error}");
+        assert!(error.contains("17、21") && error.contains("自动准备 Java"), "{error}");
+        assert_eq!(pick_java(&[java_fixture(8, false), runtimes[0].clone()], &c).unwrap().major, 8);
+    }
+
+    #[test]
+    fn u0826_explicit_java_above_hard_max_and_below_minimum_is_error() {
+        let explicit = java_fixture(17, true);
+        let compatible = java_fixture(8, true);
+        let c = java_constraint(&legacy_wrapper_java("1.12"), Some("forge"));
+        let error = pick_configured_java(&[compatible, explicit.clone()], &explicit.path, &c)
+            .unwrap_err().to_string();
+        assert!(error.contains("Java 8") && error.contains("Java 17"), "{error}");
+        assert!(error.contains("清空 Java 路径") && error.contains("LaunchWrapper"), "{error}");
+
+        let modern = java_constraint(&json!({"javaVersion":{"majorVersion":21}}), None);
+        let error = pick_configured_java(&[explicit.clone()], &explicit.path, &modern)
+            .unwrap_err().to_string();
+        assert!(error.contains("Java 21") && error.contains("Java 17"), "{error}");
+        assert!(pick_configured_java(&[explicit], "C:/missing/java.exe", &c).is_err());
+    }
+
+    #[test]
+    fn u0826_forge_preference_and_warning_do_not_block_a_pinned_runtime() {
+        let metadata = json!({"_launcherBaseId":"1.18.2", "javaVersion":{"majorVersion":17}});
+        let c = java_constraint(&metadata, Some("forge"));
+        let high = java_fixture(21, true);
+        let runtimes = [high.clone(), java_fixture(17, true)];
+        assert_eq!(c.preferred_max, Some(17));
+        assert_eq!(c.hard_max, None);
+        assert_eq!(pick_java(&runtimes, &c).unwrap().major, 17);
+        let explicit = pick_configured_java(&runtimes, &high.path, &c).unwrap();
+        assert_eq!(explicit.major, 21);
+        let warning = java_preference_warning(&explicit, &c).unwrap();
+        assert!(warning.contains("Forge") && warning.contains("Java 17") && warning.contains("Java 21"));
+        assert!(java_preference_warning(&runtimes[1], &c).is_none());
+        assert_eq!(pick_java(&[high], &java_constraint(&metadata, None)).unwrap().major, 21);
+
+        let overridden_min = json!({"_launcherBaseId":"1.18.2", "javaVersion":{"majorVersion":21}});
+        let c = java_constraint(&overridden_min, Some("forge"));
+        let picked = pick_java(&[java_fixture(21, true)], &c).unwrap();
+        let warning = java_preference_warning(&picked, &c).unwrap();
+        assert!(warning.contains("Java 17") && warning.contains("元数据至少要求 Java 21"), "{warning}");
+    }
+
+    #[test]
+    fn u0826_modern_neoforge_fabric_and_vanilla_remain_compatible() {
+        let modern = json!({
+            "_launcherBaseId":"1.21.1", "javaVersion":{"majorVersion":21},
+            "libraries":[{"name":"net.neoforged:neoforge:21.1.42"}]
+        });
+        let c = java_constraint(&modern, Some("neoforge"));
+        assert_eq!(c.preferred_max, Some(21));
+        let runtimes = [java_fixture(25, true), java_fixture(21, true)];
+        assert_eq!(pick_java(&runtimes, &c).unwrap().major, 21);
+
+        let fabric = json!({"_launcherBaseId":"1.20.1", "javaVersion":{"majorVersion":17}});
+        let c = java_constraint(&fabric, Some("fabric"));
+        assert_eq!(c.preferred_max, None);
+        assert_eq!(pick_java(&[java_fixture(21, true)], &c).unwrap().major, 21);
+        assert!(java_preference_warning(&java_fixture(21, true), &c).is_none());
+
+        // Managed-server metadata is official vanilla, and a newer Java stays valid.
+        let server = json!({"id":"1.12.2", "javaVersion":{"majorVersion":8}});
+        let c = java_constraint(&server, None);
+        assert_eq!(c.hard_max, None);
+        assert_eq!(c.preferred_max, None);
+        assert_eq!(pick_java(&[java_fixture(17, true)], &c).unwrap().major, 17);
+    }
+
+    #[test]
+    fn u0826_soft_ranges_use_only_base_release_numbers() {
+        for (release, expected) in [
+            ("1.7.9", None),
+            ("1.7.10", Some(8)),
+            ("1.16", Some(8)),
+            ("1.16.5", Some(8)),
+            ("1.17.1", Some(16)),
+            ("1.18", Some(17)),
+            ("1.20.4", Some(17)),
+            ("1.20.5", Some(21)),
+            ("1.21.1", Some(21)),
+            ("24w14a", None),
+            ("1.20.5-pre1", None),
+            ("1.20.5.1", None),
+        ] {
+            let metadata = json!({"id":"modded-id", "_launcherBaseId":release});
+            assert_eq!(java_constraint(&metadata, Some("forge")).preferred_max, expected, "{release}");
+            assert_eq!(java_constraint(&metadata, Some("neoforge")).preferred_max, expected, "{release}");
+        }
+    }
+
+    #[test]
+    fn u0826_java_selection_prefers_required_then_lower_major_and_64bit_at_equal_major() {
+        let vanilla = json!({"javaVersion":{"majorVersion":17}});
+        let c = java_constraint(&vanilla, None);
+        let runtimes = [
+            java_fixture(21, false), java_fixture(25, true), java_fixture(7, true),
+            java_fixture(21, true), java_fixture(22, true),
+        ];
+        let picked = pick_java(&runtimes, &c).unwrap();
+        assert_eq!(picked.major, 21);
+        assert!(picked.is_64bit);
+        assert_eq!(pick_java(&[picked, java_fixture(17, false)], &c).unwrap().major, 17);
+    }
+
+    #[test]
+    fn u0826_auto_download_is_only_for_unpinned_non_exact_compatible_metadata() {
+        let mut config = Config { java_auto_download: true, ..Config::default() };
+        let c = java_constraint(&legacy_wrapper_java("1.12"), Some("forge"));
+        let too_new = [java_fixture(17, true)];
+        assert!(needs_official_install(&config, &pick_java(&too_new, &c), &c));
+        assert!(!needs_official_install(&config, &Ok(java_fixture(8, true)), &c));
+        config.java_path = too_new[0].path.clone();
+        assert!(!needs_official_install(&config, &pick_java(&too_new, &c), &c));
+        config.java_path.clear();
+        config.java_auto_download = false;
+        assert!(!needs_official_install(&config, &pick_java(&too_new, &c), &c));
+
+        config.java_auto_download = true;
+        let mut invalid = legacy_wrapper_java("1.12");
+        invalid["javaVersion"]["majorVersion"] = 17.into();
+        let c = java_constraint(&invalid, Some("forge"));
+        let selection = pick_java(&too_new, &c);
+        let error = selection.as_ref().unwrap_err().to_string();
+        assert!(error.contains("LaunchWrapper") && error.contains("17") && error.contains('8'), "{error}");
+        assert!(!needs_official_install(&config, &selection, &c));
+    }
+
+    #[test]
+    fn u0826_java_version_output_records_bitness() {
+        let (_, major, is_64bit) = parse_java_version_output(
+            "openjdk version \"21.0.8\" 2025-07-15\nOpenJDK 64-Bit Server VM",
+        ).unwrap();
+        assert_eq!(major, 21);
+        assert!(is_64bit);
+        let (_, major, is_64bit) = parse_java_version_output(
+            "java version \"1.8.0_451\"\nJava HotSpot(TM) Client VM",
+        ).unwrap();
+        assert_eq!(major, 8);
+        assert!(!is_64bit);
+        let (_, _, is_64bit) = parse_java_version_output(
+            "64-Bit license notice\nopenjdk version \"17.0.12\"\nOpenJDK Client VM",
+        ).unwrap();
+        assert!(!is_64bit);
+        assert!(parse_java_version_output("not a Java VM").is_none());
+    }
+
+    #[test]
+    fn u0826_java_runtime_serializes_bitness_for_the_settings_ipc() {
+        let value = serde_json::to_value(java_fixture(17, true)).unwrap();
+        assert_eq!(value["is64bit"], true);
+        assert!(value.get("is_64bit").is_none());
+    }
+
+
     #[test]
     fn maven_coordinates_and_java_versions_are_parsed() {
         assert_eq!(
