@@ -183,7 +183,7 @@ export function SettingsPage() {
           {section === "appearance" ? <AppearanceSettings {...sectionProps} /> : null}
           {section === "game" ? <GameSettings {...sectionProps} /> : null}
           {section === "java" ? <JavaSettings {...sectionProps} /> : null}
-          {section === "downloads" ? <DownloadSettings {...sectionProps} /> : null}
+          {section === "downloads" ? <DownloadSettings {...sectionProps} savedConfig={savedConfig.current} /> : null}
           {section === "about" ? <AboutSettings onError={onError} /> : null}
         </SectionPanel>
       </div>

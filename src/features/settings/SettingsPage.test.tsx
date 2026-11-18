@@ -154,6 +154,96 @@ afterEach(async () => {
 });
 
 describe("global settings", () => {
+
+  it("tests the unsaved launcher proxy and persists only its nonsecret settings", async () => {
+    commandMock.mockResolvedValueOnce({ curseforgeConfigured: false });
+    await render();
+    await click("Downloads");
+    await select("Launcher proxy mode", "custom");
+    await select("Proxy protocol", "https");
+    await fill("Proxy host", "proxy.example.test");
+    await fill("Proxy port", "443");
+    expect(button("Save proxy credentials").disabled).toBe(true);
+    commandMock.mockResolvedValueOnce({ latencyMs: 12 });
+    await click("Test proxy connection");
+    expect(commandMock).toHaveBeenCalledWith("test_proxy_connection", {
+      proxyMode: "custom", proxyScheme: "https", proxyHost: "proxy.example.test", proxyPort: 443,
+    });
+    expect(container.textContent).toContain("Connection successful (12 ms).");
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      proxyMode: "custom", proxyScheme: "https", proxyHost: "proxy.example.test", proxyPort: 443,
+      gameProxyMode: "off",
+    }), { preserveAppearance: true });
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.not.objectContaining({ username: expect.anything() }), expect.anything());
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.not.objectContaining({ password: expect.anything() }), expect.anything());
+  });
+
+  it("shows an actionable rejection when inheriting a TLS proxy", async () => {
+    const saved = {
+      ...mockLauncher.config,
+      proxyMode: "custom", proxyScheme: "https", proxyHost: "proxy.example.test", proxyPort: 443,
+      gameProxyMode: "off",
+    } satisfies Config;
+    mockLauncher.config = mockLauncher.data.config = saved;
+    vi.mocked(mockLauncher.saveConfig).mockRejectedValueOnce({ code: "proxy.tlsInheritance" });
+    await render();
+    await click("Downloads");
+    await select("Game proxy mode", "launcher");
+    await click("Save settings");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Use an http:// proxy, Follow system, or Off.");
+  });
+
+  it("saves and clears credentials separately for the saved endpoint", async () => {
+    const saved = {
+      ...mockLauncher.config,
+      proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+      gameProxyMode: "off",
+    } satisfies Config;
+    mockLauncher.config = mockLauncher.data.config = saved;
+    await render();
+    await click("Downloads");
+    expect(container.textContent).toContain("unencrypted on the connection to the proxy");
+    await fill("Proxy username", "synthetic-user");
+    await fill("Proxy password", "synthetic-pass");
+    commandMock.mockResolvedValueOnce(true);
+    await click("Save proxy credentials");
+    expect(commandMock).toHaveBeenCalledWith("set_proxy_credentials", {
+      proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+      username: "synthetic-user", password: "synthetic-pass",
+    });
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Proxy password"]')?.value).toBe("");
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Credentials saved in the system credential store.");
+    commandMock.mockResolvedValueOnce(false);
+    await click("Clear proxy credentials");
+    expect(commandMock).toHaveBeenCalledWith("set_proxy_credentials", {
+      proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+      username: "", password: "",
+    });
+    expect(container.textContent).not.toContain("Credentials saved in the system credential store.");
+  });
+
+  it("lets users clear unreadable credentials for a saved endpoint", async () => {
+    const saved = {
+      ...mockLauncher.config,
+      proxyMode: "custom", proxyScheme: "https", proxyHost: "proxy.example.test", proxyPort: 8443,
+      gameProxyMode: "off",
+    } satisfies Config;
+    mockLauncher.config = mockLauncher.data.config = saved;
+    await render();
+    commandMock.mockResolvedValueOnce({ proxyCredentialsUnreadable: true });
+    await click("Downloads");
+    expect(container.textContent).not.toContain("Credentials saved in the system credential store.");
+    commandMock.mockResolvedValueOnce(false);
+    await click("Clear proxy credentials");
+    expect(commandMock).toHaveBeenCalledWith("set_proxy_credentials", {
+      proxyMode: "custom", proxyScheme: "https", proxyHost: "proxy.example.test", proxyPort: 8443,
+      username: "", password: "",
+    });
+  });
+
   it("previews world scene and material immediately and saves both choices explicitly", async () => {
     await render();
     await click("Appearance");

@@ -828,7 +828,7 @@ pub(super) async fn install(
         progress.stage(state, "resource-plan", "检查资源及必需前置");
     }
     require_no_pending(directory)?;
-    let api = client(false)?;
+    let api = client(state, false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let root_project = selected.project_id.clone();
     let nodes = resolve_plan(
@@ -908,7 +908,7 @@ pub(super) async fn install(
             fs::rename(&raw, alternate).map_err(|e| e.to_string())?;
         }
         let installed =
-            download_verified_progress(state, file, &next, kind, client(true)?, progress).await?;
+            download_verified_progress(state, file, &next, kind, client(state, true)?, progress).await?;
         if action.destination != file.filename {
             let target = safe_join(&next, &action.destination)?;
             if target.exists() {
@@ -974,7 +974,7 @@ pub(super) async fn updates(
     kind: ResourceKind,
 ) -> Result<Vec<ResourceUpdate>, String> {
     require_no_pending(directory)?;
-    let api = client(false)?;
+    let api = client(state, false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let mut results = Vec::new();
     let mut cache = HashMap::<String, Option<Version>>::new();
@@ -1037,7 +1037,7 @@ pub(super) async fn update_one(
     validate_id(file_name)?;
     identifier(new_id)?;
     require_no_pending(directory)?;
-    let api = client(false)?;
+    let api = client(state, false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let current = locals
         .iter()

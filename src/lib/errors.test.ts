@@ -21,6 +21,11 @@ describe("structured launcher errors", () => {
     expect(error.code).toBe("auth.required");
   });
 
+  it("preserves the Java TLS proxy policy rejection from legacy IPC", () => {
+    expect(normalizeError("proxy.tlsInheritance")).toMatchObject({ code: "proxy.tlsInheritance", detail: undefined });
+    expect(normalizeError("proxy.unrecognized").code).toBe("internal.unexpected");
+  });
+
   it("hides legacy details behind an unexpected-error code", () => {
     const error = normalizeError("旧内部错误");
     expect(error.code).toBe("internal.unexpected");

@@ -395,6 +395,14 @@ fn classify(text: &str) -> DiagnosisKind {
 }
 pub fn redact(text: &str) -> String {
     use std::sync::LazyLock;
+    static PROXY_AUTH: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(\bproxy-authorization[\s"':=]+)(?:(?:basic|bearer|negotiate)\s+)?[^\s,;"']+"#)
+            .expect("constant regex")
+    });
+    static URL_USERINFO: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(\bhttps?://)[^/?#@\s,;"']+@"#)
+            .expect("constant regex")
+    });
     static BEARER: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"(?i)(authorization[\s"':=]+)(?:bearer\s+)?([^\s,;"']+)"#)
             .expect("constant regex")
@@ -407,7 +415,9 @@ pub fn redact(text: &str) -> String {
         regex::Regex::new(r#"(?i)(--clientId[\s,'\"=]+|clientid=)([^\s,;\"'\]]+)"#)
             .expect("constant regex")
     });
-    let text = BEARER.replace_all(text, "${1}[已隐藏]");
+    let text = URL_USERINFO.replace_all(text, "${1}[已隐藏]@");
+    let text = PROXY_AUTH.replace_all(&text, "${1}[已隐藏]");
+    let text = BEARER.replace_all(&text, "${1}[已隐藏]");
     let text = SECRET.replace_all(&text, "${1}[已隐藏]");
     CLIENT_ID.replace_all(&text, "${1}[已隐藏]").into_owned()
 }
@@ -870,6 +880,16 @@ mod tests {
         assert_eq!(payload["kind"], "memory");
         assert_eq!(payload["excerpt"], sample);
         assert!(payload.get("title").is_none(), "native diagnostics should not send locale-specific titles");
+    }
+
+    #[test]
+    fn diagnostics_redact_proxy_authorization_and_url_userinfo() {
+        let encoded = "fixture-basic-auth-bytes";
+        let userinfo = "fixture-proxy-user:fixture-proxy-pass";
+        let clean = redact(&format!("Proxy-Authorization: Basic {encoded} https://{userinfo}@proxy.example.invalid/path"));
+        assert!(!clean.contains(encoded));
+        assert!(!clean.contains(userinfo));
+        assert!(clean.contains("proxy.example.invalid"));
     }
 
     #[test]

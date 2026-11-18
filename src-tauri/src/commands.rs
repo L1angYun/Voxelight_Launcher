@@ -199,6 +199,9 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
         .map_err(|_| "已有安装或启动准备任务运行，请等待完成后修改配置")?;
     config.game_directory = config.game_directory.trim().to_owned();
     config.java_path = config.java_path.trim().to_owned();
+    config.proxy_host = config.proxy_host.trim().to_owned();
+    crate::network::Settings::validate_save(&config)
+        .map_err(|error| error.code().to_owned())?;
     if !preserve_appearance {
         validate_visual_preferences(&config)?;
     }
@@ -839,6 +842,39 @@ mod tests {
 mod scoped_settings_save_tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn config_save_rejects_java_inheritance_from_a_tls_proxy() {
+        let (root, state) = owned_profile();
+        state.save().unwrap();
+        let state_file = root.path().join("state.json");
+        let before = fs::read(&state_file).unwrap();
+        let mut candidate = serde_json::to_value(state.snapshot().unwrap().config).unwrap();
+        for (field, value) in [
+            ("proxyMode", serde_json::json!("custom")),
+            ("proxyScheme", serde_json::json!("https")),
+            ("proxyHost", serde_json::json!("proxy.example.invalid")),
+            ("proxyPort", serde_json::json!(8443)),
+            ("gameProxyMode", serde_json::json!("launcher")),
+        ] {
+            candidate[field] = value;
+        }
+        let rejected = save_config_inner(&state, serde_json::from_value(candidate.clone()).unwrap()).unwrap_err();
+        assert_eq!(crate::errors::expected(rejected).code, "proxy.tlsInheritance");
+        assert_eq!(fs::read(&state_file).unwrap(), before);
+        candidate["gameProxyMode"] = serde_json::json!("off");
+        let saved = save_config_inner(&state, serde_json::from_value(candidate).unwrap()).unwrap();
+        let saved = serde_json::to_value(saved).unwrap();
+        assert_eq!(saved["proxyScheme"], "https");
+        assert_eq!(saved["gameProxyMode"], "off");
+        let saved_bytes = fs::read(&state_file).unwrap();
+        let mut inactive = saved;
+        inactive["proxyMode"] = serde_json::json!("none");
+        inactive["proxyHost"] = serde_json::json!("fixture-user:fixture-password@proxy.example.invalid");
+        let rejected = save_config_inner(&state, serde_json::from_value(inactive).unwrap()).unwrap_err();
+        assert_eq!(crate::errors::expected(rejected).code, "proxy.invalidHost");
+        assert_eq!(fs::read(&state_file).unwrap(), saved_bytes);
+    }
 
     fn owned_profile() -> (crate::instances::StagingDirectory, LauncherState) {
         let root = crate::instances::StagingDirectory::create(

@@ -144,7 +144,41 @@
     "typeface": "字体",
     "typefaceCredit": "MiSans · Xiaomi"
   },
+  "proxy": {
+    "title": "网络代理",
+    "restartNotice": "启动器新建网络客户端时会使用已保存的代理设置。请重启启动器，让登录及已有客户端也使用新设置。",
+    "mode": "启动器代理模式",
+    "modes": {
+      "system": "跟随系统",
+      "none": "关闭",
+      "custom": "自定义"
+    },
+    "scheme": "代理协议",
+    "host": "代理主机",
+    "port": "代理端口",
+    "gameMode": "游戏代理模式",
+    "gameModes": {
+      "default": "使用全局设置",
+      "off": "关闭",
+      "system": "跟随系统",
+      "launcher": "继承启动器代理"
+    },
+    "javaDescription": "Java 只能继承 HTTP 代理。此设置只影响 HTTP 请求，不影响游戏服务器连接。Forge 和 NeoForge 安装器使用启动器的代理设置。",
+    "test": "测试代理连接",
+    "credentialStorage": "代理凭据单独保存在系统凭据库中。",
+    "httpWarning": "使用 HTTP 代理时，代理凭据在发往代理的连接上不加密。",
+    "saveEndpointFirst": "请先保存代理地址，再修改凭据。",
+    "username": "代理用户名",
+    "password": "代理密码",
+    "saveCredentials": "保存代理凭据",
+    "clearCredentials": "清除代理凭据",
+    "credentialsConfigured": "代理凭据已保存在系统凭据库中。",
+    "javaNoCredentials": "代理凭据不会传给游戏或安装器。"
+  },
   "notice": {
+    "proxyConnected": "连接成功（{{latencyMs}} 毫秒）。",
+    "proxyCredentialsSaved": "代理凭据已保存。",
+    "proxyCredentialsCleared": "代理凭据已清除。",
     "secretSaved": "CurseForge 密钥已加密保存。",
     "secretCleared": "已清除保存的 CurseForge 密钥。",
     "presetExported": "配置预设已导出，不包含账号和平台密钥。",
@@ -155,6 +189,20 @@
     "javaNotFound": "没有找到 Java，请安装后指定路径。"
   },
   "errors": {
+    "proxy": {
+      "invalidMode": "请选择启动器代理模式。",
+      "invalidScheme": "启动器代理协议只能是 http:// 或 https://。",
+      "invalidHost": "请输入主机名、IPv4 地址或带方括号的 IPv6 地址，不要包含协议或路径。",
+      "invalidPort": "请输入 1 到 65535 之间的代理端口。",
+      "invalidGameMode": "请选择游戏代理模式。",
+      "invalidCredentials": "无法保存或读取代理凭据。请检查用户名和密码，或重新输入。",
+      "tlsInheritance": "Java 只能继承 HTTP 代理。请改用 http:// 代理，或选择「跟随系统」「关闭」。",
+      "authentication": "代理要求有效的凭据。请保存代理凭据后重试。",
+      "connection": "无法通过此代理连接。请检查代理主机和端口。",
+      "tls": "TLS 验证失败。请检查代理协议和证书。",
+      "timeout": "代理连接超时。",
+      "saveEndpointFirst": "请先保存代理地址，再修改凭据。"
+    },
     "config": {
       "backgroundInvalid": "请选择有效且不超过 12 MB 的 PNG、JPEG 或 WebP 背景图片。",
       "presetInvalid": "请选择本启动器导出的有效配置预设。",

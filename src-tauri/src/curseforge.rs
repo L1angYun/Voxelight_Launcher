@@ -159,7 +159,7 @@ pub async fn get_curseforge_project_details(
             crate::resources::resource_context(&state, version, instance_id.as_deref()).ok()
         });
     let key = service_key(&state).map_err(expected)?;
-    let client = api_client().map_err(expected)?;
+    let client = api_client(&state).map_err(expected)?;
     let project: Response<Project> = api(&client, &key, &format!("mods/{id}"), &[])
         .await
         .map_err(expected)?;
@@ -299,8 +299,8 @@ fn service_key(state: &LauncherState) -> Result<String, String> {
     crate::curseforge_key::effective_cf_key(&state.data_dir, None)?
         .ok_or_else(|| "请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。".into())
 }
-fn api_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+fn api_client(state: &LauncherState) -> Result<reqwest::Client, String> {
+    let builder = reqwest::Client::builder()
         .user_agent(concat!(
             "VoxelightLauncher/",
             env!("CARGO_PKG_VERSION"),
@@ -308,7 +308,8 @@ fn api_client() -> Result<reqwest::Client, String> {
         ))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    crate::network::for_state_builder(state, builder)?
         .build()
         .map_err(|_| "无法创建 CurseForge API 客户端".into())
 }
@@ -490,7 +491,7 @@ pub async fn search_curseforge(
         return Err("搜索分页超过 CurseForge 的 10000 项限制".into());
     }
     let key = service_key(&state)?;
-    let client = api_client()?;
+    let client = api_client(&state)?;
     let mut filters = vec![
         ("gameId".into(), "432".into()),
         ("classId".into(), class.to_string()),
@@ -746,7 +747,7 @@ async fn download(
             file.file_name
         ));
     }
-    let client = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(concat!(
             "VoxelightLauncher/",
             env!("CARGO_PKG_VERSION"),
@@ -762,7 +763,8 @@ async fn download(
             } else {
                 attempt.error("重定向到非 CurseForge CDN")
             }
-        }))
+        }));
+    let client = crate::network::for_state_builder(state, builder)?
         .build()
         .map_err(|_| "无法创建资源下载客户端")?;
     let temporary = safe_join(
@@ -917,7 +919,7 @@ pub(crate) async fn resolve_pinned_targets(
 ) -> AppResult<ResourceTargetPlan> {
     let kind = ResourceKind::parse(resource_type)?;
     let key = service_key(state)?;
-    let client = api_client()?;
+    let client = api_client(state)?;
     let (project, file) = get_pinned_file(&client, &key, project_id, resource_type, file_id, kind).await?;
     let manifest = crate::resources::manifest_releases(crate::minecraft::manifest(state).await);
     let targets = crate::resources::target_candidates(state)?;
@@ -959,7 +961,7 @@ pub(crate) async fn create_with_pinned_file(
         let progress = ResourceProgress::new(Some(app), game_version);
         progress.stage(state, "resource-preflight", "检查资源及必需前置");
         let key = service_key(state)?;
-        let client = api_client()?;
+        let client = api_client(state)?;
         let (project, file) = get_pinned_file(&client, &key, project_id, resource_type, file_id, kind).await?;
         crate::resource_targets::validate_pinned_creation_pair(&pinned_metadata(&file, kind), kind, loader, game_version)?;
         if !can_create_pinned(&file) {
@@ -1013,7 +1015,7 @@ pub async fn install_curseforge_resource(
             crate::resources::resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
         crate::resources::resource_transactions::require_no_pending(&target.directory)?;
         let key = service_key(&state)?;
-        let client = api_client()?;
+        let client = api_client(&state)?;
         let directory = target.directory;
         let minecraft = target.minecraft;
         let loader = target.loader.as_deref();

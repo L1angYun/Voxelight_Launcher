@@ -758,7 +758,7 @@ async fn install_jar(
         "下载并校验官方服务端 JAR",
     );
     minecraft::ensure_download_with_source_and_control(
-        &state.client,
+        state,
         &download,
         &state.snapshot()?.config.download_source,
         Some(&state.control),

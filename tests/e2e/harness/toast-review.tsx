@@ -7,7 +7,7 @@ import { AppearanceProvider } from "../../../src/app/AppearanceProvider";
 import { Dialog } from "../../../src/components/ui/Dialog";
 import { ToastProvider, useToast } from "../../../src/components/ui/ToastProvider";
 import { createLauncherI18n } from "../../../src/i18n";
-import type { Config } from "../../../src/lib/launcher";
+import { defaults, type Config } from "../../../src/lib/launcher";
 import "../../../src/design/global.css";
 import "../../../src/design/surfaces.css";
 
@@ -15,6 +15,7 @@ const parameters = new URLSearchParams(location.search);
 const theme = parameters.get("theme") === "light" ? "light" : "dark";
 const effects = parameters.get("effects") === "lite" ? "lite" : "full";
 const config: Config = {
+  ...defaults,
   gameDirectory: "C:\\ToastReview", javaPath: "", maxMemoryMb: 4096, memoryMode: "manual", jvmArguments: "", versionIsolation: true,
   theme, downloadConcurrency: 6, microsoftClientId: "", downloadLimitKib: 0, downloadSource: "official",
   screenWidth: 1280, screenHeight: 720, language: "en-US", accentColor: "#b4f17a", effects,

@@ -417,7 +417,7 @@ async fn manifest_with_resolver(
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<Value, String> {
     match fetch_bytes_candidates_resolved(
-        &state.client,
+        state.client()?,
         MANIFEST_URL,
         16 * 1024 * 1024,
         source,
@@ -957,12 +957,8 @@ fn validate_mirror_file_redirect(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn mirror_download_client() -> Result<&'static reqwest::Client, String> {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    if let Some(client) = CLIENT.get() {
-        return Ok(client);
-    }
-    let client = reqwest::Client::builder()
+pub(crate) fn mirror_download_client(data_dir: &Path, config: &Config) -> Result<reqwest::Client, String> {
+    let builder = reqwest::Client::builder()
         .user_agent(concat!("VoxelightLauncher/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(180))
@@ -974,10 +970,10 @@ fn mirror_download_client() -> Result<&'static reqwest::Client, String> {
             } else {
                 attempt.error("unsafe mirror file redirect")
             }
-        }))
+        }));
+    crate::network::for_config_builder(data_dir, config, builder)?
         .build()
-        .map_err(|e| format!("无法创建镜像文件下载客户端：{e}"))?;
-    Ok(CLIENT.get_or_init(|| client))
+        .map_err(|_| "proxy.connection".into())
 }
 
 #[derive(Clone, Copy)]
@@ -1083,30 +1079,31 @@ pub(crate) async fn ensure_download_with_control(
     file: &Download,
     control: Option<&crate::downloads::DownloadControl>,
 ) -> Result<bool, String> {
-    ensure_download_with_source_and_control(client, file, "official", control).await
+    ensure_download_with_source_and_control_resolved(client, Ok(None), file, "official", control, &identity_url).await
 }
 
 /// Uses the original metadata SHA-1 for every candidate. Mirrored files and their
 /// checksums remain in the mirror's trust chain; this is not independent official signing.
 pub(crate) async fn ensure_download_with_source_and_control(
-    client: &reqwest::Client,
+    state: &LauncherState,
     file: &Download,
     source: &str,
     control: Option<&crate::downloads::DownloadControl>,
 ) -> Result<bool, String> {
-    ensure_download_with_source_and_control_resolved(client, file, source, control, &identity_url)
+    ensure_download_with_source_and_control_resolved(state.client()?, state.mirror_client().map(Some), file, source, control, &identity_url)
         .await
 }
 
 async fn ensure_download_with_source_and_control_resolved(
     client: &reqwest::Client,
+    mirror: Result<Option<&reqwest::Client>, String>,
     file: &Download,
     source: &str,
     control: Option<&crate::downloads::DownloadControl>,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<bool, String> {
     let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
-    ensure_download_with_policy(client, file, source, policy, resolver).await
+    ensure_download_with_policy(client, mirror, file, source, policy, resolver).await
 }
 
 pub(crate) async fn ensure_preview_download(
@@ -1116,11 +1113,12 @@ pub(crate) async fn ensure_preview_download(
 ) -> Result<bool, String> {
     // As before, default skin bytes are fetched from their verified official
     // client URL, even when official metadata came from an enabled mirror.
-    ensure_download_with_policy(client, file, "official", DownloadPolicy::Preview(control), &identity_url).await
+    ensure_download_with_policy(client, Ok(None), file, "official", DownloadPolicy::Preview(control), &identity_url).await
 }
 
 async fn ensure_download_with_policy(
     client: &reqwest::Client,
+    mirror: Result<Option<&reqwest::Client>, String>,
     file: &Download,
     source: &str,
     policy: DownloadPolicy<'_>,
@@ -1141,7 +1139,7 @@ async fn ensure_download_with_policy(
         return Err("镜像文件必须具有固定且有效的预期 SHA-1".into());
     }
     let mirror_client = if candidates.iter().any(|candidate| candidate.mirror) {
-        Some(mirror_download_client()?)
+        Some(mirror?.ok_or("proxy.connection")?)
     } else {
         None
     };
@@ -1319,7 +1317,7 @@ async fn library_download_with_source(
         hash.to_ascii_lowercase()
     } else {
         let (_, hash) = fetch_bytes_candidates(
-            &state.client,
+            state.client()?,
             &format!("{url}.sha1"),
             1024,
             source,
@@ -1459,7 +1457,7 @@ async fn official_metadata_at_paths(
     let mut profile_conflict = None;
     for candidate in candidates {
         let manifest_bytes =
-            match fetch_bytes_once(&state.client, &candidate.url, 16 * 1024 * 1024, resolver).await
+            match fetch_bytes_once(state.client()?, &candidate.url, 16 * 1024 * 1024, resolver).await
             {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -1499,7 +1497,7 @@ async fn official_metadata_at_paths(
             }
         }
         match fetch_bytes_candidates_resolved(
-            &state.client,
+            state.client()?,
             &url,
             8 * 1024 * 1024,
             source,
@@ -1778,7 +1776,7 @@ async fn install_with_config(
             Some(&format!("assets/indexes/{asset_id}.json")),
         )?;
         let (assets, _) = ensure_json_download_with_source_and_control(
-            &state.client,
+            state.client()?,
             &index,
             &config.download_source,
             Some(&state.control),
@@ -1835,7 +1833,7 @@ async fn install_with_config(
         let completed_bytes = &completed_bytes;
         async move {
             let was_downloaded = ensure_download_with_source_and_control(
-                &state.client,
+                state,
                 &file,
                 download_source,
                 Some(&state.control),
@@ -2264,7 +2262,7 @@ async fn install_official_java(
     validate_id(component)?;
     state.control.checkpoint().await?;
     let (_, index) = fetch_bytes_candidates(
-        &state.client,
+        state.client()?,
         JAVA_RUNTIME_INDEX,
         4 * 1024 * 1024,
         &config.download_source,
@@ -2302,7 +2300,7 @@ async fn install_official_java(
     let manifest_download =
         download_from(&runtime["manifest"], &root, Some("runtime-manifest.json"))?;
     let (runtime_manifest, _) = ensure_json_download_with_source_and_control(
-        &state.client,
+        state.client()?,
         &manifest_download,
         &config.download_source,
         Some(&state.control),
@@ -2380,7 +2378,7 @@ async fn install_official_java(
         let bytes = &bytes;
         async move {
             ensure_download_with_source_and_control(
-                &state.client,
+                state,
                 &file,
                 download_source,
                 Some(&state.control),
@@ -2851,6 +2849,13 @@ async fn launch_prepared(
             config.screen_height = height;
         }
     }
+    let custom = shell_words::split(&config.jvm_arguments)
+        .map_err(|e| format!("自定义 JVM 参数引号不匹配：{e}"))?;
+    let game_proxy_mode = instance.and_then(|value| value.game_proxy_mode.as_deref())
+        .unwrap_or(&config.game_proxy_mode);
+    let managed_proxy_args = crate::network::Settings::from_config(&config)
+        .and_then(|settings| settings.game_args(game_proxy_mode, &custom))
+        .map_err(|error| error.code().to_owned())?;
     let game_dir = game_directory(&snapshot.config, &id, instance)?;
     let (_, metadata) = install_with_config(&state, &app, &id, &snapshot.config).await?;
     let loader = instance
@@ -2957,11 +2962,10 @@ async fn launch_prepared(
         log(&app, &state, "warn", "初始游戏内存已降到本次启动的最大内存");
     }
     arguments.push("-Dfile.encoding=UTF-8".into());
-    let custom = shell_words::split(&config.jvm_arguments)
-        .map_err(|e| format!("自定义 JVM 参数引号不匹配：{e}"))?;
     if custom.iter().any(|arg| crate::memory::is_memory_argument(arg)) {
         log(&app, &state, "warn", "已忽略旧自定义 JVM 参数中的内存选项，请在内存设置中调整");
     }
+    arguments.extend(managed_proxy_args);
     for argument in &custom {
         if crate::memory::is_memory_argument(argument) {
             continue;
@@ -3008,7 +3012,7 @@ async fn launch_prepared(
         validate_id(file_id)?;
         let download = download_from(file, &root, Some(&format!("assets/log_configs/{file_id}")))?;
         ensure_download_with_source_and_control(
-            &state.client,
+            &state,
             &download,
             &config.download_source,
             Some(&state.control),
@@ -3897,7 +3901,7 @@ mod tests {
                     let metadata = resolve_metadata_with_source(shared, "source-test", root, &snapshot.config.download_source).await?;
                     let download = download_from(&metadata["downloads"]["client"], root,
                         Some("versions/source-test/source-test.jar"))?;
-                    assert!(!ensure_download_with_source_and_control(&shared.client, &download,
+                    assert!(!ensure_download_with_source_and_control(&shared, &download,
                         &snapshot.config.download_source, Some(&shared.control)).await?);
                     assert!(build_classpath(&metadata, root, "source-test")?.contains("source-test.jar"));
                     if fail { Err("preparation failed".to_owned()) } else { Ok(()) }
@@ -4503,7 +4507,8 @@ mod tests {
                 size: Some(6),
             };
             assert!(ensure_download_with_source_and_control_resolved(
-                &state.client,
+                state.client().unwrap(),
+                state.mirror_client().map(Some),
                 &file,
                 "auto",
                 None,
@@ -4513,7 +4518,8 @@ mod tests {
             .unwrap());
             assert_eq!(fs::read(&file.path).unwrap(), good);
             assert!(!ensure_download_with_source_and_control_resolved(
-                &state.client,
+                state.client().unwrap(),
+                state.mirror_client().map(Some),
                 &file,
                 "auto",
                 None,
@@ -4531,7 +4537,8 @@ mod tests {
             };
             fs::write(&rejected.path, b"old!!!").unwrap();
             assert!(ensure_download_with_source_and_control_resolved(
-                &state.client,
+                state.client().unwrap(),
+                state.mirror_client().map(Some),
                 &rejected,
                 "bmclapi",
                 None,
@@ -4555,7 +4562,8 @@ mod tests {
                 ..rejected
             };
             assert!(ensure_download_with_source_and_control_resolved(
-                &state.client,
+                state.client().unwrap(),
+                state.mirror_client().map(Some),
                 &unhashed,
                 "bmclapi",
                 None,
@@ -5010,12 +5018,12 @@ mod tests {
                 Some(&format!("versions/{latest}/{latest}.jar")),
             )
             .unwrap();
-            assert!(ensure_download_with_control(&state.client, &file, None)
+            assert!(ensure_download_with_control(state.client().unwrap(), &file, None)
                 .await
                 .unwrap());
             assert!(file_valid(&file).await.unwrap());
             assert!(
-                !ensure_download_with_control(&state.client, &file, None)
+                !ensure_download_with_control(state.client().unwrap(), &file, None)
                     .await
                     .unwrap(),
                 "verified existing file should be reused"

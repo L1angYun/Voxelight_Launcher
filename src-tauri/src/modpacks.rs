@@ -142,7 +142,7 @@ fn allowed_download(value: &str) -> Result<reqwest::Url, String> {
     }
     Ok(url)
 }
-fn client(download: bool) -> Result<reqwest::Client, String> {
+fn client(state: &LauncherState, download: bool) -> Result<reqwest::Client, String> {
     let policy = if download {
         reqwest::redirect::Policy::custom(|a| {
             if a.previous().len() >= 5 {
@@ -156,7 +156,7 @@ fn client(download: bool) -> Result<reqwest::Client, String> {
     } else {
         reqwest::redirect::Policy::none()
     };
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(concat!(
             "VoxelightLauncher/",
             env!("CARGO_PKG_VERSION"),
@@ -164,7 +164,8 @@ fn client(download: bool) -> Result<reqwest::Client, String> {
         ))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(if download { 900 } else { 60 }))
-        .redirect(policy)
+        .redirect(policy);
+    crate::network::for_state_builder(state, builder)?
         .build()
         .map_err(|_| "无法创建整合包网络客户端".into())
 }
@@ -287,7 +288,7 @@ async fn fetch_verified(
         fs::copy(&cache, target).map_err(|e| e.to_string())?;
         return Ok(VerifiedPackFile::receipt(false, values));
     }
-    let network = client(true)?;
+    let network = client(&state, true)?;
     let mut last_error = "整合包没有受支持的下载地址".to_owned();
     for url in urls.iter().take(8) {
         state.control.checkpoint().await?;
@@ -771,7 +772,7 @@ async fn curse_into(
         return Err("CurseForge 整合包文件数量超过限制".into());
     }
     let key = crate::curseforge_key::sensitive_cf_header(&key)?;
-    let api = client(false)?;
+    let api = client(&state, false)?;
     let mut deps = BTreeMap::from([("minecraft".into(), manifest.minecraft.version.clone())]);
     let loaders = manifest.minecraft.mod_loaders;
     if loaders.len() > 1 {
@@ -1115,9 +1116,9 @@ async fn import_personal_backup(
 }
 
 #[tauri::command]
-pub async fn list_modpack_versions(project_id: String) -> Result<Vec<ModpackVersion>, String> {
+pub async fn list_modpack_versions(state: State<'_, Arc<LauncherState>>, project_id: String) -> Result<Vec<ModpackVersion>, String> {
     identifier(&project_id)?;
-    let api = client(false)?;
+    let api = client(&state, false)?;
     let project: ApiProject = json_response(api.get(format!("{API}/project/{project_id}"))).await?;
     if project.project_type != "modpack" {
         return Err("所选项目不是整合包".into());
@@ -1199,7 +1200,7 @@ pub async fn install_modrinth_modpack(
         None => state.control.begin("modpack", &project_id, "安装 Modrinth 整合包")?,
     };
     let result = async {
-        let api = client(false)?;
+        let api = client(&state, false)?;
         let project: ApiProject =
             json_response(api.get(format!("{API}/project/{project_id}"))).await?;
         if project.project_type != "modpack" {
@@ -1437,7 +1438,7 @@ async fn build_shared_export_plan(
             }
         }
     }
-    let api = client(false)?;
+    let api = client(&state, false)?;
     let hashes: Vec<_> = hash_matches.keys().cloned().collect();
     let mut mappings = HashMap::<String, ApiVersion>::new();
     for chunk in hashes.chunks(100) {

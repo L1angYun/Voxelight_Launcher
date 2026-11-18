@@ -98,7 +98,7 @@ trait AuthTransport: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<AuthResponse, String>> + Send + '_>>;
 }
 struct HttpTransport {
-    client: reqwest::Client,
+    client: Result<reqwest::Client, String>,
 }
 impl AuthTransport for HttpTransport {
     fn send(
@@ -110,7 +110,7 @@ impl AuthTransport for HttpTransport {
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|_| "无效的认证请求方法")?;
             let mut builder = self
-                .client
+                .client.as_ref().map_err(Clone::clone)?
                 .request(method, &request.url)
                 .header("Accept", "application/json");
             if let Some(token) = request.bearer {
@@ -234,8 +234,8 @@ impl CredentialState {
 }
 
 impl AuthService {
-    pub fn new(data_dir: PathBuf) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
+    pub fn new(data_dir: PathBuf, config: &crate::models::Config) -> Self {
+        let builder = reqwest::Client::builder()
             .https_only(true)
             .user_agent(concat!(
                 "VoxelightLauncher/",
@@ -244,13 +244,14 @@ impl AuthService {
             ))
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(35))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| "无法初始化认证网络客户端")?;
-        Ok(Self::with_backends(
+            .redirect(reqwest::redirect::Policy::none());
+        // Retain the failure until a network request instead of preventing the settings UI from opening.
+        let client = crate::network::for_config_builder(&data_dir, config, builder)
+            .and_then(|builder| builder.build().map_err(|_| "proxy.connection".into()));
+        Self::with_backends(
             Arc::new(HttpTransport { client }),
             Arc::new(SecretStore::new(data_dir)),
-        ))
+        )
     }
     fn with_backends(transport: Arc<dyn AuthTransport>, secrets: Arc<dyn SecretBackend>) -> Self {
         Self {

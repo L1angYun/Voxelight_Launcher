@@ -20,6 +20,7 @@ mod memory;
 mod models;
 mod mod_metadata;
 mod modpacks;
+mod network;
 mod path_grants;
 mod platform;
 mod process_output;
@@ -117,12 +118,8 @@ pub fn run() {
                 }
             };
             let webview_data = state.data_dir.join("webview");
-            let auth = match auth::AuthService::new(state.data_dir.clone()) {
-                Ok(auth) => std::sync::Arc::new(auth),
-                Err(error) => fail_startup(format!(
-                    "无法初始化认证服务。\n\n{error}"
-                )),
-            };
+            let config = state.snapshot().unwrap_or_else(|error| fail_startup(error)).config;
+            let auth = std::sync::Arc::new(auth::AuthService::new(state.data_dir.clone(), &config));
             if let Err(error) = auth.recover_credential_removals(&state) {
                 eprintln!("[voxelight/auth] deferred credential cleanup: {error}");
             }
@@ -258,6 +255,8 @@ pub fn run() {
             auth_commands::select_account_cape,
             auth_commands::set_service_secret,
             auth_commands::get_service_status,
+            network::test_proxy_connection,
+            network::set_proxy_credentials,
             loaders::list_loader_versions,
             loaders::install_loader,
             downloads::reserve_launch_task,

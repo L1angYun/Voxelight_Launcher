@@ -144,7 +144,41 @@
     "typeface": "Typeface",
     "typefaceCredit": "MiSans · Xiaomi"
   },
+  "proxy": {
+    "title": "Network proxy",
+    "restartNotice": "New connections use the saved proxy settings when the launcher creates a new network client. Restart the launcher to apply the settings to sign-in and existing clients.",
+    "mode": "Launcher proxy mode",
+    "modes": {
+      "system": "Follow system",
+      "none": "Off",
+      "custom": "Custom"
+    },
+    "scheme": "Proxy protocol",
+    "host": "Proxy host",
+    "port": "Proxy port",
+    "gameMode": "Game proxy mode",
+    "gameModes": {
+      "default": "Use global setting",
+      "off": "Off",
+      "system": "Follow system",
+      "launcher": "Inherit launcher proxy"
+    },
+    "javaDescription": "Java can inherit an HTTP proxy only. This setting applies to HTTP requests, not game server connections. Forge and NeoForge installers follow the launcher proxy settings.",
+    "test": "Test proxy connection",
+    "credentialStorage": "Credentials are stored separately in the system credential store.",
+    "httpWarning": "With an HTTP proxy, proxy credentials are unencrypted on the connection to the proxy.",
+    "saveEndpointFirst": "Save the proxy address before changing credentials.",
+    "username": "Proxy username",
+    "password": "Proxy password",
+    "saveCredentials": "Save proxy credentials",
+    "clearCredentials": "Clear proxy credentials",
+    "credentialsConfigured": "Credentials saved in the system credential store.",
+    "javaNoCredentials": "Proxy credentials are not passed to the game or installers."
+  },
   "notice": {
+    "proxyConnected": "Connection successful ({{latencyMs}} ms).",
+    "proxyCredentialsSaved": "Proxy credentials saved.",
+    "proxyCredentialsCleared": "Proxy credentials cleared.",
     "secretSaved": "CurseForge key saved with system encryption.",
     "secretCleared": "Saved CurseForge key cleared.",
     "presetExported": "Preset exported without accounts or service keys.",
@@ -156,6 +190,20 @@
     "javaNotFound": "No Java environment found. Install one or enter its path."
   },
   "errors": {
+    "proxy": {
+      "invalidMode": "Choose a launcher proxy mode.",
+      "invalidScheme": "Choose http:// or https:// for the launcher proxy.",
+      "invalidHost": "Enter a hostname, IPv4 address or bracketed IPv6 address, without a scheme or path.",
+      "invalidPort": "Enter a proxy port between 1 and 65535.",
+      "invalidGameMode": "Choose a game proxy mode.",
+      "invalidCredentials": "Proxy credentials could not be saved or read. Check the username and password or enter them again.",
+      "tlsInheritance": "Java can only inherit an HTTP proxy. Use an http:// proxy, Follow system, or Off.",
+      "authentication": "The proxy requires valid credentials. Save them and try again.",
+      "connection": "Could not connect through this proxy. Check the host and port.",
+      "tls": "TLS verification failed. Check that the proxy protocol and certificates are correct.",
+      "timeout": "The proxy connection timed out.",
+      "saveEndpointFirst": "Save the proxy address before changing credentials."
+    },
     "config": {
       "backgroundInvalid": "Choose a valid PNG, JPEG, or WebP background no larger than 12 MB.",
       "presetInvalid": "Choose a valid preset exported by this launcher.",

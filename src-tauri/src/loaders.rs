@@ -74,7 +74,7 @@ pub async fn loader_versions(
                 "https://meta.quiltmc.org/v3"
             };
             let bytes = minecraft::fetch_bytes(
-                &state.client,
+                state.client()?,
                 &format!("{base}/versions/loader/{game_version}"),
                 16 * 1024 * 1024,
             )
@@ -97,7 +97,7 @@ pub async fn loader_versions(
         }
         "forge" => {
             let xml = minecraft::fetch_bytes(
-                &state.client,
+                state.client()?,
                 "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml",
                 16 * 1024 * 1024,
             )
@@ -119,7 +119,7 @@ pub async fn loader_versions(
                 }
             }
             let promotions = minecraft::fetch_bytes(
-                &state.client,
+                state.client()?,
                 "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json",
                 2 * 1024 * 1024,
             )
@@ -138,7 +138,7 @@ pub async fn loader_versions(
         "neoforge" => {
             if game_version == "1.20.1" {
                 let xml = minecraft::fetch_bytes(
-                    &state.client,
+                    state.client()?,
                     "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml",
                     16 * 1024 * 1024,
                 )
@@ -161,7 +161,7 @@ pub async fn loader_versions(
                 }
             } else {
                 let bytes = minecraft::fetch_bytes(
-                    &state.client,
+                    state.client()?,
                     "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge",
                     8 * 1024 * 1024,
                 )
@@ -234,7 +234,7 @@ async fn prepare_profile(
             continue;
         }
         if let Some(download) = minecraft::library_download(state, library, &libraries).await? {
-            minecraft::ensure_download_with_control(&state.client, &download, Some(&state.control))
+            minecraft::ensure_download_with_control(state.client()?, &download, Some(&state.control))
                 .await?;
             let relative = download
                 .path
@@ -317,7 +317,7 @@ async fn lightweight_loader(
         "https://meta.quiltmc.org/v3"
     };
     let url = format!("{base}/versions/loader/{game_version}/{version}/profile/json");
-    let bytes = minecraft::fetch_bytes(&state.client, &url, 8 * 1024 * 1024).await?;
+    let bytes = minecraft::fetch_bytes(state.client()?, &url, 8 * 1024 * 1024).await?;
     let mut profile = minecraft::parse_json(&bytes)?;
     validate_profile(&profile, game_version)?;
     let class = profile["mainClass"].as_str().unwrap_or_default();
@@ -375,7 +375,7 @@ async fn installer_jar(
     };
     let file = format!("{name}-{coordinate}-installer.jar");
     let url = format!("{base}/{coordinate}/{file}");
-    let checksum = minecraft::fetch_bytes(&state.client, &format!("{url}.sha1"), 1024).await?;
+    let checksum = minecraft::fetch_bytes(state.client()?, &format!("{url}.sha1"), 1024).await?;
     let checksum = String::from_utf8(checksum)
         .map_err(|_| "安装器 SHA-1 编码无效")?
         .split_whitespace()
@@ -391,7 +391,7 @@ async fn installer_jar(
         sha1: checksum,
         size: None,
     };
-    minecraft::ensure_download_with_control(&state.client, &download, Some(&state.control)).await?;
+    minecraft::ensure_download_with_control(state.client()?, &download, Some(&state.control)).await?;
     Ok(download.path)
 }
 
@@ -409,14 +409,15 @@ async fn read_process_output<R: tokio::io::AsyncRead + Unpin>(
     Ok(())
 }
 
-fn installer_command(java: &Path, jar: &Path, stage: &Path, temp: &Path) -> Result<tokio::process::Command, String> {
+fn installer_command(java: &Path, jar: &Path, stage: &Path, temp: &Path, proxy: &crate::network::Settings) -> Result<tokio::process::Command, String> {
     use crate::storage::{process_path_text, to_process_path};
+    let proxy_args = proxy.installer_args().map_err(|error| error.code().to_owned())?;
     let mut command = tokio::process::Command::new(to_process_path(java)?);
     command
         .arg(format!("-Djava.io.tmpdir={}", process_path_text(temp)?))
         .arg("-Dfile.encoding=UTF-8")
         .arg("-Djava.awt.headless=true")
-        .arg("-Djava.net.useSystemProxies=true")
+        .args(proxy_args)
         .arg("-Dsun.stdout.encoding=UTF-8")
         .arg("-Dsun.stderr.encoding=UTF-8")
         .arg("-jar")
@@ -443,7 +444,8 @@ async fn run_installer(
 ) -> Result<(), String> {
     state.control.checkpoint().await?;
     let temp = crate::storage::runtime_temp_directory(stage)?;
-    let mut command = installer_command(java, jar, stage, &temp)?;
+    let proxy = crate::network::Settings::from_config(&state.snapshot()?.config).map_err(|error| error.code().to_owned())?;
+    let mut command = installer_command(java, jar, stage, &temp, &proxy)?;
     let mut child = command
         .spawn()
         .map_err(|e| format!("启动 {loader} 官方安装器失败：{e}"))?;
@@ -656,6 +658,11 @@ pub async fn install_loader_inner(
 ) -> Result<LoaderInstallResult, String> {
     loader_name(loader)?;
     validate_id(game_version)?;
+    if matches!(loader, "forge" | "neoforge") {
+        crate::network::Settings::from_config(&state.snapshot()?.config)
+            .and_then(|proxy| proxy.installer_args())
+            .map_err(|error| error.code().to_owned())?;
+    }
     let choices = loader_versions(state, loader, game_version).await?;
     let version = if loader_version.is_empty() || loader_version == "latest" {
         choices
@@ -732,7 +739,7 @@ pub async fn install_loader(
 pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, String> {
     let api = "https://authlib-injector.yushi.moe/artifact/latest.json";
     let metadata =
-        minecraft::parse_json(&minecraft::fetch_bytes(&state.client, api, 1024 * 1024).await?)?;
+        minecraft::parse_json(&minecraft::fetch_bytes(state.client()?, api, 1024 * 1024).await?)?;
     let version = metadata["version"]
         .as_str()
         .ok_or("authlib-injector 缺少版本")?;
@@ -760,7 +767,7 @@ pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, S
         }
     }
     state.control.checkpoint().await?;
-    let bytes = minecraft::fetch_bytes(&state.client, url, 16 * 1024 * 1024).await?;
+    let bytes = minecraft::fetch_bytes(state.client()?, url, 16 * 1024 * 1024).await?;
     state.control.throttle(bytes.len()).await?;
     if format!("{:x}", Sha256::digest(&bytes)) != expected.to_ascii_lowercase() {
         return Err("authlib-injector SHA256 校验失败".into());
@@ -787,6 +794,7 @@ mod tests {
             std::path::Path::new(r"\\?\D:\Launcher Profile\cache\installer.jar"),
             std::path::Path::new(r"\\?\D:\Launcher Profile\forge stage"),
             std::path::Path::new(r"\\?\D:\Launcher Profile\forge stage\runtime-temp"),
+            &crate::network::Settings::System,
         ).unwrap();
         let command = command.as_std();
         assert_eq!(command.get_program(), r"C:\Java\bin\java.exe");
@@ -799,6 +807,31 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn c7_installer_command_rejects_tls_and_keeps_http_credentials_out_of_jvm() {
+        use crate::network::Settings;
+        let java = Path::new(r"C:\Sandbox\java.exe");
+        let jar = Path::new(r"C:\Sandbox\installer.jar");
+        let stage = Path::new(r"C:\Sandbox\stage");
+        let temp = stage.join("temp");
+        let tls = Settings::parse("custom", "https", "proxy.example.invalid", 8443).unwrap();
+        let result = installer_command(java, jar, stage, &temp, &tls);
+        assert_eq!(result.unwrap_err(), "proxy.tlsInheritance");
+        let system = installer_command(java, jar, stage, &temp, &Settings::System).unwrap();
+        let system_args: Vec<_> = system.as_std().get_args().collect();
+        assert!(system_args.iter().any(|arg| *arg == "-Djava.net.useSystemProxies=true"));
+        let disabled = installer_command(java, jar, stage, &temp, &Settings::None).unwrap();
+        assert!(!disabled.as_std().get_args().any(|arg| arg.to_string_lossy().contains("Prox")));
+        let http = Settings::parse("custom", "http", "proxy.example.invalid", 8080).unwrap();
+        let command = installer_command(java, jar, stage, &temp, &http).unwrap();
+        let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_string_lossy()).collect();
+        let proxy_args: Vec<_> = args.iter().filter(|arg| arg.to_ascii_lowercase().contains("proxy")).map(|arg| arg.as_ref()).collect();
+        assert_eq!(proxy_args, [
+            "-Dhttp.proxyHost=proxy.example.invalid", "-Dhttp.proxyPort=8080",
+            "-Dhttps.proxyHost=proxy.example.invalid", "-Dhttps.proxyPort=8080",
+            "-Dhttp.nonProxyHosts=localhost|127.*|[::1]",
+        ]);
+    }
     #[test]
     fn neoforge_versions_are_scoped_to_minecraft_minor() {
         assert_eq!(neo_prefix("1.21.1"), "21.1.");

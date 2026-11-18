@@ -257,15 +257,16 @@ pub fn set_service_secret(
 #[tauri::command]
 pub fn get_service_status(
     state: State<'_, Arc<LauncherState>>,
-) -> Result<serde_json::Value, String> {
+) -> AppResult<serde_json::Value> {
     let curseforge = crate::secrets::load_service_secret(&state.data_dir, "curseforge-api-key")?
         .is_some_and(|secret| !secret.is_empty());
-    Ok(service_status(
-        curseforge,
-        crate::curseforge_key::builtin_cf_key().is_some(),
-        &state.snapshot()?.config,
-        builtin_client_id(),
-    ))
+    let config = state.snapshot()?.config;
+    let mut status = service_status(curseforge, crate::curseforge_key::builtin_cf_key().is_some(), &config, builtin_client_id());
+    match crate::network::proxy_credentials_configured(&state.data_dir, &config) {
+        Ok(configured) => status["proxyCredentialsConfigured"] = serde_json::json!(configured),
+        Err(_) => status["proxyCredentialsUnreadable"] = serde_json::json!(true),
+    }
+    Ok(status)
 }
 
 fn service_status(

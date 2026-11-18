@@ -7,6 +7,7 @@ import { Button } from "../../components/ui/Button";
 import { Field } from "../../components/ui/Field";
 import { Segmented } from "../../components/ui/Segmented";
 import { MemoryOverviewHint } from "../settings/MemoryOverviewHint";
+import { Select } from "../../components/ui/Select";
 
 export function InstanceSettings({ instance, onChanged }: { instance: Instance; onChanged: () => Promise<void> }) {
   const { t } = useTranslation();
@@ -21,6 +22,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
   const [minMemoryMb, setMinMemoryMb] = useState(instance.minMemoryMb?.toString() ?? "");
   const [javaPath, setJavaPath] = useState(instance.javaPath ?? "");
   const [jvmArguments, setJvmArguments] = useState(instance.jvmArguments ?? "");
+  const [gameProxyMode, setGameProxyMode] = useState(instance.gameProxyMode ?? "default");
   const [screenWidth, setScreenWidth] = useState(instance.screenWidth?.toString() ?? "");
   const [screenHeight, setScreenHeight] = useState(instance.screenHeight?.toString() ?? "");
   const [notice, setNotice] = useState("");
@@ -34,6 +36,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     setMinMemoryMb(instance.minMemoryMb?.toString() ?? "");
     setJavaPath(instance.javaPath ?? "");
     setJvmArguments(instance.jvmArguments ?? "");
+    setGameProxyMode(instance.gameProxyMode ?? "default");
     setScreenWidth(instance.screenWidth?.toString() ?? "");
     setScreenHeight(instance.screenHeight?.toString() ?? "");
   }, [instance]);
@@ -53,6 +56,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         maxMemoryMb: maxMemoryMb ? Number(maxMemoryMb) : null,
         javaPath,
         jvmArguments,
+        gameProxyMode,
         screenWidth: screenWidth ? Number(screenWidth) : null,
         screenHeight: screenHeight ? Number(screenHeight) : null,
       });
@@ -67,6 +71,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     setMinMemoryMb("");
     setJavaPath("");
     setJvmArguments("");
+    setGameProxyMode("default");
     setScreenWidth("");
     setScreenHeight("");
     setNotice("runtimeReset");
@@ -104,6 +109,10 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
           <Field label={t("library:windowHeight")} htmlFor="instance-height"><input id="instance-height" type="number" min={240} max={16384} value={screenHeight} onChange={(event) => setScreenHeight(event.target.value)} /></Field>
         </div>
         <Field label={t("library:jvmArguments")} htmlFor="instance-jvm"><input id="instance-jvm" value={jvmArguments} onChange={(event) => setJvmArguments(event.target.value)} /></Field>
+        <Field label={t("settings:proxy.gameMode")} htmlFor="instance-game-proxy">
+          <Select id="instance-game-proxy" aria-label={t("settings:proxy.gameMode")} value={gameProxyMode} onChange={setGameProxyMode}
+            options={["default", "off", "system", "launcher"].map((value) => ({ value, label: t(`settings:proxy.gameModes.${value}`) }))} />
+        </Field>
         <div className="vx-action-row">
           <Button variant="secondary" onClick={() => void run("instance.settings", () => pickLauncherPath("java").then((path) => { if (typeof path === "string") setJavaPath(path); }))}>{t("library:chooseJava")}</Button>
           <Button variant="ghost" onClick={resetRuntime}>{t("library:resetRuntime")}</Button>

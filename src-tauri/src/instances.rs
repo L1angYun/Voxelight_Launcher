@@ -480,6 +480,7 @@ pub async fn update_instance(
     screen_width: Option<u32>,
     screen_height: Option<u32>,
     reset_runtime: Option<bool>,
+    game_proxy_mode: Option<String>,
 ) -> crate::errors::AppResult<Instance> {
     let previous = instance(&state.snapshot()?, &instance_id)?;
     let java_path = if let Some(path) = java_path.filter(|path| Some(path.as_str()) != previous.java_path.as_deref()) {
@@ -507,9 +508,22 @@ pub async fn update_instance(
             "jvmArguments",
             "screenWidth",
             "screenHeight",
+            "gameProxyMode",
         ] {
             changes.push((field.into(), Value::Null));
         }
+    }
+    if let Some(mode) = game_proxy_mode {
+        let value = if mode == "default" {
+            Value::Null
+        } else {
+            let config = state.snapshot()?.config;
+            crate::network::Settings::from_config(&config)
+                .and_then(|proxy| proxy.validate_game_save(&mode))
+                .map_err(crate::errors::AppError::from)?;
+            json!(mode)
+        };
+        changes.push(("gameProxyMode".into(), value));
     }
     if let Some(memory) = max_memory_mb {
         if !(512..=65536).contains(&memory) {

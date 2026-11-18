@@ -3,8 +3,12 @@ import { ExternalLink } from "../../components/ui/ExternalLink";
 import type { SettingsSectionProps } from "./types";
 import { Select } from "../../components/ui/Select";
 
-export function DownloadSettings({ config, onChange, onError }: SettingsSectionProps) {
+import { ProxySettings } from "./ProxySettings";
+import type { Config } from "../../lib/launcher";
+
+export function DownloadSettings({ savedConfig, ...props }: SettingsSectionProps & { savedConfig: Config }) {
   const { t } = useTranslation();
+  const { config, onChange } = props;
   return (
     <div className="vx-settings-section">
       <header><h2>{t("settings:section.downloads")}</h2><p>{t("settings:downloadDescription")}</p></header>
@@ -34,6 +38,7 @@ export function DownloadSettings({ config, onChange, onError }: SettingsSectionP
         </div>
         <p>{t("settings:downloadSource.scopeNotice")}</p>
       </section>
+      <ProxySettings {...props} savedConfig={savedConfig} />
     </div>
   );
 }

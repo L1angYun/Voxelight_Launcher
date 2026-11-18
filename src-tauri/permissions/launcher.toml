@@ -21,6 +21,8 @@ commands.allow = [
   "save_appearance_config",
   "detect_java",
   "get_service_status",
+  "test_proxy_connection",
+  "set_proxy_credentials",
   "set_service_secret",
   "set_launcher_background",
   "export_launcher_config",

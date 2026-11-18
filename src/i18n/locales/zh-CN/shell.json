@@ -27,6 +27,18 @@
     "folder.open": "正在打开目录"
   },
   "errors": {
+    "proxy.invalidMode": "请选择启动器代理模式。",
+    "proxy.invalidScheme": "启动器代理协议只能是 http:// 或 https://。",
+    "proxy.invalidHost": "请输入主机名、IPv4 地址或带方括号的 IPv6 地址，不要包含协议或路径。",
+    "proxy.invalidPort": "请输入 1 到 65535 之间的代理端口。",
+    "proxy.invalidGameMode": "请选择游戏代理模式。",
+    "proxy.invalidCredentials": "无法保存或读取代理凭据。请检查用户名和密码，或重新输入。",
+    "proxy.tlsInheritance": "Java 只能继承 HTTP 代理。请改用 http:// 代理，或选择「跟随系统」「关闭」。",
+    "proxy.authentication": "代理要求有效的凭据。请保存代理凭据后重试。",
+    "proxy.connection": "无法通过此代理连接。请检查代理主机和端口。",
+    "proxy.tls": "TLS 验证失败。请检查代理协议和证书。",
+    "proxy.timeout": "代理连接超时。",
+    "proxy.saveEndpointFirst": "请先保存代理地址，再修改凭据。",
     "auth.sessionChanged": "此账号已被移除或重新登录。请重新选择账号后再试。",
     "resource.loaderRequired": "此目标需要模组加载器。请选择兼容的实例，或新建实例。",
     "resource.noCompatibleVersion": "此项目没有适用于该游戏版本和加载器的资源版本。请选择其他实例。",

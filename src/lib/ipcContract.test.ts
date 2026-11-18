@@ -33,6 +33,18 @@ describe("Tauri IPC registration contract", () => {
     expect(invoked.size).toBeGreaterThan(40);
   });
 
+  it("registers proxy commands only in the launcher settings permission family", () => {
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const families = permissions.split(/\[\[permission\]\]/);
+    for (const command of ["test_proxy_connection", "set_proxy_credentials"]) {
+      expect(registered.has(command)).toBe(true);
+      expect(invoked.has(command)).toBe(true);
+      const allowed = families.filter((family) => family.includes(`"${command}"`));
+      expect(allowed).toHaveLength(1);
+      expect(allowed[0]).toContain('identifier = "launcher-settings"');
+    }
+  });
+
   it("registers resource transaction and managed server capabilities", () => {
     const expected = [
       "read_local_mod_icon",

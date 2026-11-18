@@ -367,7 +367,8 @@ fn state_contents(directory: &Path) -> Result<Option<(Value, StateStamp)>, Profi
 pub struct LauncherState {
     active: Mutex<ActiveState>,
     pub data_dir: PathBuf,
-    pub client: reqwest::Client,
+    client: Result<reqwest::Client, String>,
+    mirror_client: Result<reqwest::Client, String>,
     pub operation: tokio::sync::Mutex<()>,
     pub control: crate::downloads::DownloadControl,
     pub games: Arc<crate::processes::GameRegistry>,
@@ -490,7 +491,7 @@ impl LauncherState {
             needs_write |= data.config.game_directory != directory;
             data.config.game_directory = directory;
         }
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .user_agent(concat!("VoxelightLauncher/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(std::time::Duration::from_secs(20))
             .timeout(std::time::Duration::from_secs(180))
@@ -504,15 +505,16 @@ impl LauncherState {
                 } else {
                     attempt.error("untrusted download redirect")
                 }
-            }))
-            .build()
-            .map_err(unavailable)?;
+            }));
+        let client = crate::network::for_config_builder(&data_dir, &data.config, builder)
+            .and_then(|builder| builder.build().map_err(|_| "proxy.connection".into()));
+        let mirror_client = crate::minecraft::mirror_download_client(&data_dir, &data.config);
         let control = crate::downloads::DownloadControl::load(
             data_dir.clone(),
             data.config.download_limit_kib,
         )
         .map_err(unavailable)?;
-        let mut state = Self::new(data_dir, data, revision, client, control, profile_lock);
+        let mut state = Self::new(data_dir, data, revision, client, mirror_client, control, profile_lock);
         state.active.get_mut().map_err(unavailable)?.retained_fields = retained_fields;
         if needs_write {
             state.save().map_err(|error| {
@@ -530,7 +532,8 @@ impl LauncherState {
         data_dir: PathBuf,
         data: Persisted,
         revision: Option<StateStamp>,
-        client: reqwest::Client,
+        client: Result<reqwest::Client, String>,
+        mirror_client: Result<reqwest::Client, String>,
         control: crate::downloads::DownloadControl,
         profile_lock: fs::File,
     ) -> Self {
@@ -542,6 +545,7 @@ impl LauncherState {
             }),
             data_dir,
             client,
+            mirror_client,
             operation: tokio::sync::Mutex::new(()),
             control,
             games: Default::default(),
@@ -558,14 +562,24 @@ impl LauncherState {
     ) -> Self {
         let profile_lock = open_profile_lock(&data_dir).unwrap();
         let revision = state_contents(&data_dir).unwrap().map(|(_, stamp)| stamp);
+        let mirror_client = crate::minecraft::mirror_download_client(&data_dir, &data.config);
         Self::new(
             data_dir,
             data,
             revision,
-            client,
+            Ok(client),
+            mirror_client,
             Default::default(),
             profile_lock,
         )
+    }
+
+    pub(crate) fn client(&self) -> Result<&reqwest::Client, String> {
+        self.client.as_ref().map_err(Clone::clone)
+    }
+
+    pub(crate) fn mirror_client(&self) -> Result<&reqwest::Client, String> {
+        self.mirror_client.as_ref().map_err(Clone::clone)
     }
 
     pub(crate) fn storage_status(&self) -> StorageStatus {

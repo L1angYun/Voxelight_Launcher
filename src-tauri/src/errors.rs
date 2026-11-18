@@ -63,6 +63,9 @@ impl From<&str> for AppError {
 
 pub fn expected(detail: impl Into<String>) -> AppError {
     let detail = detail.into();
+    if crate::network::Error::is_code(&detail) {
+        return AppError::new(detail);
+    }
     if let Some(id) = detail.strip_prefix(LOADER_REINSTALL_PREFIX) {
         return AppError::new("version.loaderReinstall")
             .with_param("id", id)

@@ -53,6 +53,8 @@ export function normalizeError(error: unknown): LauncherError {
     return new LauncherError("internal.unexpected", {}, value.message);
   }
   if (typeof value === "string") {
+    // The legacy loader and modpack commands still return string errors.
+    if (value === "proxy.tlsInheritance") return new LauncherError(value);
     return new LauncherError("internal.unexpected", {}, value);
   }
   return new LauncherError("internal.unexpected", {}, "Unknown launcher error");

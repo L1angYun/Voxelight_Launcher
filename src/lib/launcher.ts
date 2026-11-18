@@ -35,6 +35,11 @@ export interface Config {
   microsoftClientId: string;
   downloadLimitKib: number;
   downloadSource: string;
+  proxyMode: string;
+  proxyScheme: string;
+  proxyHost: string;
+  proxyPort: number;
+  gameProxyMode: string;
   screenWidth: number;
   screenHeight: number;
   language: string;
@@ -86,6 +91,7 @@ export interface Instance {
   minMemoryMb?: number | null;
   javaPath?: string | null;
   jvmArguments?: string | null;
+  gameProxyMode?: string | null;
   screenWidth?: number | null;
   screenHeight?: number | null;
   totalPlayTime: number;
@@ -200,6 +206,11 @@ export const defaults: Config = {
   microsoftClientId: "",
   downloadLimitKib: 0,
   downloadSource: "official",
+  proxyMode: "system",
+  proxyScheme: "http",
+  proxyHost: "",
+  proxyPort: 0,
+  gameProxyMode: "off",
   screenWidth: 1280,
   screenHeight: 720,
   language: "system",

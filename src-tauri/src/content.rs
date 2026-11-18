@@ -341,7 +341,7 @@ async fn load_default_skin(
     // Passive preview does not add an active download task, toggle foreground
     // pause/cancel, or write game files. It uses the same bandwidth quota.
     let file = preview_client_file(state, &installed, &cached, async {
-        minecraft::ensure_preview_download(&state.client, &cached, &state.control)
+        minecraft::ensure_preview_download(state.client()?, &cached, &state.control)
             .await
             .map(|_| ())
     })

@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+﻿import type { Page } from "@playwright/test";
 import type { WorldMaterial, WorldSceneId } from "../../src/components/world/types";
 import { appearanceFields, type Instance } from "../../src/lib/launcher";
 import type { DownloadTask } from "../../src/features/downloads/useDownloadTasks";
@@ -99,6 +99,8 @@ export async function installLauncherFixture(
       theme: options.theme ?? "dark",
       downloadConcurrency: 6,
       microsoftClientId: "",
+      proxyMode: "system", proxyScheme: "http", proxyHost: "", proxyPort: 0,
+      gameProxyMode: "off",
       downloadLimitKib: 0,
       downloadSource: "official",
       screenWidth: 1280,

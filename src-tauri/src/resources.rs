@@ -291,7 +291,7 @@ fn cdn_url(value: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-fn client(download: bool) -> Result<reqwest::Client, String> {
+pub(super) fn client(state: &LauncherState, download: bool) -> Result<reqwest::Client, String> {
     let redirects = if download {
         reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 5 {
@@ -305,7 +305,7 @@ fn client(download: bool) -> Result<reqwest::Client, String> {
     } else {
         reqwest::redirect::Policy::none()
     };
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(concat!(
             "VoxelightLauncher/",
             env!("CARGO_PKG_VERSION"),
@@ -313,7 +313,8 @@ fn client(download: bool) -> Result<reqwest::Client, String> {
         ))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(if download { 600 } else { 60 }))
-        .redirect(redirects)
+        .redirect(redirects);
+    crate::network::for_state_builder(state, builder)?
         .build()
         .map_err(|_| "无法建立 Modrinth 网络客户端".into())
 }
@@ -494,7 +495,7 @@ pub async fn get_modrinth_project_details(
         .as_deref()
         .filter(|id| !id.is_empty())
         .and_then(|id| resource_context(&state, id, instance_id.as_deref()).ok());
-    let api = client(false).map_err(expected)?;
+    let api = client(&state, false).map_err(expected)?;
     let project: Project = api_json(&api, &format!("project/{project_id}"), &[])
         .await
         .map_err(expected)?;
@@ -1043,7 +1044,7 @@ pub async fn resolve_resource_targets(
     let kind = ResourceKind::parse(&resource_type)?;
     identifier(&project_id)?;
     if let Some(id) = resource_version_id.as_deref() { identifier(id)?; }
-    let api = client(false)?;
+    let api = client(&state, false)?;
     let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
     if project.project_type != kind.project_type() {
         return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
@@ -1271,7 +1272,7 @@ pub async fn create_instance_for_resource(
         let name = crate::commands::validate_instance_name(&name)?;
         let progress = ResourceProgress::new(Some(&app), &game_version);
         progress.stage(&state, "resource-preflight", "检查资源及必需前置");
-        let api = client(false)?;
+        let api = client(&state, false)?;
         let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
         if project.project_type != kind.project_type() {
             return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
@@ -1457,7 +1458,7 @@ pub async fn install_resource(
         let progress = ResourceProgress::new(Some(&app), &version_id);
         progress.stage(&state, "resource-plan", "检查资源安装位置");
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
-        let api = client(false)?;
+        let api = client(&state, false)?;
         let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
         if project.project_type != kind.project_type() {
             return Err("资源项目类型与所选分类不一致，已拒绝安装".into());
@@ -2476,7 +2477,7 @@ mod tests {
         })).unwrap();
         let error = tauri::async_runtime::block_on(resource_transactions::preflight(
             &state,
-            &state.client,
+            state.client().unwrap(),
             version,
             "1.21.1",
             Some("fabric"),
