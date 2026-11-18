@@ -127,12 +127,12 @@
     "official": "Official only",
     "auto": "Automatic fallback · official first",
     "bmclapi": "BMCLAPI first · official fallback",
-    "officialDescription": "Download only from Mojang/Minecraft addresses, with size and SHA-1 verification.",
-    "autoDescription": "Try official addresses first, then BMCLAPI for vanilla metadata, clients, libraries, and assets.",
-    "bmclapiDescription": "Try BMCLAPI's version_manifest_v2 first, then official addresses. Verification requirements stay the same.",
+    "officialDescription": "Use the official publishers for game files, loader files, and metadata. File verification still applies.",
+    "autoDescription": "Try official addresses first, then BMCLAPI for supported game and loader files.",
+    "bmclapiDescription": "Try BMCLAPI first for supported game and loader files, then fall back to official addresses.",
     "mirrorNotice": "BMCLAPI is a community mirror, not an official Mojang service. A manifest hash proves file consistency, not independent official endorsement.",
     "mirrorLink": "Read about BMCLAPI",
-    "scopeNotice": "This does not add mirrors for Quilt, Modrinth, CurseForge, or other Maven services. Fixed files are verified before writing."
+    "scopeNotice": "Forge, NeoForge, Fabric, and authlib-injector have partial mirror coverage. Installer checksums still come from their official publishers. Quilt, Modrinth, and CurseForge are unchanged."
   },
   "aboutDescription": "Version, license, source code, and local-data behavior.",
   "about": {

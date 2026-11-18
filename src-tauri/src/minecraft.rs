@@ -140,6 +140,23 @@ struct UrlCandidate {
     mirror: bool,
 }
 
+fn loader_mirror_path(host: &str, path: &str) -> Option<String> {
+    if matches!(host, "maven.minecraftforge.net" | "files.minecraftforge.net" | "maven.neoforged.net")
+        && path.ends_with("-installer.jar.sha1")
+    {
+        return None;
+    }
+    let (prefix, tail) = match host {
+        "maven.minecraftforge.net" | "maven.fabricmc.net" => ("/maven", path),
+        "files.minecraftforge.net" => ("/maven", path.strip_prefix("/maven")?),
+        "maven.neoforged.net" => ("/maven", path.strip_prefix("/releases")?),
+        "meta.fabricmc.net" => ("/fabric-meta", path),
+        "authlib-injector.yushi.moe" => ("/mirrors/authlib-injector", path),
+        _ => return None,
+    };
+    (tail.starts_with('/') && tail.len() > 1).then(|| format!("{prefix}{tail}"))
+}
+
 fn mapped_bmclapi_url(url: &str) -> Result<String, String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "下载地址格式错误")?;
     if parsed.scheme() != "https"
@@ -175,7 +192,8 @@ fn mapped_bmclapi_url(url: &str) -> Result<String, String> {
             }
             format!("/libraries{}", parsed.path())
         }
-        _ => return Err("此主机没有受支持的 BMCLAPI 映射".into()),
+        _ => loader_mirror_path(host, parsed.path())
+            .ok_or("此主机或路径没有受支持的 BMCLAPI 映射")?,
     };
     let query = parsed
         .query()
@@ -213,7 +231,7 @@ fn download_url_candidates(url: &str, source: &str) -> Result<Vec<UrlCandidate>,
                 | "libraries.minecraft.net"
         )
     );
-    if !supports_mirror {
+    if !supports_mirror && loader_mirror_path(parsed.host_str().unwrap_or_default(), parsed.path()).is_none() {
         return Ok(vec![official]);
     }
     let mirror = UrlCandidate {
@@ -249,15 +267,29 @@ async fn fetch_bytes_once(
     limit: usize,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<Vec<u8>, String> {
+    fetch_bytes_once_with_origin(client, url, limit, resolver, false).await
+}
+
+async fn fetch_bytes_once_with_origin(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+    same_origin: bool,
+) -> Result<Vec<u8>, String> {
     trusted_url(url)?;
-    let request_url = resolve_request_url(url, resolver)?;
+    let request_url = reqwest::Url::parse(&resolve_request_url(url, resolver)?)
+        .map_err(|_| "下载地址格式错误")?;
     let response = client
-        .get(request_url)
+        .get(request_url.clone())
         .send()
         .await
         .map_err(|e| format!("元数据请求失败：{e}"))?
         .error_for_status()
         .map_err(|e| format!("下载服务返回错误：{e}"))?;
+    if same_origin && (!response.status().is_success() || response.url().origin() != request_url.origin()) {
+        return Err("官方安装器校验请求离开发布方源站".into());
+    }
     if response
         .content_length()
         .is_some_and(|size| size > limit as u64)
@@ -285,8 +317,93 @@ pub(crate) async fn fetch_bytes(
     fetch_bytes_once(client, &candidates[0].url, limit, &identity_url).await
 }
 
+pub(crate) async fn fetch_official_installer_sha1(
+    client: &reqwest::Client,
+    installer: &str,
+) -> Result<String, String> {
+    fetch_official_installer_sha1_resolved(client, installer, &identity_url).await
+}
+
+async fn fetch_official_installer_sha1_resolved(
+    client: &reqwest::Client,
+    installer: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(installer).map_err(|_| "安装器地址无效")?;
+    trusted_url(installer)?;
+    if !matches!(parsed.host_str(), Some("maven.minecraftforge.net" | "maven.neoforged.net"))
+        || !parsed.path().ends_with("-installer.jar")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("安装器校验值必须来自加载器的官方发布源".into());
+    }
+    // Do not route the sidecar through the candidate or mirror download clients.
+    // A successful redirect is allowed only if the final origin is the publisher.
+    let bytes = fetch_bytes_once_with_origin(client, &format!("{installer}.sha1"), 1024, resolver, true)
+        .await
+        .map_err(|_| "无法获取官方安装器 SHA-1；请切换到官方源并重试")?;
+    let digest = std::str::from_utf8(&bytes).ok().and_then(|value| value.split_whitespace().next());
+    digest.filter(|value| valid_sha1(value))
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "官方安装器校验值无效；请切换到官方源并重试".into())
+}
+
+#[derive(Clone, Copy)]
+enum LoaderMirrorStage {
+    Metadata,
+    Artifact,
+}
+
+fn record_loader_mirror_fallback(data_dir: &Path, stage: LoaderMirrorStage) {
+    let kind = match stage {
+        LoaderMirrorStage::Metadata => "metadata",
+        LoaderMirrorStage::Artifact => "artifact",
+    };
+    // Only fixed strings go to this journal. The error can include a URL or proxy details.
+    let message = format!("BMCLAPI loader {kind} rejected or unavailable; trying remaining sources");
+    let record = format!("{} [warn] {message}\n", chrono::Utc::now().to_rfc3339());
+    if crate::process_output::append_log(&data_dir.join("logs"), &record).is_err() {
+        eprintln!("{message}");
+    }
+}
+
 /// BMCLAPI is a transport mirror, not an independent Mojang endorsement. In particular,
 /// hashes supplied by a mirrored manifest inherit that manifest's trust chain.
+async fn fetch_bytes_candidates_prefer_resolved<T>(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+    validate: impl Fn(&[u8]) -> Result<T, String>,
+    should_return: impl Fn(&T, &UrlCandidate) -> bool,
+    fallback_log: Option<(&Path, LoaderMirrorStage)>,
+) -> Result<(Vec<u8>, T, UrlCandidate), String> {
+    let candidates = download_url_candidates(url, source)?;
+    let loader_mirror = reqwest::Url::parse(url).ok().is_some_and(|url| {
+        loader_mirror_path(url.host_str().unwrap_or_default(), url.path()).is_some()
+    });
+    let mut provisional = None;
+    let mut errors = Vec::new();
+    for candidate in candidates {
+        match fetch_bytes_once(client, &candidate.url, limit, resolver).await {
+            Ok(bytes) => match validate(&bytes) {
+                Ok(value) if should_return(&value, &candidate) => return Ok((bytes, value, candidate)),
+                Ok(value) => { provisional = Some((bytes, value, candidate)); continue; }
+                Err(error) => errors.push(format!("{}：{error}", candidate.url)),
+            },
+            Err(error) => errors.push(format!("{}：{error}", candidate.url)),
+        }
+        if candidate.mirror && loader_mirror {
+            if let Some((data_dir, stage)) = fallback_log {
+                record_loader_mirror_fallback(data_dir, stage);
+            }
+        }
+    }
+    provisional.ok_or_else(|| format!("元数据候选均失败：{}", errors.join("；")))
+}
+
 async fn fetch_bytes_candidates_resolved<T>(
     client: &reqwest::Client,
     url: &str,
@@ -295,18 +412,45 @@ async fn fetch_bytes_candidates_resolved<T>(
     resolver: &(dyn Fn(&str) -> String + Sync),
     validate: impl Fn(&[u8]) -> Result<T, String>,
 ) -> Result<(Vec<u8>, T, UrlCandidate), String> {
-    let candidates = download_url_candidates(url, source)?;
-    let mut errors = Vec::new();
-    for candidate in candidates {
-        match fetch_bytes_once(client, &candidate.url, limit, resolver).await {
-            Ok(bytes) => match validate(&bytes) {
-                Ok(value) => return Ok((bytes, value, candidate)),
-                Err(error) => errors.push(format!("{}：{error}", candidate.url)),
-            },
-            Err(error) => errors.push(format!("{}：{error}", candidate.url)),
-        }
-    }
-    Err(format!("元数据候选均失败：{}", errors.join("；")))
+    fetch_bytes_candidates_prefer_resolved(client, url, limit, source, resolver, validate, |_, _| true, None).await
+}
+
+async fn fetch_loader_versions_resolved<T>(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+    fallback_data_dir: Option<&Path>,
+    validate: impl Fn(&[u8]) -> Result<Vec<T>, String>,
+) -> Result<(Vec<u8>, Vec<T>, UrlCandidate), String> {
+    fetch_bytes_candidates_prefer_resolved(client, url, limit, source, resolver, validate, |versions, candidate| {
+        !candidate.mirror || !versions.is_empty()
+    }, fallback_data_dir.map(|dir| (dir, LoaderMirrorStage::Metadata))).await
+}
+
+pub(crate) async fn fetch_loader_versions<T>(
+    state: &LauncherState,
+    url: &str,
+    limit: usize,
+    source: &str,
+    validate: impl Fn(&[u8]) -> Result<Vec<T>, String>,
+) -> Result<Vec<T>, String> {
+    fetch_loader_versions_resolved(state.client()?, url, limit, source, &identity_url, Some(&state.data_dir), validate)
+        .await.map(|(_, versions, _)| versions)
+}
+
+pub(crate) async fn fetch_loader_artifact_bytes<T>(
+    state: &LauncherState,
+    url: &str,
+    limit: usize,
+    source: &str,
+    validate: impl Fn(&[u8]) -> Result<T, String>,
+) -> Result<(Vec<u8>, T), String> {
+    fetch_bytes_candidates_prefer_resolved(
+        state.client()?, url, limit, source, &identity_url, validate, |_, _| true,
+        Some((&state.data_dir, LoaderMirrorStage::Artifact)),
+    ).await.map(|(bytes, value, _)| (bytes, value))
 }
 
 pub(crate) async fn fetch_bytes_candidates<T>(
@@ -1074,6 +1218,7 @@ async fn download_once(
         .map_err(|error| format!("保存已校验文件失败：{error}"))
 }
 
+#[cfg(test)]
 pub(crate) async fn ensure_download_with_control(
     client: &reqwest::Client,
     file: &Download,
@@ -1090,8 +1235,11 @@ pub(crate) async fn ensure_download_with_source_and_control(
     source: &str,
     control: Option<&crate::downloads::DownloadControl>,
 ) -> Result<bool, String> {
-    ensure_download_with_source_and_control_resolved(state.client()?, state.mirror_client().map(Some), file, source, control, &identity_url)
-        .await
+    let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
+    ensure_download_with_policy(
+        state.client()?, state.mirror_client().map(Some), file, source, policy, &identity_url,
+        Some(&state.data_dir),
+    ).await
 }
 
 async fn ensure_download_with_source_and_control_resolved(
@@ -1103,7 +1251,7 @@ async fn ensure_download_with_source_and_control_resolved(
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<bool, String> {
     let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
-    ensure_download_with_policy(client, mirror, file, source, policy, resolver).await
+    ensure_download_with_policy(client, mirror, file, source, policy, resolver, None).await
 }
 
 pub(crate) async fn ensure_preview_download(
@@ -1113,7 +1261,7 @@ pub(crate) async fn ensure_preview_download(
 ) -> Result<bool, String> {
     // As before, default skin bytes are fetched from their verified official
     // client URL, even when official metadata came from an enabled mirror.
-    ensure_download_with_policy(client, Ok(None), file, "official", DownloadPolicy::Preview(control), &identity_url).await
+    ensure_download_with_policy(client, Ok(None), file, "official", DownloadPolicy::Preview(control), &identity_url, None).await
 }
 
 async fn ensure_download_with_policy(
@@ -1123,6 +1271,7 @@ async fn ensure_download_with_policy(
     source: &str,
     policy: DownloadPolicy<'_>,
     resolver: &(dyn Fn(&str) -> String + Sync),
+    fallback_data_dir: Option<&Path>,
 ) -> Result<bool, String> {
     policy.checkpoint().await?;
     if file_valid(file).await? {
@@ -1138,7 +1287,10 @@ async fn ensure_download_with_policy(
     if candidates.iter().any(|candidate| candidate.mirror) && !valid_sha1(&file.sha1) {
         return Err("镜像文件必须具有固定且有效的预期 SHA-1".into());
     }
-    let mirror_client = if candidates.iter().any(|candidate| candidate.mirror) {
+    let strict_loader = reqwest::Url::parse(&file.url).ok().is_some_and(|url| {
+        loader_mirror_path(url.host_str().unwrap_or_default(), url.path()).is_some()
+    });
+    let mirror_client = if !strict_loader && candidates.iter().any(|candidate| candidate.mirror) {
         Some(mirror?.ok_or("proxy.connection")?)
     } else {
         None
@@ -1155,7 +1307,14 @@ async fn ensure_download_with_policy(
             policy.checkpoint().await?;
             match download_once(candidate_client, file, &candidate.url, policy, resolver).await {
                 Ok(()) => return Ok(true),
-                Err(error) => errors.push(format!("{}：{error}", candidate.url)),
+                Err(error) => {
+                    if candidate.mirror && strict_loader {
+                        if let Some(data_dir) = fallback_data_dir {
+                            record_loader_mirror_fallback(data_dir, LoaderMirrorStage::Artifact);
+                        }
+                    }
+                    errors.push(format!("{}：{error}", candidate.url));
+                }
             }
             policy.checkpoint().await?;
             if attempt + 1 < attempts {
@@ -3526,8 +3685,13 @@ mod tests {
                                     .cloned()
                                     .unwrap_or((404, b"not found".to_vec()));
                                 let reason = if status == 200 { "OK" } else { "Error" };
+                                let location = if status == 302 {
+                                    format!("Location: {}\r\n", std::str::from_utf8(&body).unwrap())
+                                } else {
+                                    String::new()
+                                };
                                 let header = format!(
-                                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                    "HTTP/1.1 {status} {reason}\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n",
                                     body.len()
                                 );
                                 std::io::Write::write_all(&mut stream, header.as_bytes()).unwrap();
@@ -4113,7 +4277,7 @@ mod tests {
             "https://piston-meta.mojang.com:444/mc/game/version_manifest_v2.json",
             "https://user:p%40ss@piston-meta.mojang.com/mc/game/version_manifest_v2.json",
             "https://piston-meta.mojang.com.evil.example/mc/game/version_manifest_v2.json",
-            "https://maven.fabricmc.net/example/library.jar",
+            "https://maven.quiltmc.org/repository/release/org/quiltmc/example.jar",
             "https://resources.download.minecraft.net/not-an-object",
             "https://resources.download.minecraft.net/01/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "https://libraries.minecraft.net/",
@@ -4139,13 +4303,188 @@ mod tests {
         assert!(download_url_candidates(official, "unknown").is_err());
         assert!(download_url_candidates(mirror, "official").is_err());
 
-        let maven = "https://maven.fabricmc.net/example/library.jar";
+        let maven = "https://maven.quiltmc.org/repository/release/org/quiltmc/example.jar";
         for source in ["official", "auto", "bmclapi"] {
             let candidates = download_url_candidates(maven, source).unwrap();
             assert_eq!(candidates.len(), 1);
             assert_eq!(candidates[0].url, maven);
             assert!(!candidates[0].mirror);
         }
+    }
+
+    #[test]
+    fn loader_mirror_mappings_use_exact_paths_and_source_order() {
+        for (official, path) in [
+            ("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml", "/maven/net/minecraftforge/forge/maven-metadata.xml"),
+            ("https://files.minecraftforge.net/maven/net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0-installer.jar", "/maven/net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0-installer.jar"),
+            ("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml", "/maven/net/neoforged/neoforge/maven-metadata.xml"),
+            ("https://maven.fabricmc.net/net/fabricmc/fabric-loader/maven-metadata.xml", "/maven/net/fabricmc/fabric-loader/maven-metadata.xml"),
+            ("https://meta.fabricmc.net/v2/versions/loader/1.20.1", "/fabric-meta/v2/versions/loader/1.20.1"),
+            ("https://authlib-injector.yushi.moe/artifact/42/authlib-injector.jar", "/mirrors/authlib-injector/artifact/42/authlib-injector.jar"),
+        ] {
+            let mirror = format!("{BMCLAPI_ORIGIN}{path}");
+            assert_eq!(mapped_bmclapi_url(official).unwrap(), mirror);
+            let urls = |source| download_url_candidates(official, source).unwrap().into_iter().map(|candidate| candidate.url).collect::<Vec<_>>();
+            assert_eq!(urls("official"), vec![official]);
+            assert_eq!(urls("auto"), vec![official, mirror.as_str()]);
+            assert_eq!(urls("bmclapi"), vec![mirror.as_str(), official]);
+        }
+        for official in [
+            "https://maven.quiltmc.org/repository/release/org/quiltmc/example.jar",
+            "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json",
+            "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge",
+        ] {
+            assert!(mapped_bmclapi_url(official).is_err());
+            assert_eq!(download_url_candidates(official, "bmclapi").unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn u0259_empty_mirror_metadata_falls_back_without_discarding_legitimate_empty_lists() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let official = "https://meta.fabricmc.net/v2/versions/loader/1.20.1";
+            let mirror_route = "/bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/1.20.1";
+            let official_route = "/meta.fabricmc.net/v2/versions/loader/1.20.1";
+            for (status, response, expected) in [(200, b"[1]".as_slice(), 1), (200, b"[]".as_slice(), 0), (500, b"unavailable".as_slice(), 0)] {
+                let server = TestServer::new(&[(mirror_route, 200, b"[]"), (official_route, status, response)]);
+                let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+                let (_, actual, candidate) = fetch_loader_versions_resolved(&client, official, 4096, "bmclapi", &server.resolver(), None, |bytes| {
+                    serde_json::from_slice::<Vec<u8>>(bytes).map_err(|error| error.to_string())
+                }).await.unwrap();
+                assert_eq!(actual.len(), expected);
+                assert_eq!(candidate.mirror, status != 200);
+                assert_eq!(server.requests(), vec![mirror_route, official_route]);
+            }
+        });
+    }
+
+    #[test]
+    fn u0259_refused_mirror_fallback_persists_sanitized_warning() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let official = "https://meta.fabricmc.net/v2/versions/loader/1.20.1";
+            let mirror_route = "/bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/1.20.1";
+            let official_route = "/meta.fabricmc.net/v2/versions/loader/1.20.1";
+            let server = TestServer::new(&[
+                (mirror_route, 403, b"fixture-private-upstream-detail"),
+                (official_route, 200, b"[1]"),
+            ]);
+            let dir = crate::instances::StagingDirectory::create(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("target/core-tests")
+                    .join(uuid::Uuid::new_v4().to_string()),
+            )
+            .unwrap();
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            let (_, versions, candidate) = fetch_loader_versions_resolved(
+                &client, official, 4096, "bmclapi", &server.resolver(), Some(dir.path()),
+                |bytes| serde_json::from_slice::<Vec<u8>>(bytes).map_err(|error| error.to_string()),
+            ).await.unwrap();
+            assert_eq!(versions, [1]);
+            assert!(!candidate.mirror);
+            assert_eq!(server.requests(), vec![mirror_route, official_route]);
+            let log = std::fs::read_to_string(dir.path().join("logs/launcher-current.log")).unwrap();
+            let lines: Vec<_> = log.lines().collect();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].split_once(" [warn] ").unwrap().1,
+                "BMCLAPI loader metadata rejected or unavailable; trying remaining sources");
+        });
+    }
+
+    #[test]
+    fn loader_mirror_rejects_invalid_metadata_and_falls_back_to_publisher() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let official = "https://meta.fabricmc.net/v2/versions/loader/1.20.1";
+            let mirror_route = "/bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/1.20.1";
+            let official_route = "/meta.fabricmc.net/v2/versions/loader/1.20.1";
+            let expected = br#"[{"loader":{"version":"0.15.11"}}]"#;
+            let server = TestServer::new(&[(mirror_route, 200, b"invalid metadata"), (official_route, 200, expected)]);
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            let resolver = server.resolver();
+            let (bytes, result, candidate) = fetch_bytes_candidates_resolved(
+                &client, official, 4096, "bmclapi", &resolver,
+                |bytes| {
+                    let json = parse_json(bytes)?;
+                    json[0]["loader"]["version"].as_str().map(str::to_owned).ok_or("fixture version missing".into())
+                },
+            ).await.unwrap();
+            assert_eq!(bytes, expected);
+            assert_eq!(result, "0.15.11");
+            assert!(!candidate.mirror);
+            assert_eq!(server.requests(), vec![mirror_route, official_route]);
+        });
+    }
+
+
+    #[test]
+    fn official_installer_sidecar_is_not_mappable_and_fails_closed() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let official = "https://maven.minecraftforge.net/net/minecraftforge/fixture-installer.jar";
+            let sidecar = format!("{official}.sha1");
+            let official_sha = "/maven.minecraftforge.net/net/minecraftforge/fixture-installer.jar.sha1";
+            let mirror_sha = "/bmclapi2.bangbang93.com/maven/net/minecraftforge/fixture-installer.jar.sha1";
+            let valid = format!("{:x}", Sha1::digest(b"fixture installer"));
+            for source in ["official", "auto", "bmclapi"] {
+                let urls = download_url_candidates(&sidecar, source).unwrap();
+                assert_eq!(urls.len(), 1);
+                assert_eq!(urls[0].url, sidecar);
+                assert!(!urls[0].mirror);
+            }
+            assert!(mapped_bmclapi_url(&sidecar).is_err());
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            for (status, body, expected) in [(404, b"not available".as_slice(), false), (200, b"invalid digest", false), (200, valid.as_bytes(), true)] {
+                let server = TestServer::new(&[(official_sha, status, body), (mirror_sha, 200, valid.as_bytes())]);
+                let actual = fetch_official_installer_sha1_resolved(&client, official, &server.resolver()).await;
+                if expected {
+                    assert_eq!(actual.unwrap(), valid);
+                } else {
+                    assert!(actual.unwrap_err().contains("切换到官方源"));
+                }
+                assert_eq!(server.requests(), vec![official_sha]);
+            }
+        });
+    }
+
+    #[test]
+    fn loader_mirror_rejects_mismatched_installer_bytes_then_fetches_publisher_jar() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let official = "https://maven.neoforged.net/releases/net/neoforged/fixture-installer.jar";
+            let sha_route = "/maven.neoforged.net/releases/net/neoforged/fixture-installer.jar.sha1";
+            let official_route = "/maven.neoforged.net/releases/net/neoforged/fixture-installer.jar";
+            let mirror_route = "/bmclapi2.bangbang93.com/maven/net/neoforged/fixture-installer.jar";
+            let valid = b"unexecutable fixture A";
+            let invalid = b"unexecutable fixture B";
+            let digest = format!("{:x}", Sha1::digest(valid));
+            let server = TestServer::new(&[(sha_route, 200, digest.as_bytes()), (mirror_route, 200, invalid), (official_route, 200, valid)]);
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            let dir = crate::instances::StagingDirectory::create(Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("vx-c8-mirror-{}", uuid::Uuid::new_v4()))).unwrap();
+            let resolver = server.resolver();
+            let file = Download {
+                path: dir.path().join("fixture-installer.jar"),
+                sha1: fetch_official_installer_sha1_resolved(&client, official, &resolver).await.unwrap(),
+                size: None,
+                url: official.into(),
+            };
+            assert!(ensure_download_with_source_and_control_resolved(&client, Ok(None), &file, "bmclapi", None, &resolver).await.unwrap());
+            assert_eq!(fs::read(&file.path).unwrap(), valid);
+            assert_eq!(server.requests(), vec![sha_route, mirror_route, official_route]);
+        });
+    }
+
+    #[test]
+    fn official_installer_sidecar_rejects_cross_origin_response() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let official = "https://maven.minecraftforge.net/net/minecraftforge/fixture-installer.jar";
+            let official_sha = "/maven.minecraftforge.net/net/minecraftforge/fixture-installer.jar.sha1";
+            let digest = format!("{:x}", Sha1::digest(b"fixture installer"));
+            let other = TestServer::new(&[("/sidecar", 200, digest.as_bytes())]);
+            let location = format!("http://{}/sidecar", other.address);
+            let server = TestServer::new(&[(official_sha, 302, location.as_bytes())]);
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            let error = fetch_official_installer_sha1_resolved(&client, official, &server.resolver()).await.unwrap_err();
+            assert!(error.contains("SHA-1"));
+            assert_eq!(server.requests(), vec![official_sha]);
+            assert_eq!(other.requests(), vec!["/sidecar"]);
+        });
     }
 
     #[test]

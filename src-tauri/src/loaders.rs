@@ -58,6 +58,43 @@ fn neo_prefix(game_version: &str) -> String {
     }
 }
 
+fn maven_versions(bytes: &[u8], prefix: &str, strip: bool) -> Result<Vec<LoaderVersion>, String> {
+    let xml = std::str::from_utf8(bytes).map_err(|_| "Maven 元数据编码无效")?;
+    let pattern = regex::Regex::new(r"<version>([^<]+)</version>").map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    let mut parsed = false;
+    for capture in pattern.captures_iter(xml) {
+        parsed = true;
+        let coordinate = capture[1].trim();
+        if let Some(rest) = coordinate.strip_prefix(prefix) {
+            let id = if strip { rest } else { coordinate };
+            validate_id(id)?;
+            results.push(LoaderVersion {id:id.into(),stable:!id.contains("beta") && !id.contains("alpha"),recommended:false});
+        }
+    }
+    if !parsed {
+        return Err("Maven 元数据缺少版本列表".into());
+    }
+    Ok(results)
+}
+
+async fn loader_versions_fallback<F>(
+    primary: impl std::future::Future<Output = Result<Vec<LoaderVersion>, String>>,
+    fallback: impl FnOnce() -> F,
+) -> Result<Vec<LoaderVersion>, String>
+where F: std::future::Future<Output = Result<Vec<LoaderVersion>, String>>,
+{
+    let first = primary.await;
+    if first.as_ref().is_ok_and(|versions| !versions.is_empty()) {
+        return first;
+    }
+    match (first, fallback().await) {
+        (_, Ok(versions)) => Ok(versions),
+        (Ok(empty), Err(_)) => Ok(empty),
+        (Err(first), Err(second)) => Err(format!("NeoForge 版本列表获取失败：{first}；{second}")),
+    }
+}
+
 pub async fn loader_versions(
     state: &LauncherState,
     loader: &str,
@@ -65,7 +102,8 @@ pub async fn loader_versions(
 ) -> Result<Vec<LoaderVersion>, String> {
     loader_name(loader)?;
     validate_id(game_version)?;
-    let mut result = Vec::new();
+    let source = state.snapshot()?.config.download_source;
+    let mut result;
     match loader {
         "fabric" | "quilt" => {
             let base = if loader == "fabric" {
@@ -73,51 +111,32 @@ pub async fn loader_versions(
             } else {
                 "https://meta.quiltmc.org/v3"
             };
-            let bytes = minecraft::fetch_bytes(
-                state.client()?,
+            result = minecraft::fetch_loader_versions(
+                state,
                 &format!("{base}/versions/loader/{game_version}"),
                 16 * 1024 * 1024,
-            )
-            .await?;
-            let metadata = minecraft::parse_json(&bytes)?;
-            for item in metadata.as_array().ok_or("加载器版本列表无效")? {
-                let Some(id) = item["loader"]["version"].as_str() else {
-                    continue;
-                };
-                validate_id(id)?;
-                let stable = item["loader"]["stable"]
-                    .as_bool()
-                    .unwrap_or(!id.contains("beta") && !id.contains("alpha"));
-                result.push(LoaderVersion {
-                    id: id.into(),
-                    stable,
-                    recommended: false,
-                });
-            }
+                &source,
+                |bytes| {
+                    let metadata = minecraft::parse_json(bytes)?;
+                    let mut versions = Vec::new();
+                    for item in metadata.as_array().ok_or("加载器版本列表无效")? {
+                        let Some(id) = item["loader"]["version"].as_str() else { continue; };
+                        validate_id(id)?;
+                        let stable = item["loader"]["stable"].as_bool().unwrap_or(!id.contains("beta") && !id.contains("alpha"));
+                        versions.push(LoaderVersion {id:id.into(), stable, recommended:false});
+                    }
+                    Ok(versions)
+                },
+            ).await?;
         }
         "forge" => {
-            let xml = minecraft::fetch_bytes(
-                state.client()?,
+            result = minecraft::fetch_loader_versions(
+                state,
                 "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml",
                 16 * 1024 * 1024,
-            )
-            .await?;
-            let xml = String::from_utf8(xml).map_err(|_| "Forge Maven 元数据编码无效")?;
-            let prefix = format!("{game_version}-");
-            for capture in regex::Regex::new(r"<version>([^<]+)</version>")
-                .map_err(|e| e.to_string())?
-                .captures_iter(&xml)
-            {
-                let coordinate = capture.get(1).ok_or("Forge版本字段为空")?.as_str();
-                if let Some(id) = coordinate.strip_prefix(&prefix) {
-                    validate_id(id)?;
-                    result.push(LoaderVersion {
-                        id: id.into(),
-                        stable: !id.contains("beta") && !id.contains("alpha"),
-                        recommended: false,
-                    });
-                }
-            }
+                &source,
+                |xml| maven_versions(xml, &format!("{game_version}-"), true),
+            ).await?;
             let promotions = minecraft::fetch_bytes(
                 state.client()?,
                 "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json",
@@ -137,51 +156,45 @@ pub async fn loader_versions(
         }
         "neoforge" => {
             if game_version == "1.20.1" {
-                let xml = minecraft::fetch_bytes(
-                    state.client()?,
+                result = minecraft::fetch_loader_versions(
+                    state,
                     "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml",
                     16 * 1024 * 1024,
-                )
-                .await?;
-                let xml =
-                    String::from_utf8(xml).map_err(|_| "NeoForge 旧版 Maven 元数据编码无效")?;
-                for capture in regex::Regex::new(r"<version>([^<]+)</version>")
-                    .map_err(|e| e.to_string())?
-                    .captures_iter(&xml)
-                {
-                    let coordinate = capture.get(1).ok_or("NeoForge 旧版版本字段为空")?.as_str();
-                    if let Some(id) = coordinate.strip_prefix("1.20.1-") {
-                        validate_id(id)?;
-                        result.push(LoaderVersion {
-                            id: id.into(),
-                            stable: !id.contains("beta") && !id.contains("alpha"),
-                            recommended: false,
-                        });
-                    }
-                }
+                    &source,
+                    |xml| maven_versions(xml, "1.20.1-", true),
+                ).await?;
             } else {
-                let bytes = minecraft::fetch_bytes(
-                    state.client()?,
-                    "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge",
-                    8 * 1024 * 1024,
-                )
-                .await?;
-                let metadata = minecraft::parse_json(&bytes)?;
-                let prefix = neo_prefix(game_version);
-                for id in metadata["versions"]
-                    .as_array()
-                    .ok_or("NeoForge Maven 版本列表无效")?
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .filter(|id| id.starts_with(&prefix))
-                {
-                    validate_id(id)?;
-                    result.push(LoaderVersion {
-                        id: id.into(),
-                        stable: !id.contains("beta") && !id.contains("alpha"),
-                        recommended: false,
-                    });
-                }
+                let official = || async {
+                    let bytes = minecraft::fetch_bytes(
+                        state.client()?,
+                        "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge",
+                        8 * 1024 * 1024,
+                    ).await?;
+                    let metadata = minecraft::parse_json(&bytes)?;
+                    let prefix = neo_prefix(game_version);
+                    let mut versions = Vec::new();
+                    for id in metadata["versions"].as_array().ok_or("NeoForge Maven 版本列表无效")?
+                        .iter().filter_map(Value::as_str).filter(|id| id.starts_with(&prefix))
+                    {
+                        validate_id(id)?;
+                        versions.push(LoaderVersion { id: id.into(), stable: !id.contains("beta") && !id.contains("alpha"), recommended: false });
+                    }
+                    Ok(versions)
+                };
+                let xml = || async {
+                    minecraft::fetch_loader_versions(
+                        state,
+                        "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
+                        16 * 1024 * 1024,
+                        &source,
+                        |xml| maven_versions(xml, &neo_prefix(game_version), false),
+                    ).await
+                };
+                result = match source.as_str() {
+                    "bmclapi" => loader_versions_fallback(xml(), official).await?,
+                    "auto" => loader_versions_fallback(official(), xml).await?,
+                    _ => official().await?,
+                };
             }
         }
         _ => unreachable!(),
@@ -228,13 +241,14 @@ async fn prepare_profile(
         .as_array_mut()
         .ok_or("加载器配置缺少依赖库数组")?;
     let total = values.len();
+    let source = state.snapshot()?.config.download_source;
     for (index, library) in values.iter_mut().enumerate() {
         state.control.checkpoint().await?;
         if !minecraft::rules_allow(library.get("rules")) {
             continue;
         }
         if let Some(download) = minecraft::library_download(state, library, &libraries).await? {
-            minecraft::ensure_download_with_control(state.client()?, &download, Some(&state.control))
+            minecraft::ensure_download_with_source_and_control(state, &download, &source, Some(&state.control))
                 .await?;
             let relative = download
                 .path
@@ -348,6 +362,26 @@ fn read_zip_json(path: &Path, name: &str) -> Result<Value, String> {
     minecraft::parse_json(&bytes)
 }
 
+fn installer_cache_path(root: &Path, file: &str, digest: &str, source: &str) -> Result<PathBuf, String> {
+    if !minecraft::valid_sha1(digest) {
+        return Err("官方安装器校验值无效，请切换到官方源重试".into());
+    }
+    let lane = match source {
+        "official" => "official",
+        "auto" | "bmclapi" => "verified-mirror",
+        _ => return Err("下载源无效".into()),
+    };
+    safe_join(root, &format!("installers/cache/{lane}/{digest}/{file}"))
+}
+
+async fn controlled_loader_fetch<T>(
+    control: &crate::downloads::DownloadControl,
+    request: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    control.checkpoint().await?;
+    crate::download_io::cancellable(Some(control), request).await?
+}
+
 async fn installer_jar(
     state: &LauncherState,
     loader: &str,
@@ -375,23 +409,15 @@ async fn installer_jar(
     };
     let file = format!("{name}-{coordinate}-installer.jar");
     let url = format!("{base}/{coordinate}/{file}");
-    let checksum = minecraft::fetch_bytes(state.client()?, &format!("{url}.sha1"), 1024).await?;
-    let checksum = String::from_utf8(checksum)
-        .map_err(|_| "安装器 SHA-1 编码无效")?
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if !minecraft::valid_sha1(&checksum) {
-        return Err("官方安装器校验值无效".into());
-    }
+    let checksum = controlled_loader_fetch(&state.control, minecraft::fetch_official_installer_sha1(state.client()?, &url)).await?;
+    let source = state.snapshot()?.config.download_source;
     let download = Download {
-        path: safe_join(&state.data_dir, &format!("installers/cache/{file}"))?,
+        path: installer_cache_path(&state.data_dir, &file, &checksum, &source)?,
         url,
         sha1: checksum,
         size: None,
     };
-    minecraft::ensure_download_with_control(state.client()?, &download, Some(&state.control)).await?;
+    minecraft::ensure_download_with_source_and_control(state, &download, &source, Some(&state.control)).await?;
     Ok(download.path)
 }
 
@@ -558,6 +584,37 @@ fn commit_staged_libraries(stage: &Path, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn installer_seed_downloads(stage: &Path, profile: &Value) -> Result<Vec<Download>, String> {
+    let libraries_root = safe_join(stage, "libraries")?;
+    let Some(libraries) = profile["libraries"].as_array() else {
+        return Ok(Vec::new());
+    };
+    let mut files = Vec::new();
+    for library in libraries {
+        let artifact = &library["downloads"]["artifact"];
+        if artifact["sha1"].as_str().is_some_and(minecraft::valid_sha1)
+            && artifact["path"].as_str().is_some()
+            && artifact["url"].as_str().is_some_and(|url| crate::storage::trusted_url(url).is_ok())
+            && artifact["size"].as_u64().is_some()
+        {
+            files.push(minecraft::download_from(artifact, &libraries_root, None)?);
+        }
+    }
+    Ok(files)
+}
+
+async fn preseed_installer_libraries(state: &LauncherState, stage: &Path, profile: &Value) -> Result<(), String> {
+    let source = state.snapshot()?.config.download_source;
+    if source != "official" {
+        // Check every explicit artifact path before downloading any of them.
+        for file in installer_seed_downloads(stage, profile)? {
+            state.control.checkpoint().await?;
+            minecraft::ensure_download_with_source_and_control(state, &file, &source, Some(&state.control)).await?;
+        }
+    }
+    Ok(())
+}
+
 async fn heavyweight_loader(
     state: &LauncherState,
     app: &AppHandle,
@@ -628,6 +685,7 @@ async fn heavyweight_loader(
         0,
         "运行官方安装器及其客户端后处理",
     );
+    preseed_installer_libraries(state, stage, &installer).await?;
     run_installer(state, app, Path::new(&java.path), &jar, stage, loader).await?;
     let output = safe_join(
         stage,
@@ -738,8 +796,9 @@ pub async fn install_loader(
 
 pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, String> {
     let api = "https://authlib-injector.yushi.moe/artifact/latest.json";
-    let metadata =
-        minecraft::parse_json(&minecraft::fetch_bytes(state.client()?, api, 1024 * 1024).await?)?;
+    let metadata = minecraft::parse_json(
+        &controlled_loader_fetch(&state.control, minecraft::fetch_bytes(state.client()?, api, 1024 * 1024)).await?,
+    )?;
     let version = metadata["version"]
         .as_str()
         .ok_or("authlib-injector 缺少版本")?;
@@ -767,11 +826,17 @@ pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, S
         }
     }
     state.control.checkpoint().await?;
-    let bytes = minecraft::fetch_bytes(state.client()?, url, 16 * 1024 * 1024).await?;
+    let source = state.snapshot()?.config.download_source;
+    let expected = expected.to_ascii_lowercase();
+    let (bytes, ()) = controlled_loader_fetch(&state.control, minecraft::fetch_loader_artifact_bytes(state, url, 16 * 1024 * 1024, &source, |bytes| {
+        if format!("{:x}", Sha256::digest(bytes)) == expected {
+            Ok(())
+        } else {
+            Err("authlib-injector SHA256 校验失败".into())
+        }
+    })).await?;
+    state.control.checkpoint().await?;
     state.control.throttle(bytes.len()).await?;
-    if format!("{:x}", Sha256::digest(&bytes)) != expected.to_ascii_lowercase() {
-        return Err("authlib-injector SHA256 校验失败".into());
-    }
     fs::create_dir_all(destination.parent().ok_or("injector路径无效")?)
         .map_err(|e| e.to_string())?;
     let temp = destination.with_extension(format!("jar-{}.tmp", uuid::Uuid::new_v4()));
@@ -786,7 +851,70 @@ pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn u0259_prefers_publisher_versions_after_empty_or_failed_primary() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let publisher = || async { Ok(vec![super::LoaderVersion { id: "21.1.2".into(), stable: true, recommended: false }]) };
+            let result = super::loader_versions_fallback(async { Ok(Vec::new()) }, publisher).await.unwrap();
+            assert_eq!(result[0].id, "21.1.2");
+            let result = super::loader_versions_fallback(async { Err("XML unavailable".into()) }, publisher).await.unwrap();
+            assert_eq!(result[0].id, "21.1.2");
+            let result = super::loader_versions_fallback(async { Ok(Vec::new()) }, || async { Err("Publisher unavailable".into()) }).await.unwrap();
+            assert!(result.is_empty());
+            assert_eq!(super::loader_versions_fallback(publisher(), || async { panic!("nonempty result must suppress fallback") }).await.unwrap()[0].id, "21.1.2");
+        });
+    }
+
+    #[test]
+    fn u0259_controlled_metadata_io_stops_pending_request_on_cancel() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let control = crate::downloads::DownloadControl::default();
+            let job = control.begin("install", "fixture", "Fixture").unwrap();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (result, ()) = futures_util::future::join(
+                tokio::time::timeout(std::time::Duration::from_secs(2), super::controlled_loader_fetch(&control, async {
+                    started.send(()).unwrap();
+                    std::future::pending::<Result<(), String>>().await
+                })),
+                async { ready.await.unwrap(); control.cancel(&job); },
+            ).await;
+            assert!(result.expect("cancellation should wake stalled network I/O").is_err());
+        });
+    }
+
+    #[test]
+    fn u0259_preseed_plan_keeps_checked_artifacts_under_stage_and_skips_missing_checksums() {
+        let dir = std::env::temp_dir().join(format!("voxelight-preseed-plan-{}", uuid::Uuid::new_v4()));
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let profile = serde_json::json!({"libraries":[
+            {"downloads":{"artifact":{"path":"net/test/a.jar","url":"https://maven.minecraftforge.net/net/test/a.jar","sha1":digest,"size":17}}},
+            {"downloads":{"artifact":{"path":"net/test/b.jar","url":"https://maven.neoforged.net/releases/net/test/b.jar","sha1":digest,"size":18}}},
+            {"downloads":{"artifact":{"path":"net/test/unverified.jar","url":"https://maven.minecraftforge.net/net/test/unverified.jar","size":19}}},
+            {"name":"no-artifact"}
+        ]});
+        let result = super::installer_seed_downloads(&dir, &profile).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].path, dir.join("libraries/net/test/a.jar"));
+        assert_eq!(result[1].path, dir.join("libraries/net/test/b.jar"));
+        assert_eq!(result[0].sha1, digest);
+        assert_eq!(result[1].size, Some(18));
+    }
+
     #[cfg(windows)]
+    #[test]
+    fn installer_cache_keeps_official_digest_and_source_lane() {
+        let root = std::env::temp_dir();
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let file = "forge-1.20.1-47.2.0-installer.jar";
+        let official = super::installer_cache_path(&root, file, digest, "official").unwrap();
+        let mirrored = super::installer_cache_path(&root, file, digest, "bmclapi").unwrap();
+        assert_ne!(official, mirrored);
+        assert_eq!(official.parent().unwrap().file_name().unwrap(), digest);
+        assert_eq!(mirrored.parent().unwrap().file_name().unwrap(), digest);
+        assert!(super::installer_cache_path(&root, file, "bad", "bmclapi").is_err());
+        assert!(super::installer_cache_path(&root, file, digest, "unknown").is_err());
+    }
+
     #[test]
     fn r4_forge_installer_passes_ordinary_java_jar_stage_and_temp_paths() {
         let command = super::installer_command(
