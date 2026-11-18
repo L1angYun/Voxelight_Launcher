@@ -130,7 +130,13 @@ pub fn run() {
                 server_manager::ServerRegistry::default(),
             ));
             app.manage(path_grants::PathGrants::default());
-            app.manage(state);
+            app.manage(state.clone());
+            #[cfg(windows)]
+            if let Ok(snapshot) = state.snapshot() {
+                tauri::async_runtime::spawn_blocking(move || {
+                    process_output::sweep_stale_scratch(&snapshot);
+                });
+            }
             app.manage(auth);
             let window_config = match app.config().app.windows.first().cloned() {
                 Some(config) => config,

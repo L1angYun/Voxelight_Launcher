@@ -1304,7 +1304,9 @@ async fn build_shared_export_plan(
     options: SharedExportOptions,
 ) -> Result<SharedExportPlan, String> {
     let root_for_scan = root.to_path_buf();
-    let files = tokio::task::spawn_blocking(move || instances::collect_files(&root_for_scan))
+    let files = tokio::task::spawn_blocking(move || {
+        instances::collect_instance_files_controlled(&root_for_scan, None)
+    })
         .await.map_err(|error| error.to_string())??;
     let mut hash_matches = HashMap::<String, Vec<(FileRecord, String)>>::new();
     let mut excluded_files = Vec::new();
@@ -1358,7 +1360,7 @@ async fn build_shared_export_plan(
     index_files.sort_by(|a, b| a.path.cmp(&b.path));
     raw_files.sort_by(|a, b| a.relative.cmp(&b.relative));
     excluded_files.sort_by(|a, b| a.path.cmp(&b.path));
-    // The confirmation covers complete inventory hashes, actual reference URLs
+    // The confirmation covers export inventory hashes, actual reference URLs
     // and content choices; a change between approval and export must be shown again.
     let fingerprint = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&(
         &instance.id, &instance.version_id, options, &files, &index_files, &raw_files, &excluded_files,
@@ -1504,7 +1506,9 @@ async fn export_confirmed_shared_pack(
             .sync_all()
             .map_err(|e| e.to_string())?;
         let verify_root = root.clone();
-        let latest = tokio::task::spawn_blocking(move || instances::collect_files(&verify_root))
+        let latest = tokio::task::spawn_blocking(move || {
+            instances::collect_instance_files_controlled(&verify_root, None)
+        })
             .await
             .map_err(|error| error.to_string())??;
         if latest != files {
@@ -1570,6 +1574,64 @@ mod tests {
             crate::storage::test_client(),
         );
         (state, instance)
+    }
+
+    #[test]
+    fn a3_shared_pack_omits_scratch_from_preview_fingerprint_and_archive() {
+        let fixture = instances::StagingDirectory::create(test_root()).unwrap();
+        let (state, instance) = shared_export_fixture(fixture.path());
+        let root = Path::new(&instance.game_directory);
+        let scratch = root.join(".launcher-temp/run-c6792868-d4ed-42d8-a6fc-4251c8726903");
+        fs::create_dir_all(&scratch).unwrap();
+        fs::write(scratch.join("launcher.args"), b"runtime before approval").unwrap();
+        fs::create_dir_all(root.join("config/.launcher-temp")).unwrap();
+        fs::write(root.join("config/.launcher-temp/preserved.toml"), b"volume=10").unwrap();
+        let output = fixture.path().join("scoped.mrpack");
+        let options = SharedExportOptions {
+            include_configs: true,
+            ..Default::default()
+        };
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let approved = build_shared_export_plan(&state, &instance, root, options)
+                    .await
+                    .unwrap()
+                    .preview;
+                assert!(approved
+                    .excluded_files
+                    .iter()
+                    .all(|file| !file.path.starts_with(".launcher-temp/")));
+                assert_eq!(
+                    approved.bundled_files,
+                    [
+                        "modrinth.index.json",
+                        "overrides/config/.launcher-temp/preserved.toml",
+                        "overrides/config/ordinary.toml",
+                    ]
+                );
+                fs::write(scratch.join("launcher.args"), b"runtime after approval").unwrap();
+                let result = export_confirmed_shared_pack(
+                    &state,
+                    &instance,
+                    &output,
+                    None,
+                    options,
+                    &approved.fingerprint,
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.override_files, 2);
+                let mut zip = ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+                let mut entries = (0..zip.len())
+                    .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
+                    .collect::<Vec<_>>();
+                entries.sort_unstable();
+                assert_eq!(entries, approved.bundled_files);
+            });
     }
 
     #[test]

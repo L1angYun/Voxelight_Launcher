@@ -6,6 +6,15 @@ use std::{
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
+#[cfg(any(windows, test))]
+#[path = "scratch_owner.rs"]
+mod scratch_owner;
+
+#[cfg(windows)]
+pub(crate) fn sweep_stale_scratch(data: &crate::models::Persisted) {
+    scratch_owner::sweep_on_startup(data);
+}
+
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const LOG_SHARD_BYTES: u64 = 4 * 1024 * 1024;
 const ACTIVE_LOGS: usize = 4;
@@ -146,6 +155,11 @@ impl LaunchScratch {
             .and_then(|mut file: File| file.write_all(content.as_bytes()))
             .map_err(|error| format!("写入 Java 参数文件失败：{error}"))?;
         Ok(path)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn record_owner(&self, child: &tokio::process::Child, pid: u32) -> io::Result<()> {
+        scratch_owner::mark_child(self.dir.path(), child, pid)
     }
 
     pub(crate) fn started(&mut self) {

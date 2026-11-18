@@ -252,6 +252,22 @@ fn sha256(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InventoryScope {
+    All,
+    Instance,
+}
+
+fn is_runtime_scratch(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    #[cfg(windows)]
+    return name.eq_ignore_ascii_case(std::ffi::OsStr::new(".launcher-temp"));
+    #[cfg(not(windows))]
+    return name == ".launcher-temp";
+}
+
 /// Snapshot a fixed list before creating staging directories; never follow directory links.
 pub(crate) fn collect_files(root: &Path) -> Result<Vec<FileRecord>, String> {
     collect_files_controlled(root, None)
@@ -259,6 +275,21 @@ pub(crate) fn collect_files(root: &Path) -> Result<Vec<FileRecord>, String> {
 
 pub(crate) fn collect_files_controlled(
     root: &Path,
+    control: Option<&LauncherState>,
+) -> Result<Vec<FileRecord>, String> {
+    collect_files_in_scope(root, InventoryScope::All, control)
+}
+
+pub(crate) fn collect_instance_files_controlled(
+    root: &Path,
+    control: Option<&LauncherState>,
+) -> Result<Vec<FileRecord>, String> {
+    collect_files_in_scope(root, InventoryScope::Instance, control)
+}
+
+fn collect_files_in_scope(
+    root: &Path,
+    scope: InventoryScope,
     control: Option<&LauncherState>,
 ) -> Result<Vec<FileRecord>, String> {
     checked_absolute(root)?;
@@ -272,6 +303,7 @@ pub(crate) fn collect_files_controlled(
         files: &mut Vec<FileRecord>,
         total: &mut u64,
         walked: &mut usize,
+        scope: InventoryScope,
         control: Option<&LauncherState>,
     ) -> Result<(), String> {
         if depth > MAX_TREE_DEPTH {
@@ -289,7 +321,10 @@ pub(crate) fn collect_files_controlled(
             checked_absolute(&path)?;
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             if metadata.is_dir() {
-                visit(root, &path, depth + 1, files, total, walked, control)?;
+                if depth == 0 && scope == InventoryScope::Instance && is_runtime_scratch(&path) {
+                    continue;
+                }
+                visit(root, &path, depth + 1, files, total, walked, scope, control)?;
             } else if metadata.is_file() {
                 if files.len() >= MAX_TREE_FILES {
                     return Err("实例文件超过 100000 个，请先整理后重试".into());
@@ -318,7 +353,7 @@ pub(crate) fn collect_files_controlled(
         Ok(())
     }
     let mut files = Vec::new();
-    visit(root, root, 0, &mut files, &mut 0, &mut 0, control)?;
+    visit(root, root, 0, &mut files, &mut 0, &mut 0, scope, control)?;
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     Ok(files)
 }
@@ -343,13 +378,14 @@ fn copy_snapshot_controlled(
         return Err("暂存目录已经存在，已停止以保护现有文件".into());
     }
     fs::create_dir_all(destination).map_err(|e| e.to_string())?;
-    copy_into_snapshot(source, destination, files, control)
+    copy_into_snapshot(source, destination, files, InventoryScope::All, control)
 }
 
 fn copy_into_snapshot(
     source: &Path,
     destination: &Path,
     files: &[FileRecord],
+    scope: InventoryScope,
     control: Option<&LauncherState>,
 ) -> Result<(), String> {
     for record in files {
@@ -369,7 +405,7 @@ fn copy_into_snapshot(
         }
     }
     // A running game changing a world/configuration causes a safe failure.
-    if collect_files_controlled(source, control)? != files {
+    if collect_files_in_scope(source, scope, control)? != files {
         return Err("复制期间实例文件发生变化，请关闭游戏后重试。原实例未改变。".into());
     }
     Ok(())
@@ -602,9 +638,15 @@ fn clone_inner(state: &LauncherState, instance_id: &str, name: &str) -> Result<I
             "共享游戏根目录不能直接作为独立实例克隆，请先导出个人备份。独立实例可正常克隆。".into(),
         );
     }
-    let files = collect_files_controlled(&source, Some(state))?;
+    let files = collect_instance_files_controlled(&source, Some(state))?;
     let mut staging = StagingDirectory::create(staging)?;
-    copy_into_snapshot(&source, staging.path(), &files, Some(state))?;
+    copy_into_snapshot(
+        &source,
+        staging.path(),
+        &files,
+        InventoryScope::Instance,
+        Some(state),
+    )?;
     sync_checkpoint(state)?;
     if let Err(error) = staging.publish(&destination) {
         return Err(format!(
@@ -695,7 +737,7 @@ fn write_archive_controlled(
             .map_err(|e| e.to_string())?
             .sync_all()
             .map_err(|e| e.to_string())?;
-        if collect_files_controlled(source, control)? != files {
+        if collect_instance_files_controlled(source, control)? != files {
             return Err("备份期间实例文件发生变化，请关闭游戏后重试".into());
         }
         if output.exists() {
@@ -739,7 +781,7 @@ pub(crate) fn backup_inner(
     value: &Instance,
 ) -> Result<InstanceBackup, String> {
     let source = stopped_instance_directory(state, value)?;
-    let files = collect_files_controlled(&source, Some(state))?;
+    let files = collect_instance_files_controlled(&source, Some(state))?;
     validate_id(&value.id)?;
     let root = checked_absolute(&state.data_dir.join("instance-backups"))?;
     let folder = safe_join(&root, &value.id)?;
@@ -1490,7 +1532,7 @@ fn export_zip_inner(
     if crate::processes::directory_tail(&output, &source).is_some() {
         return Err("备份文件不能写入正在备份的实例目录".into());
     }
-    let files = collect_files_controlled(&source, Some(state))?;
+    let files = collect_instance_files_controlled(&source, Some(state))?;
     let dependencies = crate::modpacks::instance_dependencies(state, &value).unwrap_or_default();
     let manifest = BackupManifest {
         format_version: 1,
@@ -1537,8 +1579,14 @@ mod tests {
         let copy = root.join("clone");
         fs::create_dir_all(source.join("saves/world")).unwrap();
         fs::write(source.join("saves/world/level.dat"), b"user world").unwrap();
+        fs::create_dir(source.join(".launcher-temp")).unwrap();
+        fs::write(source.join(".launcher-temp/world-import-data"), b"world import data").unwrap();
         let records = collect_files(&source).unwrap();
         copy_snapshot(&source, &copy, &records).unwrap();
+        assert_eq!(
+            fs::read(copy.join(".launcher-temp/world-import-data")).unwrap(),
+            b"world import data"
+        );
         assert_eq!(collect_files(&copy).unwrap(), records);
         assert!(copy_snapshot(&source, &copy, &records).is_err());
         assert_eq!(
@@ -1642,6 +1690,88 @@ mod backup_recovery_tests {
             },
             reqwest::Client::builder().no_proxy().build().unwrap(),
         )
+    }
+
+    fn with_instance_scratch(
+        verify: impl FnOnce(&LauncherState, &Instance, &Path) + Send + 'static,
+    ) {
+        let root = fixture_folder("a3-scratch");
+        let source = root.path().join("game/instances/source");
+        let scratch = source.join(".launcher-temp/run-c6792868-d4ed-42d8-a6fc-4251c8726903");
+        fs::create_dir_all(&scratch).unwrap();
+        fs::write(scratch.join("launcher.args"), b"runtime only").unwrap();
+        fs::create_dir_all(source.join("config/.launcher-temp")).unwrap();
+        fs::write(source.join("config/.launcher-temp/preserved.txt"), b"user config").unwrap();
+        fs::create_dir_all(source.join("saves/world")).unwrap();
+        fs::write(source.join("saves/world/level.dat"), b"user world").unwrap();
+        let instance = backup_manifest("source", &source, vec![]).instance;
+        let state = fixture_state(root.path(), &instance);
+        let path = root.path().to_owned();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::task::spawn_blocking(move || verify(&state, &instance, &path))
+                    .await
+                    .unwrap()
+            });
+        assert_eq!(fs::read(scratch.join("launcher.args")).unwrap(), b"runtime only");
+    }
+
+    fn assert_instance_archive_omits_runtime_scratch(path: &Path) {
+        let expected = ["config/.launcher-temp/preserved.txt", "saves/world/level.dat"];
+        let manifest = read_backup(path).unwrap();
+        let listed = manifest
+            .files
+            .iter()
+            .map(|record| record.relative.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(listed, expected, "manifest inventory");
+        let mut archive = ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+        let mut names = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().to_string())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [expected[0], "launcher-backup.json", expected[1]],
+            "ZIP member inventory"
+        );
+    }
+
+    #[test]
+    fn a3_instance_backup_omits_only_top_level_launcher_scratch() {
+        with_instance_scratch(|state, instance, _| {
+            let archive = backup_inner(state, instance).unwrap();
+            assert_instance_archive_omits_runtime_scratch(Path::new(&archive.path));
+        });
+    }
+
+    #[test]
+    fn a3_personal_backup_omits_only_top_level_launcher_scratch() {
+        with_instance_scratch(|state, instance, root| {
+            let output = root.join("personal.zip");
+            export_zip_inner(state, &instance.id, output.to_str().unwrap()).unwrap();
+            assert_instance_archive_omits_runtime_scratch(&output);
+        });
+    }
+
+    #[test]
+    fn a3_clone_omits_only_top_level_launcher_scratch() {
+        with_instance_scratch(|state, instance, _| {
+            let cloned = clone_inner(state, &instance.id, "Cloned instance").unwrap();
+            let destination = Path::new(&cloned.game_directory);
+            assert!(!destination.join(".launcher-temp").exists());
+            assert_eq!(
+                fs::read(destination.join("config/.launcher-temp/preserved.txt")).unwrap(),
+                b"user config"
+            );
+            assert_eq!(
+                fs::read(destination.join("saves/world/level.dat")).unwrap(),
+                b"user world"
+            );
+        });
     }
 
     #[cfg(windows)]

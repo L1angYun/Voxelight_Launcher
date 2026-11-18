@@ -2869,6 +2869,12 @@ async fn launch_prepared(
         }
         return Err("Java 进程未提供 PID".into());
     };
+    #[cfg(windows)]
+    if let Err(error) = launch_scratch.record_owner(&child, pid) {
+        // The spawned Java remains usable. A run without a valid marker
+        // is deliberately never reclaimed by the startup sweep.
+        eprintln!("[voxelight/scratch] unable to record Java ownership: {error}");
+    }
     log(
         &app,
         &state,
