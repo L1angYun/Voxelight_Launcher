@@ -296,13 +296,8 @@ fn loader_code(loader: &str) -> Result<u32, String> {
     }
 }
 fn service_key(state: &LauncherState) -> Result<String, String> {
-    let key = crate::secrets::load_service_secret(&state.data_dir, "curseforge-api-key")?
-        .filter(|v| !v.trim().is_empty())
-        .ok_or("请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。")?;
-    if key.len() > 2048 || key.chars().any(char::is_control) {
-        return Err("加密保存的 CurseForge API Key 格式无效，请重新设置".into());
-    }
-    Ok(key)
+    crate::curseforge_key::effective_cf_key(&state.data_dir, None)?
+        .ok_or_else(|| "请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。".into())
 }
 fn api_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
@@ -326,7 +321,7 @@ async fn api<T: DeserializeOwned>(
     let response = client
         .get(format!("{API}/{path}"))
         .query(query)
-        .header("x-api-key", key)
+        .header("x-api-key", crate::curseforge_key::sensitive_cf_header(key)?)
         .send()
         .await
         .map_err(|_| "CurseForge 连接失败，请检查网络后重试")?;

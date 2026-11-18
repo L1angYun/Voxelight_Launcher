@@ -7,6 +7,7 @@ mod client_id;
 mod commands;
 mod content;
 mod curseforge;
+mod curseforge_key;
 mod download_io;
 mod downloads;
 mod errors;

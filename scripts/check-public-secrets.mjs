@@ -15,6 +15,15 @@ const ARCHIVE_OUTPUT_FILE = "tsconfig.tsbuildinfo";
 const DISABLED_PUSH_URLS = new Set(["DISABLED", "DISABLED-private-never-pushes"]);
 const BINARY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".zip", ".jar", ".exe", ".dll", ".pdf", ".mp4", ".webm"]);
 const UUID_SOURCE = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
+const CF_SOURCE = String.raw`\$2a\$10\$([./A-Za-z0-9]{53})`;
+const CF_VALUE = new RegExp(CF_SOURCE + "(?![./A-Za-z0-9])", "g");
+// A hostile path may append a valid body character such as the dot in .txt.
+const CF_REDACT = new RegExp(CF_SOURCE, "g");
+const PRIVATE_TARGETS = [
+  { key: "VOXELIGHT_MS_CLIENT_ID", pattern: UUID_SOURCE, ignoreCase: true, required: true },
+  { key: "VOXELIGHT_CF_API_KEY", pattern: CF_SOURCE, ignoreCase: false, required: false },
+];
+
 // Also cover prefixed env keys, Rust string declarations, command arguments,
 // and Cargo's { value = "...", force = true } environment syntax.
 const CLIENT_VALUE = new RegExp(
@@ -27,6 +36,7 @@ function diagnostic(path, line, key) {
   // Even a hostile filename must not turn a diagnostic into a value leak.
   const safe = value => String(value)
     .replace(new RegExp(UUID_SOURCE, "gi"), "[redacted]")
+    .replace(CF_REDACT, "[redacted]")
     .replace(/[\r\n\t\0]/g, "_");
   diagnostics.add(`${safe(path)}:${line}:${safe(key)}`);
 }
@@ -145,8 +155,8 @@ function withoutCargoComment(line) {
   return line.trim();
 }
 
-function cargoUuid(value) {
-  const direct = new RegExp(`^(["'])(${UUID_SOURCE})\\1$`, "i").exec(value.trim());
+function cargoSecret(value, { pattern, ignoreCase }) {
+  const direct = new RegExp(`^(["'])(${pattern})\\1$`, ignoreCase ? "i" : "").exec(value.trim());
   if (direct) return direct[2];
   if (!value.startsWith("{") || !value.endsWith("}")) return null;
   const fields = [];
@@ -164,7 +174,7 @@ function cargoUuid(value) {
   fields.push(value.slice(start, -1));
   const assigned = fields.map(field => /^\s*(?:value|"value"|'value')\s*=\s*(.*)$/.exec(field)).filter(Boolean);
   if (assigned.length !== 1) return null;
-  const match = new RegExp(`^(["'])(${UUID_SOURCE})\\1$`, "i").exec(assigned[0][1].trim());
+  const match = new RegExp(`^(["'])(${pattern})\\1$`, ignoreCase ? "i" : "").exec(assigned[0][1].trim());
   return match?.[2] ?? null;
 }
 
@@ -228,30 +238,30 @@ function cargoAssignment(code) {
   return null;
 }
 
-/** Read canonical UUID values without silently dropping unknown target paths. */
-function privateCargoValues(text) {
+/** Read canonical secret values without silently dropping unknown target paths. */
+function privateCargoValues(text, target) {
   const values = [], invalid = [];
-  const targetKey = "VOXELIGHT_MS_CLIENT_ID";
+  const targetKey = target.key;
   // Windows environment names are case-insensitive. Reject aliases instead of
   // letting a separately parsed canonical ID hide a possible effective value.
   const noncanonicalTarget = keys => keys.some(key => key !== targetKey && key.toUpperCase() === targetKey);
   let section = [], tableLine = 1, tableAssigned = false;
-  const clientTable = () => section.length === 2 && section[0] === "env" && section[1] === targetKey;
+  const targetTable = () => section.length === 2 && section[0] === "env" && section[1] === targetKey;
   const finishTable = () => {
-    if (clientTable() && !tableAssigned) invalid.push(tableLine);
+    if (targetTable() && !tableAssigned) invalid.push(tableLine);
   };
   for (const [index, raw] of text.split(/\r?\n/).entries()) {
     const code = withoutCargoComment(raw), line = index + 1;
     if (!code) continue;
-    // A UUID cannot be a multiline TOML string. Refuse unsupported multiline
-    // syntax rather than interpreting a key embedded inside another string.
+    // Refuse multiline syntax rather than interpreting a key embedded inside
+    // another string or accepting noncanonical secret representations.
     if (code.includes('"""') || code.includes("'''")) return { values: [], invalid: [line] };
     if (code.startsWith("[")) {
       finishTable(); tableAssigned = false; tableLine = line;
       const parsed = code.endsWith("]") ? cargoKeyPath(code.slice(1, -1)) : null;
       section = parsed ?? ["<unsupported>"];
       if (noncanonicalTarget(section)) invalid.push(line);
-      if (section.includes(targetKey) && !clientTable() || !parsed && code.includes(targetKey)) invalid.push(line);
+      if (section.includes(targetKey) && !targetTable() || !parsed && code.includes(targetKey)) invalid.push(line);
       continue;
     }
     const assignment = cargoAssignment(code);
@@ -272,11 +282,11 @@ function privateCargoValues(text) {
       if (path.length !== 3 || !["force", "relative"].includes(path[2]) || !/^(?:true|false)$/.test(assignment.value)) invalid.push(line);
       continue;
     }
-    if (clientTable()) {
+    if (targetTable()) {
       if (tableAssigned) invalid.push(line);
       tableAssigned = true;
     }
-    const value = cargoUuid(assignment.value);
+    const value = cargoSecret(assignment.value, target);
     if (value) values.push({ value, line });
     else invalid.push(line);
   }
@@ -298,6 +308,12 @@ function inspectPublicText(path, buffer) {
   for (const match of clientValues(text)) {
     if (!/^([0-9a-f])\1{31}$/i.test(match.value.replaceAll("-", ""))) {
       diagnostic(path, lineAt(text, match.index), match.key);
+    }
+  }
+  for (const match of text.matchAll(CF_VALUE)) {
+    // Only a literal repetition qualifies as a synthetic fixture.
+    if (!/^([./A-Za-z0-9])\1{52}$/.test(match[1])) {
+      diagnostic(path, lineAt(text, match.index), "VOXELIGHT_CF_API_KEY");
     }
   }
 }
@@ -432,27 +448,34 @@ function inspect(root) {
   const documents = [...paths].map(path => workingDocument(root, path, privateMode)).filter(Boolean);
   const workingConfigs = documents.filter(document => CONFIG_PATHS.has(document.path));
   documents.push(...indexDocuments(root, entries, privateMode));
-  const privateIds = new Set();
+  const privateValues = new Map();
   if (privateMode) {
-    let workingIdFound = false;
-    if (workingConfigs.length === 0) diagnostic("src-tauri/.cargo/config.toml", 1, "VOXELIGHT_MS_CLIENT_ID");
-    for (const document of documents.filter(document => CONFIG_PATHS.has(document.path))) {
-      const parsed = privateCargoValues(document.buffer.toString("utf8"));
-      for (const line of parsed.invalid) diagnostic(document.path, line, "VOXELIGHT_MS_CLIENT_ID");
-      for (const match of parsed.values) privateIds.add(match.value.toLowerCase());
-      if (workingConfigs.includes(document) && parsed.values.length > 0) workingIdFound = true;
+    const configs = documents.filter(document => CONFIG_PATHS.has(document.path));
+    for (const target of PRIVATE_TARGETS) {
+      let workingValueFound = false;
+      const exact = new Set();
+      for (const document of configs) {
+        const parsed = privateCargoValues(document.buffer.toString("utf8"), target);
+        for (const line of parsed.invalid) diagnostic(document.path, line, target.key);
+        for (const { value } of parsed.values) exact.add(target.ignoreCase ? value.toLowerCase() : value);
+        if (workingConfigs.includes(document) && parsed.values.length > 0) workingValueFound = true;
+      }
+      if (target.required && (!workingValueFound || exact.size === 0)) {
+        diagnostic(workingConfigs[0]?.path ?? "src-tauri/.cargo/config.toml", 1, target.key);
+      }
+      if (exact.size > 0) privateValues.set(target, exact);
     }
-    if (!workingIdFound || privateIds.size === 0)
-      diagnostic(workingConfigs[0]?.path ?? "src-tauri/.cargo/config.toml", 1, "VOXELIGHT_MS_CLIENT_ID");
   }
   for (const { path, buffer } of documents) {
     if (privateMode && CONFIG_PATHS.has(path)) continue;
-    const text = buffer.toString("utf8");
-    if (privateIds.size > 0) {
-      const lower = text.toLowerCase();
-      for (const id of privateIds) {
-        const index = lower.indexOf(id);
-        if (index >= 0) diagnostic(path, lineAt(text, index), "VOXELIGHT_MS_CLIENT_ID");
+    if (privateValues.size > 0) {
+      const text = buffer.toString("utf8");
+      for (const [target, exact] of privateValues) {
+        const haystack = target.ignoreCase ? text.toLowerCase() : text;
+        for (const value of exact) {
+          const index = haystack.indexOf(value);
+          if (index >= 0) diagnostic(path, lineAt(text, index), target.key);
+        }
       }
     }
     inspectPublicText(path, buffer);

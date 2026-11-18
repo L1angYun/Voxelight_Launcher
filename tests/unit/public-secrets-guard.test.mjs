@@ -15,6 +15,17 @@ const fixtureTwo = "22222222-2222-2222-2222-222222222222";
 const mixed = ["11111111", "2222", "1111", "2222", "111111111111"].join("-");
 const otherMixed = ["22222222", "1111", "2222", "1111", "222222222222"].join("-");
 const uuid = /[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/i;
+// Keep complete secret-shaped samples out of the source the guard scans.
+const cfPrefix = ["$", "2a", "$", "10", "$"].join("");
+const cfRepeated = cfPrefix + "a".repeat(53);
+const cfMixed = cfPrefix + "Ab1.".repeat(13) + "K";
+const cfKey = "VOXELIGHT_CF_API_KEY";
+
+function assertNoFixtureValue(output) {
+  const pattern = new RegExp(cfPrefix.replaceAll("$", "\\$") + "[./A-Za-z0-9]{53}");
+  assert.equal(pattern.test(output), false, "guard diagnostics must never include a CurseForge value");
+}
+
 
 function repository(t, { privateMode = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "voxelight-public-guard-"));
@@ -51,6 +62,7 @@ function repository(t, { privateMode = false } = {}) {
     const result = spawnSync(process.execPath, [script, "--root", root], { cwd: root, env, encoding: "utf8" });
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     assert.equal(uuid.test(output), false, "guard diagnostics must never include a UUID");
+    assertNoFixtureValue(output);
     return { status: result.status, output };
   };
   git("init", "-q", "-b", "main");
@@ -96,6 +108,7 @@ function extractedSource(t, extraFiles = {}) {
     const result = spawnSync(process.execPath, [script, ...args], { cwd: root, encoding: "utf8" });
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     assert.equal(uuid.test(output), false, "archive diagnostics must not disclose a fixture value");
+    assertNoFixtureValue(output);
     return { status: result.status, output };
   };
   return { root, write, manifest, writeManifest, check };
@@ -135,6 +148,82 @@ test("the archive guard scans public credentials even when the source hash match
   const archive = extractedSource(t, { "src/demo.ts": `// synthetic fixture\nclientId: "${mixed}"\n` });
   rejected(archive.check(), "src/demo.ts:2:clientId");
 });
+
+test("the public guard rejects CurseForge shapes in the checkout and separately in the index", t => {
+  const repo = repository(t);
+  const path = "src/fixture.ts";
+  repo.write(path, "// synthetic fixture\n" + "const opaque = " + JSON.stringify(cfMixed));
+  rejected(repo.check(), path + ":2:" + cfKey);
+  repo.git("add", path);
+  repo.write(path, "// cleaned working tree\n");
+  rejected(repo.check(), path + ":2:" + cfKey);
+});
+
+test("the archive guard detects a CurseForge shape with a valid member hash", t => {
+  const archive = extractedSource(t, {
+    "src/demo.ts": "// synthetic source\n" + "const opaque = " + JSON.stringify(cfMixed),
+  });
+  rejected(archive.check(), "src/demo.ts:2:" + cfKey);
+});
+
+test("public mode permits a repeated-character CurseForge fixture", t => {
+  const repo = repository(t);
+  repo.write("src/inert.ts", "// fixture: " + cfRepeated);
+  assert.equal(repo.check().status, 0);
+});
+
+test("a CurseForge-shaped filename is redacted in the location", t => {
+  const repo = repository(t);
+  repo.write("src/" + cfMixed + ".txt", "// fixture: " + cfMixed);
+  rejected(repo.check(), "src/[redacted].txt:1:" + cfKey);
+});
+
+test("private mode permits a CurseForge key in a Cargo table but rejects its exact binary or staged leak", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", "[env]\nVOXELIGHT_MS_CLIENT_ID = '" + fixtureOne + "'\n");
+  // Repeated and binary are both exempt from the public pattern check; this
+  // only fails when private config parsing and the exact-value scan work.
+  repo.write("src-tauri/.cargo/config.toml", "[env." + cfKey + "]\nvalue = '" + cfRepeated + "'\nforce = true\n");
+  assert.equal(repo.check().status, 0);
+  const path = "src/private-leak.bin";
+  repo.write(path, Buffer.from("\0synthetic fixture\n" + cfRepeated));
+  rejected(repo.check(), path + ":2:" + cfKey);
+  repo.git("add", path);
+  repo.write(path, Buffer.from("\0synthetic fixture\n"));
+  rejected(repo.check(), path + ":2:" + cfKey);
+});
+
+test("private mode reads combined inline and dotted CurseForge forms", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", "[env]\nVOXELIGHT_MS_CLIENT_ID = '" + fixtureOne + "'\n"
+    + cfKey + " = { force = true, value = '" + cfRepeated + "' }\n");
+  const anotherFixture = cfPrefix + "A".repeat(53);
+  repo.write("src-tauri/.cargo/config.toml", "\"env\".\"" + cfKey + "\".value = '" + anotherFixture + "'\n");
+  assert.equal(repo.check().status, 0);
+  const path = "src/other-value.bin";
+  for (const fixture of [cfRepeated, anotherFixture]) {
+    repo.write(path, Buffer.from("\0" + fixture));
+    rejected(repo.check(), path + ":1:" + cfKey);
+  }
+});
+
+for (const [name, content, line] of [
+  ["empty", "[env]\n" + cfKey + " = ''\n", 2],
+  ["wrong length", "[env]\n" + cfKey + " = '" + cfPrefix + "a".repeat(54) + "'\n", 2],
+  ["wrong characters", "[env]\n" + cfKey + " = { value = '" + cfPrefix + "a".repeat(52) + "*', force = true }\n", 2],
+  ["missing table value", "[env." + cfKey + "]\nforce = true\n", 1],
+  ["lowercase alias", "[env]\n" + cfKey.toLowerCase() + " = '" + cfRepeated + "'\n", 2],
+  ["lowercase table alias", "[env." + cfKey.toLowerCase() + "]\nvalue = '" + cfRepeated + "'\n", 1],
+  ["unknown target field", "[env]\n" + cfKey + ".unsupported = 'inert-fixture'\n", 2],
+  ["multiline value", "[env]\n" + cfKey + " = " + '"'.repeat(3) + cfRepeated + '"'.repeat(3) + "\n", 2],
+]) {
+  test("private mode refuses a CurseForge " + name + " without printing its value", t => {
+    const repo = repository(t, { privateMode: true });
+    repo.write(".cargo/config.toml", "[env]\nVOXELIGHT_MS_CLIENT_ID = '" + fixtureOne + "'\n");
+    repo.write("src-tauri/.cargo/config.toml", content);
+    rejected(repo.check(), "src-tauri/.cargo/config.toml:" + line + ":" + cfKey);
+  });
+}
 
 test("the archive guard does not accept missing manifest entries or unlisted source", t => {
   const archive = extractedSource(t);

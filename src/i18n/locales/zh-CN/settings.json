@@ -30,6 +30,7 @@
     "builtinActive": "此构建包含内置 Microsoft 应用，留空即可使用。",
     "curseforgeKey": "CurseForge API Key",
     "keyPlaceholder": "填写自己的 API Key",
+    "curseforgeBuiltinPlaceholder": "留空使用内置密钥",
     "keyConfiguredPlaceholder": "已加密保存，留空不修改",
     "saveKey": "保存密钥",
     "configured": "已配置",

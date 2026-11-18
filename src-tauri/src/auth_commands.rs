@@ -262,15 +262,22 @@ pub fn get_service_status(
         .is_some_and(|secret| !secret.is_empty());
     Ok(service_status(
         curseforge,
+        crate::curseforge_key::builtin_cf_key().is_some(),
         &state.snapshot()?.config,
         builtin_client_id(),
     ))
 }
 
-fn service_status(curseforge: bool, config: &Config, builtin: Option<&str>) -> serde_json::Value {
+fn service_status(
+    curseforge: bool,
+    curseforge_builtin: bool,
+    config: &Config,
+    builtin: Option<&str>,
+) -> serde_json::Value {
     let custom = !config.microsoft_client_id.trim().is_empty();
     serde_json::json!({
         "curseforgeConfigured": curseforge,
+        "curseforgeBuiltin": curseforge_builtin,
         "microsoftBuiltin": builtin.is_some(),
         "microsoftOverride": custom,
         "microsoftConfigured": builtin.is_some() || custom,
@@ -287,26 +294,29 @@ mod tests {
     #[test]
     fn service_status_exposes_boolean_builtin_and_override_state_only() {
         let config = Config::default();
-        let builtin = service_status(false, &config, Some(BUILTIN));
+        let builtin = service_status(false, true, &config, Some(BUILTIN));
         assert_eq!(builtin["microsoftBuiltin"], true);
         assert_eq!(builtin["microsoftOverride"], false);
         assert_eq!(builtin["microsoftConfigured"], true);
         assert_eq!(builtin["curseforgeConfigured"], false);
+        assert_eq!(builtin["curseforgeBuiltin"], true);
+        assert!(!serde_json::to_string(&builtin).unwrap().contains("$2a$"));
         assert!(builtin
             .as_object()
             .unwrap()
             .values()
             .all(serde_json::Value::is_boolean));
         assert!(!serde_json::to_string(&builtin).unwrap().contains(BUILTIN));
-        let absent = service_status(true, &config, None);
+        let absent = service_status(true, false, &config, None);
         assert_eq!(absent["microsoftBuiltin"], false);
+        assert_eq!(absent["curseforgeBuiltin"], false);
         assert_eq!(absent["microsoftConfigured"], false);
         let custom = Config {
             microsoft_client_id: format!(" {USER} "),
             ..Config::default()
         };
         assert_eq!(effective_client_id(&custom, Some(BUILTIN)), USER);
-        let status = service_status(false, &custom, Some(BUILTIN));
+        let status = service_status(false, false, &custom, Some(BUILTIN));
         assert_eq!(status["microsoftOverride"], true);
         assert!(!serde_json::to_string(&status).unwrap().contains(USER));
     }

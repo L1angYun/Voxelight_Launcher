@@ -11,14 +11,16 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
   const [key, setKey] = useState("");
   const [configured, setConfigured] = useState(false);
   const [builtin, setBuiltin] = useState(false);
+  const [curseforgeBuiltin, setCurseforgeBuiltin] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
-    void command<{ curseforgeConfigured: boolean; microsoftBuiltin?: boolean }>("get_service_status")
+    void command<{ curseforgeConfigured: boolean; curseforgeBuiltin?: boolean; microsoftBuiltin?: boolean }>("get_service_status")
       .then((value) => {
         if (active) {
           setConfigured(value.curseforgeConfigured);
+          setCurseforgeBuiltin(value.curseforgeBuiltin === true);
           setBuiltin(value.microsoftBuiltin === true);
         }
       })
@@ -87,7 +89,9 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
               type="password"
               autoComplete="off"
               value={key}
-              placeholder={configured ? t("settings:service.keyConfiguredPlaceholder") : t("settings:service.keyPlaceholder")}
+              placeholder={configured
+                ? t("settings:service.keyConfiguredPlaceholder")
+                : curseforgeBuiltin ? t("settings:service.curseforgeBuiltinPlaceholder") : t("settings:service.keyPlaceholder")}
               onChange={(event) => setKey(event.target.value)}
             />
             <Button variant="secondary" loading={busy} disabled={!key.trim()} onClick={() => void saveSecret(key)}>{t("settings:service.saveKey")}</Button>

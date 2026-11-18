@@ -337,6 +337,22 @@ describe("global settings", () => {
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ microsoftClientId: "" }), { preserveAppearance: true });
   });
 
+  it("shows the build-time CurseForge key fallback without filling the input", async () => {
+    commandMock.mockImplementationOnce(async () => ({ curseforgeConfigured: false, curseforgeBuiltin: true }));
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="CurseForge API Key"]')!;
+    expect(input.placeholder).toBe("Leave empty to use the built-in key");
+    expect(input.value).toBe("");
+  });
+
+  it("keeps a saved CurseForge override ahead of the build-time fallback", async () => {
+    commandMock.mockImplementationOnce(async () => ({ curseforgeConfigured: true, curseforgeBuiltin: true }));
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="CurseForge API Key"]')!;
+    expect(input.placeholder).toBe("Encrypted key saved; leave blank to keep it");
+    expect(input.value).toBe("");
+  });
+
   it("keeps the existing Client ID label when service status omits the built-in flag", async () => {
     await render();
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Microsoft Client ID"]')!;

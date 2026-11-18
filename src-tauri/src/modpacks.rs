@@ -719,19 +719,12 @@ async fn curse_into(
     if manifest.manifest_type != "minecraftModpack" || manifest.manifest_version != 1 {
         return Err("不支持此 CurseForge 清单格式".into());
     }
-    let key = match key.filter(|k| !k.is_empty()) {
-        Some(value) => Some(value),
-        None => crate::secrets::load_service_secret(&state.data_dir, "curseforge-api-key")?,
-    }
-    .ok_or(
-        "CurseForge 导入需要你自己申请的 API Key，请先在设置中保存。不会使用其它启动器的 Key。",
-    )?;
-    if key.len() > 2048 || key.chars().any(char::is_control) {
-        return Err("CurseForge API Key 格式无效".into());
-    }
+    let key = crate::curseforge_key::effective_cf_key(&state.data_dir, key.as_deref())?
+        .ok_or("CurseForge 导入需要你自己申请的 API Key，请先在设置中保存。不会使用其它启动器的 Key。")?;
     if manifest.files.len() > 20_000 {
         return Err("CurseForge 整合包文件数量超过限制".into());
     }
+    let key = crate::curseforge_key::sensitive_cf_header(&key)?;
     let api = client(false)?;
     let mut deps = BTreeMap::from([("minecraft".into(), manifest.minecraft.version.clone())]);
     let loaders = manifest.minecraft.mod_loaders;
@@ -769,7 +762,7 @@ async fn curse_into(
                 "https://api.curseforge.com/v1/mods/{}/files/{}",
                 item.project_id, item.file_id
             ))
-            .header("x-api-key", &key),
+            .header("x-api-key", key.clone()),
         )
         .await?;
         if file.data.id != item.file_id
@@ -797,7 +790,7 @@ async fn curse_into(
                 "https://api.curseforge.com/v1/mods/{}",
                 item.project_id
             ))
-            .header("x-api-key", &key),
+            .header("x-api-key", key.clone()),
         )
         .await?;
         let folder = match project.data.class_id {
