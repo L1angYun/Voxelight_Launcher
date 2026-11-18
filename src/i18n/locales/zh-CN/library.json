@@ -214,6 +214,17 @@
     "failedPack": "无法加载此整合包的版本。",
     "emptyPack": "此整合包暂无可用版本。"
   },
+  "diagnosticReport": {
+    "title": "诊断报告",
+    "time": "时间",
+    "version": "游戏版本",
+    "instance": "实例",
+    "noInstance": "无实例",
+    "conclusion": "结论",
+    "reason": "原因",
+    "suggestions": "建议",
+    "excerpt": "日志节选（已过滤常见凭证字段）"
+  },
   "diagnosis": {
     "memory": {
       "title": "内存不足",

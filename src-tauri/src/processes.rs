@@ -2,7 +2,7 @@ use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     errors::{expected, AppResult},
     game_process::{StopHandle, StopResult, StopStatus},
-    models::LogEvent,
+    models::{Config, LogEvent},
     storage::{safe_join, LauncherState},
 };
 use serde::Serialize;
@@ -249,6 +249,14 @@ pub fn unregister(app: &AppHandle, state: &LauncherState, game_id: &str, code: O
 pub fn list_running_games(registry: State<'_, Arc<GameRegistry>>) -> Vec<RunningGame> {
     registry.list()
 }
+fn interface_is_zh(config: &Config) -> bool {
+    match config.language.as_str() {
+        "zh-CN" => true,
+        "en-US" => false,
+        _ => crate::platform::get_system_appearance().locale == "zh-CN",
+    }
+}
+
 #[tauri::command]
 pub async fn stop_game(
     webview: tauri::WebviewWindow,
@@ -264,11 +272,7 @@ pub async fn stop_game(
         .map_err(|_| "正在处理此游戏的结束请求")?;
     let status = if force.unwrap_or(false) {
         let settings = state.snapshot()?.config;
-        let zh = match settings.language.as_str() {
-            "zh-CN" => true,
-            "en-US" => false,
-            _ => crate::platform::get_system_appearance().locale == "zh-CN",
-        };
+        let zh = interface_is_zh(&settings);
         confirm_and_force(&owner, || confirm_force_stop(&webview, zh)).await?
     } else {
         owner.request(false).await?
@@ -342,62 +346,15 @@ enum DiagnosisKind {
 }
 
 impl DiagnosisKind {
-    // Retain the existing plain-text report format. The UI translates the stable kind itself.
-    fn report_text(self) -> (&'static str, &'static str, &'static [&'static str]) {
+    fn locale_key(self) -> &'static str {
         match self {
-            Self::Memory => (
-                "内存不足",
-                "JVM 无法分配需要的内存",
-                &[
-                    "调整实例最大内存并关闭占用较高的程序",
-                    "使用 64 位 Java，避免分配超过物理内存的额度",
-                ],
-            ),
-            Self::Java => (
-                "Java 版本不匹配",
-                "当前 Java 无法读取游戏或模组的字节码",
-                &[
-                    "使用自动检测选择适合此游戏版本的 Java",
-                    "检查整合包和模组要求的 Java 主版本",
-                ],
-            ),
-            Self::Mods => (
-                "模组依赖或版本冲突",
-                "加载器报告缺少依赖或不兼容模组",
-                &[
-                    "在本地资源列表检查模组与 Minecraft、加载器的版本",
-                    "安装必需前置，或先禁用最近添加的模组再重试",
-                ],
-            ),
-            Self::Graphics => (
-                "图形初始化失败",
-                "游戏无法创建所需的图形上下文",
-                &[
-                    "更新显卡驱动并检查 OpenGL 支持",
-                    "笔记本可尝试为 Java 选择独立显卡",
-                ],
-            ),
-            Self::Directory => (
-                "游戏目录访问失败",
-                "文件权限或占用导致访问失败",
-                &[
-                    "选择当前用户可写的游戏目录",
-                    "关闭使用同一实例目录的其它游戏进程",
-                ],
-            ),
-            Self::Unknown => (
-                "需要进一步检查日志",
-                "暂未匹配到明确的常见故障，保留原始错误供排查",
-                &[
-                    "查看日志尾部的 Caused by 和 ERROR",
-                    "可先备份实例，再禁用最近添加的资源重试",
-                ],
-            ),
-            Self::Empty => (
-                "还没有日志",
-                "此游戏环境尚未发现日志或崩溃报告",
-                &["启动一次游戏后，可在这里查看检查结果"],
-            ),
+            Self::Memory => "memory",
+            Self::Java => "java",
+            Self::Mods => "mods",
+            Self::Graphics => "graphics",
+            Self::Directory => "directory",
+            Self::Unknown => "unknown",
+            Self::Empty => "empty",
         }
     }
 }
@@ -527,26 +484,70 @@ pub fn export_diagnostics(
     let diagnosis =
         diagnose_instance_inner(state.inner().as_ref(), version_id.clone(), instance_id.clone())?;
     let destination = Path::new(&output_path);
-    let (title, reason, suggestions) = diagnosis.kind.report_text();
-    let report = format!(
-        concat!(
-            "Voxelight Launcher ",
-            env!("CARGO_PKG_VERSION"),
-            " 诊断报告\n",
-            "时间：{}\n游戏版本：{}\n实例：{:?}\n结论：{}\n原因：{}\n建议：\n{}\n\n",
-            "日志节选（已过滤常见凭证字段）：\n{}\n"
-        ),
-        chrono::Utc::now().to_rfc3339(),
-        version_id,
-        instance_id,
-        title,
-        reason,
-        suggestions.join("\n"),
-        diagnosis.excerpt
+    let report = render_diagnostic_report(
+        diagnosis.kind,
+        interface_is_zh(&state.snapshot()?.config),
+        &version_id,
+        instance_id.as_deref(),
+        &diagnosis.excerpt,
+        &chrono::Utc::now().to_rfc3339(),
     );
     write_diagnostics_file(destination, report.as_bytes())?;
     Ok(output_path)
 }
+fn diagnostic_locale(zh: bool) -> &'static serde_json::Value {
+    static REPORT_LOCALES: std::sync::LazyLock<[serde_json::Value; 2]> = std::sync::LazyLock::new(|| {
+        [
+            include_str!("../../src/i18n/locales/zh-CN/library.json"),
+            include_str!("../../src/i18n/locales/en-US/library.json"),
+        ].map(|raw| serde_json::from_str(raw).expect("bundled library locale is valid JSON"))
+    });
+    &REPORT_LOCALES[usize::from(!zh)]
+}
+
+fn diagnostic_translation(zh: bool, keys: &[&str]) -> Option<&'static str> {
+    fn lookup(zh: bool, keys: &[&str]) -> Option<&'static str> {
+        keys.iter().try_fold(diagnostic_locale(zh), |value, key| value.get(key))?.as_str()
+    }
+    lookup(zh, keys).or_else(|| lookup(true, keys))
+}
+
+fn render_diagnostic_report(
+    kind: DiagnosisKind,
+    zh: bool,
+    version_id: &str,
+    instance_id: Option<&str>,
+    excerpt: &str,
+    now: &str,
+) -> String {
+    let label = |key| diagnostic_translation(zh, &["diagnosticReport", key])
+        .expect("required diagnostic report label");
+    let diagnosis = |key| diagnostic_translation(zh, &["diagnosis", kind.locale_key(), key]);
+    let separator = if zh { "：" } else { ": " };
+    let title = diagnosis("title").expect("required diagnosis title");
+    let reason = diagnosis("reason").expect("required diagnosis reason");
+    let mut suggestions = diagnosis("firstSuggestion").expect("required diagnosis suggestion").to_owned();
+    if let Some(second) = diagnosis("secondSuggestion") {
+        suggestions.push('\n');
+        suggestions.push_str(second);
+    }
+    let instance = instance_id.unwrap_or_else(|| label("noInstance"));
+    format!(
+        "Voxelight Launcher {} {}\n{}{separator}{now}\n{}{separator}{version_id}\n{}{separator}{instance}\n{}{separator}{title}\n{}{separator}{reason}\n{}{}\n{suggestions}\n\n{}{}\n{excerpt}\n",
+        env!("CARGO_PKG_VERSION"),
+        label("title"),
+        label("time"),
+        label("version"),
+        label("instance"),
+        label("conclusion"),
+        label("reason"),
+        label("suggestions"),
+        separator.trim_end(),
+        label("excerpt"),
+        separator.trim_end(),
+    )
+}
+
 fn write_diagnostics_file(destination: &Path, report: &[u8]) -> Result<(), String> {
     if !destination.is_absolute()
         || !destination.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
@@ -562,6 +563,73 @@ fn write_diagnostics_file(destination: &Path, report: &[u8]) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
+    const DIAGNOSIS_REPORTS: [(super::DiagnosisKind, &str); 7] = [
+        (super::DiagnosisKind::Memory, "memory"),
+        (super::DiagnosisKind::Java, "java"),
+        (super::DiagnosisKind::Mods, "mods"),
+        (super::DiagnosisKind::Graphics, "graphics"),
+        (super::DiagnosisKind::Directory, "directory"),
+        (super::DiagnosisKind::Unknown, "unknown"),
+        (super::DiagnosisKind::Empty, "empty"),
+    ];
+
+    #[test]
+    fn diagnostic_report_preserves_legacy_chinese_wording_for_every_kind() {
+        let snapshots: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/diagnostic-report-zh-legacy.json"
+        )).unwrap();
+        for (kind, key) in DIAGNOSIS_REPORTS {
+            let expected = snapshots[key].as_str().unwrap()
+                .replace("{PACKAGE_VERSION}", env!("CARGO_PKG_VERSION"));
+            let report = super::render_diagnostic_report(
+                kind, true, "fixture-version", Some("fixture-instance"), "fixture-excerpt", "fixture-time",
+            );
+            assert_eq!(report.replace("实例：fixture-instance\n", "实例：Some(\"fixture-instance\")\n"), expected, "{key}");
+        }
+    }
+
+    #[test]
+    fn diagnostic_report_locale_keys_cover_every_kind_without_relying_on_fallback() {
+        for zh in [true, false] {
+            let locale = super::diagnostic_locale(zh);
+            let translated = |value: &serde_json::Value| value.as_str().is_some_and(|s| !s.trim().is_empty());
+            for key in ["title", "time", "version", "instance", "noInstance", "conclusion",
+                        "reason", "suggestions", "excerpt"] {
+                assert!(translated(&locale["diagnosticReport"][key]), "{zh}/{key}");
+            }
+            for (kind, key) in DIAGNOSIS_REPORTS {
+                assert_eq!(kind.locale_key(), key);
+                for field in ["title", "reason", "firstSuggestion"] {
+                    assert!(translated(&locale["diagnosis"][key][field]), "{zh}/{key}/{field}");
+                }
+                assert_eq!(translated(&locale["diagnosis"][key]["secondSuggestion"]), key != "empty");
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_report_english_includes_plain_instance_and_keeps_excerpt_redacted() {
+        let excerpt = super::redact("access_token=fixture-credential");
+        let report = super::render_diagnostic_report(
+            super::DiagnosisKind::Memory, false, "1.21.1", Some("fixture-instance"), &excerpt, "fixture-time",
+        );
+        assert!(report.contains("Diagnostic report"), "{report}");
+        assert!(report.contains("Time: fixture-time\nGame version: 1.21.1\nInstance: fixture-instance\n"));
+        assert!(report.contains("Conclusion: Out of memory\n"));
+        assert!(report.contains("access_token=[已隐藏]"));
+        assert!(!report.contains("fixture-credential"));
+    }
+
+    #[test]
+    fn diagnostic_report_missing_instance_has_a_localized_label() {
+        for (zh, label) in [(true, "实例：无实例"), (false, "Instance: No instance")] {
+            let report = super::render_diagnostic_report(
+                super::DiagnosisKind::Empty, zh, "fixture-version", None, "", "fixture-time",
+            );
+            assert!(report.lines().any(|line| line == label), "{report}");
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn r4_configured_junction_resolves_before_validation_of_instance_children() {

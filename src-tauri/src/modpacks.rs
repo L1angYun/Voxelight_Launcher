@@ -1635,6 +1635,47 @@ mod tests {
     }
 
     #[test]
+    fn a4_same_root_blocks_shared_export_before_any_archive_is_created() {
+        let fixture = crate::storage::SameRootFixture::new();
+        fs::write(
+            fixture.game.join(".launcher-pack.json"),
+            r#"{"dependencies":{"minecraft":"1.21.1"}}"#,
+        )
+        .unwrap();
+        let output_parent = fixture.root().join("export");
+        let output = output_parent.join("shared.mrpack");
+        let options = SharedExportOptions::default();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let approved = build_shared_export_plan(
+                    &fixture.state,
+                    &fixture.instance,
+                    &fixture.game,
+                    options,
+                )
+                .await
+                .unwrap();
+                fixture.mark_running();
+                let error = export_confirmed_shared_pack(
+                    &fixture.state,
+                    &fixture.instance,
+                    &output,
+                    None,
+                    options,
+                    &approved.preview.fingerprint,
+                )
+                .await
+                .err()
+                .expect("the same game directory must block export");
+                assert_eq!(crate::errors::expected(error).code, "instance.running");
+                assert!(!output_parent.exists(), "no final or temporary archive");
+            });
+    }
+
+    #[test]
     fn h11_shared_export_plan_lists_actual_default_and_opt_in_files() {
         let fixture = instances::StagingDirectory::create(test_root()).unwrap();
         let (state, instance) = shared_export_fixture(fixture.path());

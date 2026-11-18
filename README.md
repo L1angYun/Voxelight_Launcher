@@ -80,6 +80,21 @@ Pop-Location
 npm run license:check
 ```
 
+Use `npm run check:msrv` to check the Rust version declared in `src-tauri/Cargo.toml`
+against all locked targets. The check uses a separate `src-tauri/target/msrv` directory.
+If the toolchain is missing, install it with `rustup toolchain install 1.90 --profile minimal`.
+For release verification or CI, run `npm run check:msrv -- --strict` so a missing toolchain fails.
+
+Run `npm run audit:deps` when preparing a release. For one dependency graph, use
+`npm run audit:deps -- --only=npm` or `npm run audit:deps -- --only=cargo`.
+These checks may access the network and are separate from `npm test`.
+The Rust audit skips if neither cargo-audit nor OSV-Scanner is installed.
+The wrapper fails on findings reported by either scanner unless an exact advisory ID and
+package pair is covered by an optional `scripts/advisory-allowlist.json` entry with
+`id`, `package`, `reason`, and `expires` (YYYY-MM-DD, inclusive in UTC).
+Expired entries fail the check. npm advisories without a GitHub advisory ID are listed as
+`npm:<source>`; Cargo yanks without an advisory are listed as `RUSTSEC-YANKED`.
+
 The license check reads the locked npm/Cargo dependency graph and compares it with the collected notices. After intentionally changing dependencies, run `npm run license:update` to refresh the inventory. Missing npm notices use the integrity-checked registry metadata/package and verified upstream source; missing Cargo notices use the source commit recorded by Cargo. Packages without a standalone license file retain their actual metadata and the official SPDX text, with that distinction recorded in `licenses/dependency-inventory.json`; no copyright lines are invented.
 
 `npm run source:package` creates and verifies the GPL source archive under `releases/<version>/`. It excludes dependencies, build outputs, user data, secrets, proprietary textures and restricted UI sources.

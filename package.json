@@ -11,6 +11,8 @@
     "desktop:dev": "node scripts/tauri.mjs dev",
     "desktop:build": "node scripts/tauri.mjs build",
     "check": "node scripts/check-i18n.mjs && node scripts/check-design-tokens.mjs && node scripts/check-public-secrets.mjs",
+    "check:msrv": "node scripts/check-toolchain.mjs --msrv",
+    "audit:deps": "node scripts/check-toolchain.mjs --audit",
     "test": "npm run check && vitest run && npm run test:node",
     "test:node": "node --test tests/unit/*.test.mjs",
     "test:e2e": "playwright test",

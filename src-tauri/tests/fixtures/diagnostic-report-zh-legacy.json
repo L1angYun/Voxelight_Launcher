@@ -1,0 +1,9 @@
+{
+  "memory": "Voxelight Launcher {PACKAGE_VERSION} 诊断报告\n时间：fixture-time\n游戏版本：fixture-version\n实例：Some(\"fixture-instance\")\n结论：内存不足\n原因：JVM 无法分配需要的内存\n建议：\n调整实例最大内存并关闭占用较高的程序\n使用 64 位 Java，避免分配超过物理内存的额度\n\n日志节选（已过滤常见凭证字段）：\nfixture-excerpt\n",
+  "java": "Voxelight Launcher {PACKAGE_VERSION} 诊断报告\n时间：fixture-time\n游戏版本：fixture-version\n实例：Some(\"fixture-instance\")\n结论：Java 版本不匹配\n原因：当前 Java 无法读取游戏或模组的字节码\n建议：\n使用自动检测选择适合此游戏版本的 Java\n检查整合包和模组要求的 Java 主版本\n\n日志节选（已过滤常见凭证字段）：\nfixture-excerpt\n",
+  "mods": "Voxelight Launcher {PACKAGE_VERSION} 诊断报告\n时间：fixture-time\n游戏版本：fixture-version\n实例：Some(\"fixture-instance\")\n结论：模组依赖或版本冲突\n原因：加载器报告缺少依赖或不兼容模组\n建议：\n在本地资源列表检查模组与 Minecraft、加载器的版本\n安装必需前置，或先禁用最近添加的模组再重试\n\n日志节选（已过滤常见凭证字段）：\nfixture-excerpt\n",
+  "graphics": "Voxelight Launcher {PACKAGE_VERSION} 诊断报告\n时间：fixture-time\n游戏版本：fixture-version\n实例：Some(\"fixture-instance\")\n结论：图形初始化失败\n原因：游戏无法创建所需的图形上下文\n建议：\n更新显卡驱动并检查 OpenGL 支持\n笔记本可尝试为 Java 选择独立显卡\n\n日志节选（已过滤常见凭证字段）：\nfixture-excerpt\n",
+  "directory": "Voxelight Launcher {PACKAGE_VERSION} 诊断报告\n时间：fixture-time\n游戏版本：fixture-version\n实例：Some(\"fixture-instance\")\n结论：游戏目录访问失败\n原因：文件权限或占用导致访问失败\n建议：\n选择当前用户可写的游戏目录\n关闭使用同一实例目录的其它游戏进程\n\n日志节选（已过滤常见凭证字段）：\nfixture-excerpt\n",
+  "unknown": "Voxelight Launcher {PACKAGE_VERSION} 诊断报告\n时间：fixture-time\n游戏版本：fixture-version\n实例：Some(\"fixture-instance\")\n结论：需要进一步检查日志\n原因：暂未匹配到明确的常见故障，保留原始错误供排查\n建议：\n查看日志尾部的 Caused by 和 ERROR\n可先备份实例，再禁用最近添加的资源重试\n\n日志节选（已过滤常见凭证字段）：\nfixture-excerpt\n",
+  "empty": "Voxelight Launcher {PACKAGE_VERSION} 诊断报告\n时间：fixture-time\n游戏版本：fixture-version\n实例：Some(\"fixture-instance\")\n结论：还没有日志\n原因：此游戏环境尚未发现日志或崩溃报告\n建议：\n启动一次游戏后，可在这里查看检查结果\n\n日志节选（已过滤常见凭证字段）：\nfixture-excerpt\n"
+}

@@ -147,6 +147,8 @@ for (const reference of usage.exact) if (!known.has(reference)) errors.push(`Mis
 for (const key of translationKeys) {
   // Backend codes are delivered at runtime and intentionally form a whitelist.
   if (key.includes(".errors.")) continue;
+  // processes.rs reads these labels from library.json. Rust tests enforce required keys in each locale.
+  if (key.startsWith("library.diagnosticReport.")) continue;
   if (!usage.exact.has(usage.canonical(key)) && !usage.patterns.some(pattern => pattern.test(key))) errors.push(`Unused translation key: ${key}`);
 }
 

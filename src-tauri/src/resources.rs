@@ -1611,6 +1611,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a4_same_root_blocks_reserved_mod_install_before_writing_in_the_target() {
+        let fixture = crate::storage::SameRootFixture::new();
+        let instance = &fixture.instance;
+        let directory =
+            resource_directory(&fixture.state.snapshot().unwrap(), &instance.version_id, Some(&instance.id), ResourceKind::Mod)
+                .unwrap();
+        assert!(!directory.exists());
+        require_resource_stopped(&fixture.state, &instance.version_id, Some(&instance.id)).unwrap();
+        fixture.mark_running();
+        let request = ResourceRequest {
+            source: ResourceSource::Modrinth,
+            project_id: "fixture-project".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: instance.version_id.clone(),
+                instance_id: Some(instance.id.clone()),
+                file_id: None,
+            },
+        };
+        let task_id = fixture.state.control.reserve_resource(request.clone()).unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let result = with_reserved_resource_task(&fixture.state, &task_id, request, async {
+                    require_resource_stopped(&fixture.state, &instance.version_id, Some(&instance.id))?;
+                    // A fixture side effect represents the download/writer after preflight.
+                    fs::create_dir_all(&directory).unwrap();
+                    fs::write(directory.join("fixture.jar"), b"test resource").unwrap();
+                    Ok(())
+                })
+                .await;
+                assert_eq!(result.unwrap_err().code, "instance.running");
+            });
+        assert!(!directory.exists(), "no installer artifact or staging directory");
+    }
+
+    #[test]
+    fn a4_resource_writers_take_the_operation_lock_and_check_running_before_the_writer() {
+        let modrinth = include_str!("resources.rs");
+        let curseforge = include_str!("curseforge.rs");
+        // Extend this table in C6 if installing an exact version adds a separate writer.
+        for (source, command, lock, writer) in [
+            (modrinth, "install_resource", "with_reserved_resource_task(", "resource_transactions::install("),
+            (modrinth, "update_resource", "state.operation.lock().await", "resource_transactions::update_one("),
+            (modrinth, "rollback_resource_update", "state.operation.lock().await", "resource_transactions::rollback("),
+            (curseforge, "install_curseforge_resource", "with_reserved_resource_task(", "let key = service_key("),
+        ] {
+            let (_, body) = source.split_once(&format!("pub async fn {command}(")).unwrap();
+            let (body, _) = body.split_once("\n}").unwrap();
+            let lock = body.find(lock).expect(command);
+            let guard = body.find("require_resource_stopped(").expect(command);
+            let write_or_network = body.find(writer).expect(command);
+            assert!(lock < guard && guard < write_or_network, "{command}");
+        }
+        let (_, wrapper) = modrinth.split_once("pub(crate) async fn with_reserved_resource_task<").unwrap();
+        let (wrapper, _) = wrapper.split_once("\n}").unwrap();
+        assert!(
+            wrapper.find("wait_for_turn(&state.operation, id).await").unwrap()
+                < wrapper.find("task.await").unwrap()
+        );
+    }
+
+    #[test]
     fn discover_cancel_queued_own_task_without_touching_another_same_project() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let (root, state) = resource_fixture();

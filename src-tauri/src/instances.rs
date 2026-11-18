@@ -1774,6 +1774,46 @@ mod backup_recovery_tests {
         });
     }
 
+    #[test]
+    fn a4_same_root_blocks_instance_backup_personal_export_and_clone() {
+        let fixture = crate::storage::SameRootFixture::new();
+        let original = fixture.game.join("user-option.txt");
+        fs::write(&original, b"user bytes").unwrap();
+        fixture.mark_running();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::task::spawn_blocking(move || {
+                    let output_parent = fixture.root().join("export");
+                    let output = output_parent.join("personal.zip");
+                    let export = export_zip_inner(
+                        &fixture.state,
+                        &fixture.instance.id,
+                        output.to_str().unwrap(),
+                    );
+                    let backup = backup_inner(&fixture.state, &fixture.instance);
+                    let clone = clone_inner(&fixture.state, &fixture.instance.id, "New clone");
+                    for (name, error) in [
+                        ("personal export", export.err()),
+                        ("instance backup", backup.err()),
+                        ("clone", clone.err()),
+                    ] {
+                        let error = error.unwrap_or_else(|| panic!("{name} accepted a running root"));
+                        assert_eq!(crate::errors::expected(error).code, "instance.running", "{name}");
+                    }
+                    assert!(!output_parent.exists());
+                    assert!(!fixture.state.data_dir.join("instance-backups").exists());
+                    let siblings = fs::read_dir(fixture.game.parent().unwrap()).unwrap().count();
+                    assert_eq!(siblings, 1, "no clone directory or temporary copy");
+                    assert_eq!(fs::read(original).unwrap(), b"user bytes");
+                })
+                .await
+                .unwrap()
+            });
+    }
+
     #[cfg(windows)]
     #[test]
     fn r4_restore_refuses_the_launcher_profile_and_its_subdirectory() {

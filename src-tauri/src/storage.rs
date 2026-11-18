@@ -782,6 +782,66 @@ fn trusted_client_redirect(url: &str, original: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+pub(crate) struct SameRootFixture {
+    pub(crate) state: LauncherState,
+    pub(crate) instance: crate::models::Instance,
+    pub(crate) game: PathBuf,
+    // The state (and its profile lock) drops before this owned test directory.
+    root: crate::instances::StagingDirectory,
+}
+
+#[cfg(test)]
+impl SameRootFixture {
+    pub(crate) fn new() -> Self {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/same-root-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let profile = root.path().join("profile");
+        let game_root = root.path().join("game");
+        let game = game_root.join("instances/SameRoot");
+        fs::create_dir_all(&game).unwrap();
+        fs::create_dir(&profile).unwrap();
+        let instance = crate::models::Instance {
+            id: "same-root-instance".into(),
+            name: "Same-root fixture instance".into(),
+            version_id: "1.21.1".into(),
+            game_directory: game.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let state = LauncherState::test_fixture(
+            profile,
+            Persisted {
+                config: crate::models::Config {
+                    game_directory: game_root.to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                instances: vec![instance.clone()],
+                ..Default::default()
+            },
+            test_client(),
+        );
+        Self { state, instance, game, root }
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        self.root.path()
+    }
+
+    pub(crate) fn mark_running(&self) {
+        #[cfg(windows)]
+        let same_directory = self.game.with_file_name("sameroot");
+        #[cfg(not(windows))]
+        let same_directory = self.game.join(".");
+        self.state
+            .games
+            .fixture_running_directory(&same_directory, Some("unrelated-running-instance"));
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn test_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()

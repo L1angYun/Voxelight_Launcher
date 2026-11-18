@@ -214,6 +214,17 @@
     "failedPack": "Could not load this modpack’s versions.",
     "emptyPack": "No versions are available for this modpack."
   },
+  "diagnosticReport": {
+    "title": "Diagnostic report",
+    "time": "Time",
+    "version": "Game version",
+    "instance": "Instance",
+    "noInstance": "No instance",
+    "conclusion": "Conclusion",
+    "reason": "Reason",
+    "suggestions": "Suggestions",
+    "excerpt": "Log excerpt (common credentials redacted)"
+  },
   "diagnosis": {
     "memory": {
       "title": "Out of memory",

@@ -82,6 +82,14 @@ fn game_root(
     instances::checked_absolute(&minecraft::game_directory(&data.config, version, instance)?)
 }
 
+fn stopped_game_root(
+    state: &LauncherState,
+    root: &Path,
+    instance_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    state.games.require_directory_stopped(root, instance_id, false)
+}
+
 #[derive(Deserialize)]
 struct LevelRoot {
     #[serde(rename = "Data")]
@@ -596,7 +604,7 @@ pub async fn backup_world(
     let output_path = grants.consume(PathUse::WorldWrite, &output_path, &window)?.to_string_lossy().into_owned();
     let _guard = state.operation.lock().await;
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
-    let root = state.games.require_directory_stopped(&root, instance_id.as_deref(), false)?;
+    let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
     let task = state
         .control
         .begin("world-backup", &world_folder, "备份世界")?;
@@ -785,7 +793,7 @@ pub async fn import_world(
     {
         return Err("请选择 Java 世界 .zip 文件".into());
     }
-    let root = state.games.require_directory_stopped(&root, instance_id.as_deref(), false)?;
+    let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
     let task = state.control.begin("world-import", &version_id, "导入世界")?;
     let shared = state.inner().clone();
     let result =
@@ -883,7 +891,7 @@ pub async fn import_local_resources(
     }
     let _guard = state.operation.lock().await;
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
-    let root = state.games.require_directory_stopped(&root, instance_id.as_deref(), false)?;
+    let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
     let directory = safe_join(&root, folder)?;
     crate::resources::resource_transactions::require_no_pending(&directory)?;
     let task = state
@@ -979,6 +987,61 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         root
     }
+    #[test]
+    fn a4_world_writers_check_running_before_writing_and_after_taking_the_lock() {
+        let source = include_str!("content.rs");
+        for command in ["backup_world", "import_world", "import_local_resources"] {
+            let (_, body) = source.split_once(&format!("pub async fn {command}(")).unwrap();
+            let (body, _) = body.split_once("\n}").unwrap();
+            let lock = body.find("state.operation.lock().await").expect(command);
+            let resolve = body.find("game_root(&state, &version_id").expect(command);
+            let guard = body.find("stopped_game_root(&state, &root").expect(command);
+            let spawn = body.find("tokio::task::spawn_blocking").expect(command);
+            assert!(lock < resolve && resolve < guard && guard < spawn, "{command}");
+            if command == "import_world" {
+                let validate = body.find("instances::checked_absolute(Path::new(&path))").unwrap();
+                assert!(resolve < validate && validate < guard, "ZIP validation precedes detection");
+            }
+        }
+    }
+
+    #[test]
+    fn a4_same_root_blocks_world_backup_before_creating_the_output_directory() {
+        let fixture = crate::storage::SameRootFixture::new();
+        let world = fixture.game.join("saves/Existing");
+        fs::create_dir_all(&world).unwrap();
+        fs::write(world.join("level.dat"), b"owned world bytes").unwrap();
+        let instance_id = Some(fixture.instance.id.as_str());
+        let root = game_root(&fixture.state, &fixture.instance.version_id, instance_id).unwrap();
+        assert_eq!(
+            stopped_game_root(&fixture.state, &root, instance_id).unwrap(),
+            fixture.game.canonicalize().unwrap()
+        );
+        fixture.mark_running();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::task::spawn_blocking(move || {
+                    let output_parent = fixture.root().join("export");
+                    let output = output_parent.join("world.zip");
+                    let result = stopped_game_root(
+                        &fixture.state,
+                        &root,
+                        Some(&fixture.instance.id),
+                    )
+                    .and_then(|root| backup_world_inner(&fixture.state, &root, "Existing", &output));
+                    let error = result.err().expect("same-root world backup must stop before writing");
+                    assert_eq!(crate::errors::expected(error).code, "instance.running");
+                    assert!(!output_parent.exists());
+                    assert_eq!(fs::read(world.join("level.dat")).unwrap(), b"owned world bytes");
+                })
+                .await
+                .unwrap()
+            });
+    }
+
     #[test]
     fn gzip_world_metadata_is_read_without_changing_original() {
         let root = root();
