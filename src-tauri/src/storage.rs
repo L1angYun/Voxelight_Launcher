@@ -1213,15 +1213,22 @@ mod tests {
         let primary = root.path().join("primary");
         let fallback = root.path().join("fallback");
         let file = primary.join(STATE_FILE);
-        let state = LauncherState::load_with_fallback(Ok(primary.clone()), || Ok(fallback.clone())).unwrap();
+        let state = LauncherState::load_with_fallback(Ok(primary.clone()), || Ok(fallback.clone()))
+            .unwrap();
         assert_eq!(state.data_dir, primary);
         assert!(state.storage_status().recovery.is_none());
         assert!(!fallback.exists());
-        assert_eq!(fs::read(&file).unwrap(), with_bom, "loading should not rewrite a BOM");
-        state.update(|data| {
-            data.config.theme = "dark".into();
-            Ok(())
-        }).unwrap();
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            with_bom,
+            "loading should not rewrite a BOM"
+        );
+        state
+            .update(|data| {
+                data.config.theme = "dark".into();
+                Ok(())
+            })
+            .unwrap();
         let bytes = fs::read(&file).unwrap();
         assert_eq!(bytes[0], b'{');
         let saved: Value = serde_json::from_slice(&bytes).unwrap();
@@ -1236,10 +1243,12 @@ mod tests {
         let file = primary.join(STATE_FILE);
         let state = LauncherState::load_from(primary).unwrap();
         fs::write(&file, &body).unwrap();
-        let error = state.update(|data| {
-            data.config.theme = "dark".into();
-            Ok(())
-        }).unwrap_err();
+        let error = state
+            .update(|data| {
+                data.config.theme = "dark".into();
+                Ok(())
+            })
+            .unwrap_err();
         assert_eq!(error, crate::errors::STORAGE_STATE_CHANGED);
         assert_eq!(fs::read(&file).unwrap(), body);
     }
@@ -1252,10 +1261,16 @@ mod tests {
         let bom = b"\xEF\xBB\xBF";
         for prefix in [b"\xEF\xBB\xBF\xEF\xBB\xBF".as_slice(), b" \xEF\xBB\xBF"] {
             fs::write(&file, [prefix, &body].concat()).unwrap();
-            assert!(matches!(state_contents(&primary), Err(ProfileLoadError::Corrupt(_))));
+            assert!(matches!(
+                state_contents(&primary),
+                Err(ProfileLoadError::Corrupt(_))
+            ));
         }
         fs::write(&file, [bom.as_slice(), b"{"].concat()).unwrap();
-        assert!(matches!(state_contents(&primary), Err(ProfileLoadError::Corrupt(_))));
+        assert!(matches!(
+            state_contents(&primary),
+            Err(ProfileLoadError::Corrupt(_))
+        ));
     }
 
     #[test]

@@ -114,14 +114,45 @@ pub(super) fn mark_child(run: &Path, child: &tokio::process::Child, pid: u32) ->
 }
 
 fn run_name(path: &Path) -> bool {
+    named_uuid(path, "run-")
+}
+
+fn named_uuid(path: &Path, prefix: &str) -> bool {
     let Some(suffix) = path
         .file_name()
         .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("run-"))
+        .and_then(|name| name.strip_prefix(prefix))
     else {
         return false;
     };
     Uuid::parse_str(suffix).is_ok_and(|id| id.hyphenated().to_string() == suffix)
+}
+
+fn quarantine_name(path: &Path) -> bool {
+    named_uuid(path, ".stale-")
+}
+
+fn root_candidates(mut entries: impl Iterator<Item = PathBuf>) -> impl Iterator<Item = PathBuf> {
+    let (mut runs, mut quarantines) = (0, 0);
+    std::iter::from_fn(move || {
+        if runs == MAX_RUN_ENTRIES_PER_ROOT && quarantines == MAX_RUN_ENTRIES_PER_ROOT {
+            return None;
+        }
+        entries.find(|path| {
+            let count = if run_name(path) {
+                &mut runs
+            } else if quarantine_name(path) {
+                &mut quarantines
+            } else {
+                return false;
+            };
+            if *count == MAX_RUN_ENTRIES_PER_ROOT {
+                return false;
+            }
+            *count += 1;
+            true
+        })
+    })
 }
 
 fn sweep_root(game: &Path, probe: impl Fn(Owner) -> Liveness) {
@@ -132,19 +163,55 @@ fn sweep_root(game: &Path, probe: impl Fn(Owner) -> Liveness) {
     let Ok(entries) = fs::read_dir(&root) else {
         return;
     };
-    for entry in entries.take(MAX_RUN_ENTRIES_PER_ROOT).flatten() {
-        let run = entry.path();
-        if !run_name(&run) || !checked_directory(&run) {
+    for candidate in root_candidates(entries.flatten().map(|entry| entry.path())) {
+        if !checked_directory(&candidate) {
             continue;
         }
-        let Some(owner) = read_owner(&run) else {
+        if quarantine_name(&candidate) {
+            retry_retired_run(&candidate, &probe);
+            continue;
+        }
+        let Some(owner) = read_owner(&candidate) else {
             // In particular, a different profile may be between spawn and
             // recording ownership. Never infer ownership from the name or age.
             continue;
         };
         if probe(owner) == Liveness::Stale {
-            retire_run(&root, &run, owner);
+            retire_run(&root, &candidate, owner);
         }
+    }
+}
+
+fn sole_captured_run(quarantine: &Path) -> Option<PathBuf> {
+    if !checked_directory(quarantine) {
+        return None;
+    }
+    let mut entries = fs::read_dir(quarantine).ok()?;
+    let run = entries.next()?.ok()?.path();
+    (entries.next().is_none() && run_name(&run) && checked_directory(&run)).then_some(run)
+}
+
+fn retry_retired_run(quarantine: &Path, probe: &impl Fn(Owner) -> Liveness) {
+    let Some(run) = sole_captured_run(quarantine) else {
+        return;
+    };
+    let Some(owner) = read_owner(&run) else {
+        return;
+    };
+    if probe(owner) == Liveness::Stale
+        && sole_captured_run(quarantine).as_deref() == Some(run.as_path())
+        && read_owner(&run) == Some(owner)
+    {
+        remove_captured_run(&run);
+        let _ = fs::remove_dir(quarantine);
+    }
+}
+
+fn remove_captured_run(run: &Path) {
+    // std on Windows does not follow links during recursive removal. Keep
+    // the original deletion boundary: only the captured child, not its parent.
+    if fs::remove_dir_all(run).is_err() {
+        eprintln!("[voxelight/scratch] unable to remove retired launch scratch");
     }
 }
 
@@ -171,11 +238,7 @@ fn retire_run(root: &Path, run: &Path, owner: Owner) {
         return;
     }
     if checked_directory(&captured) && read_owner(&captured) == Some(owner) {
-        // std on Windows does not traverse links in remove_dir_all. Never use
-        // recursive removal on the original name or the quarantine parent.
-        if fs::remove_dir_all(&captured).is_err() {
-            eprintln!("[voxelight/scratch] unable to remove retired launch scratch");
-        }
+        remove_captured_run(&captured);
     } else if checked_directory(root) && checked_directory(&quarantine) {
         // A changed candidate is not ours. Preserve it even if restoring the
         // original name fails (which can happen if another process reused it).
@@ -353,14 +416,16 @@ mod tests {
         let fixture = Fixture::new();
         let game = &fixture.0;
         let markerless = run(game);
+        let mut oversized = br#"{"pid":3,"created":42}"#.to_vec();
+        oversized.resize(257, b' ');
         let invalid = [
             br#"{"pid":0,"created":1}"#.as_slice(),
-            br#"{"pid":1,"created":0}"#,
-            br#"{"pid":1,"created":null}"#,
-            br#"{"pid":1}"#,
-            br#"{"pid":1,"created":1,"unexpected":true}"#,
-            br#"{"pid":1"#,
-            &[b' '; 257],
+            br#"{"pid":3,"created":0}"#,
+            br#"{"pid":3,"created":null}"#,
+            br#"{"pid":3}"#,
+            br#"{"pid":3,"created":1,"unexpected":true}"#,
+            br#"{"pid":3"#,
+            &oversized,
         ];
         let malformed: Vec<_> = invalid
             .into_iter()
@@ -438,6 +503,92 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+
+    #[test]
+    fn a3b_retries_retired_runs_but_preserves_ambiguous_quarantines() {
+        let fixture = Fixture::new();
+        let game = &fixture.0;
+        let root = game.join(".launcher-temp");
+        let capture = |pid: Option<u32>| {
+            let live = run(game);
+            if let Some(pid) = pid {
+                write_owner(&live, Owner { pid, created: 42 }).unwrap();
+            }
+            let retired = root.join(format!(".stale-{}", Uuid::new_v4()));
+            fs::create_dir(&retired).unwrap();
+            fs::rename(&live, retired.join(live.file_name().unwrap())).unwrap();
+            retired
+        };
+        let stale = capture(Some(3));
+        let live = capture(Some(1));
+        let unknown = capture(Some(2));
+        let markerless = capture(None);
+        let foreign = capture(Some(3));
+        fs::write(foreign.join("unrelated.txt"), b"retain").unwrap();
+        let empty = root.join(format!(".stale-{}", Uuid::new_v4()));
+        fs::create_dir(&empty).unwrap();
+
+        sweep_root(game, |owner| match owner.pid {
+            1 => Liveness::Alive,
+            2 => Liveness::Unknown,
+            3 => Liveness::Stale,
+            other => panic!("unexpected owner {other}"),
+        });
+        assert!(!stale.exists());
+        for path in [live, unknown, markerless, foreign, empty] {
+            assert!(path.is_dir(), "{} should be retained", path.display());
+        }
+    }
+
+    #[test]
+    fn a3b_root_entry_caps_do_not_count_unrelated_names_or_compete_with_retries() {
+        // Vary the iterator directly so the test does not depend on native
+        // filesystem directory enumeration order.
+        let names = (0..MAX_RUN_ENTRIES_PER_ROOT * 2)
+            .map(|i| PathBuf::from(format!("unrelated-{i}")))
+            .chain(
+                (0..MAX_RUN_ENTRIES_PER_ROOT + 1)
+                    .map(|_| PathBuf::from(format!(".stale-{}", Uuid::new_v4()))),
+            )
+            .chain(
+                (0..MAX_RUN_ENTRIES_PER_ROOT + 1)
+                    .map(|_| PathBuf::from(format!("run-{}", Uuid::new_v4()))),
+            );
+        let named: Vec<_> = root_candidates(names).collect();
+        assert_eq!(
+            named.iter().filter(|entry| run_name(entry)).count(),
+            MAX_RUN_ENTRIES_PER_ROOT
+        );
+        assert_eq!(
+            named.iter().filter(|entry| quarantine_name(entry)).count(),
+            MAX_RUN_ENTRIES_PER_ROOT
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a3b_liveness_detects_exited_child_while_std_child_holds_process_handle() {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+
+        // std::process::Child retains its Windows process handle after wait(),
+        // until Drop. This reaches the signaled-handle branch of liveness().
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = HANDLE(child.as_raw_handle());
+        let owner = Owner {
+            pid: child.id(),
+            created: win32::creation_time(handle).unwrap(),
+        };
+        assert!(child.wait().unwrap().success());
+        assert_eq!(win32::creation_time(handle).unwrap(), owner.created);
+        assert_eq!(win32::liveness(owner), Liveness::Stale);
+        drop(child);
     }
 
     #[test]

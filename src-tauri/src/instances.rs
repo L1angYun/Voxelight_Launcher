@@ -1368,6 +1368,23 @@ fn clear_intent(folder: &Path) -> Result<(), String> {
         .map_err(|e| format!("无法清除恢复记录：{e}"))
 }
 
+fn matches_original_inventory(path: &Path, original: &[FileRecord]) -> Result<bool, String> {
+    // Pre-C2 restore journals may include scratch in their automatic backup.
+    // Respect those manifests instead of silently ignoring recorded files.
+    let contains_legacy_scratch = original.iter().any(|file| {
+        let mut components = Path::new(&file.relative).components();
+        let first = components.next();
+        components.next().is_some()
+            && first.is_some_and(|first| is_runtime_scratch(Path::new(first.as_os_str())))
+    });
+    let actual = if contains_legacy_scratch {
+        collect_files(path)?
+    } else {
+        collect_instance_files_controlled(path, None)?
+    };
+    Ok(actual == original)
+}
+
 /// Recover only known layouts and never replace an unrelated or modified live
 /// directory. Compare both stage presence and file inventories; old and new
 /// may be byte-identical and an empty folder is not equivalent to no folder.
@@ -1386,7 +1403,7 @@ fn recover_layout(
     }
     if has_previous {
         let original = original.ok_or("恢复前没有活动目录，发现非预期副本")?;
-        if collect_files(&paths.previous)? != original {
+        if !matches_original_inventory(&paths.previous, original)? {
             return Err("恢复前目录校验失败，已保留所有文件".into());
         }
         if has_live {
@@ -1402,7 +1419,7 @@ fn recover_layout(
             .map_err(|e| format!("无法复位恢复前目录：{e}"));
     }
     if let Some(original) = original {
-        if !has_live || collect_files(&paths.live)? != original {
+        if !has_live || !matches_original_inventory(&paths.live, original)? {
             return Err("恢复前目录不存在或与备份不符，未覆盖活动目录".into());
         }
     } else if has_live {
@@ -2042,6 +2059,99 @@ mod backup_recovery_tests {
             assert_eq!(fs::read(paths.stage.join("fixture")).unwrap(), new);
             assert!(!paths.previous.exists());
         }
+    }
+
+
+    fn assert_restore_uses_backup_scope_and_preserves_runtime_scratch(step: &str) {
+        fn with_scratch(root: &Path, contents: &[u8]) -> PathBuf {
+            let directory = root
+                .join(".launcher-temp")
+                .join(format!("run-{}", Uuid::new_v4()));
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("launcher.args"), contents).unwrap();
+            directory.strip_prefix(root).unwrap().join("launcher.args")
+        }
+        let root = fixture_folder("restore-scratch");
+        let paths = RestorePaths::new(&root.path().join("live"), Uuid::new_v4()).unwrap();
+        let old = if step == "beforeMove" {
+            &paths.live
+        } else {
+            &paths.previous
+        };
+        place(old, b"live data");
+        let old_scratch = with_scratch(old, b"live scratch");
+        let original = collect_instance_files_controlled(old, None).unwrap();
+        assert_eq!(original.len(), 1);
+
+        // Legacy selected archives can include top-level scratch. Their
+        // exact contents must still be verified and parked on rollback.
+        let new = if step == "newPublished" {
+            &paths.live
+        } else {
+            &paths.stage
+        };
+        place(new, b"legacy selected backup");
+        let new_scratch = with_scratch(new, b"legacy scratch");
+        let selected = collect_files(new).unwrap();
+        assert_eq!(selected.len(), 2);
+        {
+            fs::write(new.join(&new_scratch), b"changed legacy scratch").unwrap();
+            assert!(recover_layout(&paths, Some(&original), &selected).is_err());
+            assert_eq!(fs::read(old.join(&old_scratch)).unwrap(), b"live scratch");
+            assert_eq!(
+                fs::read(new.join(&new_scratch)).unwrap(),
+                b"changed legacy scratch"
+            );
+            fs::write(new.join(&new_scratch), b"legacy scratch").unwrap();
+        }
+
+        for _ in 0..2 {
+            recover_layout(&paths, Some(&original), &selected)
+                .unwrap_or_else(|error| panic!("{step}: {error}"));
+        }
+        assert_eq!(
+            fs::read(paths.live.join(old_scratch)).unwrap(),
+            b"live scratch"
+        );
+        assert_eq!(
+            fs::read(paths.stage.join(new_scratch)).unwrap(),
+            b"legacy scratch"
+        );
+        assert_eq!(fs::read(paths.live.join("fixture")).unwrap(), b"live data");
+        assert!(!paths.previous.exists());
+    }
+
+    #[test]
+    fn interrupted_restore_recovers_before_move_with_runtime_scratch() {
+        assert_restore_uses_backup_scope_and_preserves_runtime_scratch("beforeMove");
+    }
+
+    #[test]
+    fn interrupted_restore_recovers_moved_original_with_runtime_scratch() {
+        assert_restore_uses_backup_scope_and_preserves_runtime_scratch("oldMoved");
+    }
+
+    #[test]
+    fn interrupted_restore_rolls_back_published_snapshot_with_runtime_scratch() {
+        assert_restore_uses_backup_scope_and_preserves_runtime_scratch("newPublished");
+    }
+
+    #[test]
+    fn interrupted_restore_checks_scratch_if_legacy_original_journal_included_it() {
+        let root = fixture_folder("restore-legacy-original");
+        let paths = RestorePaths::new(&root.path().join("live"), Uuid::new_v4()).unwrap();
+        place(&paths.previous, b"legacy original");
+        let scratch = paths.previous.join(".launcher-temp/legacy-file");
+        fs::create_dir(scratch.parent().unwrap()).unwrap();
+        fs::write(&scratch, b"legacy original scratch").unwrap();
+        let original = collect_files(&paths.previous).unwrap();
+        let selected = place(&paths.stage, b"selected backup");
+        fs::write(&scratch, b"changed legacy original scratch").unwrap();
+        assert!(recover_layout(&paths, Some(&original), &selected).is_err());
+        assert!(!paths.live.exists());
+        fs::write(scratch, b"legacy original scratch").unwrap();
+        recover_layout(&paths, Some(&original), &selected).unwrap();
+        assert_eq!(collect_files(&paths.live).unwrap(), original);
     }
 
     #[test]
