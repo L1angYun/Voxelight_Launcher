@@ -56,9 +56,9 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
         await command("export_launcher_config", { path });
         onNotice("presetExported");
       } else {
-        const next = await command<typeof config>("import_launcher_config", { path });
-        await onPersisted(next);
-        onNotice("presetImported");
+        const imported = await command<{ config: typeof config; heapArgumentsRemoved: boolean }>("import_launcher_config", { path });
+        await onPersisted(imported.config);
+        onNotice(imported.heapArgumentsRemoved ? "presetImportedHeapRemoved" : "presetImported");
       }
     } catch (cause) {
       onError(cause);

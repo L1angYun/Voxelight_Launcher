@@ -39,7 +39,7 @@ function mockSettings(page: Page) {
         const bootstrap = await original("bootstrap") as { config: Record<string, unknown> };
         const next = { ...bootstrap.config, effects: "lite", accentSource: "system" };
         const saved = await original("save_config", { config: next });
-        return record(saved);
+        return record({ config: saved, heapArgumentsRemoved: false });
       }
       return original(name, args);
     };

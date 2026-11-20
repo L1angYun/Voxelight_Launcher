@@ -261,7 +261,7 @@ pub fn get_service_status(
     let curseforge = crate::secrets::load_service_secret(&state.data_dir, "curseforge-api-key")?
         .is_some_and(|secret| !secret.is_empty());
     let config = state.snapshot()?.config;
-    let mut status = service_status(curseforge, crate::curseforge_key::builtin_cf_key().is_some(), &config, builtin_client_id());
+    let mut status = service_status(curseforge, crate::curseforge_key::builtin_cf_key(), &config, builtin_client_id());
     match crate::network::proxy_credentials_configured(&state.data_dir, &config) {
         Ok(configured) => status["proxyCredentialsConfigured"] = serde_json::json!(configured),
         Err(_) => status["proxyCredentialsUnreadable"] = serde_json::json!(true),
@@ -271,14 +271,14 @@ pub fn get_service_status(
 
 fn service_status(
     curseforge: bool,
-    curseforge_builtin: bool,
+    curseforge_builtin: Option<&str>,
     config: &Config,
     builtin: Option<&str>,
 ) -> serde_json::Value {
     let custom = !config.microsoft_client_id.trim().is_empty();
     serde_json::json!({
         "curseforgeConfigured": curseforge,
-        "curseforgeBuiltin": curseforge_builtin,
+        "curseforgeBuiltin": curseforge_builtin.is_some(),
         "microsoftBuiltin": builtin.is_some(),
         "microsoftOverride": custom,
         "microsoftConfigured": builtin.is_some() || custom,
@@ -295,20 +295,22 @@ mod tests {
     #[test]
     fn service_status_exposes_boolean_builtin_and_override_state_only() {
         let config = Config::default();
-        let builtin = service_status(false, true, &config, Some(BUILTIN));
+        // Built at runtime so no key-shaped literal reaches the public source.
+        let cf_builtin = ["$", "2a", "$", "10", "$", &"a".repeat(53)].concat();
+        let builtin = service_status(false, Some(&cf_builtin), &config, Some(BUILTIN));
         assert_eq!(builtin["microsoftBuiltin"], true);
         assert_eq!(builtin["microsoftOverride"], false);
         assert_eq!(builtin["microsoftConfigured"], true);
         assert_eq!(builtin["curseforgeConfigured"], false);
         assert_eq!(builtin["curseforgeBuiltin"], true);
-        assert!(!serde_json::to_string(&builtin).unwrap().contains("$2a$"));
+        assert!(!serde_json::to_string(&builtin).unwrap().contains(&cf_builtin));
         assert!(builtin
             .as_object()
             .unwrap()
             .values()
             .all(serde_json::Value::is_boolean));
         assert!(!serde_json::to_string(&builtin).unwrap().contains(BUILTIN));
-        let absent = service_status(true, false, &config, None);
+        let absent = service_status(true, None, &config, None);
         assert_eq!(absent["microsoftBuiltin"], false);
         assert_eq!(absent["curseforgeBuiltin"], false);
         assert_eq!(absent["microsoftConfigured"], false);
@@ -317,7 +319,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(effective_client_id(&custom, Some(BUILTIN)), USER);
-        let status = service_status(false, false, &custom, Some(BUILTIN));
+        let status = service_status(false, None, &custom, Some(BUILTIN));
         assert_eq!(status["microsoftOverride"], true);
         assert!(!serde_json::to_string(&status).unwrap().contains(USER));
     }

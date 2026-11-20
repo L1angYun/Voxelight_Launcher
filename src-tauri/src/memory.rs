@@ -109,6 +109,71 @@ pub(crate) fn auto_heap_mb(
     MemoryPlan { max_mb, reason }
 }
 
+/// The heap one launch gets, plus the log lines that explain it.
+pub(crate) struct LaunchHeap {
+    pub max_mb: u32,
+    pub logs: Vec<(&'static str, String)>,
+}
+
+/// Chooses the launch heap. Manual mode uses the configured value. Automatic
+/// mode sizes by mod count and system memory; when the mods folder cannot be
+/// read safely it falls back to the configured value. `snapshot` is only
+/// consulted when the mod count is known.
+pub(crate) fn launch_heap(
+    config: &Config,
+    instance: Option<&Instance>,
+    loader: Option<&str>,
+    mods: Result<usize, String>,
+    snapshot: impl FnOnce() -> Option<MemorySnapshot>,
+    java_64bit: bool,
+) -> LaunchHeap {
+    let fallback_mb = manual_max(config, instance);
+    if effective_mode(config, instance) != "auto" {
+        return LaunchHeap { max_mb: fallback_mb, logs: Vec::new() };
+    }
+    let mut logs = Vec::new();
+    let (memory, mods) = match mods {
+        Ok(count) => (snapshot(), Some(count)),
+        Err(error) => {
+            logs.push(("warn", error));
+            (None, None)
+        }
+    };
+    let plan = auto_heap_mb(memory, loader, mods.unwrap_or(0), java_64bit, fallback_mb);
+    logs.push(heap_log(plan, memory, mods, java_64bit));
+    LaunchHeap { max_mb: plan.max_mb, logs }
+}
+
+/// One launch-log line with every input of the automatic plan. Unknown inputs
+/// are written as such, never as zero.
+pub(crate) fn heap_log(
+    plan: MemoryPlan,
+    memory: Option<MemorySnapshot>,
+    mods: Option<usize>,
+    java_64bit: bool,
+) -> (&'static str, String) {
+    let reason = match plan.reason {
+        HeapReason::Recommended => "按当前物理内存和启用模组数推荐",
+        HeapReason::LowAvailable => "当前可用内存不足，使用最低档",
+        HeapReason::ManualFallback => "无法读取自动分配所需数据，使用设置的备用值",
+        HeapReason::BitnessCap => "受 32 位 Java 上限约束",
+    };
+    let (total, available) = memory.map_or_else(
+        || ("未知".to_owned(), "未知".to_owned()),
+        |value| (format!("{} MiB", value.total_mb), format!("{} MiB", value.available_mb)),
+    );
+    let mods = mods.map_or_else(|| "未知".to_owned(), |count| count.to_string());
+    let bits = if java_64bit { 64 } else { 32 };
+    let level = if plan.reason == HeapReason::LowAvailable { "warn" } else { "info" };
+    (
+        level,
+        format!(
+            "自动分配游戏内存：{} MiB（{reason}；总内存 {total}，可用 {available}，启用模组 {mods} 个，{bits} 位 Java）",
+            plan.max_mb
+        ),
+    )
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MemoryOverview {
@@ -117,6 +182,39 @@ pub(crate) struct MemoryOverview {
     recommended_mb: u32,
     effective_mode: String,
     mod_count: usize,
+}
+
+/// Resolves the loader the way launch does: a known instance loader wins,
+/// otherwise the installed version profile decides.
+pub(crate) fn overview_loader(recorded: &str, installed: Option<String>) -> Option<String> {
+    Some(recorded)
+        .filter(|loader| matches!(*loader, "forge" | "neoforge" | "fabric" | "quilt"))
+        .map(str::to_owned)
+        .or(installed)
+}
+
+/// Builds the overview. An instance whose mods folder cannot be read safely
+/// gets no snapshot, so the hint is hidden instead of the command failing;
+/// launch falls back to the configured value in the same case.
+pub(crate) fn memory_overview(
+    config: &Config,
+    instance: Option<&Instance>,
+    loader: Option<&str>,
+    mods: Result<usize, String>,
+    snapshot: Option<MemorySnapshot>,
+) -> MemoryOverview {
+    let (memory, mod_count) = match mods {
+        Ok(count) => (snapshot, count),
+        Err(_) => (None, 0),
+    };
+    let fallback = manual_max(config, instance);
+    MemoryOverview {
+        total_mb: memory.map(|value| value.total_mb),
+        available_mb: memory.map(|value| value.available_mb),
+        recommended_mb: auto_heap_mb(memory, loader, mod_count, true, fallback).max_mb,
+        effective_mode: effective_mode(config, instance).into(),
+        mod_count,
+    }
 }
 
 #[tauri::command]
@@ -129,23 +227,19 @@ pub(crate) async fn get_memory_overview(
         let instance = instance_id.as_ref().map(|id| {
             data.instances.iter().find(|row| &row.id == id).ok_or("实例不存在")
         }).transpose()?;
-        let mod_count = if let Some(instance) = instance {
-            let directory = crate::resources::resource_directory(&data, &instance.version_id,
-                Some(&instance.id), crate::resources::ResourceKind::Mod)?;
-            crate::resources::count_enabled_mods(&directory)?
+        let (loader, mods) = if let Some(instance) = instance {
+            let installed = crate::processes::configured_game_root(std::path::Path::new(&data.config.game_directory))
+                .ok()
+                .and_then(|root| crate::resources::version_context(&root, &instance.version_id).ok())
+                .and_then(|(_, loader)| loader);
+            let mods = crate::resources::resource_directory(&data, &instance.version_id,
+                Some(&instance.id), crate::resources::ResourceKind::Mod)
+                .and_then(|directory| crate::resources::count_enabled_mods(&directory));
+            (overview_loader(&instance.loader, installed), mods)
         } else {
-            0
+            (None, Ok(0))
         };
-        let memory = system_memory();
-        let loader = instance.map(|row| row.loader.as_str());
-        let fallback = instance.and_then(|row| row.max_memory_mb).unwrap_or(data.config.max_memory_mb);
-        Ok(MemoryOverview {
-            total_mb: memory.map(|snapshot| snapshot.total_mb),
-            available_mb: memory.map(|snapshot| snapshot.available_mb),
-            recommended_mb: auto_heap_mb(memory, loader, mod_count, true, fallback).max_mb,
-            effective_mode: effective_mode(&data.config, instance).into(),
-            mod_count,
-        })
+        Ok(memory_overview(&data.config, instance, loader.as_deref(), mods, system_memory()))
     }).await.map_err(|error| format!("读取内存信息失败：{error}"))?
 }
 
@@ -165,6 +259,28 @@ pub(crate) fn validate_min(mode: &str, min_mb: Option<u32>, max_mb: u32) -> Resu
     Ok(())
 }
 
+/// Validates the memory part of an instance save. Only a change to the
+/// instance's own effective memory settings may be rejected: a conflict that
+/// comes from an inherited global value is left to the launch-time clamp, so
+/// unrelated edits such as a rename or notes still save.
+pub(crate) fn validate_instance_memory(
+    config: &Config,
+    current: &Instance,
+    candidate: &Instance,
+) -> Result<(), String> {
+    let own = |row: &Instance| {
+        (effective_mode(config, Some(row)).to_owned(), row.max_memory_mb, row.min_memory_mb)
+    };
+    if own(current) == own(candidate) {
+        return Ok(());
+    }
+    validate_min(
+        effective_mode(config, Some(candidate)),
+        effective_min(config, Some(candidate)),
+        manual_max(config, Some(candidate)),
+    )
+}
+
 pub(crate) fn memory_arguments(max_mb: u32, min_mb: Option<u32>) -> (Vec<String>, bool) {
     let mut args = vec![format!("-Xmx{max_mb}M")];
     if let Some(min_mb) = min_mb {
@@ -174,7 +290,11 @@ pub(crate) fn memory_arguments(max_mb: u32, min_mb: Option<u32>) -> (Vec<String>
 }
 
 pub(crate) fn is_memory_argument(arg: &str) -> bool {
-    arg.starts_with("-Xms") || arg.starts_with("-Xmx")
+    // HotSpot takes the last value, so the -XX spellings would override the
+    // launcher's own -Xmx/-Xms and bypass the automatic and 32-bit caps.
+    ["-Xms", "-Xmx", "-XX:MaxHeapSize=", "-XX:InitialHeapSize=", "-XX:MinHeapSize="]
+        .iter()
+        .any(|prefix| arg.starts_with(prefix))
 }
 
 pub(crate) fn validate_changed_heap_arguments(previous: &str, candidate: &str) -> Result<(), String> {
@@ -287,10 +407,99 @@ mod tests {
     }
 
     #[test]
+    fn c5_launch_heap_keeps_manual_values_and_falls_back_when_mods_are_unreadable() {
+        let never = || -> Option<MemorySnapshot> { panic!("manual mode must not read system memory") };
+        let legacy = Instance { max_memory_mb: Some(16_384), ..Default::default() };
+        let heap = launch_heap(&Config::default(), Some(&legacy), Some("forge"), Ok(200), never, true);
+        assert_eq!(heap.max_mb, 16_384);
+        assert!(heap.logs.is_empty());
+
+        let auto = Config { max_memory_mb: 5376, ..Default::default() };
+        let unread = || -> Option<MemorySnapshot> { panic!("an unreadable mods folder must not use system memory") };
+        let heap = launch_heap(&auto, None, Some("forge"), Err("模组目录是链接".into()), unread, true);
+        assert_eq!(heap.max_mb, 5376);
+        assert_eq!(heap.logs[0], ("warn", "模组目录是链接".to_owned()));
+        assert!(heap.logs[1].1.contains("使用设置的备用值") && heap.logs[1].1.contains("启用模组 未知 个"));
+
+        let heap = launch_heap(&auto, None, Some("forge"), Ok(200), || Some(LARGE), true);
+        assert_eq!(heap.max_mb, 6144);
+        assert_eq!(heap.logs.len(), 1);
+    }
+
+    #[test]
+    fn c5_overview_matches_launch_inputs_and_hides_on_unreadable_mods() {
+        assert_eq!(overview_loader("vanilla", Some("fabric".into())).as_deref(), Some("fabric"));
+        assert_eq!(overview_loader("forge", Some("fabric".into())).as_deref(), Some("forge"));
+        assert_eq!(overview_loader("vanilla", None), None);
+        let instance = Instance { memory_mode: Some("auto".into()), ..Default::default() };
+        let config = Config::default();
+        let overview = memory_overview(&config, Some(&instance), Some("forge"), Ok(200), Some(LARGE));
+        assert_eq!((overview.total_mb, overview.mod_count, overview.recommended_mb), (Some(32_768), 200, 6144));
+        let hidden = memory_overview(&config, Some(&instance), Some("forge"), Err("链接".into()), Some(LARGE));
+        assert_eq!((hidden.total_mb, hidden.available_mb), (None, None));
+    }
+
+    #[test]
+    fn c5_heap_log_names_every_input_and_warns_when_memory_is_low() {
+        let (level, text) = heap_log(
+            MemoryPlan { max_mb: 6144, reason: HeapReason::Recommended },
+            Some(LARGE), Some(200), true,
+        );
+        assert_eq!(level, "info");
+        for part in ["6144 MiB", "总内存 32768 MiB", "可用 20000 MiB", "启用模组 200 个", "64 位 Java"] {
+            assert!(text.contains(part), "{part} in {text}");
+        }
+        let low = MemorySnapshot { total_mb: 16_384, available_mb: 500 };
+        let (level, text) = heap_log(auto_heap_mb(Some(low), Some("forge"), 10, true, 4096), Some(low), Some(10), true);
+        assert_eq!(level, "warn");
+        assert!(text.contains("可用 500 MiB"));
+        let (level, text) = heap_log(
+            MemoryPlan { max_mb: 1024, reason: HeapReason::BitnessCap }, Some(LARGE), Some(0), false,
+        );
+        assert_eq!(level, "info");
+        assert!(text.contains("32 位 Java") && text.contains("启用模组 0 个"));
+    }
+
+    #[test]
+    fn c5_inherited_initial_memory_does_not_block_unrelated_instance_saves() {
+        let global = Config {
+            memory_mode: "manual".into(),
+            max_memory_mb: 8192,
+            min_memory_mb: Some(4096),
+            ..Default::default()
+        };
+        let legacy = Instance { max_memory_mb: Some(2048), ..Default::default() };
+        // A rename resubmits the same memory fields; the form maps the legacy row to manual.
+        let renamed = Instance { name: "renamed".into(), memory_mode: Some("manual".into()), ..legacy.clone() };
+        assert!(validate_instance_memory(&global, &legacy, &renamed).is_ok());
+        // Changing the instance's own memory still rejects a new conflict.
+        let lowered = Instance { max_memory_mb: Some(1024), ..legacy.clone() };
+        assert!(validate_instance_memory(&global, &legacy, &lowered).is_err());
+        let own_min = Instance { min_memory_mb: Some(3072), ..legacy.clone() };
+        assert!(validate_instance_memory(&global, &legacy, &own_min).is_err());
+        let fitting = Instance { min_memory_mb: Some(1024), ..legacy.clone() };
+        assert!(validate_instance_memory(&global, &legacy, &fitting).is_ok());
+    }
+
+    #[test]
     fn u0880_new_heap_flags_are_rejected_but_saved_and_unrelated_flags_are_allowed() {
         assert!(validate_changed_heap_arguments("-Xmx2G -XX:+UseG1GC", "-Xmx2G -XX:+UseG1GC").is_ok());
         assert!(validate_changed_heap_arguments("-Xmx2G", "-Xmx3G").is_err());
         assert!(validate_changed_heap_arguments("", "'-Xms512M'").is_err());
         assert!(validate_changed_heap_arguments("-Xmx2G", "-Dexample=-Xmx2G").is_ok());
+        for spelling in ["-XX:MaxHeapSize=1g", "-XX:InitialHeapSize=512m", "-XX:MinHeapSize=256m"] {
+            assert!(is_memory_argument(spelling), "{spelling}");
+            assert!(validate_changed_heap_arguments("", spelling).is_err(), "{spelling}");
+        }
+        assert!(!is_memory_argument("-XX:MaxRAMPercentage=50"));
+    }
+
+    #[test]
+    fn u0880_equal_initial_and_maximum_is_accepted_without_a_clamp() {
+        assert!(validate_min("manual", Some(4096), 4096).is_ok());
+        assert_eq!(memory_arguments(4096, Some(4096)), (vec!["-Xmx4096M".to_owned(), "-Xms4096M".to_owned()], false));
+        assert!(validate_min("auto", Some(65_536), 70_000).is_ok());
+        assert!(validate_min("auto", Some(65_537), 70_000).is_err());
+        assert!(validate_min("auto", Some(256), 4096).is_ok());
     }
 }

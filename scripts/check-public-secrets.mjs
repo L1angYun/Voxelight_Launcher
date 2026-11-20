@@ -16,9 +16,11 @@ const DISABLED_PUSH_URLS = new Set(["DISABLED", "DISABLED-private-never-pushes"]
 const BINARY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".zip", ".jar", ".exe", ".dll", ".pdf", ".mp4", ".webm"]);
 const UUID_SOURCE = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
 const CF_SOURCE = String.raw`\$2a\$10\$([./A-Za-z0-9]{53})`;
-const CF_VALUE = new RegExp(CF_SOURCE + "(?![./A-Za-z0-9])", "g");
-// A hostile path may append a valid body character such as the dot in .txt.
-const CF_REDACT = new RegExp(CF_SOURCE, "g");
+// No trailing boundary: a key followed by a sentence dot, a path slash or any
+// other body character must still be detected, and the fixed {53} cannot
+// backtrack to recover from a failed lookahead.
+const CF_VALUE = new RegExp(CF_SOURCE, "g");
+const CF_REDACT = CF_VALUE;
 const PRIVATE_TARGETS = [
   { key: "VOXELIGHT_MS_CLIENT_ID", pattern: UUID_SOURCE, ignoreCase: true, required: true },
   { key: "VOXELIGHT_CF_API_KEY", pattern: CF_SOURCE, ignoreCase: false, required: false },

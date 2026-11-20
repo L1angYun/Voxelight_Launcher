@@ -132,7 +132,7 @@ beforeEach(() => {
     if (name === "detect_java") return [{ path: "C:\\SyntheticFixture\\java.exe", version: "21.0.1", major: 21 }];
     if (name === "set_launcher_background") return { ...mockLauncher.config, customBackground: args?.path ?? null };
     if (name === "export_launcher_config") return args?.path;
-    if (name === "import_launcher_config") return { ...mockLauncher.config, effects: "lite", accentSource: "system" };
+    if (name === "import_launcher_config") return { config: { ...mockLauncher.config, effects: "lite", accentSource: "system" }, heapArgumentsRemoved: false };
     return null;
   });
   mocks.open.mockReset();
@@ -378,11 +378,37 @@ describe("global settings", () => {
     } : base(name, args));
     await render();
     await click("Java");
-    expect(container.textContent).toContain("System RAM: 32 GiB; available: 16 GiB; recommended: 4096 MiB.");
+    expect(container.textContent).toContain("System RAM: 32 GiB; available: 16 GiB; recommended: 4096 MB (assumes 64-bit Java).");
     expect(reads).toBe(1);
     await click("Refresh memory");
     expect(container.textContent).toContain("available: 8 GiB");
     expect(reads).toBe(2);
+  });
+
+  it("hides the memory hint when the backend has no memory snapshot", async () => {
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => name === "get_memory_overview" ? {
+      totalMb: null, availableMb: null, recommendedMb: 4096, effectiveMode: "auto", modCount: 0,
+    } : base(name, args));
+    await render();
+    await click("Java");
+    expect(container.textContent).not.toContain("System RAM");
+    expect(container.querySelector('button[aria-label="Refresh memory"]')).toBeNull();
+  });
+
+  it("disables the maximum in automatic mode and saves the initial memory as a number or null", async () => {
+    await render();
+    await click("Java");
+    const maximum = () => container.querySelector<HTMLInputElement>('input[aria-label="Maximum memory (MB)"]')!;
+    expect(maximum().disabled).toBe(true);
+    await click("Manual memory");
+    expect(maximum().disabled).toBe(false);
+    await fill("Initial memory (MB)", "1024");
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenLastCalledWith(expect.objectContaining({ minMemoryMb: 1024 }), { preserveAppearance: true });
+    await fill("Initial memory (MB)", "");
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenLastCalledWith(expect.objectContaining({ minMemoryMb: null }), { preserveAppearance: true });
   });
 
   it("detects Java and saves runtime, memory, JVM and auto-download settings", async () => {
@@ -490,6 +516,17 @@ describe("global settings", () => {
     expect(mockLauncher.config.effects).toBe("lite");
     expect(mockLauncher.config.accentSource).toBe("system");
     expect(mockLauncher.reload).toHaveBeenCalled();
+    expect(container.textContent).toContain("Preset imported.");
+  });
+
+  it("tells the user when an imported preset's heap arguments were ignored", async () => {
+    mocks.open.mockResolvedValue("C:\\SyntheticFixture\\preset.json");
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => name === "import_launcher_config"
+      ? { config: { ...mockLauncher.config }, heapArgumentsRemoved: true } : base(name, args));
+    await render();
+    await click("Import preset");
+    expect(container.textContent).toContain("Its -Xms/-Xmx JVM arguments were ignored");
   });
 
   it("restores the saved appearance on reset and localizes action errors", async () => {

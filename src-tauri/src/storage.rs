@@ -849,10 +849,25 @@ impl SameRootFixture {
         let same_directory = self.game.with_file_name("sameroot");
         #[cfg(not(windows))]
         let same_directory = self.game.join(".");
+        assert_ne!(
+            same_directory.display().to_string(),
+            self.game.canonicalize().unwrap().display().to_string(),
+            "the fixture must register a different spelling of the same directory",
+        );
         self.state
             .games
             .fixture_running_directory(&same_directory, Some("unrelated-running-instance"));
     }
+}
+
+/// Function bodies as executable source for order assertions: line comments
+/// are dropped, so a commented-out guard no longer satisfies the search.
+#[cfg(test)]
+pub(crate) fn executable_source(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

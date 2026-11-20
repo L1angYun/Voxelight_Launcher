@@ -1,12 +1,12 @@
 {
   "memory": {
-    "initial": "初始内存（MiB）",
+    "initial": "初始内存（MB）",
     "initialHint": "留空时由 Java 选择；自动分配在需要时会降低此值。",
     "mode": "内存分配",
     "auto": "自动分配",
     "manual": "手动分配",
     "inherit": "继承全局设置",
-    "overview": "系统内存：{{total}} GiB；可用：{{available}} GiB；建议分配：{{recommended}} MiB。",
+    "overview": "系统内存：{{total}} GiB；可用：{{available}} GiB；建议分配：{{recommended}} MB（按 64 位 Java 估算）。",
     "refresh": "刷新内存"
   },
   "title": "设置",
@@ -183,6 +183,7 @@
     "secretCleared": "已清除保存的 CurseForge 密钥。",
     "presetExported": "配置预设已导出，不包含账号和平台密钥。",
     "presetImported": "配置预设已导入。",
+    "presetImportedHeapRemoved": "配置预设已导入。其中的 -Xms/-Xmx 等 JVM 参数已忽略，请在内存设置中调整。",
     "backgroundUpdated": "首页背景已更新。",
     "backgroundCleared": "已恢复默认首页背景。",
     "javaDetected": "发现 {{count}} 个 Java 环境。",
@@ -208,6 +209,10 @@
       "presetInvalid": "请选择本启动器导出的有效配置预设。",
       "busy": "请等待当前安装或启动准备完成后再修改设置。",
       "gameDirectory": "游戏目录必须是绝对路径。",
+      "memoryMode": "请选择自动或手动内存分配。",
+      "minMemoryRange": "初始内存需要在 256–65536 MB 之间。",
+      "minMemoryAboveMax": "初始内存不能大于最大内存。请调低初始内存，或调高最大内存。",
+      "heapArguments": "请在内存设置里调整内存，并从自定义 JVM 参数中删除 -Xms、-Xmx 或 -XX:…HeapSize 参数。",
       "invalid": "部分设置无效，请检查输入后重试。"
     }
   }

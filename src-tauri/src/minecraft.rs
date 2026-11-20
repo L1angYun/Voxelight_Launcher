@@ -2225,10 +2225,6 @@ impl JavaConstraint {
         }
         Ok(())
     }
-
-    fn preference_ceiling(&self) -> Option<u32> {
-        self.preferred_max.map(|max| max.max(self.min))
-    }
 }
 
 #[derive(Debug)]
@@ -2281,13 +2277,14 @@ fn java_constraint(metadata: &Value, loader: Option<&str>) -> JavaConstraint {
                 (1, 7, 10..) | (1, 8..=16, _) => Some(8),
                 (1, 17, _) => Some(16),
                 (1, 18..=19, _) | (1, 20, 0..=4) => Some(17),
-                release if release >= (1, 20, 5) => Some(21),
+                // Only the 1.x line; 26.x and later declare their own Java.
+                (1, 20, 5..) | (1, 21.., _) => Some(21),
                 _ => None,
             }),
         _ => None,
     };
     let reason = if legacy_wrapper {
-        "此版本使用旧版 LaunchWrapper"
+        "使用旧版 LaunchWrapper 的版本"
     } else {
         match (loader, preferred_max) {
             (Some("forge"), Some(_)) => "此版本的 Forge 加载器",
@@ -2309,9 +2306,10 @@ fn pick_java(runtimes: &[JavaRuntime], constraint: &JavaConstraint) -> Result<Ja
     runtimes
         .iter()
         .filter(|java| constraint.allows(java.major))
+        // Soft loader ranges only warn: every allowed runtime is at least `min`,
+        // so lowest-major-first already prefers the newest runtime they accept.
         .min_by_key(|java| (
             java.major != constraint.required,
-            constraint.preference_ceiling().is_some_and(|max| java.major > max),
             java.major,
             !java.is_64bit,
             java.path.as_str(),
@@ -2332,6 +2330,19 @@ fn pick_java(runtimes: &[JavaRuntime], constraint: &JavaConstraint) -> Result<Ja
                 constraint.range(),
             ))
         })
+}
+
+/// Names which Java path setting a pinned-Java error is about. An instance
+/// path overrides the global one, so clearing the global field cannot help.
+fn name_java_pin_source(error: String, instance_pin: bool) -> String {
+    let (field, invalid) = if instance_pin {
+        ("请清空实例设置中的 Java 路径", "实例设置中的 Java 路径无效")
+    } else {
+        ("请在“设置 › Java”中清空 Java 路径", "“设置 › Java”中的 Java 路径无效")
+    };
+    error
+        .replace("设置中的 Java 路径无效", invalid)
+        .replace("请清空 Java 路径", field)
 }
 
 fn pick_configured_java(
@@ -2992,9 +3003,7 @@ async fn launch_prepared(
     };
     let mut config = snapshot.config.clone();
     if let Some(instance) = instance {
-        if let Some(memory) = instance.max_memory_mb {
-            config.max_memory_mb = memory;
-        }
+        // The heap comes from memory::launch_heap, not config.max_memory_mb.
         if let Some(java) = instance.java_path.as_ref() {
             config.java_path = java.clone();
         }
@@ -3021,7 +3030,10 @@ async fn launch_prepared(
         .map(|instance| instance.loader.as_str())
         .filter(|loader| matches!(*loader, "forge" | "neoforge" | "fabric" | "quilt"))
         .or_else(|| crate::resources::detect_loader(&metadata));
-    let java = select_or_install_java_constrained(&state, &app, &config, &metadata, loader).await?;
+    let instance_pin = instance.is_some_and(|row| row.java_path.as_deref().is_some_and(|path| !path.trim().is_empty()));
+    let java = select_or_install_java_constrained(&state, &app, &config, &metadata, loader)
+        .await
+        .map_err(|error| name_java_pin_source(error, instance_pin))?;
     fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
     let mut launch_scratch = crate::process_output::LaunchScratch::create(&game_dir)?;
     let natives = launch_scratch.natives()?;
@@ -3093,27 +3105,19 @@ async fn launch_prepared(
     .map(|(k, v)| (k.into(), v.into()))
     .chain(java_path_variables(&game_dir, &assets, &game_assets, &natives, &libraries)?)
     .collect();
-    let fallback_mb = crate::memory::manual_max(&snapshot.config, instance);
-    let max_memory_mb = if crate::memory::effective_mode(&snapshot.config, instance) == "auto" {
-        let (memory, mods) = match crate::resources::count_enabled_mods(&game_dir.join("mods")) {
-            Ok(count) => (crate::memory::system_memory(), count),
-            Err(error) => {
-                log(&app, &state, "warn", &error);
-                (None, 0)
-            }
-        };
-        let plan = crate::memory::auto_heap_mb(memory, loader, mods, java.is_64bit, fallback_mb);
-        let reason = match plan.reason {
-            crate::memory::HeapReason::Recommended => "按当前物理内存和启用模组数推荐",
-            crate::memory::HeapReason::LowAvailable => "当前可用内存不足，使用最低档",
-            crate::memory::HeapReason::ManualFallback => "无法读取自动分配所需数据，使用设置的备用值",
-            crate::memory::HeapReason::BitnessCap => "受 32 位 Java 上限约束",
-        };
-        log(&app, &state, "info", &format!("自动分配游戏内存：{} MiB（{reason}）", plan.max_mb));
-        plan.max_mb
-    } else {
-        fallback_mb
-    };
+    let auto = crate::memory::effective_mode(&snapshot.config, instance) == "auto";
+    let heap = crate::memory::launch_heap(
+        &snapshot.config,
+        instance,
+        loader,
+        if auto { crate::resources::count_enabled_mods(&game_dir.join("mods")) } else { Ok(0) },
+        crate::memory::system_memory,
+        java.is_64bit,
+    );
+    for (level, message) in &heap.logs {
+        log(&app, &state, level, message);
+    }
+    let max_memory_mb = heap.max_mb;
     let (mut arguments, clamped_minimum) = crate::memory::memory_arguments(
         max_memory_mb, crate::memory::effective_min(&snapshot.config, instance),
     );
@@ -5001,6 +5005,20 @@ mod tests {
     }
 
     #[test]
+    fn c5_pinned_java_errors_name_the_setting_that_holds_the_pin() {
+        let explicit = java_fixture(17, true);
+        let c = java_constraint(&legacy_wrapper_java("1.12"), Some("forge"));
+        let error = pick_configured_java(&[explicit.clone()], &explicit.path, &c).unwrap_err().to_string();
+        assert!(error.contains("使用旧版 LaunchWrapper 的版本需要"), "{error}");
+        let instance = name_java_pin_source(error.clone(), true);
+        assert!(instance.contains("请清空实例设置中的 Java 路径"), "{instance}");
+        let global = name_java_pin_source(error, false);
+        assert!(global.contains("“设置 › Java”中清空 Java 路径"), "{global}");
+        let missing = pick_configured_java(&[], "C:/missing/java.exe", &c).unwrap_err().to_string();
+        assert!(name_java_pin_source(missing, true).starts_with("实例设置中的 Java 路径无效"));
+    }
+
+    #[test]
     fn u0826_forge_preference_and_warning_do_not_block_a_pinned_runtime() {
         let metadata = json!({"_launcherBaseId":"1.18.2", "javaVersion":{"majorVersion":17}});
         let c = java_constraint(&metadata, Some("forge"));
@@ -5053,13 +5071,22 @@ mod tests {
         for (release, expected) in [
             ("1.7.9", None),
             ("1.7.10", Some(8)),
+            ("1.8", Some(8)),
+            ("1.8.9", Some(8)),
+            ("1.12.2", Some(8)),
             ("1.16", Some(8)),
             ("1.16.5", Some(8)),
             ("1.17.1", Some(16)),
             ("1.18", Some(17)),
+            ("1.19.2", Some(17)),
+            ("1.20", Some(17)),
+            ("1.20.1", Some(17)),
             ("1.20.4", Some(17)),
             ("1.20.5", Some(21)),
             ("1.21.1", Some(21)),
+            ("1.21.10", Some(21)),
+            ("26.1", None),
+            ("26.3", None),
             ("24w14a", None),
             ("1.20.5-pre1", None),
             ("1.20.5.1", None),

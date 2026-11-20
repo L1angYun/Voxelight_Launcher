@@ -451,6 +451,51 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The runtime-reset and memory part of an instance update, in apply order.
+fn runtime_memory_changes(
+    reset_runtime: bool,
+    max_memory_mb: Option<u32>,
+    memory_mode: Option<String>,
+    min_memory_mb: Option<u32>,
+    clear_min_memory: bool,
+) -> Result<Vec<(String, Value)>, String> {
+    let mut changes: Vec<(String, Value)> = Vec::new();
+    if reset_runtime {
+        for field in [
+            "maxMemoryMb",
+            "memoryMode",
+            "minMemoryMb",
+            "javaPath",
+            "jvmArguments",
+            "screenWidth",
+            "screenHeight",
+            "gameProxyMode",
+        ] {
+            changes.push((field.into(), Value::Null));
+        }
+    }
+    if let Some(memory) = max_memory_mb {
+        if !(512..=65536).contains(&memory) {
+            return Err("实例内存需要在 512–65536 MB 之间".into());
+        }
+        changes.push(("maxMemoryMb".into(), json!(memory)));
+    }
+    if let Some(mode) = memory_mode {
+        if mode == "inherit" {
+            changes.retain(|(key, _)| key != "maxMemoryMb");
+            changes.push(("maxMemoryMb".into(), Value::Null));
+            changes.push(("memoryMode".into(), Value::Null));
+        } else {
+            crate::memory::validate_mode(&mode)?;
+            changes.push(("memoryMode".into(), json!(mode)));
+        }
+    }
+    if clear_min_memory || min_memory_mb.is_some() {
+        changes.push(("minMemoryMb".into(), json!(min_memory_mb)));
+    }
+    Ok(changes)
+}
+
 fn replace_metadata(value: &mut Instance, changes: &[(String, Value)]) -> Result<(), String> {
     let mut json = serde_json::to_value(&*value).map_err(|e| e.to_string())?;
     let object = json.as_object_mut().ok_or("实例信息无效")?;
@@ -498,21 +543,13 @@ pub async fn update_instance(
     if current.java_path != previous.java_path || current.icon_path != previous.icon_path {
         return Err(crate::errors::STORAGE_STATE_CHANGED.into());
     }
-    let mut changes = Vec::new();
-    if reset_runtime.unwrap_or(false) {
-        for field in [
-            "maxMemoryMb",
-            "memoryMode",
-            "minMemoryMb",
-            "javaPath",
-            "jvmArguments",
-            "screenWidth",
-            "screenHeight",
-            "gameProxyMode",
-        ] {
-            changes.push((field.into(), Value::Null));
-        }
-    }
+    let mut changes = runtime_memory_changes(
+        reset_runtime.unwrap_or(false),
+        max_memory_mb,
+        memory_mode,
+        min_memory_mb,
+        clear_min_memory.unwrap_or(false),
+    )?;
     if let Some(mode) = game_proxy_mode {
         let value = if mode == "default" {
             Value::Null
@@ -525,33 +562,10 @@ pub async fn update_instance(
         };
         changes.push(("gameProxyMode".into(), value));
     }
-    if let Some(memory) = max_memory_mb {
-        if !(512..=65536).contains(&memory) {
-            return Err("实例内存需要在 512–65536 MB 之间".into());
-        }
-        changes.push(("maxMemoryMb".into(), json!(memory)));
-    }
-    if let Some(mode) = memory_mode {
-        if mode == "inherit" {
-            changes.retain(|(key, _)| key != "maxMemoryMb");
-            changes.push(("maxMemoryMb".into(), Value::Null));
-            changes.push(("memoryMode".into(), Value::Null));
-        } else {
-            crate::memory::validate_mode(&mode)?;
-            changes.push(("memoryMode".into(), json!(mode)));
-        }
-    }
-    if clear_min_memory.unwrap_or(false) || min_memory_mb.is_some() {
-        changes.push(("minMemoryMb".into(), json!(min_memory_mb)));
-    }
     let global = state.snapshot()?.config;
     let mut candidate = current.clone();
     replace_metadata(&mut candidate, &changes)?;
-    crate::memory::validate_min(
-        crate::memory::effective_mode(&global, Some(&candidate)),
-        crate::memory::effective_min(&global, Some(&candidate)),
-        crate::memory::manual_max(&global, Some(&candidate)),
-    )?;
+    crate::memory::validate_instance_memory(&global, &current, &candidate)?;
     if let Some(java) = java_path {
         let java = java.trim();
         if java.is_empty() {
@@ -1615,6 +1629,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c5_instance_memory_changes_validate_modes_inherit_and_reset() {
+        let apply = |changes: Vec<(String, Value)>, start: Instance| {
+            let mut row = start;
+            replace_metadata(&mut row, &changes).unwrap();
+            row
+        };
+        let start = Instance {
+            max_memory_mb: Some(6144), memory_mode: Some("manual".into()), min_memory_mb: Some(1024),
+            ..Default::default()
+        };
+        assert!(runtime_memory_changes(false, None, Some("bogus".into()), None, false).is_err());
+        assert!(runtime_memory_changes(false, Some(256), None, None, false).is_err());
+        let inherit = apply(runtime_memory_changes(false, Some(4096), Some("inherit".into()), None, false).unwrap(), start.clone());
+        assert_eq!((inherit.max_memory_mb, inherit.memory_mode.as_deref()), (None, None),
+            "inherit must not leave a max that the legacy rule reads as manual");
+        let reset = apply(runtime_memory_changes(true, None, None, None, false).unwrap(), start.clone());
+        assert_eq!((reset.max_memory_mb, reset.memory_mode.as_deref(), reset.min_memory_mb), (None, None, None));
+        let auto = apply(runtime_memory_changes(false, Some(6144), Some("auto".into()), None, false).unwrap(), start.clone());
+        assert_eq!((auto.max_memory_mb, auto.memory_mode.as_deref(), auto.min_memory_mb), (Some(6144), Some("auto"), Some(1024)));
+        let cleared = apply(runtime_memory_changes(false, None, None, None, true).unwrap(), start.clone());
+        assert_eq!(cleared.min_memory_mb, None);
+        let set = apply(runtime_memory_changes(false, None, None, Some(2048), false).unwrap(), start);
+        assert_eq!(set.min_memory_mb, Some(2048));
+    }
+
+    #[test]
     fn m08_file_inventory_declines_deep_empty_directories() {
         let root = StagingDirectory::create(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1830,6 +1870,15 @@ mod backup_recovery_tests {
                 b"user world"
             );
         });
+    }
+
+    #[test]
+    fn c3_restore_target_refuses_a_running_root() {
+        let fixture = crate::storage::SameRootFixture::new();
+        assert!(restore_target(&fixture.state, &fixture.instance).is_ok());
+        fixture.mark_running();
+        let error = restore_target(&fixture.state, &fixture.instance).unwrap_err();
+        assert_eq!(error.code, "instance.running");
     }
 
     #[test]

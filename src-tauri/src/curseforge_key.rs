@@ -45,7 +45,16 @@ pub(crate) fn effective_cf_key(
     data_dir: &Path,
     explicit: Option<&str>,
 ) -> Result<Option<String>, String> {
-    select_key(explicit, builtin_cf_key(), || {
+    effective_cf_key_with(data_dir, explicit, builtin_cf_key())
+}
+
+/// The built-in key is a parameter so tests can prove the fallback is wired.
+fn effective_cf_key_with(
+    data_dir: &Path,
+    explicit: Option<&str>,
+    builtin: Option<&str>,
+) -> Result<Option<String>, String> {
+    select_key(explicit, builtin, || {
         crate::secrets::load_service_secret(data_dir, "curseforge-api-key")
     })
 }
@@ -126,6 +135,30 @@ mod tests {
         assert!(result.is_ok_and(|v| v.as_deref() == Some("explicit-fixture")));
         let result = select_key(None, Some("builtin-fixture"), || Ok(Some("saved\ninvalid".into())));
         assert!(result.is_err_and(|error| !error.contains("saved\ninvalid")));
+    }
+
+    #[test]
+    fn c4_builtin_key_is_the_last_fallback_and_never_skips_a_saved_key() {
+        let builtin = synthetic_cf_key();
+        let picked = select_key(None, Some(&builtin), || Ok(None)).unwrap();
+        assert_eq!(picked.as_deref(), Some(builtin.as_str()));
+        let picked = select_key(None, Some(&builtin), || Ok(Some(" user-fixture ".into()))).unwrap();
+        assert_eq!(picked.as_deref(), Some("user-fixture"));
+        let picked = select_key(Some("   "), Some(&builtin), || Ok(Some("user-fixture".into()))).unwrap();
+        assert_eq!(picked.as_deref(), Some("user-fixture"), "a blank explicit key must not skip the saved key");
+        assert_eq!(select_key(None, None, || Ok(None)).unwrap(), None);
+    }
+
+    #[test]
+    fn c4_effective_key_passes_the_builtin_through() {
+        let fixture = crate::instances::StagingDirectory::create(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/cf-key-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let builtin = synthetic_cf_key();
+        let picked = effective_cf_key_with(fixture.path(), None, Some(&builtin)).unwrap();
+        assert_eq!(picked.as_deref(), Some(builtin.as_str()));
+        assert_eq!(effective_cf_key_with(fixture.path(), None, None).unwrap(), None);
     }
 
     #[test]

@@ -166,6 +166,20 @@ test("the archive guard detects a CurseForge shape with a valid member hash", t 
   rejected(archive.check(), "src/demo.ts:2:" + cfKey);
 });
 
+test("the public guard rejects a CurseForge shape followed by body characters", t => {
+  const repo = repository(t);
+  const cases = [
+    "The key is " + cfMixed + ".",
+    "see " + cfMixed + ".txt",
+    "https://example.invalid/" + cfMixed + "/v1",
+    cfMixed + "x",
+  ];
+  cases.forEach((line, index) => repo.write("docs/leak-" + index + ".md", "# note\n" + line + "\n"));
+  const result = repo.check();
+  rejected(result);
+  cases.forEach((_, index) => assert.equal(result.output.includes("docs/leak-" + index + ".md:2:" + cfKey), true, "case " + index + " must be reported"));
+});
+
 test("public mode permits a repeated-character CurseForge fixture", t => {
   const repo = repository(t);
   repo.write("src/inert.ts", "// fixture: " + cfRepeated);
@@ -191,6 +205,14 @@ test("private mode permits a CurseForge key in a Cargo table but rejects its exa
   repo.git("add", path);
   repo.write(path, Buffer.from("\0synthetic fixture\n"));
   rejected(repo.check(), path + ":2:" + cfKey);
+});
+
+test("private mode still rejects a CurseForge shape outside config when no key is configured", t => {
+  const repo = repository(t, { privateMode: true });
+  repo.write(".cargo/config.toml", "[env]\nVOXELIGHT_MS_CLIENT_ID = '" + fixtureOne + "'\n");
+  assert.equal(repo.check().status, 0);
+  repo.write("src/x.ts", JSON.stringify(cfMixed));
+  rejected(repo.check(), "src/x.ts:1:" + cfKey);
 });
 
 test("private mode reads combined inline and dotted CurseForge forms", t => {

@@ -1624,6 +1624,19 @@ pub async fn recover_resource_update(
 }
 
 fn local_resource(path: PathBuf, kind: ResourceKind) -> Result<Option<LocalResource>, String> {
+    let Some((mut resource, metadata)) = local_resource_without_metadata(path, kind)? else {
+        return Ok(None);
+    };
+    resource.metadata = matches!(kind, ResourceKind::Mod)
+        .then(|| crate::mod_metadata::cached_metadata(Path::new(&resource.path), &metadata)).flatten();
+    Ok(Some(resource))
+}
+
+/// File-state checks only; never opens the archive.
+fn local_resource_without_metadata(
+    path: PathBuf,
+    kind: ResourceKind,
+) -> Result<Option<(LocalResource, fs::Metadata)>, String> {
     let metadata = fs::symlink_metadata(&path).map_err(|_| "无法读取资源文件信息")?;
     if !metadata.is_file() || linked(&metadata) {
         return Ok(None);
@@ -1644,15 +1657,14 @@ fn local_resource(path: PathBuf, kind: ResourceKind) -> Result<Option<LocalResou
     if !kind.accepts(original) || validate_id(&file_name).is_err() {
         return Ok(None);
     }
-    Ok(Some(LocalResource {
+    Ok(Some((LocalResource {
         name: original.to_owned(),
         file_name,
         path: path.to_string_lossy().into_owned(),
         enabled,
         size: metadata.len(),
-        metadata: matches!(kind, ResourceKind::Mod)
-            .then(|| crate::mod_metadata::cached_metadata(&path, &metadata)).flatten(),
-    }))
+        metadata: None,
+    }, metadata)))
 }
 
 #[tauri::command]
@@ -1738,34 +1750,75 @@ pub async fn toggle_resource(
 ) -> AppResult<LocalResource> {
     let kind = ResourceKind::parse(&resource_type)?;
     validate_id(&file_name)?;
-    let _operation = state.operation.lock().await;
-    let directory = resource_directory(
-        &state.snapshot()?,
-        &version_id,
-        instance_id.as_deref(),
-        kind,
-    )?;
-    resource_transactions::require_no_pending(&directory)?;
-    reject_links(&directory)?;
-    let source = safe_join(&directory, &file_name)?;
-    let resource = local_resource(source.clone(), kind)?.ok_or("请选择有效的资源文件")?;
-    let target_name = if resource.enabled {
-        format!("{file_name}.disabled")
-    } else {
-        file_name[..file_name.len() - 9].to_owned()
+    let target = {
+        let _operation = state.operation.lock().await;
+        // Enabling or disabling is a write to the game directory (2026-11-20 ruling C3-2).
+        require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
+        let directory = resource_directory(
+            &state.snapshot()?,
+            &version_id,
+            instance_id.as_deref(),
+            kind,
+        )?;
+        resource_transactions::require_no_pending(&directory)?;
+        reject_links(&directory)?;
+        let source = safe_join(&directory, &file_name)?;
+        let (resource, _) = local_resource_without_metadata(source.clone(), kind)?.ok_or("请选择有效的资源文件")?;
+        let target_name = if resource.enabled {
+            format!("{file_name}.disabled")
+        } else {
+            file_name[..file_name.len() - 9].to_owned()
+        };
+        validate_id(&target_name)?;
+        let target = safe_join(&directory, &target_name)?;
+        if target.exists() {
+            return Err("目标文件名已存在，已保留两个文件。请先手动处理重名文件。".into());
+        }
+        fs::rename(&source, &target).map_err(|_| "切换资源状态失败，请检查文件是否被游戏占用")?;
+        target
     };
-    validate_id(&target_name)?;
-    let target = safe_join(&directory, &target_name)?;
-    if target.exists() {
-        return Err("目标文件名已存在，已保留两个文件。请先手动处理重名文件。".into());
-    }
-    fs::rename(&source, &target).map_err(|_| "切换资源状态失败，请检查文件是否被游戏占用")?;
-    local_resource(target, kind)?.ok_or_else(|| expected("资源状态无法读取"))
+    // Metadata may open the archive; do that off the async worker and outside the lock.
+    tokio::task::spawn_blocking(move || local_resource(target, kind))
+        .await
+        .map_err(|_| expected("资源状态无法读取"))??
+        .ok_or_else(|| expected("资源状态无法读取"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c5_count_enabled_mods_counts_only_enabled_top_level_jar_files() {
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mod-count-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let mods = fixture.path().join("mods");
+        assert_eq!(count_enabled_mods(&mods), Ok(0), "a missing folder means no mods");
+        fs::create_dir_all(mods.join("sub")).unwrap();
+        fs::create_dir(mods.join("e.jar")).unwrap();
+        for name in ["a.jar", "B.JAR", "c.jar.disabled", "d.zip", "sub/x.jar"] {
+            fs::write(mods.join(name), b"jar").unwrap();
+        }
+        assert_eq!(count_enabled_mods(&mods), Ok(2));
+        let file = fixture.path().join("not-a-folder");
+        fs::write(&file, b"").unwrap();
+        assert!(count_enabled_mods(&file).is_err());
+        #[cfg(windows)]
+        {
+            let alias = fixture.path().join("linked-mods");
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(alias.to_string_lossy().replace('/', r"\"))
+                .arg(mods.to_string_lossy().replace('/', r"\"))
+                .output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let counted = count_enabled_mods(&alias);
+            let _ = fs::remove_dir(&alias);
+            assert!(counted.is_err(), "a linked mods folder must not be followed");
+        }
+    }
 
     #[test]
     fn a4_same_root_blocks_reserved_mod_install_before_writing_in_the_target() {
@@ -1808,9 +1861,9 @@ mod tests {
 
     #[test]
     fn a4_pinned_create_writers_keep_reservation_preflight_and_same_root_order() {
-        fn section<'a>(source: &'a str, marker: &str) -> &'a str {
+        fn section(source: &str, marker: &str) -> String {
             let (_, tail) = source.split_once(marker).unwrap_or_else(|| panic!("missing {marker}"));
-            tail.split_once("\n}").unwrap_or_else(|| panic!("unterminated {marker}")).0
+            crate::storage::executable_source(tail.split_once("\n}").unwrap_or_else(|| panic!("unterminated {marker}")).0)
         }
         fn ordered(body: &str, markers: &[&str]) {
             let mut remaining = body;
@@ -1821,22 +1874,22 @@ mod tests {
         }
         let mr = include_str!("resources.rs");
         let cf = include_str!("curseforge.rs");
-        ordered(section(mr, "pub(crate) async fn with_reserved_resource_task<"), &[
+        ordered(&section(mr, "pub(crate) async fn with_reserved_resource_task<"), &[
             "claim_resource(id, request)", "wait_for_turn(&state.operation, id).await", "task.await",
         ]);
-        ordered(section(mr, "pub async fn create_instance_for_resource("), &[
+        ordered(&section(mr, "pub async fn create_instance_for_resource("), &[
             "with_reserved_resource_task(", "let api = client(", "fetch_pinned_modrinth_version(",
             "validate_pinned_creation_pair(", "resource_transactions::preflight(", "install_loader_inner(",
             "create_resource_instance_then_install(", "require_resource_stopped(", "resource_target(",
             "resource_transactions::install(",
         ]);
-        ordered(section(cf, "pub(crate) async fn create_with_pinned_file("), &[
+        ordered(&section(cf, "pub(crate) async fn create_with_pinned_file("), &[
             "with_reserved_resource_task(", "let key = service_key(", "get_pinned_file(",
             "validate_pinned_creation_pair(", "can_create_pinned(", "install_loader_inner(",
             "create_resource_instance_then_install(", "require_resource_stopped(", "resource_target(",
             "resource_transactions::require_no_pending(", "let path = download(",
         ]);
-        ordered(section(mr, "async fn create_resource_instance_then_install<"), &[
+        ordered(&section(mr, "async fn create_resource_instance_then_install<"), &[
             "state.control.checkpoint().await", "create_instance_inner(",
             "state.control.checkpoint().await", "install(instance.clone()).await",
         ]);
@@ -1848,25 +1901,30 @@ mod tests {
         let modrinth = include_str!("resources.rs");
         let curseforge = include_str!("curseforge.rs");
         // Extend this table in C6 if installing an exact version adds a separate writer.
+        const LOCK: &str = "let _operation = state.operation.lock().await;";
         for (source, command, lock, writer) in [
             (modrinth, "install_resource", "with_reserved_resource_task(", "resource_transactions::install("),
-            (modrinth, "update_resource", "state.operation.lock().await", "resource_transactions::update_one("),
-            (modrinth, "rollback_resource_update", "state.operation.lock().await", "resource_transactions::rollback("),
+            (modrinth, "update_resource", LOCK, "resource_transactions::update_one("),
+            (modrinth, "rollback_resource_update", LOCK, "resource_transactions::rollback("),
+            (modrinth, "toggle_resource", LOCK, "fs::rename(&source, &target)"),
             (curseforge, "install_curseforge_resource", "with_reserved_resource_task(", "let key = service_key("),
         ] {
             let (_, body) = source.split_once(&format!("pub async fn {command}(")).unwrap();
             let (body, _) = body.split_once("\n}").unwrap();
+            let body = &crate::storage::executable_source(body);
             let lock = body.find(lock).expect(command);
-            let guard = body.find("require_resource_stopped(").expect(command);
+            let guard = body
+                .find("require_resource_stopped(&state, &version_id, instance_id.as_deref())?;")
+                .expect(command);
             let write_or_network = body.find(writer).expect(command);
             assert!(lock < guard && guard < write_or_network, "{command}");
         }
         let (_, wrapper) = modrinth.split_once("pub(crate) async fn with_reserved_resource_task<").unwrap();
         let (wrapper, _) = wrapper.split_once("\n}").unwrap();
-        assert!(
-            wrapper.find("wait_for_turn(&state.operation, id).await").unwrap()
-                < wrapper.find("task.await").unwrap()
-        );
+        let wrapper = &crate::storage::executable_source(wrapper);
+        let turn = wrapper.find("let _operation = state.control.wait_for_turn(&state.operation, id).await?;").unwrap();
+        // The named binding keeps the turn held until the task finishes.
+        assert!(turn < wrapper.find("task.await").unwrap());
     }
 
 

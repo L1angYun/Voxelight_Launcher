@@ -161,6 +161,12 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             | "已有服务端操作正在进行"
             | "已有下载或启动准备任务运行" => "server.busy",
             "游戏目录必须是绝对路径" => "config.gameDirectory",
+            "不支持所选内存分配模式" => "config.memoryMode",
+            "最小内存需要在 256–65536 MB 之间" => "config.minMemoryRange",
+            "最小内存不能大于最大内存" => "config.minMemoryAboveMax",
+            "请使用最小和最大内存设置，不要在自定义 JVM 参数里使用 -Xms 或 -Xmx" => {
+                "config.heapArguments"
+            }
             "已有安装或启动准备任务运行，请等待完成后修改配置" => {
                 "config.busy"
             }
@@ -311,5 +317,18 @@ mod tests {
             "config.presetInvalid"
         );
         assert_eq!(expected("下载源无效".to_string()).code, "config.invalid");
+    }
+
+    #[test]
+    fn c5_memory_validation_errors_have_their_own_codes() {
+        for (detail, code) in [
+            (crate::memory::validate_mode("bogus").unwrap_err(), "config.memoryMode"),
+            (crate::memory::validate_min("auto", Some(100), 4096).unwrap_err(), "config.minMemoryRange"),
+            (crate::memory::validate_min("manual", Some(8192), 4096).unwrap_err(), "config.minMemoryAboveMax"),
+            (crate::memory::validate_changed_heap_arguments("", "-Xmx2G").unwrap_err(), "config.heapArguments"),
+        ] {
+            assert_eq!(expected(detail.clone()).code, code, "{detail}");
+            assert_eq!(crate::errors::AppError::from(detail).code, code);
+        }
     }
 }

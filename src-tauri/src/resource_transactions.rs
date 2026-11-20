@@ -1578,7 +1578,7 @@ mod tests {
             (
                 "local",
                 local,
-                "state.operation.lock().await",
+                "let _guard = state.operation.lock().await;",
                 "let directory = safe_join(&root, folder)?",
                 "fs::create_dir_all(&directory)",
             ),
@@ -1590,7 +1590,8 @@ mod tests {
                 "let key = service_key(&state)?",
             ),
         ] {
-            let guarded = body.find("require_no_pending").expect(command);
+            let body = &crate::storage::executable_source(body);
+            let guarded = body.find("require_no_pending(").expect(command);
             assert!(
                 body.find(acquire).unwrap() < guarded,
                 "{command}"

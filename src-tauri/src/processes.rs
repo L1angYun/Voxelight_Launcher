@@ -131,7 +131,9 @@ impl GameRegistry {
             clock: Instant::now(),
             owner: None,
             info: RunningGame { game_id, pid: 12, version_id: "first-test-version".into(), instance_id: instance_id.map(str::to_owned),
-                game_directory: directory.canonicalize().unwrap().display().to_string(), started_at: String::new() },
+                // Store the spelling as given, like register(): the comparator
+                // must resolve aliases itself rather than rely on this fixture.
+                game_directory: directory.display().to_string(), started_at: String::new() },
         });
     }
 
@@ -250,10 +252,16 @@ pub fn list_running_games(registry: State<'_, Arc<GameRegistry>>) -> Vec<Running
     registry.list()
 }
 fn interface_is_zh(config: &Config) -> bool {
-    match config.language.as_str() {
+    report_is_zh(&config.language, || crate::platform::get_system_appearance().locale)
+}
+
+/// Mirrors the frontend's resolveLocale: only "system" follows the OS, and an
+/// unknown value falls back to English like the interface does.
+fn report_is_zh(language: &str, system_locale: impl FnOnce() -> String) -> bool {
+    match language {
         "zh-CN" => true,
-        "en-US" => false,
-        _ => crate::platform::get_system_appearance().locale == "zh-CN",
+        "system" => system_locale() == "zh-CN",
+        _ => false,
     }
 }
 
@@ -491,19 +499,28 @@ pub fn export_diagnostics(
     output_path: String,
 ) -> crate::errors::AppResult<String> {
     let output_path = grants.consume(PathUse::Diagnostics, &output_path, &window)?.to_string_lossy().into_owned();
-    let diagnosis =
-        diagnose_instance_inner(state.inner().as_ref(), version_id.clone(), instance_id.clone())?;
-    let destination = Path::new(&output_path);
-    let report = render_diagnostic_report(
+    let report = diagnostic_export_text(state.inner().as_ref(), &version_id, instance_id.as_deref(),
+        &chrono::Utc::now().to_rfc3339())?;
+    write_diagnostics_file(Path::new(&output_path), report.as_bytes())?;
+    Ok(output_path)
+}
+
+/// The exported report text, in the interface language, from a redacted excerpt.
+fn diagnostic_export_text(
+    state: &LauncherState,
+    version_id: &str,
+    instance_id: Option<&str>,
+    generated_at: &str,
+) -> Result<String, String> {
+    let diagnosis = diagnose_instance_inner(state, version_id.to_owned(), instance_id.map(str::to_owned))?;
+    Ok(render_diagnostic_report(
         diagnosis.kind,
         interface_is_zh(&state.snapshot()?.config),
-        &version_id,
-        instance_id.as_deref(),
+        version_id,
+        instance_id,
         &diagnosis.excerpt,
-        &chrono::Utc::now().to_rfc3339(),
-    );
-    write_diagnostics_file(destination, report.as_bytes())?;
-    Ok(output_path)
+        generated_at,
+    ))
 }
 fn diagnostic_locale(zh: bool) -> &'static serde_json::Value {
     static REPORT_LOCALES: std::sync::LazyLock<[serde_json::Value; 2]> = std::sync::LazyLock::new(|| {
@@ -880,6 +897,48 @@ mod tests {
         assert_eq!(payload["kind"], "memory");
         assert_eq!(payload["excerpt"], sample);
         assert!(payload.get("title").is_none(), "native diagnostics should not send locale-specific titles");
+    }
+
+    #[test]
+    fn c3_report_language_follows_the_interface_rule() {
+        let never = || -> String { panic!("only the system preference reads the OS locale") };
+        assert!(report_is_zh("zh-CN", never));
+        assert!(!report_is_zh("en-US", never));
+        assert!(!report_is_zh("fr-FR", never), "unknown values fall back to English like the UI");
+        assert!(report_is_zh("system", || "zh-CN".into()));
+        assert!(!report_is_zh("system", || "en-US".into()));
+    }
+
+    #[test]
+    fn c3_exported_report_uses_the_interface_language_and_redacts_the_log() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/diagnostic-tests").join(uuid::Uuid::new_v4().to_string());
+        let data = root.join("data");
+        let game = root.join("game");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(game.join("logs")).unwrap();
+        let secret = "fixture-export-token";
+        std::fs::write(game.join("logs/latest.log"),
+            format!("access_token={secret}\nSynthetic Java fixture: java.lang.OutOfMemoryError")).unwrap();
+        let state = LauncherState::test_fixture(
+            data, crate::models::Persisted::default(), crate::storage::test_client(),
+        );
+        let report = |language: &str| {
+            state.update(|profile| {
+                profile.config.game_directory = game.display().to_string();
+                profile.config.version_isolation = false;
+                profile.config.language = language.into();
+                Ok(())
+            }).unwrap();
+            diagnostic_export_text(&state, "1.21.1", None, "2026-11-20T00:00:00Z").unwrap()
+        };
+        let zh = report("zh-CN");
+        let en = report("en-US");
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(zh.contains("诊断报告") && !zh.contains("Diagnostic report"), "{zh}");
+        assert!(en.contains("Diagnostic report") && !en.contains("诊断报告"), "{en}");
+        assert!(!zh.contains(secret) && !en.contains(secret), "the exported excerpt must be redacted");
     }
 
     #[test]

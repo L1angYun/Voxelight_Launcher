@@ -1,12 +1,12 @@
 {
   "memory": {
-    "initial": "Initial memory (MiB)",
+    "initial": "Initial memory (MB)",
     "initialHint": "Leave empty to let Java choose. Automatic allocation can lower this value when needed.",
     "mode": "Memory allocation",
     "auto": "Automatic memory",
     "manual": "Manual memory",
     "inherit": "Use global memory mode",
-    "overview": "System RAM: {{total}} GiB; available: {{available}} GiB; recommended: {{recommended}} MiB.",
+    "overview": "System RAM: {{total}} GiB; available: {{available}} GiB; recommended: {{recommended}} MB (assumes 64-bit Java).",
     "refresh": "Refresh memory"
   },
   "title": "Settings",
@@ -183,6 +183,7 @@
     "secretCleared": "Saved CurseForge key cleared.",
     "presetExported": "Preset exported without accounts or service keys.",
     "presetImported": "Preset imported.",
+    "presetImportedHeapRemoved": "Preset imported. Its -Xms/-Xmx JVM arguments were ignored; set memory in the memory fields.",
     "backgroundUpdated": "Home background updated.",
     "backgroundCleared": "Default home background restored.",
     "javaDetected_one": "Found {{count}} Java environment.",
@@ -209,6 +210,10 @@
       "presetInvalid": "Choose a valid preset exported by this launcher.",
       "busy": "Wait for the current installation or launch preparation to finish before changing settings.",
       "gameDirectory": "The game directory must be an absolute path.",
+      "memoryMode": "Choose automatic or manual memory.",
+      "minMemoryRange": "Initial memory must be between 256 and 65536 MB.",
+      "minMemoryAboveMax": "Initial memory cannot exceed maximum memory. Lower the initial memory or raise the maximum.",
+      "heapArguments": "Set memory with the memory fields and remove -Xms, -Xmx or -XX:…HeapSize from the custom JVM arguments.",
       "invalid": "Some settings are invalid. Review the highlighted values and try again."
     }
   }

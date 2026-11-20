@@ -132,9 +132,33 @@ fn read_config_preset(path: &str) -> Result<Config, String> {
         serde_json::from_value(migrated["config"].clone()).map_err(|e| e.to_string())?;
     Ok(config)
 }
+
+/// Older presets can carry heap flags in the custom JVM arguments, which the
+/// memory fields now own. Drop them so the preset still imports (2026-11-20
+/// ruling C5-7); the values are not migrated and the save checks still run.
+fn strip_heap_arguments(config: &mut Config) -> Result<bool, String> {
+    let arguments = shell_words::split(&config.jvm_arguments).map_err(|_| "JVM 参数引号不匹配")?;
+    let kept: Vec<_> = arguments.iter().filter(|arg| !crate::memory::is_memory_argument(arg)).collect();
+    if kept.len() == arguments.len() {
+        return Ok(false);
+    }
+    config.jvm_arguments = shell_words::join(kept);
+    Ok(true)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedPreset {
+    config: Config,
+    heap_arguments_removed: bool,
+}
+
 #[cfg(test)]
-fn import_launcher_config_inner(state: &LauncherState, path: String) -> Result<Config, String> {
-    crate::commands::save_config_inner(state, read_config_preset(&path)?)
+fn import_launcher_config_inner(state: &LauncherState, path: String) -> Result<ImportedPreset, String> {
+    let mut config = read_config_preset(&path)?;
+    let heap_arguments_removed = strip_heap_arguments(&mut config)?;
+    let config = crate::commands::save_config_inner(state, config)?;
+    Ok(ImportedPreset { config, heap_arguments_removed })
 }
 
 #[tauri::command]
@@ -143,17 +167,19 @@ pub async fn import_launcher_config(
     grants: State<'_, PathGrants>,
     state: State<'_, Arc<LauncherState>>,
     path: String,
-) -> AppResult<Config> {
+) -> AppResult<ImportedPreset> {
     let path = grants.consume(PathUse::PresetRead, &path, &window)?.to_string_lossy().into_owned();
     let previous = state.snapshot()?.config;
     let mut config = read_config_preset(&path)?;
+    let heap_arguments_removed = strip_heap_arguments(&mut config)?;
     if config.custom_background != previous.custom_background {
         // A preset can restore visual preferences, but a reference to an
         // external image is not a native file grant. Keep the selected image.
         config.custom_background = previous.custom_background.clone();
     }
     crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
-    crate::commands::save_approved_config(&state, config, Some(&previous)).map_err(expected)
+    let config = crate::commands::save_approved_config(&state, config, Some(&previous)).map_err(expected)?;
+    Ok(ImportedPreset { config, heap_arguments_removed })
 }
 
 #[cfg(test)]
@@ -193,10 +219,39 @@ mod tests {
 
         let imported =
             import_launcher_config_inner(&state, preset.to_string_lossy().into_owned()).unwrap();
+        assert!(!imported.heap_arguments_removed);
+        let imported = imported.config;
         assert_eq!(imported.default_skin, "steve");
         assert_eq!(imported.max_memory_mb, 8192);
         assert_eq!(imported.effects, "lite");
         assert_eq!(imported.game_directory, game.to_string_lossy());
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn c5_preset_with_heap_flags_imports_without_them() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/appearance-tests")
+            .join(uuid::Uuid::new_v4().to_string());
+        let data = root.join("data");
+        let game = root.join("game");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&game).unwrap();
+        let state =
+            LauncherState::test_fixture(data, Persisted::default(), crate::storage::test_client());
+        let preset = root.join("heap-preset.json");
+        let config = Config {
+            game_directory: game.to_string_lossy().into_owned(),
+            jvm_arguments: "-Xmx6G -XX:+UseG1GC -Xms2G '-Dname=a b' -XX:MaxHeapSize=4g".into(),
+            ..Config::default()
+        };
+        fs::write(&preset, serde_json::to_vec(&serde_json::json!({"formatVersion": 1, "config": config})).unwrap()).unwrap();
+        let imported = import_launcher_config_inner(&state, preset.to_string_lossy().into_owned()).unwrap();
+        assert!(imported.heap_arguments_removed);
+        let kept = shell_words::split(&imported.config.jvm_arguments).unwrap();
+        assert_eq!(kept, ["-XX:+UseG1GC", "-Dname=a b"]);
+        assert_eq!(state.snapshot().unwrap().config.jvm_arguments, imported.config.jvm_arguments);
         drop(state);
         fs::remove_dir_all(root).unwrap();
     }

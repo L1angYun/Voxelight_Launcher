@@ -958,6 +958,42 @@ mod scoped_settings_save_tests {
     }
 
     #[test]
+    fn c5_u0880_config_saves_reject_new_heap_flags_and_bad_minimums_without_writing() {
+        let (_root, state) = owned_profile();
+        state.update(|data| {
+            data.config.jvm_arguments = "-Xmx2G".into();
+            data.config.memory_mode = "manual".into();
+            Ok(())
+        }).unwrap();
+        let legacy = state.snapshot().unwrap().config;
+        // A legacy heap flag never blocks an unrelated save.
+        let mut unrelated = legacy.clone();
+        unrelated.download_limit_kib = 256;
+        assert_eq!(save_approved_config(&state, unrelated, Some(&legacy)).unwrap().download_limit_kib, 256);
+        let current = state.snapshot().unwrap().config;
+        let rejected = |candidate: Config, approved: &Config| {
+            let before = state.snapshot().unwrap().config;
+            let error = save_approved_config(&state, candidate, Some(approved)).unwrap_err();
+            let after = state.snapshot().unwrap().config;
+            assert_eq!(serde_json::to_value(&before).unwrap(), serde_json::to_value(&after).unwrap(), "{error}");
+            error
+        };
+        for arguments in ["-Xmx2G -XX:+UseZGC", "-Xms1G", "-XX:MaxHeapSize=1g"] {
+            let mut changed = current.clone();
+            changed.jvm_arguments = arguments.into();
+            let error = rejected(changed, &current);
+            assert_eq!(crate::errors::expected(error).code, "config.heapArguments", "{arguments}");
+        }
+        let mut too_small = current.clone();
+        too_small.max_memory_mb = 2048;
+        too_small.min_memory_mb = Some(4096);
+        assert_eq!(crate::errors::expected(rejected(too_small, &current)).code, "config.minMemoryAboveMax");
+        // A stale JVM snapshot cannot silently restore old arguments.
+        state.update(|data| { data.config.jvm_arguments = "-XX:+UseG1GC".into(); Ok(()) }).unwrap();
+        assert_eq!(rejected(current.clone(), &current), crate::errors::STORAGE_STATE_CHANGED);
+    }
+
+    #[test]
     fn r4_nonvisual_save_keeps_the_latest_independently_saved_appearance() {
         let (_root, state) = owned_profile();
         let previous = state.snapshot().unwrap().config;

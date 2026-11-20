@@ -112,7 +112,9 @@ function readAllowlist(ctx) {
   const file = path.join(ctx.root, "scripts", "advisory-allowlist.json");
   let rules;
   try {
-    rules = JSON.parse(readFileSync(file, "utf8"));
+    // Windows editors often save with a UTF-8 BOM; accept one leading BOM.
+    const text = readFileSync(file, "utf8");
+    rules = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   } catch (error) {
     if (error.code === "ENOENT") return new Set();
     throw new AuditError("allowlist is invalid (expected scripts/advisory-allowlist.json)");

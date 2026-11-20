@@ -187,6 +187,76 @@ test("RustSec allowlisting is scoped to the exact advisory and package and expir
   assert.doesNotMatch(info.lines.join("\n"), /A local fixture reason/);
 });
 
+test("a waiver covers only its own advisory, and warnings are findings too", async (t) => {
+  const { runToolchain } = await checker();
+  const root = fixture(t);
+  const second = { advisory: { id: "RUSTSEC-2099-0002", cvss: rustAdvisory.advisory.cvss }, package: rustAdvisory.package };
+  let report = { vulnerabilities: { found: true, count: 2, list: [rustAdvisory, second] }, warnings: {} };
+  const info = capture(root, (cmd, args) => args.includes("--version") ? reply("cargo-audit fixture") : reply(report, 1));
+  const run = () => { info.lines.length = 0; return runToolchain(["--audit", "--only=cargo"], info.options); };
+  allow(root, [{ id: "RUSTSEC-2099-0001", package: "example-crate", reason: "fixture", expires: "2098-10-13" }]);
+  assert.equal(run(), 1, "a waiver for one advisory must not cover another on the same crate");
+  assert.match(info.lines.join("\n"), /RUSTSEC-2099-0002 example-crate/);
+  assert.match(info.lines.join("\n"), /1 unallowlisted/);
+  report = {
+    vulnerabilities: { found: false, count: 0, list: [] },
+    warnings: {
+      yanked: [{ package: { name: "yanked-crate" }, advisory: null }],
+      unmaintained: [{ package: { name: "old-crate" }, advisory: { id: "RUSTSEC-2099-0003" } }],
+    },
+  };
+  assert.equal(run(), 1);
+  assert.match(info.lines.join("\n"), /RUSTSEC-YANKED yanked-crate/);
+  assert.match(info.lines.join("\n"), /RUSTSEC-2099-0003 old-crate/);
+  allow(root, [
+    { id: "RUSTSEC-YANKED", package: "yanked-crate", reason: "fixture", expires: "2098-10-13" },
+    { id: "RUSTSEC-2099-0003", package: "old-crate", reason: "fixture", expires: "2098-10-13" },
+  ]);
+  assert.equal(run(), 0);
+});
+
+test("an allowlist saved with a UTF-8 BOM is accepted", async (t) => {
+  const { runToolchain } = await checker();
+  const root = fixture(t);
+  writeFileSync(path.join(root, "scripts", "advisory-allowlist.json"), String.fromCharCode(0xfeff) + "[]");
+  const info = capture(root, (cmd, args) => args.includes("--version")
+    ? reply("cargo-audit fixture")
+    : reply({ vulnerabilities: { found: false, count: 0, list: [] }, warnings: {} }));
+  assert.equal(runToolchain(["--audit", "--only=cargo"], info.options), 0, info.lines.join("\n"));
+});
+
+test("MSRV skips when rustup lists only other toolchains, and strict mode reports it", async (t) => {
+  const { runToolchain } = await checker();
+  const root = fixture(t);
+  const calls = [];
+  const info = capture(root, (command, args) => {
+    calls.push(command);
+    return command === "rustup" ? reply("stable-x86_64-pc-windows-msvc (active, default)\n") : reply();
+  });
+  assert.equal(runToolchain(["--msrv"], info.options), 0);
+  assert.match(info.lines.join("\n"), /SKIPPED/);
+  assert.equal(runToolchain(["--msrv", "--strict"], info.options), 2);
+  assert.deepEqual([...new Set(calls)], ["rustup"], "no cargo build without the pinned toolchain");
+  const named = capture(root, (command) => command === "rustup" ? reply("1.90-x86_64-pc-windows-msvc\n") : reply());
+  assert.equal(runToolchain(["--msrv"], named.options), 0);
+  assert.match(named.lines.join("\n"), /msrv: ok/);
+});
+
+test("a plain --audit runs both ecosystems", async (t) => {
+  const { runToolchain } = await checker();
+  const root = fixture(t);
+  const info = capture(root, (command, args) => {
+    if (command === "cargo") return args.includes("--version") ? reply("cargo-audit fixture")
+      : reply({ vulnerabilities: { found: false, count: 0, list: [] }, warnings: {} });
+    return reply({ auditReportVersion: 2, vulnerabilities: {}, metadata: {} });
+  });
+  info.options.env = { npm_execpath: "npm-cli.js" };
+  assert.equal(runToolchain(["--audit"], info.options), 0, info.lines.join("\n"));
+  const output = info.lines.join("\n");
+  assert.match(output, /audit npm: ok/);
+  assert.match(output, /audit cargo: ok/);
+});
+
 test("npm audit reports the underlying advisory once through transitive via references", async (t) => {
   const { runToolchain } = await checker();
   const root = fixture(t);

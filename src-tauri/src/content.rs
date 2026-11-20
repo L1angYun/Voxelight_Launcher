@@ -997,9 +997,11 @@ mod tests {
         for command in ["backup_world", "import_world", "import_local_resources"] {
             let (_, body) = source.split_once(&format!("pub async fn {command}(")).unwrap();
             let (body, _) = body.split_once("\n}").unwrap();
-            let lock = body.find("state.operation.lock().await").expect(command);
+            let body = &crate::storage::executable_source(body);
+            // A named binding keeps the lock held; `let _ =` would drop it at once.
+            let lock = body.find("let _guard = state.operation.lock().await;").expect(command);
             let resolve = body.find("game_root(&state, &version_id").expect(command);
-            let guard = body.find("stopped_game_root(&state, &root").expect(command);
+            let guard = body.find("let root = stopped_game_root(&state, &root, instance_id.as_deref())?;").expect(command);
             let spawn = body.find("tokio::task::spawn_blocking").expect(command);
             assert!(lock < resolve && resolve < guard && guard < spawn, "{command}");
             if command == "import_world" {
