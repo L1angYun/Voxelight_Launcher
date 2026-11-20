@@ -65,6 +65,7 @@ export function CharacterCanvas({
   errorLabel,
   resetToken = 0,
   deferMs = 0,
+  freeze = false,
 }: {
   skinUrl?: string | null;
   capeUrl?: string | null;
@@ -84,6 +85,9 @@ export function CharacterCanvas({
   resetToken?: number;
   /** Delay only viewer construction; existing viewers still apply resources immediately. */
   deferMs?: number;
+  /** Keep the last fully loaded frame as a plain 2D image and release the WebGL viewer.
+    Used where the scene is static anyway (Lite / reduced motion), so no GPU context stays resident. */
+  freeze?: boolean;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
@@ -105,6 +109,9 @@ export function CharacterCanvas({
   const [error, setError] = useState<string | null>(null);
   const [capeError, setCapeError] = useState<string | null>(null);
   const [visible, setVisible] = useState(!document.hidden);
+  const [frozen, setFrozen] = useState(false);
+  const [capeSettled, setCapeSettled] = useState(true);
+  const stillRef = useRef<HTMLCanvasElement | null>(null);
   const inView = useRef(true);
   const reducedMotion = useReducedMotion();
   const mode = reducedMotion ? "none" : animation;
@@ -128,6 +135,20 @@ export function CharacterCanvas({
     function setup() {
       const mount = mountRef.current;
       if (!mount) return;
+      const still = stillRef.current;
+      if (frozen && still) {
+        // The still replaces the viewer in place; a real layout change rebuilds
+        // and recaptures so the image is never stretched to a new aspect.
+        still.setAttribute("aria-label", label);
+        mount.append(still);
+        const captured = { width: mount.clientWidth, height: mount.clientHeight };
+        const stale = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+          if (Math.abs(mount.clientWidth - captured.width) > 2 || Math.abs(mount.clientHeight - captured.height) > 2) setFrozen(false);
+        });
+        stale?.observe(mount);
+        setLoading(false);
+        return () => { stale?.disconnect(); still.remove(); };
+      }
       let active = true;
       let instance: WebGLSkinViewer;
       let observer: ResizeObserver | undefined;
@@ -268,6 +289,7 @@ export function CharacterCanvas({
         instance.renderer.forceContextLoss();
         canvas.remove();
         canvasRef.current = null;
+        setViewer((current) => (current === instance ? null : current));
       };
     }
     const create = () => {
@@ -279,6 +301,7 @@ export function CharacterCanvas({
     };
     const schedule = () => {
       if (stopped || viewerRef.current) return;
+      if (frozen && stillRef.current) { create(); return; }
       if (timer !== undefined) window.clearTimeout(timer);
       setLoading(true);
       setError(null);
@@ -294,7 +317,8 @@ export function CharacterCanvas({
       if (pendingStartRef.current === schedule) pendingStartRef.current = null;
       teardown?.();
     };
-  }, [attempt, interactive, label]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt, interactive, label, frozen]);
 
   useEffect(() => {
     // Resource changes reschedule a pending construction only. Once present,
@@ -336,13 +360,16 @@ export function CharacterCanvas({
     if (!viewer || viewer.disposed) return;
     let active = true;
     setCapeError(null);
+    setCapeSettled(false);
     void capeLoaderRef.current?.load(null, "cape").then(() => {
       if (!active || viewer.disposed || !capeUrl) return null;
       return capeLoaderRef.current?.load(capeUrl, "cape");
     }).then((applied) => {
       if (active && applied && !viewer.disposed) viewer.render();
+      if (active) setCapeSettled(true);
     }).catch((cause: unknown) => {
       if (!active) return;
+      setCapeSettled(true);
       const message = cause instanceof Error ? cause.message : "cape.loadFailed";
       setCapeError(message);
       onErrorRef.current?.(message);
@@ -398,6 +425,37 @@ export function CharacterCanvas({
     viewer.render();
   }, [resetToken, viewer]);
 
+  useEffect(() => {
+    // Any change to what the still shows, or leaving the frozen context,
+    // rebuilds the live viewer (which recaptures if freeze still applies).
+    const key = JSON.stringify([skinUrl, capeUrl, model, mode]);
+    if (!freeze || (stillRef.current && stillRef.current.dataset.stillKey !== key)) {
+      stillRef.current = null;
+      if (frozen) setFrozen(false);
+    }
+  }, [freeze, frozen, skinUrl, capeUrl, model, mode]);
+
+  useEffect(() => {
+    if (!freeze || frozen || !viewer || viewer.disposed || loading || !capeSettled || error || capeError) return;
+    const source = canvasRef.current;
+    if (!source || source.width < 1 || source.height < 1) return;
+    // Render and copy in the same task: the drawing buffer is not preserved
+    // after compositing, so a later read could be blank.
+    viewer.render();
+    const still = document.createElement("canvas");
+    still.width = source.width;
+    still.height = source.height;
+    const context = still.getContext("2d");
+    if (!context) return;
+    context.drawImage(source, 0, 0);
+    still.setAttribute("role", "img");
+    still.tabIndex = -1;
+    still.dataset.characterStill = "true";
+    still.dataset.stillKey = JSON.stringify([skinUrl, capeUrl, model, mode]);
+    stillRef.current = still;
+    setFrozen(true);
+  }, [freeze, frozen, viewer, loading, capeSettled, error, capeError, skinUrl, capeUrl, model, mode]);
+
   return (
     <div
       className={cn("vx-character-canvas", className)}
@@ -408,6 +466,7 @@ export function CharacterCanvas({
       data-visible={visible}
       data-character-animation={mode}
       data-character-paused={playbackPaused}
+      data-character-frozen={frozen}
     >
       <div className="vx-character-canvas__mount" ref={mountRef} aria-busy={loading} />
       {error || capeError ? (

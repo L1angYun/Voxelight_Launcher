@@ -480,4 +480,68 @@ describe("CharacterCanvas", () => {
     expect(viewer.playerWrapper.visible).toBe(false);
     expect(loadCape).toHaveBeenCalledWith(null, "cape");
   });
+
+  describe("freeze (Lite / reduced motion)", () => {
+    const drawImage = vi.fn();
+    beforeEach(() => {
+      drawImage.mockClear();
+      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement, type: string) {
+        return type === "2d" ? ({ drawImage } as unknown as CanvasRenderingContext2D) : null;
+      } as typeof HTMLCanvasElement.prototype.getContext);
+    });
+    const settle = async () => act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
+    const host = () => container.querySelector<HTMLElement>(".vx-character-canvas")!;
+    const mountCanvases = () => [...container.querySelectorAll<HTMLCanvasElement>(".vx-character-canvas__mount canvas")];
+
+    it("keeps one loaded frame as a 2D still and releases the WebGL viewer", async () => {
+      await render({ skinUrl: "skin.png", capeUrl: "cape.png", label: "Preview", freeze: true, paused: true });
+      await settle();
+      const viewer = viewers[0];
+      expect(drawImage).toHaveBeenCalledTimes(1);
+      expect(viewer.renderer.forceContextLoss).toHaveBeenCalled();
+      expect(viewer.disposed).toBe(true);
+      expect(host().dataset.characterFrozen).toBe("true");
+      expect(host().dataset.characterState).toBe("ready");
+      const canvases = mountCanvases();
+      expect(canvases).toHaveLength(1);
+      expect(canvases[0].dataset.characterStill).toBe("true");
+      expect(canvases[0].getAttribute("role")).toBe("img");
+      expect(canvases[0].getAttribute("aria-label")).toBe("Preview");
+      expect(viewers).toHaveLength(1);
+    });
+
+    it("rebuilds a live viewer when freezing no longer applies", async () => {
+      await render({ skinUrl: "skin.png", label: "Preview", freeze: true, paused: true });
+      await settle();
+      expect(viewers[0].disposed).toBe(true);
+      await render({ skinUrl: "skin.png", label: "Preview", freeze: false });
+      await settle();
+      expect(viewers).toHaveLength(2);
+      expect(viewers[1].disposed).toBe(false);
+      expect(host().dataset.characterFrozen).toBe("false");
+      expect(mountCanvases().some(canvas => canvas.dataset.characterStill)).toBe(false);
+    });
+
+    it("recaptures when the shown skin changes while frozen", async () => {
+      await render({ skinUrl: "first.png", label: "Preview", freeze: true, paused: true });
+      await settle();
+      await render({ skinUrl: "second.png", label: "Preview", freeze: true, paused: true });
+      await settle();
+      expect(viewers).toHaveLength(2);
+      expect(viewers[1].disposed).toBe(true);
+      expect(loadSkin).toHaveBeenLastCalledWith("second.png", expect.anything());
+      expect(drawImage).toHaveBeenCalledTimes(2);
+      const canvases = mountCanvases();
+      expect(canvases).toHaveLength(1);
+      expect(canvases[0].dataset.stillKey).toContain("second.png");
+    });
+
+    it("does not freeze a viewer that is not asked to", async () => {
+      await render({ skinUrl: "skin.png", label: "Preview", paused: true });
+      await settle();
+      expect(drawImage).not.toHaveBeenCalled();
+      expect(viewers[0].disposed).toBe(false);
+      expect(host().dataset.characterFrozen).toBe("false");
+    });
+  });
 });

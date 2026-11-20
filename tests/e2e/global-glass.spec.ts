@@ -191,7 +191,7 @@ test("one world canvas serves full and lite modes while real data points remain 
         createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:01Z",
       }] } : original(name, args);
     });
-    await current.goto("http://127.0.0.1:1420/");
+    await current.goto("/");
     await expect(current.locator(".vx-global-scene canvas")).toHaveCount(1);
     await expect(current.locator(".world-scene__canvas")).toBeVisible();
     await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", effects === "full" ? "animated" : "static");

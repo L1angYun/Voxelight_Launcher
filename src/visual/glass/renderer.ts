@@ -416,8 +416,12 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
     },
     resize(width, height, nextDpr = 1) {
       dpr = Math.max(0.1, nextDpr);
-      canvas.width = Math.max(1, Math.floor(width * dpr));
-      canvas.height = Math.max(1, Math.floor(height * dpr));
+      // Without surface drawing every frame is a transparent clear: the
+      // context only reports capability and context loss. A 1x1 backbuffer
+      // keeps those semantics without a window-sized GPU allocation.
+      const backed = options.drawSurfaces !== false;
+      canvas.width = backed ? Math.max(1, Math.floor(width * dpr)) : 1;
+      canvas.height = backed ? Math.max(1, Math.floor(height * dpr)) : 1;
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       requestPaint();
