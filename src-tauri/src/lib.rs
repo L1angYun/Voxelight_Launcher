@@ -261,6 +261,8 @@ pub fn run() {
             network::test_proxy_connection,
             source_select::get_download_source_verdict,
             updates::check_launcher_update,
+            updates::download_launcher_update,
+            updates::cancel_launcher_update,
             network::set_proxy_credentials,
             loaders::list_loader_versions,
             loaders::install_loader,

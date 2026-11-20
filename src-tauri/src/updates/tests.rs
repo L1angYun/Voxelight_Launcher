@@ -1,6 +1,6 @@
 use super::checker::{check, classify, select, Offer, RateLimit};
 use super::manifest::{parse_release, parse_version, pick_gitee_release, strict_json, Package, Release};
-use super::sources::{get_file, manifest_location_tag, validate_location, Location, Request, Response, Transport};
+use super::sources::{get_file, manifest_location_tag, validate_location, FetchError, Location, Request, Response, Transport};
 use super::*;
 use futures_util::future::BoxFuture;
 use serde_json::json;
@@ -18,18 +18,22 @@ struct Reply {
     headers: Vec<(&'static str, String)>,
     body: Vec<u8>,
     delay: Duration,
+    /// The declared Content-Length: None for the body length, Some(None) for unknown.
+    length: Option<Option<u64>>,
+    /// A body in parts: (delay before the part in ms, the part). Replaces `body`.
+    chunks: Option<Vec<(u64, Result<Vec<u8>, FetchError>)>>,
 }
 
 fn ok(body: serde_json::Value) -> Reply {
-    Reply { status: 200, location: None, headers: vec![], body: body.to_string().into_bytes(), delay: Duration::ZERO }
+    Reply { status: 200, location: None, headers: vec![], body: body.to_string().into_bytes(), delay: Duration::ZERO, length: None, chunks: None }
 }
 
 fn status(code: u16) -> Reply {
-    Reply { status: code, location: None, headers: vec![], body: vec![], delay: Duration::ZERO }
+    Reply { status: code, location: None, headers: vec![], body: vec![], delay: Duration::ZERO, length: None, chunks: None }
 }
 
 fn moved(to: &str) -> Reply {
-    Reply { status: 302, location: Some(to.into()), headers: vec![], body: vec![], delay: Duration::ZERO }
+    Reply { status: 302, location: Some(to.into()), headers: vec![], body: vec![], delay: Duration::ZERO, length: None, chunks: None }
 }
 
 fn delayed(reply: Reply, ms: u64) -> Reply {
@@ -81,8 +85,16 @@ impl Transport for Fake {
                 retry_after: header("retry-after"),
                 rate_remaining: header("x-ratelimit-remaining"),
                 rate_reset: header("x-ratelimit-reset"),
-                content_length: Some(reply.body.len() as u64),
-                body: futures_util::stream::iter(vec![Ok(reply.body)]).boxed(),
+                content_length: reply.length.unwrap_or(Some(reply.body.len() as u64)),
+                body: match reply.chunks {
+                    None => futures_util::stream::iter(vec![Ok(reply.body)]).boxed(),
+                    Some(chunks) => futures_util::stream::iter(chunks)
+                        .then(|(ms, part)| async move {
+                            tokio::time::sleep(Duration::from_millis(ms)).await;
+                            part
+                        })
+                        .boxed(),
+                },
             })
         })
     }
@@ -265,6 +277,8 @@ fn redirect_chains_follow_only_trusted_transitions_and_never_leak_urls() {
     let error = run(get_file(&Fake::with(vec![(&gh, moved(&asset)), (&asset, status(403))]), &gh, file, Source::GitHub, None))
         .err()
         .unwrap();
+    assert_eq!(error, FetchError::Transport("更新服务器返回错误（HTTP 403）".into()), "an HTTP error is a transport failure");
+    let error = String::from(error);
     assert!(!error.contains("SECRET") && !error.contains("http"), "{error}");
     // A CDN that redirects again is not a trusted transition.
     let again = Fake::with(vec![(&gh, moved(&asset)), (&asset, moved(&asset))]);
@@ -539,4 +553,365 @@ fn update_settings_default_to_auto_and_a_startup_check() {
     assert!(old.check_for_updates && old.update_source == "auto", "older state files get the defaults");
     assert!(Preference::parse("auto").is_some() && Preference::parse("github").is_some() && Preference::parse("gitee").is_some());
     assert!(Preference::parse("mirror").is_none());
+}
+
+// ---- C4b: the verified download ----
+
+const BYTES: &[u8] = b"voxelight installer fixture bytes";
+
+fn sha_of(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+fn package_of(bytes: &[u8], source: Source) -> Package {
+    Package {
+        version: (0, 7, 0),
+        tag: "v0.7.0".into(),
+        file_name: installer_name((0, 7, 0)),
+        size: bytes.len() as u64,
+        sha256: sha_of(bytes),
+        source,
+    }
+}
+
+fn file_on(source: Source) -> String {
+    super::sources::file_url(source, "v0.7.0", &installer_name((0, 7, 0)))
+}
+
+fn body(bytes: &[u8]) -> Reply {
+    Reply { body: bytes.to_vec(), ..status(200) }
+}
+
+struct Root(crate::instances::StagingDirectory);
+
+impl Root {
+    fn new() -> Self {
+        Self(
+            crate::instances::StagingDirectory::create(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("target/update-download-tests")
+                    .join(uuid::Uuid::new_v4().to_string()),
+            )
+            .unwrap(),
+        )
+    }
+    fn path(&self) -> &std::path::Path {
+        self.0.path()
+    }
+    /// Staging directories left under the root.
+    fn leftovers(&self) -> Vec<String> {
+        std::fs::read_dir(self.path()).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()
+    }
+}
+
+fn fetch(fake: &Fake, package: &Package, preference: Preference, root: &Root) -> Result<super::download::StagedUpdate, String> {
+    run(super::download::download(fake, package, preference, root.path(), &|_, _| {}, &|| false))
+}
+
+#[test]
+fn a_verified_download_is_committed_and_held_against_writers() {
+    let root = Root::new();
+    let package = package_of(BYTES, Source::GitHub);
+    let fake = Fake::with(vec![(&file_on(Source::GitHub), body(BYTES))]);
+    let mut staged = fetch(&fake, &package, Preference::Auto, &root).unwrap();
+    assert_eq!(std::fs::read(&staged.installer).unwrap(), BYTES);
+    assert_eq!(staged.installer.file_name().unwrap(), "VoxelightLauncher-0.7.0-x64-setup.exe");
+    assert!(!staged.directory.join("download.bin").exists(), "the part was committed under its final name");
+    let name = staged.directory.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.len() == 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit()), "{name}");
+    #[cfg(windows)]
+    assert!(std::fs::OpenOptions::new().write(true).open(&staged.installer).is_err(), "writers are denied while staged");
+    staged.verify().unwrap();
+    let expected = staged.package.sha256.clone();
+    staged.package.sha256 = sha_of(b"something else");
+    assert!(staged.verify().is_err(), "the held file is hashed again before use");
+    staged.package.sha256 = expected;
+    drop(staged);
+    assert!(root.leftovers().is_empty(), "dropping the staged update removes its files");
+    fake.done();
+}
+
+#[test]
+fn integrity_failures_leave_nothing_and_never_try_the_other_source() {
+    let package = package_of(BYTES, Source::GitHub);
+    let mut longer = BYTES.to_vec();
+    longer.push(b'!');
+    let mut tampered = BYTES.to_vec();
+    tampered[0] ^= 1;
+    // Each case names the check that must catch it, not a later safety net.
+    let cases = [
+        ("truncated", Reply { length: Some(Some(BYTES.len() as u64)), ..body(&BYTES[..10]) }, "安装包的大小或 SHA-256 校验失败"),
+        ("overlong without a length", Reply { length: Some(None), ..body(&longer) }, "安装包超过发布信息中的大小"),
+        ("declared length differs", body(&longer), "安装包大小与发布信息不一致"),
+        ("hash mismatch", body(&tampered), "安装包的大小或 SHA-256 校验失败"),
+    ];
+    for (case, reply, expected) in cases {
+        let root = Root::new();
+        // Auto would allow Gitee after a transport failure; the fake panics if it is contacted.
+        let fake = Fake::with(vec![(&file_on(Source::GitHub), reply)]);
+        let result = fetch(&fake, &package, Preference::Auto, &root);
+        assert_eq!(result.err().as_deref(), Some(expected), "{case}");
+        assert!(root.leftovers().is_empty(), "{case}: {:?}", root.leftovers());
+        assert_eq!(fake.urls(), [file_on(Source::GitHub)], "{case}");
+    }
+}
+
+#[test]
+fn a_transport_failure_tries_the_other_source_only_in_auto() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    let gitee = file_on(Source::Gitee);
+    let attach = format!("https://gitee.com/liangyun_Liu/Voxelight_Launcher/attach_files/7/download/{}", package.file_name);
+    let cdn = format!("https://foruda.gitee.com/attach_file/7/{}?token=t", package.file_name);
+    let fake = Fake::with(vec![
+        (&file_on(Source::GitHub), status(503)),
+        (&gitee, moved(&attach)),
+        (&attach, moved(&cdn)),
+        (&cdn, body(BYTES)),
+    ]);
+    let staged = fetch(&fake, &package, Preference::Auto, &root).unwrap();
+    assert_eq!(std::fs::read(&staged.installer).unwrap(), BYTES);
+    fake.done();
+    drop(staged);
+
+    let only = Fake::with(vec![(&file_on(Source::GitHub), status(503))]);
+    assert!(fetch(&only, &package, Preference::GitHub, &root).is_err(), "a single-source preference never falls back");
+    assert!(root.leftovers().is_empty());
+}
+
+fn chunked(parts: Vec<(u64, Result<Vec<u8>, FetchError>)>) -> Reply {
+    Reply { chunks: Some(parts), length: Some(Some(BYTES.len() as u64)), ..status(200) }
+}
+
+fn short_limits() -> super::download::Limits {
+    super::download::Limits { idle: Duration::from_millis(300), total: Duration::from_secs(5) }
+}
+
+fn fetch_limited(fake: &Fake, package: &Package, preference: Preference, root: &Root, cancelled: &(dyn Fn() -> bool + Sync)) -> Result<super::download::StagedUpdate, String> {
+    run(super::download::download_with_limits(fake, package, preference, root.path(), short_limits(), &|_, _| {}, cancelled))
+}
+
+#[test]
+fn a_body_that_ends_early_is_an_integrity_failure_but_a_reset_tries_the_other_source() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    let ended = Fake::with(vec![(&file_on(Source::GitHub), chunked(vec![
+        (0, Ok(BYTES[..10].to_vec())),
+        (0, Err(FetchError::Invalid(RESPONSE_ENDED.into()))),
+    ]))]);
+    assert_eq!(fetch(&ended, &package, Preference::Auto, &root).err().as_deref(), Some(RESPONSE_ENDED));
+    assert_eq!(ended.urls().len(), 1, "an early end never tries the other source");
+
+    let gitee = file_on(Source::Gitee);
+    let attach = format!("https://gitee.com/liangyun_Liu/Voxelight_Launcher/attach_files/7/download/{}", package.file_name);
+    let cdn = format!("https://foruda.gitee.com/attach_file/7/{}", package.file_name);
+    let reset = Fake::with(vec![
+        (&file_on(Source::GitHub), chunked(vec![(0, Ok(BYTES[..10].to_vec())), (0, Err(FetchError::Transport("reset".into())))])),
+        (&gitee, moved(&attach)),
+        (&attach, moved(&cdn)),
+        (&cdn, body(BYTES)),
+    ]);
+    let staged = fetch(&reset, &package, Preference::Auto, &root).unwrap();
+    assert_eq!(std::fs::read(&staged.installer).unwrap(), BYTES);
+    reset.done();
+}
+
+#[test]
+fn a_stalled_read_times_out_and_counts_as_a_transport_failure() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    let stalled = Fake::with(vec![(&file_on(Source::GitHub), chunked(vec![(0, Ok(BYTES[..5].to_vec())), (60_000, Ok(BYTES[5..].to_vec()))]))]);
+    let started = Instant::now();
+    let result = fetch_limited(&stalled, &package, Preference::GitHub, &root, &|| false);
+    assert_eq!(result.err().as_deref(), Some("更新下载超时"));
+    assert!(started.elapsed() < Duration::from_secs(3), "the idle limit ended the wait: {:?}", started.elapsed());
+    assert!(root.leftovers().is_empty());
+}
+
+#[test]
+fn the_total_limit_bounds_a_slow_but_steady_download() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    // Every part arrives inside the idle limit, but the whole takes too long.
+    let parts = BYTES.chunks(2).map(|part| (200, Ok(part.to_vec()))).collect();
+    let slow = Fake::with(vec![(&file_on(Source::GitHub), chunked(parts))]);
+    let limits = super::download::Limits { idle: Duration::from_millis(500), total: Duration::from_millis(800) };
+    let result = run(super::download::download_with_limits(&slow, &package, Preference::GitHub, root.path(), limits, &|_, _| {}, &|| false));
+    assert_eq!(result.err().as_deref(), Some("更新下载超时"));
+    assert!(root.leftovers().is_empty());
+}
+
+#[test]
+fn cancel_interrupts_a_stalled_read_and_never_tries_the_other_source() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    // The read stalls longer than the idle limit, so only Cancel can end it early.
+    let stalled = Fake::with(vec![(&file_on(Source::GitHub), chunked(vec![(0, Ok(BYTES[..5].to_vec())), (60_000, Ok(BYTES[5..].to_vec()))]))]);
+    let started = Instant::now();
+    let limits = super::download::Limits { idle: Duration::from_secs(30), total: Duration::from_secs(60) };
+    let cancelled = || started.elapsed() > Duration::from_millis(200);
+    let result = run(super::download::download_with_limits(&stalled, &package, Preference::Auto, root.path(), limits, &|_, _| {}, &cancelled));
+    assert_eq!(result.err().as_deref(), Some(crate::downloads::CANCELLED));
+    assert!(started.elapsed() < Duration::from_secs(3), "Cancel interrupted the read: {:?}", started.elapsed());
+    assert_eq!(stalled.urls(), [file_on(Source::GitHub)], "no other source after a cancel");
+    assert!(root.leftovers().is_empty());
+}
+
+#[test]
+fn a_cancel_after_the_last_byte_still_stops_before_the_commit() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    let fake = Fake::with(vec![(&file_on(Source::GitHub), body(BYTES))]);
+    let seen = std::sync::atomic::AtomicBool::new(false);
+    // Cancel turns true once the whole body was reported.
+    let progress = |done: u64, total: u64| {
+        if done == total {
+            seen.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    };
+    let cancelled = || seen.load(std::sync::atomic::Ordering::SeqCst);
+    let result = run(super::download::download_with_limits(&fake, &package, Preference::Auto, root.path(), super::download::LIMITS, &progress, &cancelled));
+    assert_eq!(result.err().as_deref(), Some(crate::downloads::CANCELLED));
+    assert!(root.leftovers().is_empty());
+}
+
+#[test]
+fn body_errors_are_classified_by_their_cause() {
+    #[derive(Debug)]
+    struct Wrapper(std::io::Error);
+    impl std::fmt::Display for Wrapper {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("wrapped")
+        }
+    }
+    impl std::error::Error for Wrapper {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+    let ended = Wrapper(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early eof"));
+    assert_eq!(stream_error(&ended), FetchError::Invalid(RESPONSE_ENDED.into()));
+    let reset = Wrapper(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"));
+    assert_eq!(stream_error(&reset), FetchError::Transport("更新数据传输中断".into()));
+}
+
+#[test]
+fn an_untrusted_redirect_is_an_integrity_failure() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    let fake = Fake::with(vec![(&file_on(Source::GitHub), moved("https://evil.example/x.exe"))]);
+    assert!(fetch(&fake, &package, Preference::Auto, &root).is_err());
+    assert_eq!(fake.urls().len(), 1, "no fallback after an untrusted redirect");
+}
+
+#[test]
+fn cancelling_removes_the_part_and_the_staging_directory() {
+    let package = package_of(BYTES, Source::GitHub);
+    let root = Root::new();
+    let fake = Fake::with(vec![(&file_on(Source::GitHub), body(BYTES))]);
+    let result = run(super::download::download(&fake, &package, Preference::Auto, root.path(), &|_, _| {}, &|| true));
+    assert_eq!(result.err().as_deref(), Some(crate::downloads::CANCELLED));
+    assert!(root.leftovers().is_empty());
+}
+
+#[test]
+fn the_final_commit_never_replaces_an_existing_file() {
+    let root = Root::new();
+    let target = root.path().join("installer.exe");
+    std::fs::write(&target, b"existing").unwrap();
+    let part_path = root.path().join("download.bin");
+    let mut part = crate::download_io::DownloadPart::create(part_path.clone()).unwrap();
+    run(async { tokio::io::AsyncWriteExt::write_all(part.file(), b"new").await }).unwrap();
+    assert!(part.publish_new(&target).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"existing", "H08: the existing file is untouched");
+    assert!(!part_path.exists(), "the refused part is removed");
+}
+
+#[cfg(windows)]
+#[test]
+fn staging_refuses_a_junctioned_root() {
+    let root = Root::new();
+    let real = root.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let alias = root.path().join("alias");
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(alias.to_string_lossy().replace('/', r"\"))
+        .arg(real.to_string_lossy().replace('/', r"\"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let package = package_of(BYTES, Source::GitHub);
+    let result = run(super::download::download(&Fake::default(), &package, Preference::Auto, &alias.join("updates"), &|_, _| {}, &|| false));
+    let _ = std::fs::remove_dir(&alias);
+    assert!(result.is_err());
+    assert!(std::fs::read_dir(&real).unwrap().next().is_none(), "nothing was written through the junction");
+}
+
+#[test]
+fn digests_compare_exactly_and_locations_follow_the_preference() {
+    use super::download::{digest_equals, locations};
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(BYTES);
+    assert!(digest_equals(&digest, &sha_of(BYTES)));
+    assert!(!digest_equals(&digest, &sha_of(b"other")));
+    assert!(!digest_equals(&digest, &sha_of(BYTES)[..63]));
+    let gitee = package_of(BYTES, Source::Gitee);
+    assert_eq!(locations(&gitee, Preference::Auto), [(Source::Gitee, file_on(Source::Gitee)), (Source::GitHub, file_on(Source::GitHub))]);
+    assert_eq!(locations(&gitee, Preference::Gitee), [(Source::Gitee, file_on(Source::Gitee))]);
+}
+
+#[test]
+fn the_download_uses_only_the_offered_package_and_reuses_a_staged_one() {
+    let dir = crate::instances::StagingDirectory::create(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/update-tests").join(uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let mut data = crate::models::Persisted::default();
+    data.config.update_source = "github".into();
+    let state = LauncherState::test_fixture(dir.path().join("profile"), data, crate::storage::test_client());
+    let service = UpdateService::default();
+    let root = Root::new();
+    let none = run(download_with(&state, &service, &Fake::default(), root.path(), &|_, _| {}));
+    assert_eq!(none.err().as_deref(), Some("没有可下载的更新，请先检查更新"));
+    // A check that finds only the running version offers nothing to download.
+    let current = display_version(current_version());
+    let same = Fake::with(vec![(API_LATEST, ok(release_json(&format!("v{current}"), &sha_of(BYTES), BYTES.len() as u64)))]);
+    run(check_with(&state, &service, &same, chrono::Utc::now())).unwrap();
+    let none = run(download_with(&state, &service, &Fake::default(), root.path(), &|_, _| {}));
+    assert_eq!(none.err().as_deref(), Some("没有可下载的更新，请先检查更新"));
+    let mut json = release_json("v99.0.0", &sha_of(BYTES), BYTES.len() as u64);
+    json["assets"][0]["name"] = json!(installer_name((99, 0, 0)));
+    run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(json))]), chrono::Utc::now())).unwrap();
+    let url = super::sources::file_url(Source::GitHub, "v99.0.0", &installer_name((99, 0, 0)));
+    let fake = Fake::with(vec![(&url, body(BYTES))]);
+    let first = run(download_with(&state, &service, &fake, root.path(), &|_, _| {})).unwrap();
+    let again = run(download_with(&state, &service, &fake, root.path(), &|_, _| {})).unwrap();
+    assert_eq!(first, again);
+    assert_eq!(fake.urls().len(), 1, "an already staged package is reused");
+
+    // An Auto re-check answered by the other source offers the same bytes: still reused.
+    if let Ok(mut offered) = service.offered.lock() {
+        if let Some((package, _)) = offered.as_mut() {
+            package.source = Source::Gitee;
+        }
+    }
+    run(download_with(&state, &service, &Fake::default(), root.path(), &|_, _| {})).unwrap();
+
+    // A late cancel while idle never stops the next download.
+    request_cancel(&service);
+    assert_eq!(service.download_state.load(std::sync::atomic::Ordering::SeqCst), IDLE);
+
+    // Changing the source after the check requires a new check; nothing is contacted.
+    let mut config = state.snapshot().unwrap().config;
+    config.update_source = "gitee".into();
+    config.game_directory = dir.path().join("game").to_string_lossy().into_owned();
+    crate::commands::save_config_inner(&state, config).unwrap();
+    let changed = run(download_with(&state, &service, &Fake::default(), root.path(), &|_, _| {}));
+    assert_eq!(changed.err().as_deref(), Some("更新来源已更改，请重新检查更新"));
+    assert_eq!(service.download_state.load(std::sync::atomic::Ordering::SeqCst), IDLE, "the in-progress state is cleared");
+    drop(service);
+    assert!(root.leftovers().is_empty());
+    drop(state);
 }

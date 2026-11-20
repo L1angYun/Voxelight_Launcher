@@ -56,6 +56,22 @@ impl DownloadPart {
     }
 }
 
+impl DownloadPart {
+    /// Like `publish`, but never replaces an existing `target` (H08). On a
+    /// conflict the part is still owned and removed on drop.
+    pub(crate) fn publish_new(mut self, target: &Path) -> io::Result<()> {
+        drop(self.file.take());
+        crate::instances::publish_archive_file(
+            self.path
+                .as_ref()
+                .expect("download part owns an unpublished path"),
+            target,
+        )?;
+        self.path = None;
+        Ok(())
+    }
+}
+
 impl Drop for DownloadPart {
     fn drop(&mut self) {
         drop(self.file.take());

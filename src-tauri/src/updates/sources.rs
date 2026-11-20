@@ -23,7 +23,7 @@ pub(crate) struct Response {
     pub(crate) rate_remaining: Option<String>,
     pub(crate) rate_reset: Option<String>,
     pub(crate) content_length: Option<u64>,
-    pub(crate) body: BoxStream<'static, Result<Vec<u8>, String>>,
+    pub(crate) body: BoxStream<'static, Result<Vec<u8>, FetchError>>,
 }
 
 /// The network seam. The production transport never follows redirects, so
@@ -129,6 +129,22 @@ fn redirect(status: u16) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
+/// Why a fetch failed: the network (another source may help) or an
+/// untrusted location or redirect (another source must not be tried).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum FetchError {
+    Transport(String),
+    Invalid(String),
+}
+
+impl From<FetchError> for String {
+    fn from(error: FetchError) -> Self {
+        match error {
+            FetchError::Transport(message) | FetchError::Invalid(message) => message,
+        }
+    }
+}
+
 /// Fetches `url` (a release file URL) and follows only trusted redirects.
 /// Errors never contain a URL, so a signed CDN query cannot leak.
 pub(crate) async fn get_file(
@@ -137,27 +153,28 @@ pub(crate) async fn get_file(
     file_name: &str,
     source: Source,
     expected_tag: Option<&str>,
-) -> Result<Response, String> {
+) -> Result<Response, FetchError> {
+    let invalid = |message: &str| FetchError::Invalid(message.to_owned());
     let mut current = url.to_owned();
     let mut previous = Location::Release;
     for hop in 0..=MAX_REDIRECTS {
-        let location = validate_location(&current, file_name, source, expected_tag)?;
+        let location = validate_location(&current, file_name, source, expected_tag).map_err(FetchError::Invalid)?;
         if !transition_allowed(source, hop, previous, location) {
-            return Err("更新跳转顺序不受信任".into());
+            return Err(invalid("更新跳转顺序不受信任"));
         }
         previous = location;
-        let response = transport.send(Request { url: current.clone(), api: false }).await?;
+        let response = transport.send(Request { url: current.clone(), api: false }).await.map_err(FetchError::Transport)?;
         if !redirect(response.status) {
             if !(200..300).contains(&response.status) {
-                return Err(format!("更新服务器返回错误（HTTP {}）", response.status));
+                return Err(FetchError::Transport(format!("更新服务器返回错误（HTTP {}）", response.status)));
             }
             return Ok(response);
         }
-        let next = response.location.as_deref().ok_or("更新跳转缺少目标")?;
-        let base = reqwest::Url::parse(&current).map_err(|_| "更新地址无效")?;
-        current = base.join(next).map_err(|_| "更新跳转目标无效")?.to_string();
+        let next = response.location.as_deref().ok_or_else(|| invalid("更新跳转缺少目标"))?;
+        let base = reqwest::Url::parse(&current).map_err(|_| invalid("更新地址无效"))?;
+        current = base.join(next).map_err(|_| invalid("更新跳转目标无效"))?.to_string();
     }
-    Err("更新跳转次数过多".into())
+    Err(invalid("更新跳转次数过多"))
 }
 
 /// `releases/latest/download/update.json` and its tag-bound redirect chain.
