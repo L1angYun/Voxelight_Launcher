@@ -125,14 +125,20 @@
   "downloadDescription": "管理官方下载、社区镜像与任务并发。",
   "downloadSource": {
     "official": "仅官方源",
-    "auto": "自动回退 · 官方优先",
+    "auto": "自动 · 官方优先，明显更慢时换镜像",
     "bmclapi": "BMCLAPI 优先 · 官方兜底",
     "officialDescription": "游戏文件、加载器文件和元数据均从官方发布方下载，文件仍会按要求校验。",
-    "autoDescription": "优先使用官方地址，失败后对支持的游戏和加载器文件尝试 BMCLAPI。",
+    "autoDescription": "启动器每次运行后，第一次获取版本列表或下载文件时，测一次官方源和 BMCLAPI。除非官方源没有响应或明显更慢，否则官方优先，另一个作为回退。结果只在本次运行内有效，不会写入设置或上传；本地启动器日志会记录一行摘要。",
     "bmclapiDescription": "对支持的游戏和加载器文件优先使用 BMCLAPI，失败后回退到官方地址。",
     "mirrorNotice": "BMCLAPI 是社区镜像，不是 Mojang 官方服务。清单哈希只能证明文件与清单一致，不代表独立官方背书。",
     "mirrorLink": "查看 BMCLAPI 来源说明",
-    "scopeNotice": "Forge、NeoForge、Fabric 和 authlib-injector 仅部分文件支持镜像。安装器的校验值仍来自官方发布方。Quilt、Modrinth 和 CurseForge 不受影响。"
+    "scopeNotice": "Forge、NeoForge、Fabric 和 authlib-injector 仅部分文件支持镜像。安装器的校验值仍来自官方发布方。Quilt、Modrinth 和 CurseForge 不受影响。",
+    "verdictPending": "本次运行尚未测量。第一次获取版本列表或下载文件时，会测量两个源。",
+    "verdictOfficial": "本次运行：官方优先（官方 {{official}}，BMCLAPI {{mirror}}）。",
+    "verdictMirror": "本次运行：BMCLAPI 优先（官方 {{official}}，BMCLAPI {{mirror}}）。",
+    "verdictUnreachable": "未响应",
+    "verdictMs": "{{ms}} 毫秒",
+    "verdictInconclusive": "两个源都没有响应。暂时官方优先；一分钟后再次获取版本列表时会重新测量。"
   },
   "aboutDescription": "版本、许可、源代码与本地数据行为。",
   "about": {

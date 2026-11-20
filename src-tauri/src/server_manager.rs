@@ -765,12 +765,8 @@ async fn install_jar(
         download.size.unwrap_or(0),
         "下载并校验官方服务端 JAR",
     );
-    minecraft::ensure_download_with_source_and_control(
-        state,
-        &download,
-        &state.snapshot()?.config.download_source,
-        Some(&state.control),
-    )
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
+    minecraft::ensure_download_with_source_and_control(state, &download, &source, Some(&state.control))
     .await?;
     definition.jar_sha1 = Some(download.sha1);
     definition.java_major = Some(

@@ -66,6 +66,16 @@ describe("Tauri IPC registration contract", () => {
     expect(expected.filter((name) => !registered.has(name))).toEqual([]);
   });
 
+  it("registers the download source verdict only in the settings permission family", () => {
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const families = permissions.split("[[permission]]");
+    expect(registered.has("get_download_source_verdict")).toBe(true);
+    expect(invoked.has("get_download_source_verdict")).toBe(true);
+    const allowed = families.filter((family) => family.includes(`"get_download_source_verdict"`));
+    expect(allowed).toHaveLength(1);
+    expect(allowed[0]).toContain('identifier = "launcher-settings"');
+  });
+
   it("registers the memory overview in the settings permission family", () => {
     const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
     const settings = permissions.split("[[permission]]").find((block) => block.includes('identifier = "launcher-settings"'));

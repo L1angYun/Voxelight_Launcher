@@ -125,14 +125,20 @@
   "downloadDescription": "Control official downloads, mirrors, and task throughput.",
   "downloadSource": {
     "official": "Official only",
-    "auto": "Automatic fallback · official first",
+    "auto": "Automatic · official first unless clearly slower",
     "bmclapi": "BMCLAPI first · official fallback",
     "officialDescription": "Use the official publishers for game files, loader files, and metadata. File verification still applies.",
-    "autoDescription": "Try official addresses first, then BMCLAPI for supported game and loader files.",
+    "autoDescription": "Measures the official source and BMCLAPI the first time this session fetches the version list or a file. Official goes first unless it does not answer or is clearly slower; the other stays as a fallback. The result lasts for this session only. It is never written to your settings or uploaded; one summary line goes to the local launcher log.",
     "bmclapiDescription": "Try BMCLAPI first for supported game and loader files, then fall back to official addresses.",
     "mirrorNotice": "BMCLAPI is a community mirror, not an official Mojang service. A manifest hash proves file consistency, not independent official endorsement.",
     "mirrorLink": "Read about BMCLAPI",
-    "scopeNotice": "Forge, NeoForge, Fabric, and authlib-injector have partial mirror coverage. Installer checksums still come from their official publishers. Quilt, Modrinth, and CurseForge are unchanged."
+    "scopeNotice": "Forge, NeoForge, Fabric, and authlib-injector have partial mirror coverage. Installer checksums still come from their official publishers. Quilt, Modrinth, and CurseForge are unchanged.",
+    "verdictPending": "Not measured yet in this session. Both sources are measured the first time the version list or a file is fetched.",
+    "verdictOfficial": "This session: official first (official {{official}}, BMCLAPI {{mirror}}).",
+    "verdictMirror": "This session: BMCLAPI first (official {{official}}, BMCLAPI {{mirror}}).",
+    "verdictUnreachable": "no answer",
+    "verdictMs": "{{ms}} ms",
+    "verdictInconclusive": "Neither source answered. Official goes first for now; both are measured again the next time the version list is fetched, after a minute."
   },
   "aboutDescription": "Version, license, source code, and local-data behavior.",
   "about": {

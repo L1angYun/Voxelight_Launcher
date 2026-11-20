@@ -372,6 +372,9 @@ pub struct LauncherState {
     pub operation: tokio::sync::Mutex<()>,
     pub control: crate::downloads::DownloadControl,
     pub games: Arc<crate::processes::GameRegistry>,
+    /// Per-session reachability verdict for the "auto" download source. A leaf
+    /// lock: never taken while holding `active`, never persisted.
+    pub(crate) source_verdict: tokio::sync::Mutex<Option<crate::source_select::Verdict>>,
     recovery: Option<StorageRecovery>,
     _profile_lock: fs::File,
 }
@@ -552,6 +555,7 @@ impl LauncherState {
             operation: tokio::sync::Mutex::new(()),
             control,
             games: Default::default(),
+            source_verdict: tokio::sync::Mutex::new(None),
             recovery: None,
             _profile_lock: profile_lock,
         }

@@ -442,6 +442,46 @@ describe("global settings", () => {
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ downloadSource: "bmclapi", downloadConcurrency: 8, downloadLimitKib: 1024 }), { preserveAppearance: true });
   });
 
+  it("shows the session download source verdict only for a saved auto source", async () => {
+    await render();
+    await click("Downloads");
+    expect(container.querySelector('[data-testid="download-source-verdict"]')).toBeNull();
+    expect(commandMock.mock.calls.some(([name]) => name === "get_download_source_verdict")).toBe(false);
+    await select("Download source", "auto");
+    // An unsaved switch to auto has no verdict of its own yet.
+    expect(container.querySelector('[data-testid="download-source-verdict"]')).toBeNull();
+  });
+
+  async function renderAutoVerdict(verdict: unknown) {
+    mockLauncher.data.config.downloadSource = "auto";
+    mockLauncher.config.downloadSource = "auto";
+    commandMock.mockImplementation(async (name) => name === "get_download_source_verdict"
+      ? verdict
+      : name === "get_service_status" ? { curseforgeConfigured: false } : null);
+    await render();
+    await click("Downloads");
+    expect(commandMock).toHaveBeenCalledWith("get_download_source_verdict");
+    return container.querySelector('[data-testid="download-source-verdict"]')?.textContent;
+  }
+
+  it("renders a measured verdict for a saved auto source", async () => {
+    expect(await renderAutoVerdict({ preferred: "mirror", officialMs: null, mirrorMs: 85, conclusive: true }))
+      .toBe("This session: BMCLAPI first (official no answer, BMCLAPI 85 ms).");
+    expect(container.textContent).toContain("Official goes first unless it does not answer or is clearly slower");
+    expect(container.textContent).toContain("one summary line goes to the local launcher log");
+  });
+
+  it("renders the not-yet-measured state for a saved auto source without a verdict", async () => {
+    expect(await renderAutoVerdict(null))
+      .toBe("Not measured yet in this session. Both sources are measured the first time the version list or a file is fetched.");
+  });
+
+  it("does not present an inconclusive verdict as the session's choice", async () => {
+    const text = await renderAutoVerdict({ preferred: "official", officialMs: null, mirrorMs: null, conclusive: false });
+    expect(text).toBe("Neither source answered. Official goes first for now; both are measured again the next time the version list is fetched, after a minute.");
+    expect(text).not.toContain("This session");
+  });
+
   it("stores service configuration in General rather than About", async () => {
     await render();
     expect(container.textContent).toContain("Service connections");

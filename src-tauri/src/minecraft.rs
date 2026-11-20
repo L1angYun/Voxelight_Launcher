@@ -157,7 +157,7 @@ fn loader_mirror_path(host: &str, path: &str) -> Option<String> {
     (tail.starts_with('/') && tail.len() > 1).then(|| format!("{prefix}{tail}"))
 }
 
-fn mapped_bmclapi_url(url: &str) -> Result<String, String> {
+pub(crate) fn mapped_bmclapi_url(url: &str) -> Result<String, String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "下载地址格式错误")?;
     if parsed.scheme() != "https"
         || parsed.port_or_known_default() != Some(443)
@@ -245,11 +245,11 @@ fn download_url_candidates(url: &str, source: &str) -> Result<Vec<UrlCandidate>,
     })
 }
 
-fn identity_url(url: &str) -> String {
+pub(crate) fn identity_url(url: &str) -> String {
     url.to_owned()
 }
 
-fn resolve_request_url(
+pub(crate) fn resolve_request_url(
     url: &str,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<String, String> {
@@ -595,7 +595,7 @@ async fn manifest_with_resolver(
 }
 
 pub async fn manifest(state: &LauncherState) -> Result<Value, String> {
-    let source = state.snapshot()?.config.download_source;
+    let source = crate::source_select::passive_download_source(state, &state.snapshot()?.config.download_source).await?;
     manifest_with_resolver(state, &source, &identity_url).await
 }
 
@@ -842,7 +842,7 @@ pub(crate) async fn resolve_metadata(
     id: &str,
     root: &Path,
 ) -> Result<Value, String> {
-    let source = state.snapshot()?.config.download_source;
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
     resolve_metadata_with_source(state, id, root, &source).await
 }
 
@@ -1588,7 +1588,7 @@ pub(crate) async fn official_metadata(
     id: &str,
     root: &Path,
 ) -> Result<Value, String> {
-    let source = state.snapshot()?.config.download_source;
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
     official_metadata_with_source(state, id, root, &source).await
 }
 
@@ -1923,6 +1923,8 @@ async fn install_with_config(
     config: &Config,
 ) -> Result<(InstallResult, Value), String> {
     validate_id(id)?;
+    let effective = crate::source_select::with_effective_source(state, config).await?;
+    let config = &effective;
     let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
     let root = root.as_path();
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
@@ -2469,6 +2471,8 @@ async fn install_official_java(
     constraint: &JavaConstraint,
 ) -> Result<JavaRuntime, String> {
     constraint.validate().map_err(|error| error.to_string())?;
+    let effective = crate::source_select::with_effective_source(state, config).await?;
+    let config = &effective;
     let required = constraint.required;
     let component = metadata["javaVersion"]["component"]
         .as_str()
@@ -3255,13 +3259,8 @@ async fn launch_prepared(
         let file_id = file["id"].as_str().ok_or("日志配置缺少文件名")?;
         validate_id(file_id)?;
         let download = download_from(file, &root, Some(&format!("assets/log_configs/{file_id}")))?;
-        ensure_download_with_source_and_control(
-            &state,
-            &download,
-            &config.download_source,
-            Some(&state.control),
-        )
-        .await?;
+        let source = crate::source_select::effective_download_source(&state, &config.download_source).await?;
+        ensure_download_with_source_and_control(&state, &download, &source, Some(&state.control)).await?;
         let template = metadata["logging"]["client"]["argument"]
             .as_str()
             .ok_or("日志配置参数缺失")?;

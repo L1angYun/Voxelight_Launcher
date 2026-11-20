@@ -1,14 +1,41 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "../../components/ui/ExternalLink";
 import type { SettingsSectionProps } from "./types";
 import { Select } from "../../components/ui/Select";
 
 import { ProxySettings } from "./ProxySettings";
-import type { Config } from "../../lib/launcher";
+import { command, type Config } from "../../lib/launcher";
+
+/** The session's reachability verdict for the saved "auto" source (read-only). */
+export type SourceVerdict = {
+  preferred: "official" | "mirror";
+  officialMs: number | null;
+  mirrorMs: number | null;
+  conclusive: boolean;
+};
+
+function useSourceVerdict(active: boolean) {
+  const [verdict, setVerdict] = useState<SourceVerdict | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    command<SourceVerdict | null>("get_download_source_verdict")
+      .then((value) => { if (current) setVerdict(value); })
+      .catch(() => { if (current) setVerdict(null); });
+    return () => { current = false; };
+  }, [active]);
+  return active ? verdict : null;
+}
 
 export function DownloadSettings({ savedConfig, ...props }: SettingsSectionProps & { savedConfig: Config }) {
   const { t } = useTranslation();
   const { config, onChange } = props;
+  // The verdict belongs to the saved choice; an unsaved switch to auto has none yet.
+  const auto = savedConfig.downloadSource === "auto" && config.downloadSource === "auto";
+  const verdict = useSourceVerdict(auto);
+  const latency = (ms: number | null) =>
+    ms === null ? t("settings:downloadSource.verdictUnreachable") : t("settings:downloadSource.verdictMs", { ms });
   return (
     <div className="vx-settings-section">
       <header><h2>{t("settings:section.downloads")}</h2><p>{t("settings:downloadDescription")}</p></header>
@@ -20,6 +47,18 @@ export function DownloadSettings({ savedConfig, ...props }: SettingsSectionProps
             options={["official", "auto", "bmclapi"].map((value) => ({ value, label: t(`settings:downloadSource.${value}`) }))} />
         </label>
         <p>{t(`settings:downloadSource.${config.downloadSource}Description`)}</p>
+        {auto ? (
+          <p data-testid="download-source-verdict">
+            {!verdict
+              ? t("settings:downloadSource.verdictPending")
+              : !verdict.conclusive
+                ? t("settings:downloadSource.verdictInconclusive")
+                : t(verdict.preferred === "mirror" ? "settings:downloadSource.verdictMirror" : "settings:downloadSource.verdictOfficial", {
+                  official: latency(verdict.officialMs),
+                  mirror: latency(verdict.mirrorMs),
+                })}
+          </p>
+        ) : null}
         {config.downloadSource !== "official" ? (
           <p>
             {t("settings:downloadSource.mirrorNotice")}{" "}

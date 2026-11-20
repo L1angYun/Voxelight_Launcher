@@ -31,7 +31,7 @@ The former `MINECRAFT_LAUNCHER_*` variables remain explicit override aliases. Th
 
 ## Download sources and game safety
 
-Settings offers three download modes: `official` uses only Mojang/Minecraft sources, `auto` tries the official source before BMCLAPI, and `bmclapi` tries BMCLAPI before the official fallback. The mirror applies to supported vanilla metadata, clients, libraries, assets, logging, hash-verified Java runtime entries and the official server JAR. It does not invent mirrors for Quilt, Modrinth, CurseForge, OptiFine or arbitrary Maven hosts.
+Settings offers three download modes: `official` uses only Mojang/Minecraft sources, `auto` measures both sources once per session and tries the official source first unless it does not answer or is slower than twice BMCLAPI plus 150 ms (provisional thresholds), with the other as the fallback; the measurement is not saved or uploaded, and `bmclapi` tries BMCLAPI before the official fallback. The mirror applies to supported vanilla metadata, clients, libraries, assets, logging, hash-verified Java runtime entries and the official server JAR. It does not invent mirrors for Quilt, Modrinth, CurseForge, OptiFine or arbitrary Maven hosts.
 
 Version-manifest v2 entries retain the official URL and expected SHA-1. Files are checked before being committed. A hash supplied by a mirrored manifest belongs to that mirror's trust chain and is not independent Mojang signing. BMCLAPI is a community service, not an official Mojang endpoint.
 

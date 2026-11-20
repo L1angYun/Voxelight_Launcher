@@ -30,6 +30,7 @@ mod resources;
 mod secrets;
 mod server_manager;
 mod servers;
+mod source_select;
 mod storage;
 
 use std::{fs, path::Path};
@@ -256,6 +257,7 @@ pub fn run() {
             auth_commands::set_service_secret,
             auth_commands::get_service_status,
             network::test_proxy_connection,
+            source_select::get_download_source_verdict,
             network::set_proxy_credentials,
             loaders::list_loader_versions,
             loaders::install_loader,

@@ -102,7 +102,8 @@ pub async fn loader_versions(
 ) -> Result<Vec<LoaderVersion>, String> {
     loader_name(loader)?;
     validate_id(game_version)?;
-    let source = state.snapshot()?.config.download_source;
+    // A list request; the install path cancels it through controlled_loader_fetch.
+    let source = crate::source_select::passive_download_source(state, &state.snapshot()?.config.download_source).await?;
     let mut result;
     match loader {
         "fabric" | "quilt" => {
@@ -241,7 +242,7 @@ async fn prepare_profile(
         .as_array_mut()
         .ok_or("加载器配置缺少依赖库数组")?;
     let total = values.len();
-    let source = state.snapshot()?.config.download_source;
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
     for (index, library) in values.iter_mut().enumerate() {
         state.control.checkpoint().await?;
         if !minecraft::rules_allow(library.get("rules")) {
@@ -410,7 +411,7 @@ async fn installer_jar(
     let file = format!("{name}-{coordinate}-installer.jar");
     let url = format!("{base}/{coordinate}/{file}");
     let checksum = controlled_loader_fetch(&state.control, minecraft::fetch_official_installer_sha1(state.client()?, &url)).await?;
-    let source = state.snapshot()?.config.download_source;
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
     let download = Download {
         path: installer_cache_path(&state.data_dir, &file, &checksum, &source)?,
         url,
@@ -613,7 +614,7 @@ fn installer_seed_downloads(stage: &Path, profile: &Value) -> Result<(Vec<Downlo
 }
 
 async fn preseed_installer_libraries(state: &LauncherState, stage: &Path, profile: &Value) -> Result<(), String> {
-    let source = state.snapshot()?.config.download_source;
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
     if source != "official" {
         // Check every explicit artifact path before downloading any of them.
         let (files, untrusted) = installer_seed_downloads(stage, profile)?;
@@ -842,7 +843,7 @@ pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, S
         }
     }
     state.control.checkpoint().await?;
-    let source = state.snapshot()?.config.download_source;
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
     let expected = expected.to_ascii_lowercase();
     let (bytes, ()) = controlled_loader_fetch(&state.control, minecraft::fetch_loader_artifact_bytes(state, url, 16 * 1024 * 1024, &source, |bytes| {
         if format!("{:x}", Sha256::digest(bytes)) == expected {

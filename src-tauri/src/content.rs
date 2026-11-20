@@ -319,9 +319,9 @@ async fn load_default_skin(
     let config = state.snapshot()?.config;
     let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
     let preview = instances::checked_absolute(&state.data_dir.join("preview-cache"))?;
-    let source = config.download_source.as_str();
+    let source = crate::source_select::passive_download_source(state, &config.download_source).await?;
     let (source_version, metadata) =
-        minecraft::resolve_preview_metadata(state, version_id, &root, &preview, source)
+        minecraft::resolve_preview_metadata(state, version_id, &root, &preview, &source)
             .await
             .map_err(|e| format!("解析角色来源版本失败：{e}"))?;
     let installed = minecraft::download_from(
