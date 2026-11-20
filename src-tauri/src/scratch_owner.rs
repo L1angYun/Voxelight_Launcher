@@ -624,6 +624,52 @@ mod tests {
     }
 
     #[test]
+    fn f2_retry_rechecks_quarantine_after_probe() {
+        let fixture = Fixture::new();
+        let game = &fixture.0;
+        let root = game.join(".launcher-temp");
+        let stale = Owner {
+            pid: 3,
+            created: 42,
+        };
+        let capture = || {
+            let live = run(game);
+            write_owner(&live, stale).unwrap();
+            let quarantine = root.join(format!(".stale-{}", Uuid::new_v4()));
+            fs::create_dir(&quarantine).unwrap();
+            let captured = quarantine.join(live.file_name().unwrap());
+            fs::rename(&live, &captured).unwrap();
+            (quarantine, captured)
+        };
+
+        // The marker is replaced while the probe runs: the run now has another owner.
+        let (quarantine, captured) = capture();
+        let replacement = Owner {
+            pid: 4,
+            created: 43,
+        };
+        retry_retired_run(&quarantine, &|_| {
+            fs::remove_file(captured.join(MARKER)).unwrap();
+            write_owner(&captured, replacement).unwrap();
+            Liveness::Stale
+        });
+        assert_eq!(read_owner(&captured), Some(replacement));
+        assert!(captured.join("launcher.args").is_file());
+
+        // Another run joins the quarantine while the probe runs: it is no longer
+        // a quarantine holding exactly the run that was probed.
+        let (quarantine, captured) = capture();
+        let sibling = quarantine.join(format!("run-{}", Uuid::new_v4()));
+        retry_retired_run(&quarantine, &|_| {
+            fs::create_dir(&sibling).unwrap();
+            Liveness::Stale
+        });
+        assert!(captured.join("launcher.args").is_file());
+        assert!(sibling.is_dir());
+        assert!(quarantine.is_dir());
+    }
+
+    #[test]
     fn a3b_startup_discovers_shared_isolated_and_registered_roots_only() {
         use crate::models::{Config, Instance, Persisted};
 

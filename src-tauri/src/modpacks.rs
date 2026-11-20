@@ -10,7 +10,6 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha512};
-#[cfg(test)]
 use std::path::PathBuf;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -230,20 +229,89 @@ fn hashes(path: &Path) -> Result<(String, String, u64), String> {
     ))
 }
 
+/// A path segment shaped like a Windows 8.3 short name (`~` then a digit).
+/// Such a path may later resolve to another file through the alias, so the
+/// lock never treats it as a managed download; matching too much only makes
+/// the file an override, which is the safe side.
+fn short_name_shaped(path: &str) -> bool {
+    path.split('/').any(|part| {
+        part.split('~')
+            .skip(1)
+            .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    })
+}
+
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Earlier versions kept every downloaded `<uuid>.mrpack`. Remove such files
+/// once they are older than `min_age`; a younger one may still be importing in
+/// another launcher that shares this data directory.
+fn sweep_pack_downloads(directory: &Path, min_age: std::time::Duration) {
+    let Ok(entries) = fs::read_dir(directory) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".mrpack")) else { continue };
+        if !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.hyphenated().to_string() == id) {
+            continue;
+        }
+        let Ok(stat) = fs::symlink_metadata(entry.path()) else { continue };
+        let old = stat
+            .modified()
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age >= min_age);
+        if stat.is_file() && old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The receipt is taken from the copy in the stage, so neither a stale cache
+/// entry nor a change between hashing and copying can produce a false receipt.
+fn staged_receipt(
+    target: &Path,
+    downloaded: bool,
+    matches: impl Fn(&(String, String, u64)) -> bool,
+) -> Result<VerifiedPackFile, String> {
+    let checked = (|| {
+        let (sha1, sha512, size) = hashes(target)?;
+        let sha256 = instances::sha256(target)?;
+        Ok::<_, String>(((sha1, sha512, size), sha256))
+    })();
+    match checked {
+        Ok((values, sha256)) if matches(&values) => {
+            let mut receipt = VerifiedPackFile::receipt(downloaded, values);
+            receipt.sha256 = sha256;
+            Ok(receipt)
+        }
+        other => {
+            let _ = fs::remove_file(target);
+            Err(other.err().unwrap_or_else(|| "整合包文件复制后校验失败".into()))
+        }
+    }
+}
+
 struct VerifiedPackFile {
     downloaded: bool,
     sha1: String,
     sha512: String,
+    sha256: String,
     size: u64,
 }
 
 impl VerifiedPackFile {
     fn receipt(downloaded: bool, (sha1, sha512, size): (String, String, u64)) -> Self {
-        Self { downloaded, sha1, sha512, size }
+        Self { downloaded, sha1, sha512, sha256: String::new(), size }
     }
 
     fn lock_entry(self, path: String) -> LockedPackFile {
-        LockedPackFile { path, sha1: self.sha1, sha512: self.sha512, size: self.size }
+        LockedPackFile { path, sha1: self.sha1, sha512: self.sha512, size: self.size, sha256: self.sha256 }
     }
 }
 
@@ -278,7 +346,7 @@ async fn fetch_verified(
         .to_ascii_lowercase();
     let cache = safe_join(&cache_root, &format!("{cache_key}.bin"))?;
     let cached = if cache.is_file() { Some(hashes(&cache)?) } else { None };
-    if let Some(values) = cached.filter(&matches) {
+    if cached.filter(&matches).is_some() {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -286,7 +354,7 @@ async fn fetch_verified(
             return Err("整合包文件目标已存在".into());
         }
         fs::copy(&cache, target).map_err(|e| e.to_string())?;
-        return Ok(VerifiedPackFile::receipt(false, values));
+        return staged_receipt(target, false, &matches);
     }
     let network = client(&state, true)?;
     let mut last_error = "整合包没有受支持的下载地址".to_owned();
@@ -353,7 +421,7 @@ async fn fetch_verified(
         }
         .await;
         match result {
-            Ok(values) => {
+            Ok(_) => {
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
@@ -361,7 +429,7 @@ async fn fetch_verified(
                     return Err("整合包目标文件已存在，拒绝覆盖".into());
                 }
                 fs::copy(&cache, target).map_err(|e| e.to_string())?;
-                return Ok(VerifiedPackFile::receipt(true, values));
+                return staged_receipt(target, true, &matches);
             }
             Err(error) => {
                 last_error = error;
@@ -407,7 +475,7 @@ fn inspect_zip_limits_controlled(
 pub(crate) fn inspect_zip_reader<R: std::io::Read + std::io::Seek>(
     zip: &mut ZipArchive<R>, total_limit: u64, file_limit: u64, state: Option<&LauncherState>,
 ) -> Result<(), String> {
-    if zip.len() > 100_000 {
+    if zip.len() > MAX_ZIP_ENTRIES {
         return Err("ZIP 文件数量超过限制".into());
     }
     let mut total = 0u64;
@@ -435,14 +503,18 @@ pub(crate) fn inspect_zip_reader<R: std::io::Read + std::io::Seek>(
         if total > total_limit || file.size() > file_limit {
             return Err("ZIP 解压大小超过限制".into());
         }
-        if file.size() > 1024 * 1024
-            && file.compressed_size() > 0
-            && file.size() / file.compressed_size() > 1000
-        {
+        if suspicious_ratio(file.size(), file.compressed_size()) {
             return Err("ZIP 压缩比例异常，拒绝解压".into());
         }
     }
     Ok(())
+}
+
+const MAX_ZIP_ENTRIES: usize = 100_000;
+
+/// Entries above 1 MiB that expand more than 1000:1 (integer ratio) are refused.
+fn suspicious_ratio(size: u64, compressed: u64) -> bool {
+    size > 1024 * 1024 && compressed > 0 && size / compressed > 1000
 }
 pub(crate) fn archive_relative(value: &str) -> Result<(), String> {
     if value.is_empty()
@@ -923,6 +995,9 @@ struct LockedPackFile {
     sha1: String,
     sha512: String,
     size: u64,
+    /// Used only to match the staged inventory; not part of the lock format.
+    #[serde(skip)]
+    sha256: String,
 }
 
 struct StagedPack {
@@ -948,13 +1023,29 @@ fn write_import_lock(
             return Err("整合包的文件路径与锁文件冲突或大小写重复".into());
         }
     }
-    let overrides: Vec<_> = inventory
+    // Classify by what the stage actually holds. A downloaded file stays managed
+    // only if the stage still has exactly its verified bytes at that path; an
+    // override layer, an alias spelling or any other change makes it an override.
+    let receipts: HashMap<String, &LockedPackFile> = staged
+        .files
         .iter()
-        .filter(|record| staged.override_paths.contains(&record.relative.to_lowercase()))
+        .map(|file| (file.path.to_lowercase(), file))
         .collect();
-    let mut files: Vec<_> = staged.files.iter()
-        .filter(|file| !staged.override_paths.contains(&file.path.to_lowercase()))
-        .collect();
+    let mut files = Vec::new();
+    let mut overrides = Vec::new();
+    for record in inventory {
+        let key = record.relative.to_lowercase();
+        let managed = receipts.get(&key).filter(|file| {
+            !staged.override_paths.contains(&key)
+                && !short_name_shaped(&key)
+                && file.size == record.size
+                && file.sha256.eq_ignore_ascii_case(&record.sha256)
+        });
+        match managed {
+            Some(file) => files.push(*file),
+            None => overrides.push(record),
+        }
+    }
     files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     let mut payload = json!({
         "formatVersion": 2,
@@ -1224,7 +1315,10 @@ pub async fn install_modrinth_modpack(
         }
         let directory = checked_absolute(&state.data_dir.join("pack-downloads"))?;
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        sweep_pack_downloads(&directory, std::time::Duration::from_secs(24 * 60 * 60));
         let archive = safe_join(&directory, &format!("{}.mrpack", uuid::Uuid::new_v4()))?;
+        // The verified bytes stay in pack-cache; this copy only feeds the import.
+        let _downloaded = RemoveOnDrop(archive.clone());
         fetch_verified(
             &state,
             &[file.url.clone()],
@@ -1649,6 +1743,64 @@ async fn export_confirmed_shared_pack(
 mod tests {
     use super::*;
 
+    fn zip_in_memory(build: impl FnOnce(&mut ZipWriter<std::io::Cursor<Vec<u8>>>)) -> ZipArchive<std::io::Cursor<Vec<u8>>> {
+        let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        build(&mut zip);
+        let bytes = zip.finish().unwrap().into_inner();
+        ZipArchive::new(std::io::Cursor::new(bytes)).unwrap()
+    }
+
+    #[test]
+    fn c6_zip_entry_cap_is_inclusive_at_the_limit() {
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let archive = |count: usize| {
+            zip_in_memory(|zip| {
+                for n in 0..count {
+                    zip.start_file(format!("f{n}"), stored).unwrap();
+                }
+            })
+        };
+        let mut at_limit = archive(MAX_ZIP_ENTRIES);
+        assert_eq!(inspect_zip_reader(&mut at_limit, u64::MAX, u64::MAX, None), Ok(()));
+        let mut over = archive(MAX_ZIP_ENTRIES + 1);
+        assert_eq!(
+            inspect_zip_reader(&mut over, u64::MAX, u64::MAX, None),
+            Err("ZIP 文件数量超过限制".into())
+        );
+    }
+
+    #[test]
+    fn c6_compression_ratio_boundaries() {
+        const MIB: u64 = 1024 * 1024;
+        assert!(!suspicious_ratio(MIB, 1), "1 MiB itself is never checked");
+        assert!(!suspicious_ratio(MIB + 1000, (MIB + 1000) / 1000), "exactly 1000:1 is allowed");
+        assert!(suspicious_ratio(1001 * 2 * MIB, 2 * MIB), "1001:1 is refused");
+        assert!(!suspicious_ratio(16 * MIB, 0), "a zero compressed size is not a ratio");
+
+        let zeros = vec![0u8; 16 * MIB as usize];
+        let entry = |method| {
+            zip_in_memory(|zip| {
+                zip.start_file("zeros.bin", SimpleFileOptions::default().compression_method(method))
+                    .unwrap();
+                std::io::Write::write_all(zip, &zeros).unwrap();
+            })
+        };
+        let mut deflated = entry(CompressionMethod::Deflated);
+        {
+            let file = deflated.by_index(0).unwrap();
+            assert!(
+                file.size() / file.compressed_size() > 1000,
+                "fixture precondition: deflated zeros exceed 1000:1"
+            );
+        }
+        assert_eq!(
+            inspect_zip_reader(&mut deflated, u64::MAX, u64::MAX, None),
+            Err("ZIP 压缩比例异常，拒绝解压".into())
+        );
+        let mut stored = entry(CompressionMethod::Stored);
+        assert_eq!(inspect_zip_reader(&mut stored, u64::MAX, u64::MAX, None), Ok(()));
+    }
+
     #[test]
     fn c6_import_requires_a_modrinth_index_for_online_installs_and_checks_cancel_before_publish() {
         let source = crate::storage::executable_source(include_str!("modpacks.rs"));
@@ -2024,6 +2176,141 @@ mod tests {
                 ]);
             }
         });
+    }
+
+    #[test]
+    fn c1_lock_keeps_only_downloads_whose_staged_bytes_still_match() {
+        let root = test_root();
+        fs::create_dir_all(root.join("mods")).unwrap();
+        fs::create_dir_all(root.join("config")).unwrap();
+        let write = |relative: &str, bytes: &[u8]| fs::write(root.join(relative), bytes).unwrap();
+        write("mods/kept.jar", b"kept bytes");
+        // Same name and size as a receipt, different bytes: for example an override
+        // written through another spelling of the path, or a later change in the stage.
+        write("mods/changed.jar", b"changed bytes");
+        // Same name, different size.
+        write("mods/resized.jar", b"resized");
+        // Matching bytes, but an override layer wrote this path.
+        write("config/same.toml", b"same bytes");
+        // Matching bytes under a name shaped like an 8.3 alias.
+        write("mods/ABCDEF~1.JAR", b"short name");
+        let receipt = |path: &str, bytes: &[u8]| LockedPackFile {
+            path: path.into(),
+            sha1: format!("{:x}", Sha1::digest(bytes)),
+            sha512: format!("{:x}", Sha512::digest(bytes)),
+            size: bytes.len() as u64,
+            sha256: format!("{:x}", sha2::Sha256::digest(bytes)),
+        };
+        let staged = StagedPack {
+            index: PackIndex {
+                format_version: 1,
+                game: "minecraft".into(),
+                version_id: "fixture".into(),
+                name: "Fixture".into(),
+                summary: None,
+                files: Vec::new(),
+                dependencies: BTreeMap::from([("minecraft".into(), "1.21.1".into())]),
+            },
+            downloaded: 2,
+            skipped: 0,
+            warnings: Vec::new(),
+            files: vec![
+                receipt("mods/kept.jar", b"kept bytes"),
+                receipt("mods/changed.jar", b"CHANGED BYTES"),
+                receipt("mods/resized.jar", b"resized and longer"),
+                receipt("config/same.toml", b"same bytes"),
+                receipt("mods/ABCDEF~1.JAR", b"short name"),
+            ],
+            override_paths: HashSet::from(["config/same.toml".to_string()]),
+        };
+        let inventory = instances::collect_files_controlled(&root, None).unwrap();
+        write_import_lock(&root, &staged, None, &inventory).unwrap();
+        let lock: Value =
+            serde_json::from_slice(&fs::read(root.join(".launcher-pack.json")).unwrap()).unwrap();
+        cleanup(&root);
+        let files: Vec<_> = lock["files"].as_array().unwrap().iter().map(|f| f["path"].clone()).collect();
+        assert_eq!(files, vec![json!("mods/kept.jar")]);
+        assert!(lock["files"][0].get("sha256").is_none(), "the lock format is unchanged");
+        let mut overrides = lock["overrides"].as_array().unwrap().clone();
+        overrides.sort_by(|a, b| a["relative"].as_str().cmp(&b["relative"].as_str()));
+        let entry = |relative: &str, bytes: &[u8]| {
+            json!({"relative": relative, "size": bytes.len(),
+                "sha256": format!("{:x}", sha2::Sha256::digest(bytes))})
+        };
+        assert_eq!(
+            overrides,
+            vec![
+                entry("config/same.toml", b"same bytes"),
+                entry("mods/ABCDEF~1.JAR", b"short name"),
+                entry("mods/changed.jar", b"changed bytes"),
+                entry("mods/resized.jar", b"resized"),
+            ]
+        );
+    }
+
+    #[test]
+    fn c1_short_name_shapes() {
+        for path in ["mods/ABCDEF~1.JAR", "PROGRA~2/x.jar", "a~10", "mods/x~1y.jar"] {
+            assert!(short_name_shaped(path), "{path}");
+        }
+        for path in ["mods/a~b.jar", "mods/name~.jar", "mods/plain-1.jar", "~"] {
+            assert!(!short_name_shaped(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn c1_online_install_sweeps_guards_and_verifies_the_staged_copy() {
+        let source = crate::storage::executable_source(include_str!("modpacks.rs"));
+        let (_, body) = source.split_once("pub async fn install_modrinth_modpack(").unwrap();
+        let (body, _) = body.split_once("\n}").unwrap();
+        let sweep = body.find("sweep_pack_downloads(&directory,").unwrap();
+        let guard = body.find("let _downloaded = RemoveOnDrop(archive.clone());").unwrap();
+        let fetch = body.find("fetch_verified(").unwrap();
+        let import = body.find("import_inner(").unwrap();
+        assert!(sweep < guard && guard < fetch && fetch < import);
+        let (_, fetch) = source.split_once("async fn fetch_verified(").unwrap();
+        let (fetch, _) = fetch.split_once("\n}").unwrap();
+        assert_eq!(fetch.matches("staged_receipt(target, ").count(), 2);
+        assert_eq!(fetch.matches("&matches);").count(), 2);
+        assert!(!fetch.contains("VerifiedPackFile::receipt("));
+    }
+
+    #[test]
+    fn c1_pack_download_sweep_and_guard_remove_only_launcher_archives() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let ours = root.join(format!("{}.mrpack", uuid::Uuid::new_v4()));
+        let user = root.join("my-pack.mrpack");
+        let other = root.join(format!("{}.zip", uuid::Uuid::new_v4()));
+        for path in [&ours, &user, &other] {
+            fs::write(path, b"archive").unwrap();
+        }
+        sweep_pack_downloads(&root, std::time::Duration::from_secs(24 * 60 * 60));
+        let young_kept = ours.is_file();
+        sweep_pack_downloads(&root, std::time::Duration::ZERO);
+        let guarded = root.join("guarded.mrpack");
+        fs::write(&guarded, b"archive").unwrap();
+        drop(RemoveOnDrop(guarded.clone()));
+        let kept = [young_kept, ours.exists(), user.is_file(), other.is_file(), guarded.exists()];
+        cleanup(&root);
+        assert_eq!(kept, [true, false, true, true, false]);
+    }
+
+    #[test]
+    fn c1_staged_receipt_rejects_and_removes_a_copy_that_does_not_match() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("file.jar");
+        fs::write(&target, b"tampered").unwrap();
+        let error = staged_receipt(&target, false, |values| values.2 == 8 && values.0 == "0".repeat(40));
+        let removed = !target.exists();
+        fs::write(&target, b"expected").unwrap();
+        let sha1 = format!("{:x}", Sha1::digest(b"expected"));
+        let receipt = staged_receipt(&target, true, |values| values.0 == sha1).unwrap();
+        cleanup(&root);
+        assert!(error.is_err() && removed);
+        assert!(receipt.downloaded);
+        assert_eq!(receipt.sha256, format!("{:x}", sha2::Sha256::digest(b"expected")));
     }
 
     fn test_root() -> PathBuf {

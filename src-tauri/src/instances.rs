@@ -236,7 +236,7 @@ pub(crate) fn instance_root(state: &LauncherState) -> Result<PathBuf, String> {
     checked_absolute(&instances)
 }
 
-fn sha256(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256(path: &Path) -> Result<String, String> {
     let mut file = fs::File::open(path).map_err(|e| format!("无法读取实例文件：{e}"))?;
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 128 * 1024];
@@ -1451,6 +1451,22 @@ fn restore_inner(
     instance_id: &str,
     backup_id: &str,
 ) -> AppResult<RestoreResult> {
+    restore_inner_using(
+        state,
+        instance_id,
+        backup_id,
+        rename_owned_directory,
+        replace_registered_instance,
+    )
+}
+
+fn restore_inner_using(
+    state: &LauncherState,
+    instance_id: &str,
+    backup_id: &str,
+    move_dir: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    replace: impl FnOnce(&LauncherState, &Instance, &Instance) -> Result<(), String>,
+) -> AppResult<RestoreResult> {
     let current = instance(&state.snapshot()?, instance_id)?;
     let directory = restore_target(state, &current)?;
     let folder = backup_folder(state, instance_id)?;
@@ -1522,42 +1538,64 @@ fn restore_inner(
     write_intent(&folder, &intent)?;
     staging.preserve(); // durable material now belongs to the recovery intent
 
-    let publish = (|| -> Result<(), String> {
-        if intent.original.is_some() {
-            rename_owned_directory(&paths.live, &paths.previous).map_err(|e| e.to_string())?;
-        }
-        rename_owned_directory(&paths.stage, &paths.live).map_err(|e| e.to_string())?;
-        replace_registered_instance(state, &current, &restored)
-    })();
-    if let Err(error) = publish {
-        let on_disk = state
-            .snapshot()
-            .and_then(|data| instance(&data, instance_id));
-        match on_disk
-            .and_then(|on_disk| recover_with_state(state, &folder, &intent, &paths, &on_disk))
-        {
-            Ok(_) => {
-                return Err(paths
-                    .locations(&intent)
-                    .error("backup.restoreRolledBack", error))
-            }
-            Err(recovery) => {
-                return Err(paths.locations(&intent).error(
-                    "backup.restoreRecoveryRequired",
-                    format!("{error}; {recovery}"),
-                ))
-            }
-        }
-    }
-    if let Err(error) = clear_intent(&folder) {
-        return Err(paths
-            .locations(&intent)
-            .error("backup.restoreRecoveryRequired", error));
-    }
+    swap_instance_directory_using(
+        state,
+        &folder,
+        &intent,
+        &paths,
+        &current,
+        &restored,
+        move_dir,
+        replace,
+    )?;
     Ok(RestoreResult {
         instance: restored,
         previous_backup,
         previous_directory: paths.locations(&intent).previous_directory,
+    })
+}
+
+/// Publish the staged directory that `intent` records: park the live
+/// directory, move the stage into place and update the registration. Any
+/// failure rolls back from the durable intent; the intent is cleared only after
+/// a complete publish. Restore uses it now; pack updates reuse it with their own
+/// `after` registration.
+#[allow(clippy::too_many_arguments)]
+fn swap_instance_directory_using(
+    state: &LauncherState,
+    folder: &Path,
+    intent: &RestoreIntent,
+    paths: &RestorePaths,
+    current: &Instance,
+    after: &Instance,
+    mut move_dir: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    replace: impl FnOnce(&LauncherState, &Instance, &Instance) -> Result<(), String>,
+) -> AppResult<()> {
+    let publish = (|| -> Result<(), String> {
+        if intent.original.is_some() {
+            move_dir(&paths.live, &paths.previous).map_err(|e| e.to_string())?;
+        }
+        move_dir(&paths.stage, &paths.live).map_err(|e| e.to_string())?;
+        replace(state, current, after)
+    })();
+    if let Err(error) = publish {
+        let on_disk = state
+            .snapshot()
+            .and_then(|data| instance(&data, &current.id));
+        return Err(
+            match on_disk.and_then(|on_disk| recover_with_state(state, folder, intent, paths, &on_disk)) {
+                Ok(_) => paths.locations(intent).error("backup.restoreRolledBack", error),
+                Err(recovery) => paths.locations(intent).error(
+                    "backup.restoreRecoveryRequired",
+                    format!("{error}; {recovery}"),
+                ),
+            },
+        );
+    }
+    clear_intent(folder).map_err(|error| {
+        paths
+            .locations(intent)
+            .error("backup.restoreRecoveryRequired", error)
     })
 }
 
@@ -2321,6 +2359,112 @@ mod backup_recovery_tests {
         assert!(read_intent(&backup_folder(&state, "test").unwrap())
             .unwrap()
             .is_none());
+    }
+
+    #[derive(Clone, Copy)]
+    enum PublishFailure {
+        /// The stage move fails after `before` ran on the live path.
+        Stage(fn(&Path)),
+        /// Both moves succeed, then the registry update fails.
+        Registry,
+    }
+
+    /// Restore with injected doubles after a real backup. The archived
+    /// registration differs from the live one (its name), so a rollback that
+    /// kept the archived registration would be visible.
+    fn restore_with_failing_publish(
+        prefix: &str,
+        failure: PublishFailure,
+    ) -> (StagingDirectory, LauncherState, Instance, PathBuf, AppError) {
+        let root = fixture_folder(prefix);
+        let live = root.path().join("game").join("instances").join("test");
+        fs::create_dir_all(live.parent().unwrap()).unwrap();
+        let before = backup_manifest("test", &live, place(&live, b"selected backup bytes"));
+        let scratch = live.join(".launcher-temp/run-0f5d2f8e-5d0c-4b8e-9d55-0d1c5a3f4e21");
+        fs::create_dir_all(&scratch).unwrap();
+        fs::write(scratch.join("launcher.args"), b"runtime only").unwrap();
+        let registered = before.instance.clone();
+        let mut archived = before.instance.clone();
+        archived.name = "archived title".into();
+        let state = fixture_state(root.path(), &registered);
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let (state, error) = runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let backup = backup_inner(&state, &archived).unwrap();
+                fs::write(live.join("fixture"), b"current bytes").unwrap();
+                let error = restore_inner_using(
+                    &state,
+                    "test",
+                    &backup.id,
+                    |from, to| match failure {
+                        PublishFailure::Stage(before) if to.ends_with("test") => {
+                            before(to);
+                            Err(std::io::Error::other("injected publish failure"))
+                        }
+                        _ => fs::rename(from, to),
+                    },
+                    |state, current, after| match failure {
+                        PublishFailure::Registry => Err("injected registry failure".into()),
+                        PublishFailure::Stage(_) => replace_registered_instance(state, current, after),
+                    },
+                )
+                .err()
+                .expect("the injected publish failure is reported");
+                (state, error)
+            })
+            .await
+            .unwrap()
+        });
+        let live = root.path().join("game/instances/test");
+        (root, state, registered, live, error)
+    }
+
+    fn assert_rolled_back(state: &LauncherState, registered: &Instance, live: &Path, error: &AppError) {
+        assert_eq!(error.code, "backup.restoreRolledBack");
+        assert_eq!(fs::read(live.join("fixture")).unwrap(), b"current bytes");
+        assert_eq!(
+            fs::read(live.join(".launcher-temp/run-0f5d2f8e-5d0c-4b8e-9d55-0d1c5a3f4e21/launcher.args")).unwrap(),
+            b"runtime only"
+        );
+        let stage = PathBuf::from(error.params["restoredDirectory"].as_str().unwrap());
+        assert_eq!(fs::read(stage.join("fixture")).unwrap(), b"selected backup bytes");
+        assert!(read_intent(&backup_folder(state, "test").unwrap()).unwrap().is_none());
+        let now = state.snapshot().unwrap().instances[0].clone();
+        assert!(same_instance(&now, registered).unwrap(), "the live registration is kept");
+        assert_eq!(now.name, registered.name);
+    }
+
+    #[test]
+    fn f1_publish_failure_rolls_back_with_real_journal_and_runtime_scratch() {
+        let (_root, state, registered, live, error) =
+            restore_with_failing_publish("f1-rollback", PublishFailure::Stage(|_| {}));
+        assert_rolled_back(&state, &registered, &live, &error);
+    }
+
+    #[test]
+    fn f1_registry_failure_after_both_moves_rolls_back() {
+        let (_root, state, registered, live, error) =
+            restore_with_failing_publish("f1-registry", PublishFailure::Registry);
+        assert_rolled_back(&state, &registered, &live, &error);
+    }
+
+    #[test]
+    fn f1_incomplete_rollback_is_recovered_from_the_journal_later() {
+        // The double leaves an unrelated empty directory at the live name, so
+        // the automatic rollback must refuse and keep the intent.
+        let (_root, state, instance, live, error) = restore_with_failing_publish(
+            "f1-recovery",
+            PublishFailure::Stage(|live| fs::create_dir(live).unwrap()),
+        );
+        assert_eq!(error.code, "backup.restoreRecoveryRequired");
+        let folder = backup_folder(&state, "test").unwrap();
+        let intent = read_intent(&folder).unwrap().expect("the intent is kept for recovery");
+        fs::remove_dir(&live).unwrap();
+        let paths = intent_paths(&intent, &instance, &live).unwrap();
+        recover_with_state(&state, &folder, &intent, &paths, &instance).unwrap();
+        assert_eq!(fs::read(live.join("fixture")).unwrap(), b"current bytes");
+        assert!(live.join(".launcher-temp").is_dir());
+        assert!(read_intent(&folder).unwrap().is_none());
     }
 
     #[test]

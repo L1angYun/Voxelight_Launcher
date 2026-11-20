@@ -3198,4 +3198,58 @@ mod local_metadata_regression {
             assert!(crate::mod_metadata::read_icon(path).is_none());
         });
     }
+
+    fn padded(bytes: &[u8], fill: u8, length: usize) -> Vec<u8> {
+        let mut value = bytes.to_vec();
+        value.resize(length, fill);
+        value
+    }
+
+    #[test]
+    fn c6_metadata_limit_is_isolated_with_valid_json() {
+        let limit = 256 * 1024;
+        let at_limit = padded(br#"{"id":"demo"}"#, b' ', limit);
+        with_jar(&[("fabric.mod.json", &at_limit)], |_, value| {
+            assert_eq!(value["metadata"]["modId"], "demo", "valid JSON of exactly 256 KiB is read");
+        });
+        let over = padded(br#"{"id":"demo"}"#, b' ', limit + 1);
+        with_jar(&[("fabric.mod.json", &over)], |_, value| {
+            assert_eq!(value["name"], "fixture.jar");
+            assert!(value.get("metadata").is_none(), "one byte over the limit is not read");
+        });
+    }
+
+    #[test]
+    fn c6_icon_limit_is_isolated_with_valid_png() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let png = STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aW9sAAAAASUVORK5CYII=")
+            .unwrap();
+        let metadata = br#"{"id":"demo","icon":"icon.png"}"#;
+        let limit = 512 * 1024;
+        let at_limit = padded(&png, 0, limit);
+        with_jar(&[("fabric.mod.json", metadata), ("icon.png", &at_limit)], |path, _| {
+            assert!(crate::mod_metadata::read_icon(path).is_some(), "a valid PNG of exactly 512 KiB is read");
+        });
+        let over = padded(&png, 0, limit + 1);
+        with_jar(&[("fabric.mod.json", metadata), ("icon.png", &over)], |path, value| {
+            assert_eq!(value["metadata"]["modId"], "demo");
+            assert!(crate::mod_metadata::read_icon(path).is_none(), "one byte over the limit is not read");
+        });
+    }
+
+    #[test]
+    fn c6_corrupt_jar_is_still_listed_without_metadata() {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/core-tests")
+            .join(format!("vx-corrupt-jar-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("broken.jar");
+        fs::write(&path, b"this is not a zip archive").unwrap();
+        let listed = local_resource(path.clone(), ResourceKind::Mod);
+        let _ = fs::remove_dir_all(&folder);
+        let value = serde_json::to_value(listed.unwrap().unwrap()).unwrap();
+        assert_eq!(value["name"], "broken.jar");
+        assert!(value.get("metadata").is_none());
+    }
 }

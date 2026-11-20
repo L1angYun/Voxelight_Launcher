@@ -391,6 +391,43 @@ fn history_root(directory: &Path) -> Result<PathBuf, String> {
         .ok_or("资源目录标识无效")?;
     safe_join(parent, &format!(".launcher-resource-history/{name}"))
 }
+/// Earlier versions could leave a transaction folder behind when an install
+/// failed before its journal was written. Nothing can recover such a folder.
+/// Remove only exact UUID names without a journal that are older than
+/// `min_age`, never through a link; another launcher sharing this game root
+/// may be staging a younger one right now.
+fn sweep_unjournaled(root: &Path, min_age: std::time::Duration) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !uuid::Uuid::parse_str(name).is_ok_and(|id| id.hyphenated().to_string() == name) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(stat) = fs::symlink_metadata(&path) else { continue };
+        let old = stat
+            .modified()
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age >= min_age);
+        if stat.is_dir() && !linked(&stat) && old && !path.join("journal.json").exists() {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+}
+
+fn stage_kept_every_file(before: &[FileRecord], next: &[FileRecord], parked: &[FileRecord]) -> bool {
+    let kept: HashSet<(u64, &str)> = next
+        .iter()
+        .chain(parked)
+        .map(|record| (record.size, record.sha256.as_str()))
+        .collect();
+    before
+        .iter()
+        .all(|record| kept.contains(&(record.size, record.sha256.as_str())))
+}
+
 fn journal_path(root: &Path, id: &str) -> Result<PathBuf, String> {
     uuid::Uuid::parse_str(id).map_err(|_| "资源事务标识无效")?;
     safe_join(root, &format!("{id}/journal.json"))
@@ -852,9 +889,12 @@ pub(super) async fn install(
     }
     let root = history_root(directory)?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    sweep_unjournaled(&root, std::time::Duration::from_secs(24 * 60 * 60));
     let id = uuid::Uuid::new_v4().to_string();
     let transaction = safe_join(&root, &id)?;
-    fs::create_dir_all(&transaction).map_err(|e| e.to_string())?;
+    // Until the journal exists, nothing can find or recover this folder, so a
+    // failure or cancel before that point removes it instead of leaking a copy.
+    let mut owned = crate::instances::StagingDirectory::create(transaction.clone())?;
     let next = safe_join(&transaction, "next")?;
     let before_exists = directory.exists();
     let before = inventory(directory)?;
@@ -921,6 +961,12 @@ pub(super) async fn install(
     }
     state.control.checkpoint().await?;
     let after = inventory(&next)?;
+    // Install only moves copied files into staged-replaced/, never deletes them.
+    // A stage missing any of them was changed from outside (for example swept
+    // by another launcher during a long pause) and must not be committed.
+    if !stage_kept_every_file(&before, &after, &inventory(&removed)?) {
+        return Err("资源暂存副本在安装期间被外部改动，原目录未改变".into());
+    }
     let mut journal = Journal {
         id: id.clone(),
         name: name.into(),
@@ -937,6 +983,7 @@ pub(super) async fn install(
     };
     let path = journal_path(&root, &id)?;
     save_journal(&path, &journal)?;
+    owned.preserve();
     if let Some(progress) = progress {
         progress.stage(state, "resource-commit", "提交已校验资源及必需前置");
     }
@@ -1217,6 +1264,101 @@ mod tests {
         assert_eq!(fs::read(directory.join("current.jar")).unwrap(), b"latest bytes");
         assert_eq!(fs::read(directory.join("unknown-user.jar")).unwrap(), b"private user jar");
         cleanup(&root);
+    }
+
+    #[test]
+    fn c1_staging_is_removed_when_install_fails_before_the_journal() {
+        let root = root();
+        let directory = root.join("mods");
+        fs::create_dir_all(&directory).unwrap();
+        let state = Arc::new(LauncherState::test_fixture(
+            root.join("data"),
+            crate::models::Persisted::default(),
+            crate::storage::test_client(),
+        ));
+        // An empty directory needs no Modrinth lookup. The download then fails
+        // offline at the CDN check, after the transaction folder was created.
+        let selected: Version = serde_json::from_value(serde_json::json!({
+            "id": "version", "project_id": "project", "game_versions": ["1.21.1"],
+            "loaders": ["fabric"], "version_type": "release",
+            "files": [{
+                "filename": "fixture.jar", "url": "https://example.invalid/fixture.jar",
+                "primary": true, "size": 1, "hashes": {"sha512": "a".repeat(128)}
+            }]
+        }))
+        .unwrap();
+        let error = tauri::async_runtime::block_on(install(
+            &state, &directory, "1.21.1", Some("fabric"), "Fixture", selected,
+            ResourceKind::Mod, true, None,
+        ))
+        .err()
+        .expect("the offline download fails");
+        let history = history_root(&directory).unwrap();
+        let leftovers: Vec<_> = fs::read_dir(&history)
+            .map(|entries| entries.flatten().map(|entry| entry.file_name()).collect())
+            .unwrap_or_default();
+        let live: Vec<_> = fs::read_dir(&directory).unwrap().flatten().map(|e| e.file_name()).collect();
+        drop(state);
+        cleanup(&root);
+        assert!(error.contains("Modrinth"), "{error}");
+        assert!(leftovers.is_empty(), "no journal-less copy is left: {leftovers:?}");
+        assert!(
+            live.iter().all(|name| name.to_string_lossy().starts_with('.')),
+            "the live directory is unchanged: {live:?}"
+        );
+    }
+
+    #[test]
+    fn c1_sweep_removes_only_old_unjournaled_uuid_folders() {
+        let (root, directory, transaction, path, journal) = setup();
+        save_journal(&path, &journal).unwrap();
+        let history = history_root(&directory).unwrap();
+        let orphan = history.join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(orphan.join("next")).unwrap();
+        fs::write(orphan.join("next/copy.jar"), b"leaked copy").unwrap();
+        let other = history.join("not-a-transaction");
+        fs::create_dir_all(&other).unwrap();
+        let simple = history.join(uuid::Uuid::new_v4().simple().to_string());
+        fs::create_dir_all(&simple).unwrap();
+
+        sweep_unjournaled(&history, std::time::Duration::from_secs(24 * 60 * 60));
+        assert!(orphan.is_dir(), "a young folder may belong to another launcher");
+        sweep_unjournaled(&history, std::time::Duration::ZERO);
+        let kept = [transaction.is_dir(), other.is_dir(), simple.is_dir(), orphan.exists()];
+        cleanup(&root);
+        assert_eq!(kept, [true, true, true, false]);
+    }
+
+    #[test]
+    fn c1_staging_is_kept_once_the_journal_is_saved() {
+        let source = crate::storage::executable_source(include_str!("resource_transactions.rs"));
+        let (_, body) = source.split_once("pub(super) async fn install(").unwrap();
+        let (body, _) = body.split_once("\n}").unwrap();
+        let swept = body.find("sweep_unjournaled(&root,").unwrap();
+        let created = body.find("StagingDirectory::create(transaction.clone())").unwrap();
+        let checked = body.find("if !stage_kept_every_file(&before, &after, &inventory(&removed)?)").unwrap();
+        let saved = body.find("save_journal(&path, &journal)?;").unwrap();
+        let preserved = body.find("owned.preserve();").unwrap();
+        let commit = body.find("commit_using(").unwrap();
+        assert!(swept < created && created < checked && checked < saved);
+        assert!(saved < preserved && preserved < commit);
+    }
+
+    #[test]
+    fn c1_a_stage_that_lost_a_copied_file_is_not_committed() {
+        let record = |name: &str, bytes: &[u8]| FileRecord {
+            relative: name.into(),
+            size: bytes.len() as u64,
+            sha256: format!("{:x}", sha2::Sha256::digest(bytes)),
+        };
+        let before = [record("a.jar", b"a"), record("b.jar", b"b")];
+        // b.jar was parked under another name; the new download is extra.
+        let next = [record("a.jar", b"a"), record("new.jar", b"new")];
+        let parked = [record("uuid-b.jar", b"b")];
+        assert!(stage_kept_every_file(&before, &next, &parked));
+        assert!(!stage_kept_every_file(&before, &next, &[]), "b.jar vanished");
+        assert!(!stage_kept_every_file(&before, &[], &[]), "the whole copy vanished");
+        assert!(stage_kept_every_file(&[], &[], &[]), "an empty directory has nothing to keep");
     }
 
     #[test]
