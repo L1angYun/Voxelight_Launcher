@@ -133,6 +133,43 @@ fn parse_json(loader: &'static str, value: &Value) -> Option<ModMetadata> {
     Some(out)
 }
 
+/// TOML basic-string escapes, including \uXXXX and \UXXXXXXXX. In a multi-line
+/// string a backslash at the end of a line also drops the newline and the
+/// leading whitespace of the following lines.
+fn toml_unescape(input: &str, multiline: bool) -> Option<String> {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' { out.push(ch); continue; }
+        match chars.next()? {
+            'b' => out.push('\u{8}'),
+            't' => out.push('\t'),
+            'n' => out.push('\n'),
+            'f' => out.push('\u{c}'),
+            'r' => out.push('\r'),
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            marker @ ('u' | 'U') => {
+                let digits: String = (0..if marker == 'u' { 4 } else { 8 })
+                    .map(|_| chars.next()).collect::<Option<_>>()?;
+                out.push(char::from_u32(u32::from_str_radix(&digits, 16).ok()?)?);
+            }
+            next if multiline && next.is_whitespace() => {
+                // Line-ending backslash: skip spaces, the newline and the indentation after it.
+                let mut saw_newline = next == '\n';
+                while let Some(&peek) = chars.peek() {
+                    if !peek.is_whitespace() { break; }
+                    saw_newline |= peek == '\n';
+                    chars.next();
+                }
+                if !saw_newline { return None; }
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
 // Read only the metadata fields we recognize. Leave unknown TOML values unused.
 fn toml_string(input: &str) -> Option<(String, &str)> {
     let quote = *input.as_bytes().first()?;
@@ -140,7 +177,7 @@ fn toml_string(input: &str) -> Option<(String, &str)> {
     let mut escaped = false;
     for (i, byte) in input.bytes().enumerate().skip(1) {
         if !escaped && byte == quote {
-            let value = if quote == b'"' { serde_json::from_str(&input[..=i]).ok()? }
+            let value = if quote == b'"' { toml_unescape(&input[1..i], false)? }
                 else { input[1..i].to_owned() };
             return Some((value, input[i + 1..].trim_start()));
         }
@@ -163,6 +200,8 @@ fn toml_scalar(input: &str) -> Option<Option<Value>> {
             if let Some(tail) = source.strip_prefix(']') {
                 return is_end(tail.trim_start()).then_some(Some(Value::Array(values)));
             }
+            // An array left open on its line is malformed, not merely unsupported.
+            if source.is_empty() || source.starts_with('#') { return None; }
             if !source.starts_with(['"', '\'']) { return Some(None); }
             let (value, tail) = toml_string(source)?;
             values.push(value.into());
@@ -201,6 +240,8 @@ fn parse_toml(loader: &'static str, input: &str, jar_version: Option<&str>) -> O
         let value = if let Some(marker) = ["\"\"\"", "'''"].into_iter().find(|m| raw.starts_with(m)) {
             let mut current = &raw[3..];
             let mut result = String::new();
+            // Only the newline right after the opening delimiter is trimmed.
+            let mut first = true;
             loop {
                 if let Some((value, tail)) = current.split_once(marker) {
                     let tail = tail.trim();
@@ -208,10 +249,11 @@ fn parse_toml(loader: &'static str, input: &str, jar_version: Option<&str>) -> O
                     result.push_str(value);
                     break;
                 }
-                if !current.is_empty() || !result.is_empty() { result.push_str(current); result.push('\n'); }
+                if !(first && current.is_empty()) { result.push_str(current); result.push('\n'); }
+                first = false;
                 current = lines.next()?;
             }
-            Some(result.into())
+            Some(if marker == "\"\"\"" { toml_unescape(&result, true)? } else { result }.into())
         } else { toml_scalar(raw)? };
         if let Some(value) = value {
             let map = match section {
@@ -240,6 +282,60 @@ fn parse_toml(loader: &'static str, input: &str, jar_version: Option<&str>) -> O
     Some(out)
 }
 
+/// One attribute from the main section of a JAR manifest: names are
+/// case-insensitive, continuation lines (leading space) are unfolded, and
+/// per-entry sections after the first blank line are ignored.
+fn main_manifest_attribute(manifest: &str, name: &str) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for line in manifest.lines() {
+        if line.is_empty() { break; }
+        match (line.strip_prefix(' '), lines.last_mut()) {
+            (Some(rest), Some(last)) => last.push_str(rest),
+            _ => lines.push(line.to_owned()),
+        }
+    }
+    lines.iter().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim().eq_ignore_ascii_case(name).then(|| value.trim().to_owned())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn c6_toml_basic_strings_follow_toml_escapes() {
+        let toml = concat!(
+            "[[mods]]\n",
+            "modId = \"fixture\"\n",
+            "displayName = \"\\U0001F680 Tools\"\n",
+            "description = \"\"\"\n",
+            "\n",
+            "Line one\\nLine two \\\n",
+            "    joined\"\"\"\n",
+        );
+        let meta = parse_toml("forge", toml, None).expect("valid TOML");
+        assert_eq!(meta.name, "\u{1F680} Tools");
+        assert_eq!(meta.description, "\nLine one\nLine two joined");
+        let literal = "[[mods]]\nmodId = 'fixture'\ndescription = '''\nkeep \\n literal'''\n";
+        assert_eq!(parse_toml("forge", literal, None).unwrap().description, "keep \\n literal");
+    }
+
+    #[test]
+    fn c6_an_unterminated_array_is_malformed() {
+        assert!(parse_toml("forge", "[[mods]]\nmodId = \"fixture\"\nauthors = [\"Ana\",\n", None).is_none());
+        assert!(parse_toml("forge", "[[mods]]\nmodId = \"fixture\"\nauthors = [\"Ana\", 3]\n", None).is_some());
+    }
+
+    #[test]
+    fn c6_jar_version_comes_from_the_main_manifest_section() {
+        let manifest = "Manifest-Version: 1.0\nimplementation-version: 2.0.\n 1-long\n\nName: inner/\nImplementation-Version: 9\n";
+        assert_eq!(main_manifest_attribute(manifest, "Implementation-Version").as_deref(), Some("2.0.1-long"));
+        assert_eq!(main_manifest_attribute("Manifest-Version: 1.0\n\nName: x\nImplementation-Version: 9\n", "Implementation-Version"), None);
+    }
+}
+
 fn read_metadata(zip: &mut ZipArchive<File>) -> Option<ModMetadata> {
     for (file, loader) in [("fabric.mod.json", "fabric"), ("quilt.mod.json", "quilt"),
         ("META-INF/neoforge.mods.toml", "neoforge"), ("META-INF/mods.toml", "forge"), ("mcmod.info", "legacyForge")] {
@@ -249,8 +345,8 @@ fn read_metadata(zip: &mut ZipArchive<File>) -> Option<ModMetadata> {
         if file.ends_with(".toml") {
             let manifest = read_entry(zip, "META-INF/MANIFEST.MF", 64 * 1024).unwrap_or_default();
             let manifest = String::from_utf8_lossy(&manifest);
-            let version = manifest.lines().find_map(|line| line.strip_prefix("Implementation-Version:")).map(str::trim);
-            return parse_toml(loader, &body, version);
+            let version = main_manifest_attribute(&manifest, "Implementation-Version");
+            return parse_toml(loader, &body, version.as_deref());
         }
         return parse_json(loader, &serde_json::from_str(&body).ok()?);
     }
@@ -265,12 +361,36 @@ pub(crate) fn cached_metadata(path: &Path, stat: &fs::Metadata) -> Option<ModMet
     let Ok(modified) = stat.modified() else { return read_metadata(&mut open_jar(path)?); };
     let key = (path.to_owned(), stat.len(), modified);
     if let Some(hit) = cache.lock().ok()?.get(&key).cloned() { return hit.as_deref().cloned(); }
-    let value = open_jar(path).and_then(|mut zip| read_metadata(&mut zip));
+    // A failed open (for example a JAR a running game holds) is not cached:
+    // releasing the lock changes neither size nor mtime, so Refresh must retry.
+    let mut zip = open_jar(path)?;
+    let value = read_metadata(&mut zip);
     if let Ok(mut guard) = cache.lock() {
         if guard.len() >= 4096 { guard.clear(); }
         guard.insert(key, value.clone().map(Arc::new));
     }
     value
+}
+
+/// The mod ID a JAR declares, read directly (never cached), for duplicate checks.
+pub(crate) fn declared_mod_id(path: &Path) -> Option<String> {
+    let mut zip = open_jar(path)?;
+    read_metadata(&mut zip).map(|metadata| metadata.mod_id)
+}
+
+/// An enabled JAR in `directory`, other than `skip`, that declares `mod_id`.
+pub(crate) fn enabled_jar_with_mod_id(directory: &Path, mod_id: &str, skip: &Path) -> Option<String> {
+    for entry in fs::read_dir(directory).ok()?.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path == skip || !name.to_ascii_lowercase().ends_with(".jar") { continue; }
+        let Ok(stat) = fs::symlink_metadata(&path) else { continue; };
+        if !stat.is_file() || crate::resources::linked(&stat) { continue; }
+        if cached_metadata(&path, &stat).is_some_and(|metadata| metadata.mod_id == mod_id) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 pub(crate) fn read_icon(path: &Path) -> Option<String> {

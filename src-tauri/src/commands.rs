@@ -72,7 +72,17 @@ pub async fn save_config(
         keep_saved_appearance(&mut config, &previous);
     }
     crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
+    reject_inherited_tls(&config, &state.snapshot()?.instances)?;
     save_approved_config_with_scope(&state, config, Some(&previous), preserve_appearance).map_err(expected)
+}
+
+/// Ruling C7-1: name the instances that would inherit an https:// proxy.
+fn reject_inherited_tls(config: &Config, instances: &[crate::models::Instance]) -> AppResult<()> {
+    let names = crate::network::instances_blocking_tls(config, instances)?;
+    if names.is_empty() {
+        return Ok(());
+    }
+    Err(crate::errors::AppError::new("proxy.tlsInheritanceInstances").with_param("instances", names.join("、")))
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -257,6 +267,15 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
             return Err(crate::errors::STORAGE_STATE_CHANGED.into());
         }
         crate::memory::validate_changed_heap_arguments(&previous.jvm_arguments, &config.jvm_arguments)?;
+        // Re-checked under the state lock: an instance may have changed since the command looked.
+        if !crate::network::instances_blocking_tls(&config, &data.instances)
+            .map_err(|error| error.code().to_owned())?
+            .is_empty()
+        {
+            return Err(crate::network::Error::TlsInheritance.code().to_owned());
+        }
+        crate::network::forget_abandoned_credentials(&state.data_dir, &data.config, &config)
+            .map_err(|error| error.code().to_owned())?;
         data.config = config.clone();
         Ok(config)
     })?;
@@ -955,6 +974,58 @@ mod scoped_settings_save_tests {
         assert_eq!(saved.world_scene, "legacy-setting");
         assert_eq!(saved.accent_color, "legacy-color");
         assert_eq!(saved.language, "en-US");
+    }
+
+    fn custom_proxy(config: &mut Config, scheme: &str, host: &str) {
+        config.proxy_mode = "custom".into();
+        config.proxy_scheme = scheme.into();
+        config.proxy_host = host.into();
+        config.proxy_port = 8080;
+    }
+
+    #[test]
+    fn c7_switching_to_https_is_refused_while_an_instance_inherits_the_proxy() {
+        let (_root, state) = owned_profile();
+        state.update(|data| {
+            custom_proxy(&mut data.config, "http", "proxy.example.invalid");
+            data.instances.push(crate::models::Instance {
+                id: "inherits".into(), name: "Inheriting pack".into(),
+                game_proxy_mode: Some("launcher".into()), ..Default::default()
+            });
+            Ok(())
+        }).unwrap();
+        let current = state.snapshot().unwrap().config;
+        let mut tls = current.clone();
+        custom_proxy(&mut tls, "https", "proxy.example.invalid");
+        let before = serde_json::to_value(&state.snapshot().unwrap().config).unwrap();
+        assert_eq!(save_approved_config(&state, tls.clone(), Some(&current)).unwrap_err(), "proxy.tlsInheritance");
+        assert_eq!(serde_json::to_value(&state.snapshot().unwrap().config).unwrap(), before);
+        let named = reject_inherited_tls(&tls, &state.snapshot().unwrap().instances).unwrap_err();
+        assert_eq!(named.code, "proxy.tlsInheritanceInstances");
+        assert_eq!(named.params["instances"], "Inheriting pack");
+        // Without inheriting instances the https:// proxy saves for the launcher itself.
+        state.update(|data| { data.instances.clear(); Ok(()) }).unwrap();
+        assert_eq!(save_approved_config(&state, tls, Some(&current)).unwrap().proxy_scheme, "https");
+    }
+
+    #[test]
+    fn c7_abandoning_a_proxy_address_deletes_its_credentials() {
+        let (_root, state) = owned_profile();
+        let key = |host: &str| format!("download-proxy-credentials:http://{host}:8080");
+        let stored = |host: &str| crate::secrets::load_service_secret(&state.data_dir, &key(host)).unwrap().is_some();
+        let mut a = state.snapshot().unwrap().config;
+        custom_proxy(&mut a, "http", "a.example.invalid");
+        let saved = save_approved_config(&state, a.clone(), None).unwrap();
+        crate::secrets::save_service_secret(&state.data_dir, &key("a.example.invalid"), "{\"username\":\"u\",\"password\":\"p\"}").unwrap();
+        // Off keeps the address as a draft, so the credentials stay.
+        let mut off = saved.clone();
+        off.proxy_mode = "none".into();
+        let saved = save_approved_config(&state, off, Some(&saved)).unwrap();
+        assert!(stored("a.example.invalid"));
+        let mut b = saved.clone();
+        custom_proxy(&mut b, "http", "b.example.invalid");
+        save_approved_config(&state, b, Some(&saved)).unwrap();
+        assert!(!stored("a.example.invalid"), "A's credentials must not survive the switch to B");
     }
 
     #[test]

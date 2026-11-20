@@ -5,6 +5,40 @@ use std::thread;
 use std::time::Duration;
 
 #[test]
+fn c7_loaded_proxy_host_drops_userinfo_but_stays_custom() {
+    let mut config = crate::models::Config {
+        proxy_mode: "custom".into(),
+        proxy_host: "fixture-user:fixture-pass@proxy.example.invalid".into(),
+        proxy_port: 8080,
+        ..Default::default()
+    };
+    assert!(strip_host_userinfo(&mut config));
+    assert_eq!(config.proxy_host, "proxy.example.invalid");
+    assert_eq!(config.proxy_mode, "custom");
+    assert!(!serde_json::to_string(&config).unwrap().contains("fixture-pass"));
+    assert!(!strip_host_userinfo(&mut config), "a clean host is left alone");
+}
+
+#[test]
+fn c7_abandoned_credentials_survive_only_a_mode_change() {
+    let dir = crate::instances::StagingDirectory::create(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/proxy-credential-tests")
+            .join(uuid::Uuid::new_v4().to_string()),
+    ).unwrap();
+    let a = crate::models::Config {
+        proxy_mode: "custom".into(), proxy_host: "a.example.invalid".into(), proxy_port: 8080, ..Default::default()
+    };
+    let key = draft_endpoint(&a).unwrap().credential_key();
+    crate::secrets::save_service_secret(dir.path(), &key, "{\"username\":\"u\",\"password\":\"p\"}").unwrap();
+    let mode_only = crate::models::Config { proxy_mode: "none".into(), ..a.clone() };
+    forget_abandoned_credentials(dir.path(), &a, &mode_only).unwrap();
+    assert!(crate::secrets::load_service_secret(dir.path(), &key).unwrap().is_some());
+    let cleared = crate::models::Config { proxy_host: String::new(), ..a.clone() };
+    forget_abandoned_credentials(dir.path(), &a, &cleared).unwrap();
+    assert!(crate::secrets::load_service_secret(dir.path(), &key).unwrap().is_none());
+}
+
+#[test]
 fn c7_proxy_authorization_is_a_sensitive_header() {
     let credentials = Credentials::new("fixture-user".into(), "fixture-pass".into()).unwrap();
     let header = credentials.proxy_authorization().unwrap();
@@ -123,7 +157,12 @@ fn accept_or_timeout(listener: &TcpListener) -> TcpStream {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                // Windows hands back the listener's non-blocking mode; under load a
+                // read could then fail with WouldBlock before the request arrives.
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(error)
                 if error.kind() == std::io::ErrorKind::WouldBlock
                     && std::time::Instant::now() < deadline =>
@@ -186,6 +225,8 @@ fn c7_real_connect_hits_loopback_proxy_and_sends_auth_only_when_configured() {
                 Error::Authentication
             }
         );
+        // Provider requests surface this code instead of a generic network error.
+        assert_eq!(proxy_auth_code(&error).as_deref(), (!auth).then_some("proxy.authentication"));
         let request = server.join().unwrap();
         assert!(request.starts_with("CONNECT proxy-fixture.invalid:443 HTTP/1.1\r\n"));
         let mut actual = request.lines().filter_map(|line| {

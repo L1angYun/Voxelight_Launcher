@@ -355,6 +355,14 @@ enum LoaderMirrorStage {
     Artifact,
 }
 
+/// A fixed-text loader warning in the persistent launcher log.
+pub(crate) fn record_loader_warning(data_dir: &Path, message: &str) {
+    let record = format!("{} [warn] {message}\n", chrono::Utc::now().to_rfc3339());
+    if crate::process_output::append_log(&data_dir.join("logs"), &record).is_err() {
+        eprintln!("{message}");
+    }
+}
+
 fn record_loader_mirror_fallback(data_dir: &Path, stage: LoaderMirrorStage) {
     let kind = match stage {
         LoaderMirrorStage::Metadata => "metadata",
@@ -1168,9 +1176,10 @@ async fn download_once(
     let response = policy
         .cancellable(client.get(request_url).send())
         .await?
-        .map_err(|error| error.to_string())?
+        // reqwest errors print the request URL; keep it (and any signed query) out of logs.
+        .map_err(|error| error.without_url().to_string())?
         .error_for_status()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.without_url().to_string())?;
     if file
         .size
         .zip(response.content_length())
@@ -1238,7 +1247,24 @@ pub(crate) async fn ensure_download_with_source_and_control(
     let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
     ensure_download_with_policy(
         state.client()?, state.mirror_client().map(Some), file, source, policy, &identity_url,
-        Some(&state.data_dir),
+        Some(&state.data_dir), false,
+    ).await
+}
+
+/// A download that is part of a loader install chain (installer jar, its
+/// pre-fetched libraries, loader profile libraries). Every candidate, including
+/// Mojang-hosted libraries served by a mirror, uses the allowlisted client and
+/// its redirect checks, and a rejected mirror is logged before falling back.
+pub(crate) async fn ensure_loader_download(
+    state: &LauncherState,
+    file: &Download,
+    source: &str,
+    control: Option<&crate::downloads::DownloadControl>,
+) -> Result<bool, String> {
+    let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
+    ensure_download_with_policy(
+        state.client()?, state.mirror_client().map(Some), file, source, policy, &identity_url,
+        Some(&state.data_dir), true,
     ).await
 }
 
@@ -1251,7 +1277,7 @@ async fn ensure_download_with_source_and_control_resolved(
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<bool, String> {
     let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
-    ensure_download_with_policy(client, mirror, file, source, policy, resolver, None).await
+    ensure_download_with_policy(client, mirror, file, source, policy, resolver, None, false).await
 }
 
 pub(crate) async fn ensure_preview_download(
@@ -1261,7 +1287,7 @@ pub(crate) async fn ensure_preview_download(
 ) -> Result<bool, String> {
     // As before, default skin bytes are fetched from their verified official
     // client URL, even when official metadata came from an enabled mirror.
-    ensure_download_with_policy(client, Ok(None), file, "official", DownloadPolicy::Preview(control), &identity_url, None).await
+    ensure_download_with_policy(client, Ok(None), file, "official", DownloadPolicy::Preview(control), &identity_url, None, false).await
 }
 
 async fn ensure_download_with_policy(
@@ -1272,6 +1298,7 @@ async fn ensure_download_with_policy(
     policy: DownloadPolicy<'_>,
     resolver: &(dyn Fn(&str) -> String + Sync),
     fallback_data_dir: Option<&Path>,
+    loader_install: bool,
 ) -> Result<bool, String> {
     policy.checkpoint().await?;
     if file_valid(file).await? {
@@ -1287,9 +1314,9 @@ async fn ensure_download_with_policy(
     if candidates.iter().any(|candidate| candidate.mirror) && !valid_sha1(&file.sha1) {
         return Err("镜像文件必须具有固定且有效的预期 SHA-1".into());
     }
-    let strict_loader = reqwest::Url::parse(&file.url).ok().is_some_and(|url| {
-        loader_mirror_path(url.host_str().unwrap_or_default(), url.path()).is_some()
-    });
+    // The caller says whether this is a loader install; the host alone would
+    // miss Mojang-hosted libraries that an installer profile also lists.
+    let strict_loader = strict_loader_download(loader_install, &file.url);
     let mirror_client = if !strict_loader && candidates.iter().any(|candidate| candidate.mirror) {
         Some(mirror?.ok_or("proxy.connection")?)
     } else {
@@ -1313,7 +1340,8 @@ async fn ensure_download_with_policy(
                             record_loader_mirror_fallback(data_dir, LoaderMirrorStage::Artifact);
                         }
                     }
-                    errors.push(format!("{}：{error}", candidate.url));
+                    // No full URL: a signed query string must not reach the log.
+                    errors.push(format!("{}：{error}", candidate_label(&candidate.url, candidate.mirror)));
                 }
             }
             policy.checkpoint().await?;
@@ -1328,6 +1356,20 @@ async fn ensure_download_with_policy(
         file.path.file_name().unwrap_or_default().to_string_lossy(),
         errors.join("；")
     ))
+}
+
+/// Whether a download uses the allowlisted client for mirror candidates and logs
+/// a rejected mirror: every loader-install download, plus loader hosts anywhere.
+fn strict_loader_download(loader_install: bool, url: &str) -> bool {
+    loader_install || reqwest::Url::parse(url).ok().is_some_and(|url| {
+        loader_mirror_path(url.host_str().unwrap_or_default(), url.path()).is_some()
+    })
+}
+
+/// Source label and host only, never path or query.
+fn candidate_label(url: &str, mirror: bool) -> String {
+    let host = reqwest::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned)).unwrap_or_default();
+    format!("{}（{host}）", if mirror { "镜像" } else { "官方源" })
 }
 
 async fn ensure_json_download_with_source_and_control(
@@ -4359,6 +4401,59 @@ mod tests {
                 assert_eq!(candidate.mirror, status != 200);
                 assert_eq!(server.requests(), vec![mirror_route, official_route]);
             }
+        });
+    }
+
+    #[test]
+    fn c8_loader_installs_use_the_strict_policy_even_for_mojang_libraries() {
+        let mojang = "https://libraries.minecraft.net/com/example/lib/1.0/lib-1.0.jar";
+        assert!(strict_loader_download(true, mojang), "a loader install must not use the permissive mirror client");
+        assert!(!strict_loader_download(false, mojang), "ordinary game downloads keep their behaviour");
+        assert!(strict_loader_download(false, "https://maven.minecraftforge.net/net/minecraftforge/forge/x.jar"));
+        assert_eq!(candidate_label("https://maven.example.invalid/a.jar?sig=fixture-secret", true), "镜像（maven.example.invalid）");
+        let label = candidate_label("https://libraries.minecraft.net/a.jar?sig=fixture-secret", false);
+        assert!(!label.contains("fixture-secret") && !label.contains("a.jar"), "{label}");
+    }
+
+    #[test]
+    fn c8_matching_digest_with_the_wrong_size_is_rejected() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let body = b"fixture bytes";
+            let route = "/maven.minecraftforge.net/net/test/sized.jar";
+            let server = TestServer::new(&[(route, 200, body)]);
+            let dir = crate::instances::StagingDirectory::create(Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("vx-c8-size-{}", uuid::Uuid::new_v4()))).unwrap();
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            let file = Download {
+                path: dir.path().join("sized.jar"),
+                sha1: format!("{:x}", Sha1::digest(body)),
+                size: Some(body.len() as u64 + 1),
+                url: "https://maven.minecraftforge.net/net/test/sized.jar".into(),
+            };
+            let resolver = server.resolver();
+            let result = ensure_download_with_source_and_control_resolved(&client, Ok(None), &file, "official", None, &resolver).await;
+            assert!(result.is_err(), "the declared size must be enforced even when the digest matches");
+            assert!(!file.path.exists(), "nothing is published");
+        });
+    }
+
+    #[test]
+    fn c8_failed_candidates_never_put_the_url_query_in_the_error() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let server = TestServer::new(&[]);
+            let dir = crate::instances::StagingDirectory::create(Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("vx-c8-errors-{}", uuid::Uuid::new_v4()))).unwrap();
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            let file = Download {
+                path: dir.path().join("lib.jar"),
+                sha1: format!("{:x}", Sha1::digest(b"fixture")),
+                size: Some(7),
+                url: "https://libraries.minecraft.net/com/example/lib.jar?sig=fixture-secret".into(),
+            };
+            let resolver = server.resolver();
+            let Err(error) = ensure_download_with_source_and_control_resolved(&client, Ok(Some(&client)), &file, "bmclapi", None, &resolver).await else {
+                panic!("both candidates return 404");
+            };
+            assert!(!error.contains("fixture-secret") && !error.contains("sig="), "{error}");
+            assert!(error.contains("libraries.minecraft.net"), "{error}");
         });
     }
 

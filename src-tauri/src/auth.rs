@@ -125,7 +125,9 @@ impl AuthTransport for HttpTransport {
                 }
             };
             let mut response = builder.send().await.map_err(|error| {
-                if error.is_timeout() {
+                if let Some(code) = crate::network::proxy_auth_code(&error) {
+                    code
+                } else if error.is_timeout() {
                     "认证请求超时，请检查网络后重试".to_string()
                 } else {
                     "认证网络请求失败，请检查网络、代理和 HTTPS 证书后重试".to_string()

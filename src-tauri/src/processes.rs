@@ -408,7 +408,9 @@ pub fn redact(text: &str) -> String {
             .expect("constant regex")
     });
     static URL_USERINFO: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r#"(?i)(\bhttps?://)[^/?#@\s,;"']+@"#)
+        // All of the authority before its last '@' is userinfo; RFC 3986 allows
+        // sub-delimiters such as , ; ' there, so they must not end the match.
+        regex::Regex::new(r#"(?i)(\bhttps?://)[^/?#\s"]*@"#)
             .expect("constant regex")
     });
     static BEARER: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -939,6 +941,15 @@ mod tests {
         assert!(zh.contains("诊断报告") && !zh.contains("Diagnostic report"), "{zh}");
         assert!(en.contains("Diagnostic report") && !en.contains("诊断报告"), "{en}");
         assert!(!zh.contains(secret) && !en.contains(secret), "the exported excerpt must be redacted");
+    }
+
+    #[test]
+    fn c7_userinfo_with_sub_delimiters_is_fully_redacted() {
+        for (user, pass) in [("fixture,user", "fixture-pass"), ("fixture-user", "pa;ss"), ("o'user", "p,a;s's")] {
+            let clean = redact(&format!("proxy at http://{user}:{pass}@proxy.example.invalid:8080/x done"));
+            assert!(!clean.contains(user) && !clean.contains(pass), "{clean}");
+            assert!(clean.contains("proxy.example.invalid:8080/x"), "{clean}");
+        }
     }
 
     #[test]

@@ -198,6 +198,7 @@
       "invalidGameMode": "请选择游戏代理模式。",
       "invalidCredentials": "无法保存或读取代理凭据。请检查用户名和密码，或重新输入。",
       "tlsInheritance": "Java 只能继承 HTTP 代理。请改用 http:// 代理，或选择「跟随系统」「关闭」。",
+      "tlsInheritanceInstances": "这些实例设为继承启动器代理，而 Java 不能继承 https:// 代理：{{instances}}。请先把它们改为「关闭」或「跟随系统」，或改用 http:// 代理。",
       "authentication": "代理要求有效的凭据。请保存代理凭据后重试。",
       "connection": "无法通过此代理连接。请检查代理主机和端口。",
       "tls": "TLS 验证失败。请检查代理协议和证书。",

@@ -462,6 +462,11 @@ mod tests {
             },
         )
         .unwrap();
+        // The size limit is inclusive: a valid marker of exactly 256 bytes counts.
+        let boundary = run(game);
+        let mut exact = br#"{"pid":3,"created":42}"#.to_vec();
+        exact.resize(256, b' ');
+        fs::write(boundary.join(MARKER), &exact).unwrap();
         let root = game.join(".launcher-temp");
         let other_names = [
             "run-not-a-uuid".to_string(),
@@ -492,6 +497,7 @@ mod tests {
             other => panic!("inspected an invalid fixture owner: {other}"),
         });
         assert!(!dead.exists());
+        assert!(!boundary.exists(), "a 256-byte stale marker is still a valid owner");
         for path in [markerless, live, unknown]
             .into_iter()
             .chain(malformed)

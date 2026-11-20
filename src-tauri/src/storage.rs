@@ -491,6 +491,9 @@ impl LauncherState {
             needs_write |= data.config.game_directory != directory;
             data.config.game_directory = directory;
         }
+        // A hand-edited or copied profile can carry user:password@ in the proxy
+        // host. Drop that before any config snapshot reaches the webview.
+        needs_write |= crate::network::strip_host_userinfo(&mut data.config);
         let builder = reqwest::Client::builder()
             .user_agent(concat!("VoxelightLauncher/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(std::time::Duration::from_secs(20))

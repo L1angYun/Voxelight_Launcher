@@ -1004,6 +1004,11 @@ async fn import_inner(
     if final_dir.exists() {
         return Err("整合包目标已存在".into());
     }
+    // An online Modrinth install names its project and version; only a real
+    // Modrinth index may carry that baseline, so no other format is tried.
+    if origin.is_some() && !modrinth {
+        return Err("Modrinth 整合包缺少 modrinth.index.json，已停止导入".into());
+    }
     let mut owned_stage = instances::StagingDirectory::create(stage_name)?;
     let stage = owned_stage.path();
     let staged = if modrinth {
@@ -1037,6 +1042,8 @@ async fn import_inner(
         &loader_version,
     )?;
     let StagedPack { downloaded, skipped, warnings, .. } = staged;
+    // Cancelling while the lock is written must still leave only the disposable stage.
+    state.control.checkpoint().await?;
     if let Err(error) = owned_stage.publish(&final_dir) {
         return Err(format!(
             "无法提交整合包，完整暂存目录保留在 {}：{error}",
@@ -1641,6 +1648,20 @@ async fn export_confirmed_shared_pack(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c6_import_requires_a_modrinth_index_for_online_installs_and_checks_cancel_before_publish() {
+        let source = crate::storage::executable_source(include_str!("modpacks.rs"));
+        let (_, body) = source.split_once("async fn import_inner(").unwrap();
+        let (body, _) = body.split_once("\n}").unwrap();
+        let origin = body.find("if origin.is_some() && !modrinth {").unwrap();
+        let stage = body.find("instances::StagingDirectory::create(stage_name)?").unwrap();
+        assert!(origin < stage, "a non-Modrinth archive with a Modrinth origin stops before staging");
+        let lock = body.find("write_import_lock(").unwrap();
+        let publish = body.find("owned_stage.publish(&final_dir)").unwrap();
+        let checkpoint = body[lock..publish].rfind("state.control.checkpoint().await?;").map(|at| lock + at);
+        assert!(checkpoint.is_some_and(|at| at > lock), "cancellation is checked after the lock and before publishing");
+    }
 
     fn shared_export_fixture(root: &Path) -> (LauncherState, Instance) {
         let profile = root.join("profile");

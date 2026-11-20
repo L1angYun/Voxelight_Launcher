@@ -208,6 +208,9 @@ pub struct LocalResource {
     pub path: String,
     pub enabled: bool,
     pub size: u64,
+    /// Modification time in ms, so a file replaced under the same name gets a new revision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) metadata: Option<crate::mod_metadata::ModMetadata>,
 }
@@ -329,7 +332,11 @@ async fn api_json<T: DeserializeOwned>(
         .query(query)
         .send()
         .await
-        .map_err(|_| "无法连接 Modrinth，请检查网络后重试")?;
+        .map_err(|error| crate::network::proxy_auth_code(&error)
+            .unwrap_or_else(|| "无法连接 Modrinth，请检查网络后重试".into()))?;
+    if response.status() == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+        return Err(crate::network::Error::Authentication.code().into());
+    }
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err("Modrinth 请求过于频繁，请稍后重试".into());
     }
@@ -1663,6 +1670,9 @@ fn local_resource_without_metadata(
         path: path.to_string_lossy().into_owned(),
         enabled,
         size: metadata.len(),
+        modified_ms: metadata.modified().ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|time| time.as_millis() as u64),
         metadata: None,
     }, metadata)))
 }
@@ -3051,6 +3061,25 @@ mod local_metadata_regression {
         });
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn c6_metadata_is_retried_after_a_locked_jar_is_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        with_jar(&[("fabric.mod.json", br#"{"id":"locked","name":"Locked"}"#)], |path, _| {
+            // A fresh copy so the earlier listing has not cached it.
+            let copy = path.with_file_name("locked-copy.jar");
+            fs::copy(path, &copy).unwrap();
+            let stat = fs::symlink_metadata(&copy).unwrap();
+            let lock = fs::OpenOptions::new().read(true).share_mode(0).open(&copy).unwrap();
+            assert!(crate::mod_metadata::cached_metadata(&copy, &stat).is_none());
+            drop(lock);
+            let unchanged = fs::symlink_metadata(&copy).unwrap();
+            assert_eq!((unchanged.len(), unchanged.modified().unwrap()), (stat.len(), stat.modified().unwrap()));
+            assert!(crate::mod_metadata::cached_metadata(&copy, &unchanged).is_some(),
+                "a released JAR must be read again");
+        });
+    }
+
     #[test]
     fn local_mod_metadata_supports_quilt_and_both_legacy_shapes() {
         with_jar(&[("quilt.mod.json", br#"{"quilt_loader":{"id":"quilt-demo","version":"4","metadata":{"name":"Quilt Demo","contributors":{"Ana":"Owner"}},"depends":["fixture-a",{"id":"fixture-b","versions":["1","2"],"optional":true}]}}"#)], |_, value| {
@@ -3064,6 +3093,19 @@ mod local_metadata_regression {
                 assert_eq!(value["metadata"]["name"], "Legacy");
             });
         }
+    }
+
+    #[test]
+    fn c6_jar_version_placeholder_reads_only_the_main_manifest_section() {
+        let forge = b"[[mods]]\nmodId='demo'\nversion='${file.jarVersion}'\n";
+        let manifest = b"Manifest-Version: 1.0\r\nimplementation-version: 4.\r\n 2\r\n\r\nName: inner/\r\nImplementation-Version: 9\r\n";
+        with_jar(&[("META-INF/mods.toml", forge), ("META-INF/MANIFEST.MF", manifest)], |_, value| {
+            assert_eq!(value["metadata"]["version"], "4.2");
+        });
+        let entry_only = b"Manifest-Version: 1.0\r\n\r\nName: inner/\r\nImplementation-Version: 9\r\n";
+        with_jar(&[("META-INF/mods.toml", forge), ("META-INF/MANIFEST.MF", entry_only)], |_, value| {
+            assert_ne!(value["metadata"]["version"], "9", "an entry section's version is not the mod version");
+        });
     }
 
     #[test]

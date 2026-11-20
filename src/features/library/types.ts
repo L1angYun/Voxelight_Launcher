@@ -24,6 +24,7 @@ export interface LocalResource {
   path: string;
   enabled: boolean;
   size: number;
+  modifiedMs?: number;
 }
 export interface ResourceUpdate {
   fileName: string;

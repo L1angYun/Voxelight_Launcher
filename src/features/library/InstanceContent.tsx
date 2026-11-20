@@ -40,7 +40,7 @@ function LocalFileName({ file, versionId, instanceId }: { file: LocalResource; v
   const meta = file.metadata;
   const details = [meta?.version, ...(meta?.authors ?? [])].filter(Boolean).join(" · ");
   return <div>
-    {meta?.hasIcon ? <LocalModIcon key={`${versionId}:${instanceId ?? ""}:${file.fileName}`} fileName={file.fileName} versionId={versionId} instanceId={instanceId} /> : null}
+    {meta?.hasIcon ? <LocalModIcon key={`${versionId}:${instanceId ?? ""}:${file.fileName}:${file.size}:${file.modifiedMs ?? ""}`} fileName={file.fileName} versionId={versionId} instanceId={instanceId} /> : null}
     <strong>{meta?.name || file.name}</strong>
     <small>{file.fileName} · {sizeText(file.size, i18n.language)}{details ? ` · ${details}` : ""}</small>
     {meta?.dependencies.map((dep, i) => <span key={`${dep.id}:${i}`} className="vx-dependency-kind" data-kind={dep.kind}>

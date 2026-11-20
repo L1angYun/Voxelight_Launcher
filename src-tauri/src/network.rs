@@ -315,6 +315,63 @@ impl Settings {
 
 // CONNECT 407 is not an HTTP response exposed by reqwest 0.12.28. It is a
 // private hyper-util tunnel source; classify but never return/display that text.
+/// Names of instances whose own game proxy mode inherits the launcher proxy,
+/// when that proxy is https:// (ruling C7-1): Java cannot inherit a TLS proxy.
+pub(crate) fn instances_blocking_tls(
+    config: &crate::models::Config,
+    instances: &[crate::models::Instance],
+) -> Result<Vec<String>, Error> {
+    let settings = Settings::from_config(config)?;
+    if !settings.endpoint().is_some_and(|endpoint| endpoint.scheme == "https") {
+        return Ok(Vec::new());
+    }
+    Ok(instances
+        .iter()
+        .filter(|instance| instance.game_proxy_mode.as_deref() == Some("launcher"))
+        .map(|instance| instance.name.clone())
+        .collect())
+}
+
+/// Removes URL userinfo from a stored proxy host. The host part is kept, so a
+/// custom proxy stays custom (and fails closed if what is left is invalid)
+/// instead of silently becoming a direct connection. Returns whether it changed.
+pub(crate) fn strip_host_userinfo(config: &mut crate::models::Config) -> bool {
+    let Some((_, host)) = config.proxy_host.rsplit_once('@') else {
+        return false;
+    };
+    let host = host.to_owned();
+    config.proxy_host = host;
+    true
+}
+
+/// The saved proxy address, whatever the mode; credentials are keyed by it.
+fn draft_endpoint(config: &crate::models::Config) -> Option<Endpoint> {
+    Endpoint::parse(&config.proxy_scheme, config.proxy_host.trim(), config.proxy_port).ok()
+}
+
+/// Deletes the credentials of a proxy address that a save abandons. Switching
+/// only the mode (for example Off and back) keeps the address and its record.
+pub(crate) fn forget_abandoned_credentials(
+    data_dir: &std::path::Path,
+    previous: &crate::models::Config,
+    next: &crate::models::Config,
+) -> Result<(), Error> {
+    let Some(old) = draft_endpoint(previous) else {
+        return Ok(());
+    };
+    if draft_endpoint(next).as_ref() == Some(&old) {
+        return Ok(());
+    }
+    crate::secrets::save_service_secret(data_dir, &old.credential_key(), "")
+        .map_err(|_| Error::InvalidCredentials)
+}
+
+/// `proxy.authentication` when a request failed because the proxy wants
+/// credentials (an expired password, say); other failures keep their message.
+pub(crate) fn proxy_auth_code(error: &reqwest::Error) -> Option<String> {
+    (classify(error) == Error::Authentication).then(|| Error::Authentication.code().to_owned())
+}
+
 pub(crate) fn classify(error: &reqwest::Error) -> Error {
     if error.is_timeout() {
         return Error::Timeout;
@@ -438,9 +495,11 @@ pub(crate) async fn test_proxy_connection(
     let client = configure_builder(&state.data_dir, &settings, builder)?
         .build()
         .map_err(|_| Error::Connection)?;
+    // The probe target goes through the same allowlist as every other request.
+    crate::storage::trusted_url(crate::minecraft::MANIFEST_URL).map_err(|_| Error::Connection)?;
     let started = Instant::now();
     let response = client
-        .head("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
+        .head(crate::minecraft::MANIFEST_URL)
         .send()
         .await
         .map_err(|error| classify(&error))?;

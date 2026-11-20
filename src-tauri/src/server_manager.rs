@@ -676,6 +676,14 @@ fn eula_file_accepted(dir: &Path) -> bool {
                 .is_some_and(|(_, value)| value.trim() == "true")
         })
 }
+/// Java proxy properties for a managed server, from the global game proxy mode.
+/// Off yields no arguments, so the command line is the same as before.
+fn server_proxy_args(config: &crate::models::Config) -> Result<Vec<String>, String> {
+    crate::network::Settings::from_config(config)
+        .and_then(|settings| settings.game_args(&config.game_proxy_mode, &[]))
+        .map_err(|error| error.code().to_owned())
+}
+
 fn require_eula(definition: &ServerDefinition, dir: &Path) -> Result<(), String> {
     if !definition.eula_accepted || !eula_file_accepted(dir) {
         Err("请先阅读 Minecraft EULA 并在界面勾选同意，才能启动服务端".into())
@@ -950,6 +958,9 @@ async fn start_managed_server_inner(
     {
         return Err("另一个由启动器管理的服务端已使用此端口，请先更换端口".into());
     }
+    // Ruling C7-2: the server follows the global game proxy mode, and a TLS
+    // proxy is refused before any download, file write or task record.
+    let proxy_args = server_proxy_args(&state.snapshot()?.config)?;
     let _download = state
         .operation
         .try_lock()
@@ -974,6 +985,7 @@ async fn start_managed_server_inner(
     let temp = crate::storage::runtime_temp_directory(&dir)?;
     let mut command = Command::new(crate::storage::to_process_path(Path::new(&runtime.path))?);
     command.arg(format!("-Djava.io.tmpdir={}", crate::storage::process_path_text(&temp)?));
+    command.args(&proxy_args);
     command.current_dir(crate::storage::to_process_path(&dir)?).args([
         "-Xms512M",
         &format!("-Xmx{}M", settings.max_memory_mb),
@@ -1100,6 +1112,25 @@ fn redact_console(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c7_server_proxy_follows_the_global_game_mode_and_refuses_tls() {
+        let mut config = crate::models::Config::default();
+        assert!(server_proxy_args(&config).unwrap().is_empty(), "Off keeps the old command line");
+        config.proxy_mode = "custom".into();
+        config.proxy_scheme = "http".into();
+        config.proxy_host = "proxy.example.invalid".into();
+        config.proxy_port = 8080;
+        assert!(server_proxy_args(&config).unwrap().is_empty());
+        config.game_proxy_mode = "launcher".into();
+        let args = server_proxy_args(&config).unwrap();
+        assert!(args.contains(&"-Dhttp.proxyHost=proxy.example.invalid".to_owned()), "{args:?}");
+        config.proxy_scheme = "https".into();
+        assert_eq!(server_proxy_args(&config).unwrap_err(), "proxy.tlsInheritance");
+        config.game_proxy_mode = "system".into();
+        assert_eq!(server_proxy_args(&config).unwrap(), ["-Djava.net.useSystemProxies=true"]);
+    }
+
     fn definition() -> ServerDefinition {
         ServerDefinition {
             id: uuid::Uuid::new_v4().to_string(),

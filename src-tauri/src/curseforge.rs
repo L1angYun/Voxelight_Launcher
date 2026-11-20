@@ -828,12 +828,15 @@ async fn download(
         state.control.checkpoint().await?;
         crate::instances::checked_absolute(directory)?;
         let target = safe_join(directory, &file.file_name)?;
+        if kind == ResourceKind::Mod {
+            refuse_duplicate_mod(&temporary, directory, &target)?;
+        }
         if target.exists() {
             return Err("下载期间出现同名文件，现有文件未覆盖".into());
         }
-        tokio::fs::rename(&temporary, &target)
-            .await
-            .map_err(|_| "无法提交已校验资源")?;
+        // H08: publish without replacing a file that appeared meanwhile.
+        crate::instances::publish_archive_file(&temporary, &target)
+            .map_err(|_| "无法提交已校验资源：目标文件已存在或无法写入，现有文件未覆盖")?;
         Ok(target)
     }
     .await;
@@ -841,6 +844,20 @@ async fn download(
         let _ = tokio::fs::remove_file(&temporary).await;
     }
     result
+}
+
+/// Ruling C6-1 (2026-11-20): never leave two enabled copies of one mod. A JAR
+/// whose mod ID cannot be read keeps the previous behaviour.
+fn refuse_duplicate_mod(downloaded: &Path, directory: &Path, target: &Path) -> Result<(), String> {
+    let Some(mod_id) = crate::mod_metadata::declared_mod_id(downloaded) else {
+        return Ok(());
+    };
+    match crate::mod_metadata::enabled_jar_with_mod_id(directory, &mod_id, target) {
+        Some(existing) => Err(format!(
+            "已启用的 {existing} 声明了同一个模组（{mod_id}），新版本未安装。请先停用或删除它，再安装这个版本"
+        )),
+        None => Ok(()),
+    }
 }
 
 use crate::resource_targets::{ResourceTargetPlan, VersionLite};
@@ -1081,6 +1098,53 @@ pub async fn install_curseforge_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c6_a_second_enabled_copy_of_the_same_mod_is_refused() {
+        use std::io::Write;
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/cf-duplicate-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let jar = |path: &Path, id: &str| {
+            let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+            zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(format!(r#"{{"id":"{id}","version":"1"}}"#).as_bytes()).unwrap();
+            zip.finish().unwrap();
+        };
+        let mods = fixture.path().join("mods");
+        fs::create_dir(&mods).unwrap();
+        jar(&mods.join("example-2.jar"), "example");
+        let downloaded = mods.join(".curseforge-fixture.part");
+        jar(&downloaded, "example");
+        let target = mods.join("example-1.jar");
+        let error = refuse_duplicate_mod(&downloaded, &mods, &target).unwrap_err();
+        assert!(error.contains("example-2.jar") && error.contains("example"), "{error}");
+        assert!(mods.join("example-2.jar").exists(), "the existing file stays");
+
+        jar(&downloaded, "other");
+        assert!(refuse_duplicate_mod(&downloaded, &mods, &target).is_ok());
+        fs::rename(mods.join("example-2.jar"), mods.join("example-2.jar.disabled")).unwrap();
+        jar(&downloaded, "example");
+        assert!(refuse_duplicate_mod(&downloaded, &mods, &target).is_ok(), "a disabled copy is not a duplicate");
+        fs::write(&downloaded, b"not a jar").unwrap();
+        assert!(refuse_duplicate_mod(&downloaded, &mods, &target).is_ok(), "unknown mod IDs keep the old behaviour");
+    }
+
+    #[test]
+    fn c6_cf_publish_never_replaces_a_file_that_appeared() {
+        let fixture = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/cf-duplicate-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let source = fixture.path().join("new.part");
+        let target = fixture.path().join("example.jar");
+        fs::write(&source, b"verified").unwrap();
+        fs::write(&target, b"user bytes").unwrap();
+        assert!(crate::instances::publish_archive_file(&source, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"user bytes");
+    }
+
     fn example() -> CfFile {
         serde_json::from_value(serde_json::json!({
             "id":123,"modId":456,"gameId":432,"isAvailable":true,

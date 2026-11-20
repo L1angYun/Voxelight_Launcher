@@ -199,6 +199,7 @@
       "invalidGameMode": "Choose a game proxy mode.",
       "invalidCredentials": "Proxy credentials could not be saved or read. Check the username and password or enter them again.",
       "tlsInheritance": "Java can only inherit an HTTP proxy. Use an http:// proxy, Follow system, or Off.",
+      "tlsInheritanceInstances": "These instances inherit the launcher proxy, and Java cannot inherit an https:// proxy: {{instances}}. Set them to Off or Follow system first, or use an http:// proxy.",
       "authentication": "The proxy requires valid credentials. Save them and try again.",
       "connection": "Could not connect through this proxy. Check the host and port.",
       "tls": "TLS verification failed. Check that the proxy protocol and certificates are correct.",

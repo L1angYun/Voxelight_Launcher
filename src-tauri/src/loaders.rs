@@ -248,7 +248,7 @@ async fn prepare_profile(
             continue;
         }
         if let Some(download) = minecraft::library_download(state, library, &libraries).await? {
-            minecraft::ensure_download_with_source_and_control(state, &download, &source, Some(&state.control))
+            minecraft::ensure_loader_download(state, &download, &source, Some(&state.control))
                 .await?;
             let relative = download
                 .path
@@ -331,7 +331,7 @@ async fn lightweight_loader(
         "https://meta.quiltmc.org/v3"
     };
     let url = format!("{base}/versions/loader/{game_version}/{version}/profile/json");
-    let bytes = minecraft::fetch_bytes(state.client()?, &url, 8 * 1024 * 1024).await?;
+    let bytes = controlled_loader_fetch(&state.control, minecraft::fetch_bytes(state.client()?, &url, 8 * 1024 * 1024)).await?;
     let mut profile = minecraft::parse_json(&bytes)?;
     validate_profile(&profile, game_version)?;
     let class = profile["mainClass"].as_str().unwrap_or_default();
@@ -417,7 +417,7 @@ async fn installer_jar(
         sha1: checksum,
         size: None,
     };
-    minecraft::ensure_download_with_source_and_control(state, &download, &source, Some(&state.control)).await?;
+    minecraft::ensure_loader_download(state, &download, &source, Some(&state.control)).await?;
     Ok(download.path)
 }
 
@@ -584,32 +584,47 @@ fn commit_staged_libraries(stage: &Path, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn installer_seed_downloads(stage: &Path, profile: &Value) -> Result<Vec<Download>, String> {
+/// The checked artifacts to prefetch, plus how many declared a remote URL that
+/// the allowlist rejects. Those are left to the installer, as before C8, but
+/// the caller logs that they were skipped (ruling C8-5).
+fn installer_seed_downloads(stage: &Path, profile: &Value) -> Result<(Vec<Download>, usize), String> {
     let libraries_root = safe_join(stage, "libraries")?;
     let Some(libraries) = profile["libraries"].as_array() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     };
     let mut files = Vec::new();
+    let mut untrusted = 0;
     for library in libraries {
         let artifact = &library["downloads"]["artifact"];
+        let url = artifact["url"].as_str().filter(|url| !url.is_empty());
+        if url.is_some_and(|url| crate::storage::trusted_url(url).is_err()) {
+            untrusted += 1;
+            continue;
+        }
         if artifact["sha1"].as_str().is_some_and(minecraft::valid_sha1)
             && artifact["path"].as_str().is_some()
-            && artifact["url"].as_str().is_some_and(|url| crate::storage::trusted_url(url).is_ok())
+            && url.is_some()
             && artifact["size"].as_u64().is_some()
         {
             files.push(minecraft::download_from(artifact, &libraries_root, None)?);
         }
     }
-    Ok(files)
+    Ok((files, untrusted))
 }
 
 async fn preseed_installer_libraries(state: &LauncherState, stage: &Path, profile: &Value) -> Result<(), String> {
     let source = state.snapshot()?.config.download_source;
     if source != "official" {
         // Check every explicit artifact path before downloading any of them.
-        for file in installer_seed_downloads(stage, profile)? {
+        let (files, untrusted) = installer_seed_downloads(stage, profile)?;
+        if untrusted > 0 {
+            minecraft::record_loader_warning(&state.data_dir, &format!(
+                "{untrusted} installer libraries declare a download address outside the allowlist; the installer fetches them itself"
+            ));
+        }
+        for file in files {
             state.control.checkpoint().await?;
-            minecraft::ensure_download_with_source_and_control(state, &file, &source, Some(&state.control)).await?;
+            minecraft::ensure_loader_download(state, &file, &source, Some(&state.control)).await?;
         }
     }
     Ok(())
@@ -721,7 +736,8 @@ pub async fn install_loader_inner(
             .and_then(|proxy| proxy.installer_args())
             .map_err(|error| error.code().to_owned())?;
     }
-    let choices = loader_versions(state, loader, game_version).await?;
+    // Cancellation must interrupt a stalled list request and stop any fallback.
+    let choices = controlled_loader_fetch(&state.control, loader_versions(state, loader, game_version)).await?;
     let version = if loader_version.is_empty() || loader_version == "latest" {
         choices
             .iter()
@@ -892,7 +908,8 @@ mod tests {
             {"downloads":{"artifact":{"path":"net/test/unverified.jar","url":"https://maven.minecraftforge.net/net/test/unverified.jar","size":19}}},
             {"name":"no-artifact"}
         ]});
-        let result = super::installer_seed_downloads(&dir, &profile).unwrap();
+        let (result, untrusted) = super::installer_seed_downloads(&dir, &profile).unwrap();
+        assert_eq!(untrusted, 0);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].path, dir.join("libraries/net/test/a.jar"));
         assert_eq!(result[1].path, dir.join("libraries/net/test/b.jar"));
@@ -900,7 +917,69 @@ mod tests {
         assert_eq!(result[1].size, Some(18));
     }
 
-    #[cfg(windows)]
+    #[test]
+    fn c8_preseed_plan_counts_untrusted_urls_and_rejects_traversal() {
+        let dir = std::env::temp_dir().join(format!("voxelight-preseed-plan-{}", uuid::Uuid::new_v4()));
+        let digest = "0123456789abcdef0123456789abcdef01234567";
+        let profile = serde_json::json!({"libraries":[
+            {"downloads":{"artifact":{"path":"net/test/a.jar","url":"https://maven.minecraftforge.net/net/test/a.jar","sha1":digest,"size":17}}},
+            {"downloads":{"artifact":{"path":"net/test/c.jar","url":"https://untrusted.example.invalid/c.jar","sha1":digest,"size":17}}},
+            {"downloads":{"artifact":{"path":"net/test/nosize.jar","url":"https://maven.minecraftforge.net/net/test/nosize.jar","sha1":digest}}},
+            {"downloads":{"artifact":{"path":"net/test/badhash.jar","url":"https://maven.minecraftforge.net/net/test/badhash.jar","sha1":"xyz","size":1}}},
+            {"downloads":{"artifact":{"path":"net/test/embedded.jar","url":"","sha1":digest,"size":1}}}
+        ]});
+        let (files, untrusted) = super::installer_seed_downloads(&dir, &profile).unwrap();
+        assert_eq!(untrusted, 1, "only a declared remote URL outside the allowlist counts");
+        assert_eq!(files.len(), 1, "missing size, bad hash and embedded artifacts are not prefetched");
+        let traversal = serde_json::json!({"libraries":[
+            {"downloads":{"artifact":{"path":"../../escape.jar","url":"https://maven.minecraftforge.net/net/test/a.jar","sha1":digest,"size":17}}}
+        ]});
+        assert!(super::installer_seed_downloads(&dir, &traversal).is_err());
+    }
+
+    #[test]
+    fn c8_a_cached_installer_is_never_used_without_this_runs_official_checksum() {
+        let source = crate::storage::executable_source(include_str!("loaders.rs"));
+        let (_, body) = source.split_once("async fn installer_jar(").unwrap();
+        let (body, _) = body.split_once("\n}").unwrap();
+        let checksum = body.find("minecraft::fetch_official_installer_sha1(").unwrap();
+        let cache = body.find("installer_cache_path(&state.data_dir, &file, &checksum, &source)?").unwrap();
+        let download = body.find("minecraft::ensure_loader_download(state, &download, &source").unwrap();
+        assert!(checksum < cache && cache < download);
+        // No early return on an existing cache file: the download helper hashes
+        // the cached bytes against the official digest before reusing them.
+        assert!(!body[..download].contains(".exists()") && !body[..download].contains("return Ok("));
+        let root = std::env::temp_dir();
+        let file = "forge-1.20.1-47.2.0-installer.jar";
+        let a = super::installer_cache_path(&root, file, "0123456789abcdef0123456789abcdef01234567", "bmclapi").unwrap();
+        let b = super::installer_cache_path(&root, file, "1123456789abcdef0123456789abcdef01234567", "bmclapi").unwrap();
+        assert_ne!(a, b, "a changed official digest selects a new cache entry");
+    }
+
+    #[test]
+    fn c8_install_time_loader_requests_are_cancellable() {
+        let source = crate::storage::executable_source(include_str!("loaders.rs"));
+        for call in [
+            "controlled_loader_fetch(&state.control, loader_versions(state, loader, game_version)).await?",
+            "controlled_loader_fetch(&state.control, minecraft::fetch_bytes(state.client()?, &url, 8 * 1024 * 1024)).await?",
+        ] {
+            assert!(source.contains(call), "{call}");
+        }
+        let (production, _) = source.split_once("#[cfg(test)]").unwrap();
+        assert!(!production.contains("let choices = loader_versions("), "the bare list request is gone");
+    }
+
+    #[test]
+    fn c8_a_failed_prefetch_stops_before_the_installer_runs() {
+        // The installer would fetch unverified files itself, so the prefetch
+        // error must propagate before run_installer is reached.
+        let source = crate::storage::executable_source(include_str!("loaders.rs"));
+        let (_, body) = source.split_once("async fn heavyweight_loader(").unwrap();
+        let prefetch = body.find("preseed_installer_libraries(state, stage, &installer).await?;").unwrap();
+        let install = body.find("run_installer(").unwrap();
+        assert!(prefetch < install);
+    }
+
     #[test]
     fn installer_cache_keeps_official_digest_and_source_lane() {
         let root = std::env::temp_dir();
@@ -915,6 +994,7 @@ mod tests {
         assert!(super::installer_cache_path(&root, file, digest, "unknown").is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn r4_forge_installer_passes_ordinary_java_jar_stage_and_temp_paths() {
         let command = super::installer_command(
