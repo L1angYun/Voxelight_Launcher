@@ -104,6 +104,12 @@ fn quarantine_webview_profile(path: &Path) -> bool {
     }
 }
 
+/// `voxelight-launcher.exe --update-helper`: the update hand-off helper.
+/// Returns the process exit code; it never opens the profile or a window.
+pub fn run_update_helper() -> i32 {
+    updates::helper::main()
+}
+
 pub fn run() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -133,6 +139,7 @@ pub fn run() {
             ));
             app.manage(path_grants::PathGrants::default());
             app.manage(std::sync::Arc::new(updates::UpdateService::default()));
+            tauri::async_runtime::spawn_blocking(updates::sweep::sweep_on_startup);
             app.manage(state.clone());
             #[cfg(windows)]
             if let Ok(snapshot) = state.snapshot() {
@@ -263,6 +270,7 @@ pub fn run() {
             updates::check_launcher_update,
             updates::download_launcher_update,
             updates::cancel_launcher_update,
+            updates::install_launcher_update_and_exit,
             network::set_proxy_credentials,
             loaders::list_loader_versions,
             loaders::install_loader,

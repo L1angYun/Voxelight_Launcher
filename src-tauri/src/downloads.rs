@@ -414,6 +414,14 @@ impl DownloadControl {
         Ok(())
     }
 
+    /// No task is running or waiting (a lock failure counts as busy).
+    pub(crate) fn is_idle(&self) -> bool {
+        self.scheduler
+            .lock()
+            .map(|state| state.live.is_empty() && state.active.is_none())
+            .unwrap_or(false)
+    }
+
     pub fn activate(&self, id: &str) -> bool {
         self.mutate(true, |state| {
             if state.active.is_some() {

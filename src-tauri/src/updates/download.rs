@@ -61,6 +61,17 @@ pub(crate) struct StagedUpdate {
 }
 
 impl StagedUpdate {
+    #[cfg(test)]
+    pub(crate) fn for_test(directory: PathBuf, installer: PathBuf, package: Package) -> Self {
+        Self { package, directory, installer, handle: None, handed_off: false }
+    }
+
+    /// Keeps the files on disk: the helper process owns them from now on.
+    pub(crate) fn hand_off(mut self) {
+        self.handed_off = true;
+        self.handle = None;
+    }
+
     /// Hashes the held file again (for example right before the hand-off).
     pub(crate) fn verify(&mut self) -> Result<(), String> {
         let handle = self.handle.as_mut().ok_or("暂存的安装包已不可用")?;

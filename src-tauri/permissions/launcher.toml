@@ -154,6 +154,7 @@ commands.allow = [
   "check_launcher_update",
   "download_launcher_update",
   "cancel_launcher_update",
+  "install_launcher_update_and_exit",
 ]
 
 [[permission]]

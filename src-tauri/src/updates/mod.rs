@@ -5,8 +5,12 @@
 //! automatic redirects. See docs/superpowers/plans/2026-11-17-voxelight-self-update.md.
 pub(crate) mod checker;
 pub(crate) mod download;
+pub(crate) mod helper;
+pub(crate) mod install;
 pub(crate) mod manifest;
+pub(crate) mod process;
 pub(crate) mod sources;
+pub(crate) mod sweep;
 
 use crate::errors::AppResult;
 use crate::storage::LauncherState;
@@ -178,6 +182,8 @@ pub(crate) struct UpdateService {
 const IDLE: u8 = 0;
 const RUNNING: u8 = 1;
 const CANCELLING: u8 = 2;
+/// The install hand-off owns the service: no download may start.
+const INSTALLING: u8 = 3;
 
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -351,6 +357,113 @@ pub(crate) fn request_cancel(service: &UpdateService) {
     let _ = service.download_state.compare_exchange(RUNNING, CANCELLING, Ordering::SeqCst, Ordering::SeqCst);
 }
 
+/// What is running right now, for the install gate.
+pub(crate) fn activity(
+    state: &LauncherState,
+    service: &UpdateService,
+    servers: &crate::server_manager::ServerRegistry,
+) -> Result<install::Activity, String> {
+    Ok(install::Activity {
+        games: state.games.snapshot()?.len(),
+        servers: servers.any_running(),
+        tasks: !state.control.is_idle(),
+        update_download: service.download_state.load(std::sync::atomic::Ordering::SeqCst) != IDLE,
+    })
+}
+
+/// Everything the install holds until the process exits: the operation and
+/// server locks and the INSTALLING download state. Dropping it (any refusal
+/// after the gate) gives all of them back.
+pub(crate) struct InstallGate<'a> {
+    _operation: tokio::sync::MutexGuard<'a, ()>,
+    _servers: tokio::sync::MutexGuard<'a, ()>,
+    service: &'a UpdateService,
+}
+
+impl Drop for InstallGate<'_> {
+    fn drop(&mut self) {
+        self.service.download_state.store(IDLE, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The H06 gate for the install: refuses while anything runs here, and
+/// while any other process (a launcher with another profile) uses the
+/// installed executable, which the installer would force-close. Checks
+/// that cannot be completed refuse too.
+pub(crate) fn hold_idle<'a>(
+    state: &'a LauncherState,
+    service: &'a UpdateService,
+    servers: &'a crate::server_manager::ServerRegistry,
+    executable: &std::path::Path,
+    me: process::Identity,
+    others: impl Fn(&std::path::Path, Option<process::Identity>) -> Result<bool, String>,
+) -> AppResult<InstallGate<'a>> {
+    use crate::errors::AppError;
+    use std::sync::atomic::Ordering;
+    let operation = state.operation.try_lock().map_err(|_| AppError::new("update.tasksRunning"))?;
+    let server_lock = servers.try_hold().ok_or_else(|| AppError::new("update.serverRunning"))?;
+    if let Some(code) = install::busy_reason(activity(state, service, servers)?) {
+        return Err(AppError::new(code));
+    }
+    service
+        .download_state
+        .compare_exchange(IDLE, INSTALLING, Ordering::SeqCst, Ordering::SeqCst)
+        .map_err(|_| AppError::new("update.downloading"))?;
+    let gate = InstallGate { _operation: operation, _servers: server_lock, service };
+    match others(executable, Some(me)) {
+        Ok(false) => Ok(gate),
+        Ok(true) => Err(AppError::new("update.otherInstance")),
+        Err(detail) => Err(AppError::new("update.otherInstanceUnknown").with_detail(detail)),
+    }
+}
+
+/// Installs the staged update on exit. Refused unless the launcher is idle:
+/// no game, no managed server, no download or launch task, no update
+/// download. The operation and server locks are taken here and never
+/// released, so nothing can start between the check and the exit.
+/// `error_text` and `logs_text` are the helper's localized failure texts.
+#[tauri::command]
+pub(crate) async fn install_launcher_update_and_exit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<LauncherState>>,
+    service: tauri::State<'_, Arc<UpdateService>>,
+    servers: tauri::State<'_, Arc<crate::server_manager::ServerRegistry>>,
+    error_text: String,
+    logs_text: String,
+) -> AppResult<()> {
+    use crate::errors::AppError;
+    let bounded = |text: String| -> AppResult<String> {
+        (!text.trim().is_empty() && text.chars().count() <= 4096)
+            .then_some(text)
+            .ok_or_else(|| AppError::new("update.invalidText"))
+    };
+    let (error_text, logs_text) = (bounded(error_text)?, bounded(logs_text)?);
+    let executable = std::env::current_exe().map_err(|_| AppError::new("update.handOffFailed"))?;
+    let parent = install::current_identity()?;
+    let gate = hold_idle(&state, &service, &servers, &executable, parent, process::other_users)?;
+    let mut slot = service.staged.lock().await;
+    let mut staged = slot.take().ok_or_else(|| AppError::new("update.notStaged"))?;
+    // A failed re-check drops the staged update, which removes its files.
+    staged.verify()?;
+    let helper_exe = install::copy_helper(&executable, &staged)?;
+    let command = install::helper_command(&helper_exe, &staged, parent, &executable, &error_text, &logs_text);
+    if let Err(error) = install::hand_off(command).await {
+        let _ = std::fs::remove_file(&helper_exe);
+        *slot = Some(staged);
+        return Err(AppError::new("update.handOffFailed").with_detail(error));
+    }
+    staged.hand_off();
+    state.control.unbind_events();
+    // Keep the locks and the INSTALLING state for the rest of this process's life.
+    std::mem::forget(gate);
+    app.exit(0);
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "handoff-tests.rs"]
+mod handoff_tests;

@@ -80,7 +80,16 @@
     "storage.stateChanged": "数据档已被其他程序修改。请关闭应用并重新打开后再保存。",
     "storage.pathAuthorizationRequired": "请先在系统对话框中选择或确认此路径。",
     "storage.folderUnavailable": "启动器无法打开此目录。",
-    "instance.exportPreviewChanged": "检查后文件发生了变化。请重新预览文件清单再导出。"
+    "instance.exportPreviewChanged": "检查后文件发生了变化。请重新预览文件清单再导出。",
+    "update.gameRunning": "有游戏正在运行。请先退出游戏，再安装启动器更新。",
+    "update.serverRunning": "有托管服务端正在运行。请先停止服务端，再安装启动器更新。",
+    "update.tasksRunning": "仍有下载或安装任务在进行。请等它们完成后再安装启动器更新。",
+    "update.downloading": "启动器更新仍在下载。",
+    "update.notStaged": "更新尚未下载，请先下载。",
+    "update.handOffFailed": "无法把更新交给安装程序，什么都没有改动，请重试。",
+    "update.invalidText": "更新提示文字无效。",
+    "update.otherInstance": "此文件夹中还有另一个启动器（其他配置）正在运行。请先关闭它，再安装更新。",
+    "update.otherInstanceUnknown": "无法确认是否有其他启动器正在运行，因此没有安装更新。"
   },
   "storage": {
     "fallbackTitle": "当前使用备用数据档",

@@ -80,7 +80,16 @@
     "storage.stateChanged": "Another program changed this profile. Close and reopen the launcher before saving again.",
     "storage.pathAuthorizationRequired": "Choose or approve this exact path in the native dialog before continuing.",
     "storage.folderUnavailable": "The launcher could not open this registered directory.",
-    "instance.exportPreviewChanged": "Files changed after you reviewed them. Review the updated list before exporting."
+    "instance.exportPreviewChanged": "Files changed after you reviewed them. Review the updated list before exporting.",
+    "update.gameRunning": "A game is running. Exit it before installing the launcher update.",
+    "update.serverRunning": "A managed server is running. Stop it before installing the launcher update.",
+    "update.tasksRunning": "Downloads or installs are still running. Wait for them to finish before installing the launcher update.",
+    "update.downloading": "The launcher update is still downloading.",
+    "update.notStaged": "The update is not downloaded yet. Download it first.",
+    "update.handOffFailed": "The update could not be handed to the installer. Nothing was changed; try again.",
+    "update.invalidText": "The update message is invalid.",
+    "update.otherInstance": "Another launcher window (another profile) is running from this folder. Close it before installing the update.",
+    "update.otherInstanceUnknown": "The launcher could not confirm that no other launcher is running, so the update was not installed."
   },
   "storage": {
     "fallbackTitle": "Using a fallback data profile",

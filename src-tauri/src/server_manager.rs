@@ -141,6 +141,33 @@ impl ServerRegistry {
             .get(id)
             .cloned())
     }
+    /// Any managed server alive (a lock failure counts as running).
+    pub(crate) fn any_running(&self) -> bool {
+        self.processes
+            .lock()
+            .map(|processes| processes.values().any(|entry| entry.alive.load(Ordering::SeqCst)))
+            .unwrap_or(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_alive(&self, id: &str) {
+        let (kill, _) = mpsc::channel(1);
+        let entry = Arc::new(OwnedServer {
+            pid: 1,
+            alive: AtomicBool::new(true),
+            stdin: tokio::sync::Mutex::new(None),
+            kill,
+            status: Mutex::new("running".into()),
+            exit_code: Mutex::new(None),
+        });
+        self.processes.lock().unwrap().insert(id.into(), entry);
+    }
+
+    /// Holds the server operation lock, so no server starts meanwhile.
+    pub(crate) fn try_hold(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.operation.try_lock().ok()
+    }
+
     fn running(&self, id: &str) -> bool {
         self.process(id)
             .ok()
