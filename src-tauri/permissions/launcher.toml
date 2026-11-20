@@ -148,6 +148,13 @@ commands.allow = [
 ]
 
 [[permission]]
+identifier = "launcher-updates"
+description = "Allow the launcher self-update commands in the local main window."
+commands.allow = [
+  "check_launcher_update",
+]
+
+[[permission]]
 identifier = "launcher-native-paths"
 description = "Allow the launcher native paths commands in the local main window."
 commands.allow = [

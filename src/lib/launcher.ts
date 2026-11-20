@@ -52,6 +52,8 @@ export interface Config {
   customBackground?: string | null;
   javaAutoDownload: boolean;
   defaultSkin: DefaultSkinId;
+  checkForUpdates: boolean;
+  updateSource: "auto" | "github" | "gitee";
 }
 type AppearanceField = typeof appearanceFields[number];
 export const appearanceFields = [
@@ -223,6 +225,8 @@ export const defaults: Config = {
   customBackground: null,
   javaAutoDownload: true,
   defaultSkin: "steve",
+  checkForUpdates: true,
+  updateSource: "auto",
 };
 
 export interface ResourceProject {

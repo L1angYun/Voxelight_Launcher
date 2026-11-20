@@ -92,6 +92,7 @@
     "launcher-downloads",
     "launcher-discover",
     "launcher-multiplayer",
+    "launcher-updates",
     "launcher-native-paths"
   ]
 }

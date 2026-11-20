@@ -32,6 +32,7 @@ mod server_manager;
 mod servers;
 mod source_select;
 mod storage;
+mod updates;
 
 use std::{fs, path::Path};
 use tauri::Manager;
@@ -131,6 +132,7 @@ pub fn run() {
                 server_manager::ServerRegistry::default(),
             ));
             app.manage(path_grants::PathGrants::default());
+            app.manage(std::sync::Arc::new(updates::UpdateService::default()));
             app.manage(state.clone());
             #[cfg(windows)]
             if let Ok(snapshot) = state.snapshot() {
@@ -258,6 +260,7 @@ pub fn run() {
             auth_commands::get_service_status,
             network::test_proxy_connection,
             source_select::get_download_source_verdict,
+            updates::check_launcher_update,
             network::set_proxy_credentials,
             loaders::list_loader_versions,
             loaders::install_loader,

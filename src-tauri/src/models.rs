@@ -38,6 +38,10 @@ pub struct Config {
     pub sound_enabled: bool,
     pub custom_background: Option<String>,
     pub java_auto_download: bool,
+    /// Check for launcher updates in the background after start (HSR default: on).
+    pub check_for_updates: bool,
+    /// "auto" (GitHub and Gitee at once), "github" or "gitee".
+    pub update_source: String,
     pub default_skin: String,
 }
 
@@ -80,6 +84,8 @@ impl Default for Config {
             sound_enabled: false,
             custom_background: None,
             java_auto_download: true,
+            check_for_updates: true,
+            update_source: "auto".into(),
             default_skin: "steve".into(),
         }
     }
@@ -134,6 +140,10 @@ pub struct Persisted {
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub pending_credential_removals: std::collections::BTreeSet<String>,
     pub instances: Vec<Instance>,
+    /// The highest launcher version any update source has reported, so a
+    /// source frozen on an older release is noticed (never offered).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_highest_seen: Option<String>,
 }
 
 impl Default for Persisted {
@@ -144,6 +154,7 @@ impl Default for Persisted {
             accounts: Vec::new(),
             pending_credential_removals: Default::default(),
             instances: Vec::new(),
+            update_highest_seen: None,
         }
     }
 }
