@@ -1903,7 +1903,17 @@ pub async fn install(
     id: &str,
 ) -> Result<(InstallResult, Value), String> {
     let config = state.snapshot()?.config;
+    require_install_root_stopped(state, &config)?;
     install_with_config(state, app, id, &config).await
+}
+
+/// H06 for installs: the configured root, refused while a game launched from
+/// it runs. Launch preparation calls install_with_config directly, so starting
+/// another instance from the same root stays possible.
+pub(crate) fn require_install_root_stopped(state: &LauncherState, config: &Config) -> Result<PathBuf, String> {
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
+    state.games.require_root_stopped(&root)?;
+    Ok(root)
 }
 
 async fn install_with_config(
@@ -3008,6 +3018,69 @@ pub async fn launch(
     .await
 }
 
+/// The game's proxy flags: the instance's game proxy mode wins over the global
+/// one. Built from the saved settings only; credentials are never passed to Java.
+fn launch_proxy_args(config: &Config, instance: Option<&Instance>, custom: &[String]) -> Result<Vec<String>, String> {
+    let game_proxy_mode = instance
+        .and_then(|value| value.game_proxy_mode.as_deref())
+        .unwrap_or(&config.game_proxy_mode);
+    crate::network::Settings::from_config(config)
+        .and_then(|settings| settings.game_args(game_proxy_mode, custom))
+        .map_err(|error| error.code().to_owned())
+}
+
+/// The launcher-controlled JVM options that come before the version's own
+/// arguments: heap, encoding, managed proxy flags, the user's custom options
+/// (never heap, main class, classpath or response files) and the temp folder.
+fn launcher_jvm_options(
+    memory: Vec<String>,
+    managed_proxy_args: Vec<String>,
+    custom: &[String],
+    java_temp: impl FnOnce() -> Result<String, String>,
+) -> Result<Vec<String>, String> {
+    let mut arguments = memory;
+    arguments.push("-Dfile.encoding=UTF-8".into());
+    arguments.extend(managed_proxy_args);
+    for argument in custom {
+        if crate::memory::is_memory_argument(argument) {
+            continue;
+        }
+        if !argument.starts_with('-')
+            || matches!(
+                argument.as_str(),
+                "-jar"
+                    | "-cp"
+                    | "-classpath"
+                    | "--class-path"
+                    | "--module-path"
+                    | "-p"
+                    | "--module"
+                    | "-m"
+            )
+            || argument.starts_with('@')
+        {
+            return Err("自定义 JVM 参数不能覆盖主类、classpath 或响应文件".into());
+        }
+        arguments.push(argument.clone());
+    }
+    if !custom
+        .iter()
+        .any(|argument| argument.starts_with("-Djava.io.tmpdir="))
+    {
+        arguments.push(format!("-Djava.io.tmpdir={}", java_temp()?));
+    }
+    Ok(arguments)
+}
+
+/// Java's response file text for the JVM options (one quoted option per line).
+fn jvm_response_file(arguments: &[String]) -> String {
+    arguments
+        .iter()
+        .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 async fn launch_prepared(
     state: Arc<LauncherState>,
     app: AppHandle,
@@ -3061,11 +3134,7 @@ async fn launch_prepared(
     }
     let custom = shell_words::split(&config.jvm_arguments)
         .map_err(|e| format!("自定义 JVM 参数引号不匹配：{e}"))?;
-    let game_proxy_mode = instance.and_then(|value| value.game_proxy_mode.as_deref())
-        .unwrap_or(&config.game_proxy_mode);
-    let managed_proxy_args = crate::network::Settings::from_config(&config)
-        .and_then(|settings| settings.game_args(game_proxy_mode, &custom))
-        .map_err(|error| error.code().to_owned())?;
+    let managed_proxy_args = launch_proxy_args(&config, instance, &custom)?;
     let game_dir = game_directory(&snapshot.config, &id, instance)?;
     let (_, metadata) = install_with_config(&state, &app, &id, &snapshot.config).await?;
     let loader = instance
@@ -3160,48 +3229,18 @@ async fn launch_prepared(
         log(&app, &state, level, message);
     }
     let max_memory_mb = heap.max_mb;
-    let (mut arguments, clamped_minimum) = crate::memory::memory_arguments(
+    let (memory, clamped_minimum) = crate::memory::memory_arguments(
         max_memory_mb, crate::memory::effective_min(&snapshot.config, instance),
     );
     if clamped_minimum {
         log(&app, &state, "warn", "初始游戏内存已降到本次启动的最大内存");
     }
-    arguments.push("-Dfile.encoding=UTF-8".into());
     if custom.iter().any(|arg| crate::memory::is_memory_argument(arg)) {
         log(&app, &state, "warn", "已忽略旧自定义 JVM 参数中的内存选项，请在内存设置中调整");
     }
-    arguments.extend(managed_proxy_args);
-    for argument in &custom {
-        if crate::memory::is_memory_argument(argument) {
-            continue;
-        }
-        if !argument.starts_with('-')
-            || matches!(
-                argument.as_str(),
-                "-jar"
-                    | "-cp"
-                    | "-classpath"
-                    | "--class-path"
-                    | "--module-path"
-                    | "-p"
-                    | "--module"
-                    | "-m"
-            )
-            || argument.starts_with('@')
-        {
-            return Err("自定义 JVM 参数不能覆盖主类、classpath 或响应文件".into());
-        }
-        arguments.push(argument.clone());
-    }
-    if !custom
-        .iter()
-        .any(|argument| argument.starts_with("-Djava.io.tmpdir="))
-    {
-        arguments.push(format!(
-            "-Djava.io.tmpdir={}",
-            process_path_text(&launch_scratch.java_temp()?)?
-        ));
-    }
+    let mut arguments = launcher_jvm_options(memory, managed_proxy_args, &custom, || {
+        process_path_text(&launch_scratch.java_temp()?)
+    })?;
     if let Some(values) = metadata["arguments"].get("jvm") {
         arguments.extend(read_arguments(values, &variables)?);
     } else {
@@ -3264,12 +3303,8 @@ async fn launch_prepared(
     let mut command = tokio::process::Command::new(to_process_path(Path::new(&java.path))?);
     if java.major >= 9 {
         // Java's response file avoids Windows' 32 KiB process command-line limit.
-        let content = arguments[..jvm_argument_count]
-            .iter()
-            .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let argument_file = launch_scratch.write_args(&content)?;
+        let argument_file =
+            launch_scratch.write_args(&jvm_response_file(&arguments[..jvm_argument_count]))?;
         command.arg(format!("@{}", process_path_text(&argument_file)?));
         command.args(&arguments[jvm_argument_count..]);
     } else {
@@ -3357,7 +3392,7 @@ async fn launch_prepared(
     }
     let game_id = uuid::Uuid::new_v4().to_string();
     let (process, owner) = crate::game_process::GameProcess::new(child);
-    crate::processes::register(&app, &game_id, pid, &id, instance_id.clone(), &game_dir, owner);
+    crate::processes::register(&app, &game_id, pid, &id, instance_id.clone(), &game_dir, &root, owner);
     let app_for_exit = app.clone();
     let state_for_exit = state.clone();
     let id_for_exit = game_id.clone();
@@ -3814,6 +3849,118 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target/core-tests")
             .join(format!("{label}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn c7_default_jvm_options_match_the_pre_c7_baseline() {
+        let config = Config::default();
+        assert_eq!(config.game_proxy_mode, "off");
+        let proxy = launch_proxy_args(&config, None, &[]).unwrap();
+        assert!(proxy.is_empty(), "the default adds no proxy flags: {proxy:?}");
+        let memory = vec!["-Xmx4096M".to_string(), "-Xms1024M".to_string()];
+        let options = launcher_jvm_options(memory, proxy, &[], || Ok("T:\\tmp".into())).unwrap();
+        assert_eq!(options, ["-Xmx4096M", "-Xms1024M", "-Dfile.encoding=UTF-8", "-Djava.io.tmpdir=T:\\tmp"]);
+        assert_eq!(
+            jvm_response_file(&options),
+            "\"-Xmx4096M\"\n\"-Xms1024M\"\n\"-Dfile.encoding=UTF-8\"\n\"-Djava.io.tmpdir=T:\\\\tmp\""
+        );
+        assert_eq!(jvm_response_file(&["say \"hi\"".into()]), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn c7_instance_launcher_proxy_mode_reaches_the_response_file() {
+        let config = Config {
+            proxy_mode: "custom".into(),
+            proxy_scheme: "http".into(),
+            proxy_host: "proxy.example.invalid".into(),
+            proxy_port: 8080,
+            game_proxy_mode: "off".into(),
+            ..Config::default()
+        };
+        let launcher = Instance { game_proxy_mode: Some("launcher".into()), ..Instance::default() };
+        let expected = crate::network::Settings::from_config(&config).unwrap().installer_args().unwrap();
+        assert!(!expected.is_empty());
+        assert!(launch_proxy_args(&config, None, &[]).unwrap().is_empty(), "global off stays off");
+        let proxy = launch_proxy_args(&config, Some(&launcher), &[]).unwrap();
+        assert_eq!(proxy, expected, "the instance mode wins over the global one");
+        let custom = vec!["-Dhttp.proxyHost=mine.invalid".to_string()];
+        assert!(
+            launch_proxy_args(&config, Some(&launcher), &custom).unwrap().is_empty(),
+            "a user's own proxy option keeps precedence"
+        );
+        let options = launcher_jvm_options(vec![], proxy, &["-Dcustom=1".into()], || Ok("T".into())).unwrap();
+        let text = jvm_response_file(&options);
+        for flag in &expected {
+            assert!(text.contains(&format!("\"{flag}\"")), "{flag} reaches the response file");
+        }
+        assert!(text.find("-Dfile.encoding").unwrap() < text.find(&expected[0]).unwrap());
+        assert!(text.find(&expected[expected.len() - 1]).unwrap() < text.find("-Dcustom=1").unwrap());
+        assert!(!text.to_ascii_lowercase().contains("password") && !text.contains('@'));
+        let https = Config { proxy_scheme: "https".into(), ..config.clone() };
+        assert_eq!(
+            launch_proxy_args(&https, Some(&launcher), &[]),
+            Err(crate::network::Error::TlsInheritance.code().to_owned())
+        );
+    }
+
+    #[test]
+    fn c7_launch_uses_the_extracted_jvm_option_builders() {
+        let source = crate::storage::executable_source(include_str!("minecraft.rs"));
+        let (_, launch) = source.split_once("async fn launch_prepared(").unwrap();
+        let (launch, _) = launch.split_once("\n}").unwrap();
+        assert!(launch.contains("let managed_proxy_args = launch_proxy_args(&config, instance, &custom)?;"));
+        assert!(launch.contains("let mut arguments = launcher_jvm_options(memory, managed_proxy_args, &custom,"));
+        assert!(launch.contains("jvm_response_file(&arguments[..jvm_argument_count])"));
+        assert!(!launch.contains("-Dfile.encoding"), "the options are built in one place");
+    }
+
+    #[test]
+    fn c2_installs_refuse_while_a_game_from_the_same_root_runs() {
+        let directory = source_test_directory("c2-install-root");
+        let other = directory.join("other-root");
+        fs::create_dir_all(&other).unwrap();
+        let state = source_test_state(&directory);
+        let config = state.snapshot().unwrap().config;
+        let root = PathBuf::from(&config.game_directory);
+        fs::create_dir_all(&root).unwrap();
+        // An instance game from before this field existed has no library root.
+        state.games.fixture_running_directory(&root.join("instances/a"), None);
+        let before = require_install_root_stopped(&state, &config);
+        #[cfg(windows)]
+        let alias = PathBuf::from(root.to_string_lossy().to_uppercase());
+        #[cfg(not(windows))]
+        let alias = root.join(".");
+        state.games.fixture_running_root(&alias);
+        let during = require_install_root_stopped(&state, &config);
+        let mut elsewhere = config.clone();
+        elsewhere.game_directory = other.to_string_lossy().into_owned();
+        let other_root = require_install_root_stopped(&state, &elsewhere);
+        drop(state);
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(before.is_ok(), "{before:?}");
+        assert_eq!(during, Err(crate::errors::INSTALL_GAME_RUNNING.into()));
+        assert!(other_root.is_ok(), "another root has its own libraries");
+    }
+
+    #[test]
+    fn c2_every_install_entry_checks_the_root_but_launch_does_not() {
+        let source = crate::storage::executable_source(include_str!("minecraft.rs"));
+        let body = |name: &str| {
+            let (_, rest) = source.split_once(name).unwrap();
+            rest.split_once("\n}").unwrap().0.to_owned()
+        };
+        let install = body("pub async fn install(\n");
+        let checked = install.find("require_install_root_stopped(state, &config)?;").unwrap();
+        assert!(checked < install.find("install_with_config(").unwrap());
+        let launch = body("async fn launch_prepared(");
+        assert!(!launch.contains("require_install_root_stopped"), "a second instance may still launch");
+        assert!(launch.contains("&game_dir, &root, owner);"), "launch records its library root");
+        let loaders = crate::storage::executable_source(include_str!("loaders.rs"));
+        let (_, loader) = loaders.split_once("pub async fn install_loader_inner(").unwrap();
+        let (loader, _) = loader.split_once("\n}").unwrap();
+        let checked = loader.find("minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;").unwrap();
+        assert!(checked < loader.find("minecraft::install(state, app, game_version)").unwrap());
+        assert!(checked < loader.find("lightweight_loader(").unwrap());
     }
 
     fn manifest_fixture(versions: Vec<Value>) -> Vec<u8> {

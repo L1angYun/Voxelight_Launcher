@@ -2485,6 +2485,7 @@ mod tests {
             instance_id: None,
             game_directory: game_directory.to_string_lossy().into_owned(),
             started_at: "now".into(),
+            library_root: String::new(),
         }];
         let error = recover_resource_update_inner(
             &state,
@@ -2528,6 +2529,7 @@ mod tests {
             instance_id: None,
             game_directory: directory.to_string_lossy().into_owned(),
             started_at: "now".into(),
+            library_root: String::new(),
         }];
         assert!(target_running(&data, "fabric-test", None, &games));
         assert!(!target_running(&data, "1.21.1", None, &games));

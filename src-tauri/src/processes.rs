@@ -25,6 +25,10 @@ pub struct RunningGame {
     pub instance_id: Option<String>,
     pub game_directory: String,
     pub started_at: String,
+    /// The configured root whose libraries/ and versions/ the game reads.
+    /// Internal only: installs into that root must wait for the game to exit.
+    #[serde(skip)]
+    pub library_root: String,
 }
 struct TrackedGame {
     info: RunningGame,
@@ -133,8 +137,39 @@ impl GameRegistry {
             info: RunningGame { game_id, pid: 12, version_id: "first-test-version".into(), instance_id: instance_id.map(str::to_owned),
                 // Store the spelling as given, like register(): the comparator
                 // must resolve aliases itself rather than rely on this fixture.
-                game_directory: directory.display().to_string(), started_at: String::new() },
+                game_directory: directory.display().to_string(), started_at: String::new(),
+                library_root: String::new() },
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_running_root(&self, library_root: &Path) {
+        // Same recording path as register(), so the test covers what launch stores.
+        self.track(
+            "fixture-library-root-game",
+            13,
+            "fixture-version",
+            None,
+            &library_root.join("versions/fixture-version"),
+            library_root,
+            None,
+        );
+    }
+
+    /// Installs replace library files and write versions/<id> profiles in the
+    /// configured root. A running JVM holds those files open (on Windows a
+    /// replacement fails partway), so refuse while any game launched from the
+    /// same root runs. Launching another instance is still allowed.
+    pub(crate) fn require_root_stopped(&self, root: &Path) -> Result<(), String> {
+        let root = canonical_game_directory(root)?;
+        let games = self.snapshot()?;
+        if games.iter().any(|game| {
+            !game.library_root.is_empty()
+                && same_canonical_directory(&root, Path::new(&game.library_root))
+        }) {
+            return Err(crate::errors::INSTALL_GAME_RUNNING.into());
+        }
+        Ok(())
     }
 
     pub(crate) fn require_directory_stopped(
@@ -194,10 +229,29 @@ pub fn register(
     version: &str,
     instance_id: Option<String>,
     directory: &Path,
+    library_root: &Path,
     owner: StopHandle,
 ) {
     if let Some(registry) = app.try_state::<Arc<GameRegistry>>() {
-        if let Ok(mut games) = registry.games.lock() {
+        registry.track(game_id, pid, version, instance_id, directory, library_root, Some(Arc::new(owner)));
+        let _ = app.emit("launcher://games", registry.list());
+    }
+}
+
+impl GameRegistry {
+    /// The one place a launched game is recorded (register and test fixtures).
+    #[allow(clippy::too_many_arguments)]
+    fn track(
+        &self,
+        game_id: &str,
+        pid: u32,
+        version: &str,
+        instance_id: Option<String>,
+        directory: &Path,
+        library_root: &Path,
+        owner: Option<Arc<StopHandle>>,
+    ) {
+        if let Ok(mut games) = self.games.lock() {
             games.insert(
                 game_id.into(),
                 TrackedGame {
@@ -208,13 +262,13 @@ pub fn register(
                         instance_id,
                         game_directory: directory.to_string_lossy().into_owned(),
                         started_at: chrono::Utc::now().to_rfc3339(),
+                        library_root: library_root.to_string_lossy().into_owned(),
                     },
                     clock: Instant::now(),
-                    owner: Some(Arc::new(owner)),
+                    owner,
                 },
             );
         }
-        let _ = app.emit("launcher://games", registry.list());
     }
 }
 pub fn unregister(app: &AppHandle, state: &LauncherState, game_id: &str, code: Option<i32>) {
@@ -782,6 +836,7 @@ mod tests {
                         instance_id: None,
                         game_directory: directory.to_string_lossy().into_owned(),
                         started_at: chrono::Utc::now().to_rfc3339(),
+                        library_root: String::new(),
                     },
                     clock: Instant::now(),
                     owner: Some(Arc::new(handle)),
@@ -1014,6 +1069,7 @@ mod tests {
                     instance_id: Some("running-instance".into()),
                     game_directory: "D:/fixture".into(),
                     started_at: chrono::Utc::now().to_rfc3339(),
+                    library_root: String::new(),
                 },
                 clock: Instant::now(),
                 owner: None,
@@ -1038,6 +1094,7 @@ mod tests {
                     instance_id: Some("running-instance".into()),
                     game_directory: "D:/fixture".into(),
                     started_at: chrono::Utc::now().to_rfc3339(),
+                    library_root: String::new(),
                 },
                 clock: Instant::now(),
                 owner: None,

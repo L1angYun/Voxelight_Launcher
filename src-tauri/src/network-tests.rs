@@ -415,3 +415,186 @@ fn c7_new_provider_client_uses_saved_endpoint_without_mutating_existing_client()
     assert!(a.join().unwrap().starts_with("CONNECT before.invalid:443 HTTP/1.1\r\n"));
     assert!(b.join().unwrap().starts_with("CONNECT after.invalid:443 HTTP/1.1\r\n"));
 }
+
+/// Every file under `root`, for a byte search of secrets.
+fn files_below(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path)
+            } else {
+                found.push(path)
+            }
+        }
+    }
+    found
+}
+
+#[cfg(windows)]
+#[test]
+fn c7_credentials_never_reach_state_ipc_or_java_arguments() {
+    use crate::models::{Config, Persisted};
+    use crate::storage::LauncherState;
+    let dir = crate::instances::StagingDirectory::create(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/c7-tests")
+            .join(uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let profile = dir.path().join("profile");
+    std::fs::create_dir(&profile).unwrap();
+    // Distinctive values, assembled at runtime so no literal sample sits in the source.
+    let user = format!("c7-zz-{}-user", 90 + 1);
+    let pass = format!("c7-zz-{}-pass", 90 + 1);
+    let config = Config {
+        game_directory: dir.path().join("game").to_string_lossy().into_owned(),
+        proxy_mode: "custom".into(),
+        proxy_scheme: "http".into(),
+        proxy_host: "127.0.0.1".into(),
+        proxy_port: 18080,
+        game_proxy_mode: "launcher".into(),
+        ..Config::default()
+    };
+    let state = LauncherState::test_fixture(profile.clone(), Persisted::default(), crate::storage::test_client());
+    crate::commands::save_config_inner(&state, config).unwrap();
+    assert!(set_proxy_credentials_inner(&state, "custom", "http", "127.0.0.1", 18080, user.clone(), pass.clone()).unwrap());
+    let status = crate::auth_commands::service_status_for(&state).unwrap();
+    assert_eq!(status["proxyCredentialsConfigured"], true);
+
+    let saved = state.snapshot().unwrap();
+    let settings = Settings::from_config(&saved.config).unwrap();
+    let mut texts = vec![
+        serde_json::to_string(&status).unwrap(),
+        serde_json::to_string(&saved.config).unwrap(),
+        serde_json::to_string(&saved).unwrap(),
+        settings.installer_args().unwrap().join("\n"),
+        settings.game_args("launcher", &[]).unwrap().join("\n"),
+    ];
+    let files = files_below(&profile);
+    assert!(files.iter().any(|file| file.file_name().is_some_and(|name| name == "state.json")));
+    for file in files {
+        // The profile lock is held open by the state and carries no data.
+        if file.file_name().is_some_and(|name| name == crate::storage::PROFILE_LOCK) {
+            continue;
+        }
+        let bytes = std::fs::read(&file).unwrap();
+        texts.push(String::from_utf8_lossy(&bytes).into_owned());
+        let wide: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        texts.push(String::from_utf16_lossy(&wide));
+    }
+    for text in &texts {
+        assert!(!text.contains(&user) && !text.contains(&pass), "a credential leaked into {text:.120}");
+    }
+
+    assert!(!set_proxy_credentials_inner(&state, "custom", "http", "127.0.0.1", 18080, String::new(), String::new()).unwrap());
+    let cleared = crate::auth_commands::service_status_for(&state).unwrap();
+    assert_eq!(cleared["proxyCredentialsConfigured"], false);
+    drop(state);
+}
+
+/// Runs inside a child test process only (see `run_proxy_env_child`); in an
+/// ordinary run it returns at once. The child gets proxy environment
+/// variables that the parent test process must not set on itself.
+#[test]
+fn c7_proxy_env_child_probe() {
+    let Ok(mode) = std::env::var("VOXELIGHT_C7_PROXY_CHILD") else {
+        return;
+    };
+    let port: u16 = std::env::var("VOXELIGHT_C7_TARGET_PORT").unwrap().parse().unwrap();
+    let settings = Settings::parse(&mode, "http", "", 0).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let _context = rt.enter();
+    let builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .resolve("direct.invalid", std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+    let client = settings.apply(builder, None).unwrap().build().unwrap();
+    let response = rt
+        .block_on(client.get(format!("http://direct.invalid:{port}/probe")).send())
+        .unwrap();
+    assert_eq!(response.status(), 204);
+}
+
+fn serve_once(
+    listener: TcpListener,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> thread::JoinHandle<Option<String>> {
+    thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            match listener.accept() {
+                Ok((mut socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
+                    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut received = Vec::new();
+                    let mut byte = [0];
+                    while received.len() < 8192 && !received.ends_with(b"\r\n\r\n") {
+                        socket.read_exact(&mut byte).unwrap();
+                        received.push(byte[0]);
+                    }
+                    socket.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n").unwrap();
+                    return Some(String::from_utf8(received).unwrap());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if done.load(std::sync::atomic::Ordering::SeqCst) || std::time::Instant::now() > deadline {
+                        return None;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("fixture listener failed: {error}"),
+            }
+        }
+    })
+}
+
+/// (request seen by the direct target, request seen by the proxy, target port)
+fn run_proxy_env_child(mode: &str) -> (Option<String>, Option<String>, u16) {
+    let direct = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = direct.local_addr().unwrap().port();
+    let proxy_url = format!("http://127.0.0.1:{}", proxy.local_addr().unwrap().port());
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen_direct = serve_once(direct, done.clone());
+    let seen_proxy = serve_once(proxy, done.clone());
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["network::tests::c7_proxy_env_child_probe", "--exact", "--nocapture", "--test-threads=1"])
+        .env("VOXELIGHT_C7_PROXY_CHILD", mode)
+        .env("VOXELIGHT_C7_TARGET_PORT", port.to_string())
+        .env("HTTP_PROXY", &proxy_url)
+        .env("HTTPS_PROXY", &proxy_url)
+        .env("ALL_PROXY", &proxy_url)
+        .env("http_proxy", &proxy_url)
+        // A non-empty list that matches nothing: an empty one would let reqwest
+        // fall back to the Windows registry bypass list of this machine.
+        // (Windows env keys are case-insensitive, so set it once only.)
+        .env("NO_PROXY", "c7-unused.invalid")
+        .output()
+        .unwrap();
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (direct, proxy) = (seen_direct.join().unwrap(), seen_proxy.join().unwrap());
+    let log = String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "child probe failed for {mode}: {log}");
+    assert!(log.contains("1 passed"), "the child ran the probe: {log}");
+    (direct, proxy, port)
+}
+
+#[test]
+fn c7_none_ignores_proxy_env_in_subprocess() {
+    let (direct, proxy, _) = run_proxy_env_child("none");
+    assert!(direct.unwrap().starts_with("GET /probe HTTP/1.1\r\n"));
+    assert!(proxy.is_none(), "'none' must not use the proxy from the environment");
+}
+
+#[test]
+fn c7_system_follows_proxy_env_in_subprocess() {
+    let (direct, proxy, port) = run_proxy_env_child("system");
+    assert!(direct.is_none(), "'system' must not bypass the environment proxy");
+    let request = proxy.unwrap();
+    assert!(
+        request.starts_with(&format!("GET http://direct.invalid:{port}/probe HTTP/1.1\r\n")),
+        "{request}"
+    );
+}

@@ -524,11 +524,23 @@ pub(crate) fn set_proxy_credentials(
     username: String,
     password: String,
 ) -> crate::errors::AppResult<bool> {
+    set_proxy_credentials_inner(&state, &proxy_mode, &proxy_scheme, &proxy_host, proxy_port, username, password)
+}
+
+pub(crate) fn set_proxy_credentials_inner(
+    state: &crate::storage::LauncherState,
+    proxy_mode: &str,
+    proxy_scheme: &str,
+    proxy_host: &str,
+    proxy_port: u16,
+    username: String,
+    password: String,
+) -> crate::errors::AppResult<bool> {
     let _operation = state
         .operation
         .try_lock()
         .map_err(|_| crate::errors::AppError::new("config.busy"))?;
-    let submitted = Settings::parse(&proxy_mode, &proxy_scheme, proxy_host.trim(), proxy_port)?;
+    let submitted = Settings::parse(proxy_mode, proxy_scheme, proxy_host.trim(), proxy_port)?;
     let saved = Settings::from_config(&state.snapshot()?.config)?;
     store_endpoint_credentials(&state.data_dir, &submitted, &saved, username, password)
         .map_err(Into::into)

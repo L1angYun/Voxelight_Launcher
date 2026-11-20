@@ -258,6 +258,10 @@ pub fn set_service_secret(
 pub fn get_service_status(
     state: State<'_, Arc<LauncherState>>,
 ) -> AppResult<serde_json::Value> {
+    service_status_for(&state)
+}
+
+pub(crate) fn service_status_for(state: &LauncherState) -> AppResult<serde_json::Value> {
     let curseforge = crate::secrets::load_service_secret(&state.data_dir, "curseforge-api-key")?
         .is_some_and(|secret| !secret.is_empty());
     let config = state.snapshot()?.config;

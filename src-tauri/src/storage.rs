@@ -300,7 +300,7 @@ struct ActiveState {
 }
 
 const STATE_FILE: &str = "state.json";
-const PROFILE_LOCK: &str = "launcher-profile.lock";
+pub(crate) const PROFILE_LOCK: &str = "launcher-profile.lock";
 
 fn open_profile_lock(directory: &Path) -> Result<fs::File, ProfileLoadError> {
     fs::create_dir_all(directory).map_err(unavailable)?;

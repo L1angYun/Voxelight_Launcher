@@ -51,6 +51,7 @@
     "version.profileConflict": "Voxelight kept the existing profile for {{id}} because it could not verify its source. Back up its JSON under versions first, then move that JSON aside before reinstalling the original version or loader.",
     "download.cancelled": "Installation cancelled.",
     "instance.running": "This instance is already running. Do not launch it twice.",
+    "install.gameRunning": "A game from the same game directory is running. Exit the game before installing a version or loader.",
     "instance.notFound": "The instance no longer exists. Refresh the library.",
     "backup.notFound": "No matching instance backup was found.",
     "backup.invalid": "The backup manifest is invalid and cannot be used.",

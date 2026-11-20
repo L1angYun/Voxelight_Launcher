@@ -754,7 +754,7 @@ pub async fn install_loader_inner(
         loader_version.to_owned()
     };
     state.control.checkpoint().await?;
-    let root = crate::processes::configured_game_root(Path::new(&state.snapshot()?.config.game_directory))?;
+    let root = minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
     let (_, base) = minecraft::install(state, app, game_version).await?;
     let id = if matches!(loader, "fabric" | "quilt") {
         lightweight_loader(state, app, loader, game_version, &version, &root).await?
@@ -792,7 +792,7 @@ pub async fn install_loader(
     loader: String,
     game_version: String,
     loader_version: String,
-) -> Result<LoaderInstallResult, String> {
+) -> crate::errors::AppResult<LoaderInstallResult> {
     let _guard = state
         .operation
         .try_lock()
@@ -807,7 +807,7 @@ pub async fn install_loader(
     if let Err(error) = &result {
         minecraft::log(&app, &state, "error", error);
     }
-    result
+    result.map_err(crate::errors::expected)
 }
 
 pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, String> {

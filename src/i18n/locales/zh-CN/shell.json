@@ -51,6 +51,7 @@
     "resource.manifestUnavailable": "无法获取 Minecraft 版本列表，请检查网络后重试。",
     "download.cancelled": "安装已取消。",
     "instance.running": "此实例已在运行，请勿重复启动。",
+    "install.gameRunning": "同一游戏目录中有游戏正在运行。请先退出游戏，再安装版本或加载器。",
     "instance.notFound": "实例不存在，请刷新实例列表。",
     "backup.notFound": "没有找到对应的实例备份。",
     "backup.invalid": "备份清单无效，无法使用此备份。",

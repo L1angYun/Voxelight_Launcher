@@ -42,6 +42,7 @@ pub(crate) const RESOURCE_RECOVERY_CONFLICT: &str = "resource.recoveryConflict";
 pub(crate) const RESOURCE_RECOVERY_INCOMPLETE: &str = "resource.recoveryIncomplete";
 pub(crate) const RESOURCE_RECOVERY_NOT_NEEDED: &str = "resource.recoveryNotNeeded";
 pub(crate) const RESOURCE_RECOVERY_REQUIRED: &str = "存在未完成的资源事务，请先在更新历史中恢复。";
+pub(crate) const INSTALL_GAME_RUNNING: &str = "同一游戏目录中有游戏正在运行。请先退出游戏，再安装版本或加载器。";
 
 pub(crate) const LOADER_REINSTALL_PREFIX: &str = "加载器版本元数据损坏，需重新安装：";
 pub(crate) const PROFILE_CONFLICT_PREFIX: &str = "版本配置的来源无法确认，原文件已保留：";
@@ -83,6 +84,7 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             STORAGE_STATE_CHANGED => "storage.stateChanged",
             "instance.exportPreviewChanged" => "instance.exportPreviewChanged",
             RESOURCE_RECOVERY_REQUIRED => "resource.recoveryRequired",
+            INSTALL_GAME_RUNNING => "install.gameRunning",
             crate::auth::CLIENT_MISSING => "auth.clientIdRequired",
             crate::auth::CLIENT_REJECTED => "auth.clientRejected",
             crate::auth::APP_NOT_APPROVED => "auth.appNotApproved",
@@ -200,6 +202,11 @@ pub fn expected(detail: impl Into<String>) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c2_install_while_a_game_runs_has_a_stable_code() {
+        assert_eq!(expected(INSTALL_GAME_RUNNING).code, "install.gameRunning");
+    }
 
     #[test]
     fn resource_cancellation_has_a_stable_code() {

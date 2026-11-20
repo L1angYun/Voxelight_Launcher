@@ -1072,6 +1072,9 @@ async fn import_inner(
     optional: bool,
     origin: Option<PackOrigin>,
 ) -> Result<PackImportResult, String> {
+    // Every import ends with a version or loader install into the configured
+    // root (H06); refuse before staging and downloading instead of at the end.
+    crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
     let source = archive.to_owned();
     let inspect_state = state.clone();
     let (personal, modrinth, curse) = tokio::task::spawn_blocking(move || {
@@ -1289,7 +1292,7 @@ pub async fn install_modrinth_modpack(
     modpack_version_id: String,
     name: Option<String>,
     include_optional: Option<bool>,
-) -> Result<PackImportResult, String> {
+) -> crate::errors::AppResult<PackImportResult> {
     identifier(&project_id)?;
     identifier(&modpack_version_id)?;
     let _operation = state.operation.lock().await;
@@ -1298,6 +1301,9 @@ pub async fn install_modrinth_modpack(
         None => state.control.begin("modpack", &project_id, "安装 Modrinth 整合包")?,
     };
     let result = async {
+        // The operation lock is held from here to the dependency install, so
+        // refusing now is final and saves downloading a pack that cannot install.
+        crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)?;
         let api = client(&state, false)?;
         let project: ApiProject =
             json_response(api.get(format!("{API}/project/{project_id}"))).await?;
@@ -1346,7 +1352,7 @@ pub async fn install_modrinth_modpack(
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
-    result
+    result.map_err(crate::errors::expected)
 }
 
 pub(crate) fn instance_dependencies(
@@ -2256,6 +2262,28 @@ mod tests {
         for path in ["mods/a~b.jar", "mods/name~.jar", "mods/plain-1.jar", "~"] {
             assert!(!short_name_shaped(path), "{path}");
         }
+    }
+
+    #[test]
+    fn c2_imports_refuse_before_staging_while_a_game_from_the_root_runs() {
+        let source = crate::storage::executable_source(include_str!("modpacks.rs"));
+        let body = |name: &str| {
+            let (_, rest) = source.split_once(name).unwrap();
+            rest.split_once("\n}").unwrap().0.to_owned()
+        };
+        let import = body("async fn import_inner(");
+        let guard = import.find("crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;").unwrap();
+        assert!(guard < import.find("inspect_zip_limits_controlled(").unwrap());
+        assert!(guard < import.find("instances::StagingDirectory::create(stage_name)?").unwrap());
+        let online = body("pub async fn install_modrinth_modpack(");
+        let guard = online.find("crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)?;").unwrap();
+        assert!(online.find("state.operation.lock().await").unwrap() < guard);
+        assert!(guard < online.find("fetch_verified(").unwrap());
+        assert!(online.trim_end().ends_with("result.map_err(crate::errors::expected)"), "the code reaches the UI");
+        let loaders = crate::storage::executable_source(include_str!("loaders.rs"));
+        let (_, loader) = loaders.split_once("pub async fn install_loader(").unwrap();
+        let (loader, _) = loader.split_once("\n}").unwrap();
+        assert!(loader.trim_end().ends_with("result.map_err(crate::errors::expected)"), "the code reaches the UI");
     }
 
     #[test]
