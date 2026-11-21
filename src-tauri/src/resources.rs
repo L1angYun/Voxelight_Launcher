@@ -294,6 +294,46 @@ fn cdn_url(value: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+/// Test-only service addresses for this thread: the API bases, and the address
+/// the CDN host names resolve to. Production uses the constants and HTTPS checks.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct TestEndpoints {
+    pub(crate) modrinth_api: String,
+    pub(crate) curseforge_api: String,
+    pub(crate) cdn: std::net::SocketAddr,
+    /// The version the Minecraft and loader step would produce; tests of the
+    /// create path use it instead of installing a game.
+    pub(crate) prepared_version: Option<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_ENDPOINTS: std::cell::RefCell<Option<TestEndpoints>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_endpoints() -> Option<TestEndpoints> {
+    TEST_ENDPOINTS.with(|endpoints| endpoints.borrow().clone())
+}
+
+/// A test's stand-in for the Minecraft and loader install (never in a release build).
+pub(crate) fn prepared_version() -> Option<String> {
+    #[cfg(test)]
+    return test_endpoints().and_then(|endpoints| endpoints.prepared_version);
+    #[cfg(not(test))]
+    None
+}
+
+/// The Modrinth API base.
+pub(super) fn modrinth_api() -> String {
+    #[cfg(test)]
+    if let Some(endpoints) = test_endpoints() {
+        return endpoints.modrinth_api;
+    }
+    API.to_owned()
+}
+
 pub(super) fn client(state: &LauncherState, download: bool) -> Result<reqwest::Client, String> {
     let redirects = if download {
         reqwest::redirect::Policy::custom(|attempt| {
@@ -317,6 +357,11 @@ pub(super) fn client(state: &LauncherState, download: bool) -> Result<reqwest::C
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(if download { 600 } else { 60 }))
         .redirect(redirects);
+    #[cfg(test)]
+    let builder = match test_endpoints() {
+        Some(endpoints) => builder.resolve("cdn.modrinth.com", endpoints.cdn),
+        None => builder,
+    };
     crate::network::for_state_builder(state, builder)?
         .build()
         .map_err(|_| "无法建立 Modrinth 网络客户端".into())
@@ -328,7 +373,7 @@ async fn api_json<T: DeserializeOwned>(
     query: &[(String, String)],
 ) -> Result<T, String> {
     let response = client
-        .get(format!("{API}/{endpoint}"))
+        .get(format!("{}/{endpoint}", modrinth_api()))
         .query(query)
         .send()
         .await
@@ -1161,7 +1206,7 @@ pub async fn reserve_resource_task(
     Ok(state.control.reserve_resource(request)?)
 }
 
-fn validate_resource_request(request: &ResourceRequest) -> AppResult<()> {
+pub(crate) fn validate_resource_request(request: &ResourceRequest) -> AppResult<()> {
     let kind = ResourceKind::parse(&request.resource_type)?;
     match request.source {
         ResourceSource::Modrinth => identifier(&request.project_id)?,
@@ -1226,8 +1271,99 @@ pub(crate) async fn with_reserved_resource_task<T>(
     result
 }
 
+/// A Create request as an install into the instance it made (other requests unchanged).
+fn into_instance(request: ResourceRequest, instance: &Instance) -> ResourceRequest {
+    match request.target {
+        ReservedTarget::Create { file_id, resource_version_id, .. } => ResourceRequest {
+            target: ReservedTarget::Existing {
+                version_id: instance.version_id.clone(),
+                instance_id: Some(instance.id.clone()),
+                file_id,
+                resource_version_id,
+            },
+            ..request
+        },
+        target => ResourceRequest { target, ..request },
+    }
+}
+
+/// The file a request for the latest one resolved to.
+pub(crate) enum Pin<'a> {
+    Modrinth(&'a str),
+    Curseforge(u64),
+}
+
+/// Records the file this run chose, so a retry of a request for the latest
+/// file installs the same one.
+pub(crate) fn pin_retry(state: &LauncherState, task: &str, request: &ResourceRequest, pin: Pin<'_>) {
+    let mut request = request.clone();
+    let (ReservedTarget::Existing { file_id, resource_version_id, .. } | ReservedTarget::Create { file_id, resource_version_id, .. }) =
+        &mut request.target;
+    match pin {
+        Pin::Modrinth(id) => *resource_version_id = Some(id.to_owned()),
+        Pin::Curseforge(id) => *file_id = Some(id),
+    }
+    state.control.set_retry(task, Some(crate::downloads::RetryRequest::Resource { request }));
+}
+
+/// What a resource install produced.
+pub(crate) enum ResourceOutcome {
+    Installed(ResourceInstall),
+    Created(ResourceInstanceResult),
+}
+
+impl ResourceOutcome {
+    pub(crate) fn installed(self) -> AppResult<ResourceInstall> {
+        match self {
+            Self::Installed(install) => Ok(install),
+            Self::Created(_) => Err("资源安装结果与请求不一致".into()),
+        }
+    }
+
+    pub(crate) fn created(self) -> AppResult<ResourceInstanceResult> {
+        match self {
+            Self::Created(result) => Ok(result),
+            Self::Installed(_) => Err("资源安装结果与请求不一致".into()),
+        }
+    }
+}
+
+/// The one path every resource install takes, from the four commands and from
+/// a retry: the reserved request alone decides the source and the target.
+pub(crate) async fn run_resource_request(
+    state: &Arc<LauncherState>,
+    app: Option<&AppHandle>,
+    task: &str,
+    request: ResourceRequest,
+) -> AppResult<ResourceOutcome> {
+    validate_resource_request(&request)?;
+    let existing = matches!(request.target, ReservedTarget::Existing { .. });
+    Ok(match (request.source, existing) {
+        (ResourceSource::Modrinth, true) => ResourceOutcome::Installed(install_modrinth(state, app, task, request).await?),
+        (ResourceSource::Curseforge, true) => {
+            ResourceOutcome::Installed(crate::curseforge::install_curseforge(state, task, request).await?)
+        }
+        (ResourceSource::Modrinth, false) => ResourceOutcome::Created(create_with_modrinth(state, app, task, request).await?),
+        (ResourceSource::Curseforge, false) => {
+            ResourceOutcome::Created(crate::curseforge::create_with_pinned_file(state, app, task, request).await?)
+        }
+    })
+}
+
+/// A resource install retried from the Downloads page: the same path as the
+/// first attempt, through the same reservation, claim and operation lock.
+pub(crate) async fn run_queued_resource(app: AppHandle, state: Arc<LauncherState>, task: String, request: ResourceRequest) {
+    if let Err(error) = run_resource_request(&state, Some(&app), &task, request).await {
+        let message = error.detail.clone().unwrap_or_else(|| error.code.clone());
+        // A payload refused before the claim still ends its task (no-op otherwise).
+        state.control.finish(&task, Some(&message));
+        crate::minecraft::log(&app, &state, "error", message);
+    }
+}
+
 pub(crate) async fn create_resource_instance_then_install<F, Fut>(
     state: &LauncherState,
+    task: &str,
     name: String,
     version_id: String,
     install: F,
@@ -1239,6 +1375,12 @@ where
     // This is the registration boundary: a cancelled loader never leaves an instance.
     state.control.checkpoint().await?;
     let instance = crate::commands::create_instance_inner(state, name, version_id)?;
+    // From here a retry, also one after a crash, installs into this instance
+    // instead of creating a second one. The journal is saved at once.
+    if let Some(crate::downloads::RetryRequest::Resource { request }) = state.control.retry_of(task) {
+        let request = into_instance(request, &instance);
+        state.control.set_retry(task, Some(crate::downloads::RetryRequest::Resource { request }));
+    }
     let result = async {
         state.control.checkpoint().await?;
         install(instance.clone()).await
@@ -1263,23 +1405,39 @@ pub async fn create_instance_for_resource(
     name: String,
     task_id: String,
 ) -> AppResult<ResourceInstanceResult> {
-    if source == "curseforge" && resource_version_id.is_none() {
+    let request = if source == "curseforge" && resource_version_id.is_none() {
         let file_id = file_id.ok_or_else(|| expected("请选择要安装的 CurseForge 文件"))?;
-        return crate::curseforge::create_with_pinned_file(state.inner(), &app, &task_id, &project_id, &resource_type, file_id, &game_version, &loader, loader_version.as_deref(), &name).await;
-    }
-    require_modrinth(&source)?;
-    if file_id.is_some() { return Err(expected("资源文件标识无效")); }
-    let request = ResourceRequest {
-        source: ResourceSource::Modrinth, project_id: project_id.clone(), resource_type: resource_type.clone(),
-        target: ReservedTarget::Create { game_version: game_version.clone(), loader: loader.clone(),
-            loader_version: loader_version.clone(), name: name.clone(), file_id: None, resource_version_id: resource_version_id.clone() },
+        ResourceRequest {
+            source: ResourceSource::Curseforge, project_id, resource_type,
+            target: ReservedTarget::Create { game_version, loader, loader_version, name, file_id: Some(file_id), resource_version_id: None },
+        }
+    } else {
+        require_modrinth(&source)?;
+        if file_id.is_some() { return Err(expected("资源文件标识无效")); }
+        ResourceRequest {
+            source: ResourceSource::Modrinth, project_id, resource_type,
+            target: ReservedTarget::Create { game_version, loader, loader_version, name, file_id: None, resource_version_id },
+        }
     };
-    with_reserved_resource_task(&state, &task_id, request, async {
+    run_resource_request(state.inner(), Some(&app), &task_id, request).await?.created()
+}
+
+async fn create_with_modrinth(
+    state: &Arc<LauncherState>,
+    app: Option<&AppHandle>,
+    task: &str,
+    request: ResourceRequest,
+) -> AppResult<ResourceInstanceResult> {
+    let ReservedTarget::Create { game_version, loader, loader_version, name, resource_version_id, .. } = request.target.clone() else {
+        return Err("资源文件标识无效".into());
+    };
+    let (project_id, resource_type, retry) = (request.project_id.clone(), request.resource_type.clone(), request.clone());
+    with_reserved_resource_task(state, task, request, async {
         let kind = ResourceKind::parse(&resource_type)?;
         let name = crate::commands::validate_instance_name(&name)?;
-        let progress = ResourceProgress::new(Some(&app), &game_version);
-        progress.stage(&state, "resource-preflight", "检查资源及必需前置");
-        let api = client(&state, false)?;
+        let progress = ResourceProgress::new(app, &game_version);
+        progress.stage(state, "resource-preflight", "检查资源及必需前置");
+        let api = client(state, false)?;
         let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
         if project.project_type != kind.project_type() {
             return Err(expected("资源项目类型与所选分类不一致，已拒绝安装"));
@@ -1287,9 +1445,14 @@ pub async fn create_instance_for_resource(
         let resource_loader = (kind == ResourceKind::Mod).then_some(loader.as_str());
         let selected = if let Some(id) = resource_version_id.as_deref() {
             let selected = fetch_pinned_modrinth_version(&api, id, &project.id, kind).await?;
-            crate::resource_targets::validate_pinned_creation_pair(
-                &version_lite(&selected), kind, &loader, &game_version,
-            )?;
+            let lite = version_lite(&selected);
+            // A "latest" Create of a shader or resource pack accepts any allowed
+            // loader for its game version; its pinned retry accepts that version too.
+            if kind == ResourceKind::Mod
+                || crate::resource_targets::validate_request(std::slice::from_ref(&lite), kind, &loader, &game_version).is_err()
+            {
+                crate::resource_targets::validate_pinned_creation_pair(&lite, kind, &loader, &game_version)?;
+            }
             selected
         } else {
             let versions = project_versions(&api, &project.id, &game_version, resource_loader).await?;
@@ -1304,10 +1467,11 @@ pub async fn create_instance_for_resource(
             if selected.project_id != project.id {
                 return Err(expected("Modrinth 版本与项目标识不一致"));
             }
+            pin_retry(state, task, &retry, Pin::Modrinth(&selected.id));
             selected
         };
         resource_transactions::preflight(
-            &state,
+            state,
             &api,
             selected.clone(),
             &game_version,
@@ -1316,33 +1480,40 @@ pub async fn create_instance_for_resource(
         )
         .await?;
         state.control.checkpoint().await?;
-        progress.stage(&state, "resource-loader", "安装 Minecraft 及加载器");
-        let version_id = if loader == "vanilla" {
-            crate::minecraft::install(&state, &app, &game_version).await?;
-            game_version.clone()
-        } else {
-            crate::loaders::install_loader_inner(
-                &state,
-                &app,
-                &loader,
-                &game_version,
-                loader_version.as_deref().unwrap_or("latest"),
-            )
-            .await?
-            .version_id
+        progress.stage(state, "resource-loader", "安装 Minecraft 及加载器");
+        let version_id = match prepared_version() {
+            Some(version_id) => version_id,
+            None => {
+                let app = app.ok_or_else(|| AppError::from("创建实例需要启动器窗口"))?;
+                if loader == "vanilla" {
+                    crate::minecraft::install(state, app, &game_version).await?;
+                    game_version.clone()
+                } else {
+                    crate::loaders::install_loader_inner(
+                        state,
+                        app,
+                        &loader,
+                        &game_version,
+                        loader_version.as_deref().unwrap_or("latest"),
+                    )
+                    .await?
+                    .version_id
+                }
+            }
         };
-        progress.stage(&state, "resource-create", "创建实例");
-        let install_state = state.inner().clone();
-        let install_app = app.clone();
+        progress.stage(state, "resource-create", "创建实例");
+        let install_state = state.clone();
+        let install_app = app.cloned();
         create_resource_instance_then_install(
-            &state,
+            state,
+            task,
             name.clone(),
             version_id.clone(),
             move |instance| async move {
                 require_resource_stopped(&install_state, &version_id, Some(&instance.id))?;
                 let target =
                     resource_target(&install_state, &version_id, Some(&instance.id), kind)?;
-                let resource_progress = ResourceProgress::new(Some(&install_app), &version_id);
+                let resource_progress = ResourceProgress::new(install_app.as_ref(), &version_id);
                 let install = resource_transactions::install(
                     &install_state,
                     &target.directory,
@@ -1456,16 +1627,29 @@ pub async fn install_resource(
     task_id: String,
 ) -> AppResult<ResourceInstall> {
     let request = ResourceRequest {
-        source: ResourceSource::Modrinth, project_id: project_id.clone(), resource_type: resource_type.clone(),
-        target: ReservedTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id: None, resource_version_id: resource_version_id.clone(), },
+        source: ResourceSource::Modrinth, project_id, resource_type,
+        target: ReservedTarget::Existing { version_id, instance_id, file_id: None, resource_version_id },
     };
-    with_reserved_resource_task(&state, &task_id, request, async {
+    run_resource_request(state.inner(), Some(&app), &task_id, request).await?.installed()
+}
+
+async fn install_modrinth(
+    state: &Arc<LauncherState>,
+    app: Option<&AppHandle>,
+    task: &str,
+    request: ResourceRequest,
+) -> AppResult<ResourceInstall> {
+    let ReservedTarget::Existing { version_id, instance_id, resource_version_id, .. } = request.target.clone() else {
+        return Err("资源文件标识无效".into());
+    };
+    let (project_id, resource_type, retry) = (request.project_id.clone(), request.resource_type.clone(), request.clone());
+    with_reserved_resource_task(state, task, request, async {
         let kind = ResourceKind::parse(&resource_type)?;
-        require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
-        let progress = ResourceProgress::new(Some(&app), &version_id);
-        progress.stage(&state, "resource-plan", "检查资源安装位置");
-        let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
-        let api = client(&state, false)?;
+        require_resource_stopped(state, &version_id, instance_id.as_deref())?;
+        let progress = ResourceProgress::new(app, &version_id);
+        progress.stage(state, "resource-plan", "检查资源安装位置");
+        let target = resource_target(state, &version_id, instance_id.as_deref(), kind)?;
+        let api = client(state, false)?;
         let project: Project = api_json(&api, &format!("project/{project_id}"), &[]).await?;
         if project.project_type != kind.project_type() {
             return Err("资源项目类型与所选分类不一致，已拒绝安装".into());
@@ -1473,8 +1657,11 @@ pub async fn install_resource(
         let version = select_modrinth_install_version(
             &api, &project.id, kind, &target.minecraft, target.loader.as_deref(), resource_version_id.as_deref(),
         ).await?;
+        if resource_version_id.is_none() {
+            pin_retry(state, task, &retry, Pin::Modrinth(&version.id));
+        }
         let result = resource_transactions::install(
-            state.inner(),
+            state,
             &target.directory,
             &target.minecraft,
             target.loader.as_deref(),
@@ -1484,7 +1671,7 @@ pub async fn install_resource(
             true,
             Some(&progress),
         ).await?;
-        progress.emit(&state, "complete", 1, 1, 0, 0, "资源安装完成");
+        progress.emit(state, "complete", 1, 1, 0, 0, "资源安装完成");
         Ok(result)
     }).await
 }
@@ -1887,7 +2074,7 @@ mod tests {
         ordered(&section(mr, "pub(crate) async fn with_reserved_resource_task<"), &[
             "claim_resource(id, request)", "wait_for_turn(&state.operation, id).await", "task.await",
         ]);
-        ordered(&section(mr, "pub async fn create_instance_for_resource("), &[
+        ordered(&section(mr, "async fn create_with_modrinth("), &[
             "with_reserved_resource_task(", "let api = client(", "fetch_pinned_modrinth_version(",
             "validate_pinned_creation_pair(", "resource_transactions::preflight(", "install_loader_inner(",
             "create_resource_instance_then_install(", "require_resource_stopped(", "resource_target(",
@@ -1900,8 +2087,8 @@ mod tests {
             "resource_transactions::require_no_pending(", "let path = download(",
         ]);
         ordered(&section(mr, "async fn create_resource_instance_then_install<"), &[
-            "state.control.checkpoint().await", "create_instance_inner(",
-            "state.control.checkpoint().await", "install(instance.clone()).await",
+            "state.control.checkpoint().await", "create_instance_inner(", "into_instance(request, &instance)",
+            "state.control.set_retry(task,", "state.control.checkpoint().await", "install(instance.clone()).await",
         ]);
     }
 
@@ -1912,19 +2099,24 @@ mod tests {
         let curseforge = include_str!("curseforge.rs");
         // Extend this table in C6 if installing an exact version adds a separate writer.
         const LOCK: &str = "let _operation = state.operation.lock().await;";
+        // Installs into an existing instance run in the bodies that the one
+        // request path dispatches to (run_resource_request).
         for (source, command, lock, writer) in [
-            (modrinth, "install_resource", "with_reserved_resource_task(", "resource_transactions::install("),
-            (modrinth, "update_resource", LOCK, "resource_transactions::update_one("),
-            (modrinth, "rollback_resource_update", LOCK, "resource_transactions::rollback("),
-            (modrinth, "toggle_resource", LOCK, "fs::rename(&source, &target)"),
-            (curseforge, "install_curseforge_resource", "with_reserved_resource_task(", "let key = service_key("),
+            (modrinth, "async fn install_modrinth(", "with_reserved_resource_task(", "resource_transactions::install("),
+            (modrinth, "pub async fn update_resource(", LOCK, "resource_transactions::update_one("),
+            (modrinth, "pub async fn rollback_resource_update(", LOCK, "resource_transactions::rollback("),
+            (modrinth, "pub async fn toggle_resource(", LOCK, "fs::rename(&source, &target)"),
+            (curseforge, "pub(crate) async fn install_curseforge(", "with_reserved_resource_task(", "let key = service_key("),
         ] {
-            let (_, body) = source.split_once(&format!("pub async fn {command}(")).unwrap();
+            let (_, body) = source.split_once(command).unwrap();
             let (body, _) = body.split_once("\n}").unwrap();
             let body = &crate::storage::executable_source(body);
             let lock = body.find(lock).expect(command);
             let guard = body
-                .find("require_resource_stopped(&state, &version_id, instance_id.as_deref())?;")
+                .find("require_resource_stopped(")
+                .and_then(|at| body[at..].find(", &version_id, instance_id.as_deref())?;").map(|end| (at, end)))
+                .filter(|(_, end)| *end < 40)
+                .map(|(at, _)| at)
                 .expect(command);
             let write_or_network = body.find(writer).expect(command);
             assert!(lock < guard && guard < write_or_network, "{command}");
@@ -2100,7 +2292,7 @@ mod tests {
 
     #[test]
     fn u1264_pinned_install_uses_the_same_reserved_h06_and_journal_boundaries() {
-        let (_, body) = include_str!("resources.rs").split_once("pub async fn install_resource(").unwrap();
+        let (_, body) = include_str!("resources.rs").split_once("async fn install_modrinth(").unwrap();
         let (body, _) = body.split_once("\n}").unwrap();
         let reserve = body.find("with_reserved_resource_task(").unwrap();
         let h06 = body.find("require_resource_stopped(").unwrap();
@@ -2196,6 +2388,7 @@ mod tests {
         state.control.cancel(&task);
         let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
             &state,
+            &task,
             "Example".into(),
             "fabric-test".into(),
             |_| async { panic!("cancelled install must not start") },
@@ -2221,6 +2414,7 @@ mod tests {
         let install_task = task.clone();
         let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
             &state,
+            &task,
             "Example".into(),
             "fabric-test".into(),
             move |_| async move {
@@ -2251,6 +2445,7 @@ mod tests {
         let task = state.control.begin("resource", "project", "创建并安装").unwrap();
         let result = tauri::async_runtime::block_on(create_resource_instance_then_install(
             &state,
+            &task,
             "Example".into(),
             "fabric-test".into(),
             |_| async { Err(expected("磁盘写入失败")) },
@@ -3024,6 +3219,506 @@ mod tests {
         assert!(details.versions.iter().all(|version| version.compatible));
         assert_eq!(details.dependencies[0].kind, "required");
         assert_eq!(details.dependencies[1].kind, "unknown");
+    }
+
+    // ---- C7: one request path, test endpoints and resource retry -------------
+
+    use crate::parts::range_server::{RangeServer, Scripted};
+
+    /// Points this thread's Modrinth and CurseForge clients at loopback servers,
+    /// with no proxy (a system proxy on the test machine cannot reach them).
+    struct Endpoints;
+
+    impl Endpoints {
+        fn set(state: &LauncherState, api: &RangeServer, cdn: &RangeServer) -> Self {
+            state.update(|persisted| {
+                persisted.config.proxy_mode = "none".into();
+                Ok(())
+            }).unwrap();
+            TEST_ENDPOINTS.with(|endpoints| {
+                *endpoints.borrow_mut() = Some(TestEndpoints {
+                    modrinth_api: format!("http://{}", api.address),
+                    curseforge_api: format!("http://{}", api.address),
+                    cdn: cdn.address.parse().unwrap(),
+                    prepared_version: None,
+                })
+            });
+            Endpoints
+        }
+
+        /// Stands in for the Minecraft and loader install of a create request.
+        fn preparing(self, version_id: &str) -> Self {
+            TEST_ENDPOINTS.with(|endpoints| {
+                if let Some(endpoints) = endpoints.borrow_mut().as_mut() {
+                    endpoints.prepared_version = Some(version_id.into());
+                }
+            });
+            self
+        }
+    }
+
+    impl Drop for Endpoints {
+        fn drop(&mut self) {
+            TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
+        }
+    }
+
+    fn port(server: &RangeServer) -> &str {
+        server.address.rsplit(':').next().unwrap()
+    }
+
+    fn json(value: serde_json::Value) -> Scripted {
+        Scripted::ok(value.to_string().as_bytes(), "\"j\"")
+    }
+
+    fn modrinth_project() -> Scripted {
+        json(serde_json::json!({"id": "fixture-project", "title": "Fixture", "project_type": "mod"}))
+    }
+
+    fn modrinth_version(id: &str, day: u32, cdn: &RangeServer, bytes: &[u8]) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "project_id": "fixture-project", "game_versions": ["1.21.1"], "loaders": ["fabric"],
+            "version_type": "release", "date_published": format!("2026-01-{day:02}T00:00:00Z"),
+            "files": [{"filename": format!("{id}.jar"), "url": format!("http://cdn.modrinth.com:{}/data/{id}.jar", port(cdn)),
+                "primary": true, "size": bytes.len(), "hashes": {"sha512": format!("{:x}", sha2::Sha512::digest(bytes))}}],
+            "dependencies": []
+        })
+    }
+
+    fn modrinth_request(pin: Option<&str>) -> ResourceRequest {
+        ResourceRequest {
+            source: ResourceSource::Modrinth,
+            project_id: "fixture-project".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(), instance_id: None, file_id: None, resource_version_id: pin.map(str::to_owned),
+            },
+        }
+    }
+
+    fn mods(state: &LauncherState) -> PathBuf {
+        resource_target(state, "fabric-test", None, ResourceKind::Mod).unwrap().directory
+    }
+
+    fn task_row(state: &LauncherState, id: &str) -> crate::downloads::DownloadJob {
+        state.control.list().into_iter().find(|job| job.id == id).unwrap()
+    }
+
+    fn journals(state: &LauncherState) -> Vec<String> {
+        let history = mods(state).parent().unwrap().join(".launcher-resource-history").join("mods");
+        let mut found = Vec::new();
+        for entry in fs::read_dir(history).into_iter().flatten().flatten() {
+            if let Ok(text) = fs::read_to_string(entry.path().join("journal.json")) {
+                found.push(text);
+            }
+        }
+        found
+    }
+
+    fn run(state: &Arc<LauncherState>, task: &str, request: ResourceRequest) -> AppResult<ResourceOutcome> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run_resource_request(state, None, task, request))
+    }
+
+    #[test]
+    fn c6_2_the_reserved_modrinth_version_is_the_file_written() {
+        let (root, state) = resource_fixture();
+        let (older, newer) = (b"older mod".as_slice(), b"newer mod".as_slice());
+        let cdn = RangeServer::new(vec![Scripted::ok(older, "\"o\"")]);
+        // The pinned version is fetched by id; the newer one is never asked for.
+        let api = RangeServer::new(vec![modrinth_project(), json(modrinth_version("older", 1, &cdn, older))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = modrinth_request(Some("older"));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "older.jar");
+        assert_eq!(fs::read(mods(&state).join("older.jar")).unwrap(), older);
+        assert!(!mods(&state).join("newer.jar").exists());
+        assert_eq!(api.header(0, ":path").as_deref(), Some("/project/fixture-project"));
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/version/older"));
+        assert_eq!((cdn.count(), cdn.header(0, ":path").as_deref()), (1, Some("/data/older.jar")));
+        let journals = journals(&state);
+        assert_eq!(journals.len(), 1);
+        assert!(journals[0].contains("older.jar") && !journals[0].contains("newer"), "{}", journals[0]);
+        assert_eq!(task_row(&state, &task).status, "completed");
+        let _ = newer;
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c6_2_a_version_response_for_another_id_writes_nothing() {
+        let (root, state) = resource_fixture();
+        let bytes = b"newer mod".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"n\"")]);
+        // Asked for "older", the service answers with "newer".
+        let api = RangeServer::new(vec![modrinth_project(), json(modrinth_version("newer", 2, &cdn, bytes))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = modrinth_request(Some("older"));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.detail.as_deref(), Some("Modrinth 版本与项目标识不一致"));
+        assert_eq!(cdn.count(), 0);
+        assert!(!mods(&state).exists(), "no resource file");
+        assert!(journals(&state).is_empty(), "no transaction");
+        assert_eq!(task_row(&state, &task).status, "failed");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c6_2_the_reserved_curseforge_file_is_the_file_written() {
+        let (root, state) = resource_fixture();
+        // A synthetic key of the right shape, assembled here.
+        let key = ["$", "2a", "$", "10", "$"].join("") + &"a".repeat(53);
+        crate::secrets::save_service_secret(&state.data_dir, "curseforge-api-key", &key).unwrap();
+        let bytes = b"pinned curseforge mod".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"c\"")]);
+        let file = serde_json::json!({"data": {
+            "id": 123, "modId": 456, "gameId": 432, "isAvailable": true, "fileName": "pinned.jar",
+            "fileLength": bytes.len(), "downloadUrl": format!("http://edge.forgecdn.net:{}/files/pinned.jar", port(&cdn)),
+            "hashes": [{"algo": 1, "value": format!("{:x}", sha1::Sha1::digest(bytes))}, {"algo": 2, "value": format!("{:x}", md5::compute(bytes))}],
+            "gameVersions": ["1.21.1", "Fabric"], "dependencies": []
+        }});
+        let project = serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": true
+        }});
+        let api = RangeServer::new(vec![json(project), json(file)]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing { version_id: "fabric-test".into(), instance_id: None, file_id: Some(123), resource_version_id: None },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "pinned.jar");
+        assert_eq!(fs::read(mods(&state).join("pinned.jar")).unwrap(), bytes);
+        assert_eq!(api.header(0, ":path").as_deref(), Some("/mods/456"));
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods/456/files/123"));
+        assert!(api.header(1, "x-api-key").is_some_and(|value| value == key), "the saved key is sent");
+        assert_eq!((cdn.count(), cdn.header(0, ":path").as_deref()), (1, Some("/files/pinned.jar")));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn u0256_a_resource_retry_installs_the_version_the_first_run_chose() {
+        let (root, state) = resource_fixture();
+        let (older, newer) = (b"older mod".as_slice(), b"newer mod".as_slice());
+        // First run: "latest" resolves to "newer", then the CDN refuses the file.
+        let cdn = RangeServer::new(vec![Scripted::status(404)]);
+        let api = RangeServer::new(vec![
+            modrinth_project(),
+            json(serde_json::json!([modrinth_version("older", 1, &cdn, older), modrinth_version("newer", 2, &cdn, newer)])),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = modrinth_request(None);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        assert!(run(&state, &task, request).is_err());
+        assert!(api.header(1, ":path").unwrap().starts_with("/project/fixture-project/version"));
+        let row = task_row(&state, &task);
+        assert_eq!((row.status.as_str(), row.retryable), ("failed", true));
+        let pinned = modrinth_request(Some("newer"));
+        assert_eq!(row.retry_request(), Some(crate::downloads::RetryRequest::Resource { request: pinned.clone() }));
+        drop((endpoints, api, cdn));
+
+        // The retry is a reserved task claimed with that exact request, and asks for "newer" by id.
+        let (retried, planned) = state.control.queue_retry(&task).unwrap();
+        assert_eq!(planned, crate::downloads::RetryRequest::Resource { request: pinned.clone() });
+        let cdn = RangeServer::new(vec![Scripted::ok(newer, "\"n\"")]);
+        let api = RangeServer::new(vec![modrinth_project(), json(modrinth_version("newer", 2, &cdn, newer))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        assert!(run(&state, &retried, modrinth_request(None)).is_err(), "the claim needs the identical request");
+        let installed = run(&state, &retried, pinned).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "newer.jar");
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/version/newer"));
+        assert_eq!(fs::read(mods(&state).join("newer.jar")).unwrap(), newer);
+        let row = task_row(&state, &retried);
+        assert_eq!((row.status.as_str(), row.retried_from.as_deref()), ("completed", Some(task.as_str())));
+        assert!(!task_row(&state, &task).retryable, "the first row is not retried twice");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    fn create_request(source: ResourceSource, kind: &str, file_id: Option<u64>, pin: Option<&str>) -> ResourceRequest {
+        ResourceRequest {
+            source,
+            project_id: if source == ResourceSource::Curseforge { "456".into() } else { "fixture-project".into() },
+            resource_type: kind.into(),
+            target: ReservedTarget::Create {
+                game_version: "1.21.1".into(), loader: "fabric".into(), loader_version: None,
+                name: "Fixture".into(), file_id, resource_version_id: pin.map(str::to_owned),
+            },
+        }
+    }
+
+    fn save_curseforge_key(state: &LauncherState) -> String {
+        // A synthetic key of the right shape, assembled here.
+        let key = ["$", "2a", "$", "10", "$"].join("") + &"a".repeat(53);
+        crate::secrets::save_service_secret(&state.data_dir, "curseforge-api-key", &key).unwrap();
+        key
+    }
+
+    fn curseforge_project() -> Scripted {
+        json(serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": true
+        }}))
+    }
+
+    fn curseforge_file(id: u64, name: &str, day: u32, cdn: &RangeServer, bytes: &[u8]) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "modId": 456, "gameId": 432, "isAvailable": true, "fileName": name,
+            "fileLength": bytes.len(), "downloadUrl": format!("http://edge.forgecdn.net:{}/files/{name}", port(cdn)),
+            "hashes": [{"algo": 1, "value": format!("{:x}", sha1::Sha1::digest(bytes))}, {"algo": 2, "value": format!("{:x}", md5::compute(bytes))}],
+            "gameVersions": ["1.21.1", "Fabric"], "dependencies": [], "fileDate": format!("2026-01-{day:02}T00:00:00Z")
+        })
+    }
+
+    fn instance_mods(state: &LauncherState, instance_id: &str) -> PathBuf {
+        resource_target(state, "fabric-test", Some(instance_id), ResourceKind::Mod).unwrap().directory
+    }
+
+    #[test]
+    fn c6_2_a_modrinth_create_writes_the_reserved_version_into_its_new_instance() {
+        let (root, state) = resource_fixture();
+        let older = b"older mod".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(older, "\"o\"")]);
+        let api = RangeServer::new(vec![modrinth_project(), json(modrinth_version("older", 1, &cdn, older))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+        let request = create_request(ResourceSource::Modrinth, "mod", None, Some("older"));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let created = run(&state, &task, request).unwrap().created().unwrap();
+        assert_eq!(fs::read(instance_mods(&state, &created.instance.id).join("older.jar")).unwrap(), older);
+        assert_eq!(api.header(0, ":path").as_deref(), Some("/project/fixture-project"));
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/version/older"));
+        assert_eq!((cdn.count(), cdn.header(0, ":path").as_deref()), (1, Some("/data/older.jar")));
+        assert_eq!(state.snapshot().unwrap().instances.len(), 1);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c6_2_a_curseforge_create_writes_the_reserved_file_and_refuses_another() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let bytes = b"pinned curseforge mod".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"c\"")]);
+        let api = RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": curseforge_file(123, "pinned.jar", 1, &cdn, bytes)}))]);
+        let endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+        let request = create_request(ResourceSource::Curseforge, "mod", Some(123), None);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let created = run(&state, &task, request.clone()).unwrap().created().unwrap();
+        assert_eq!(fs::read(instance_mods(&state, &created.instance.id).join("pinned.jar")).unwrap(), bytes);
+        assert_eq!(api.header(0, ":path").as_deref(), Some("/mods/456"));
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods/456/files/123"));
+        assert_eq!(cdn.count(), 1);
+        drop((endpoints, api, cdn));
+
+        // Asked for file 123, the service answers with file 124: no instance, no download.
+        let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"c\"")]);
+        let api = RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": curseforge_file(124, "other.jar", 1, &cdn, bytes)}))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        assert!(run(&state, &task, request).is_err());
+        assert_eq!((cdn.count(), state.snapshot().unwrap().instances.len()), (0, 1));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c6_2_a_curseforge_file_response_for_another_id_writes_nothing() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let bytes = b"other curseforge mod".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"o\"")]);
+        // Asked for file 123, the service answers with file 124.
+        let api = RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": curseforge_file(124, "other.jar", 1, &cdn, bytes)}))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            target: ReservedTarget::Existing { version_id: "fabric-test".into(), instance_id: None, file_id: Some(123), resource_version_id: None },
+            ..create_request(ResourceSource::Curseforge, "mod", None, None)
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.detail.as_deref(), Some("CurseForge 文件不属于所选项目"));
+        assert_eq!(cdn.count(), 0);
+        assert!(!mods(&state).exists());
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn u0256_a_curseforge_retry_installs_the_file_the_first_run_chose() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let (newer, older) = (b"newer curseforge mod".as_slice(), b"older curseforge mod".as_slice());
+        let cdn = RangeServer::new(vec![Scripted::status(404)]);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": [curseforge_file(5000, "older.jar", 1, &cdn, older), curseforge_file(5001, "newer.jar", 2, &cdn, newer)]})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let latest = ResourceRequest {
+            target: ReservedTarget::Existing { version_id: "fabric-test".into(), instance_id: None, file_id: None, resource_version_id: None },
+            ..create_request(ResourceSource::Curseforge, "mod", None, None)
+        };
+        let task = state.control.reserve_resource(latest.clone()).unwrap();
+        assert!(run(&state, &task, latest.clone()).is_err());
+        assert!(api.header(1, ":path").unwrap().starts_with("/mods/456/files?"));
+        let pinned = ResourceRequest {
+            target: ReservedTarget::Existing { version_id: "fabric-test".into(), instance_id: None, file_id: Some(5001), resource_version_id: None },
+            ..latest
+        };
+        let row = task_row(&state, &task);
+        assert_eq!((row.retryable, row.retry_request()), (true, Some(crate::downloads::RetryRequest::Resource { request: pinned.clone() })));
+        drop((endpoints, api, cdn));
+
+        let (retried, _) = state.control.queue_retry(&task).unwrap();
+        let cdn = RangeServer::new(vec![Scripted::ok(newer, "\"n\"")]);
+        let api = RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": curseforge_file(5001, "newer.jar", 2, &cdn, newer)}))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        run(&state, &retried, pinned).unwrap();
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods/456/files/5001"));
+        assert_eq!(fs::read(mods(&state).join("newer.jar")).unwrap(), newer);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn u0256_a_create_whose_instance_exists_is_retried_into_it_even_after_a_crash() {
+        let (root, state) = resource_fixture();
+        let (older, newer) = (b"older mod".as_slice(), b"newer mod".as_slice());
+        // "latest" resolves to "newer"; the instance is made; then the download fails.
+        let cdn = RangeServer::new(vec![Scripted::status(404)]);
+        let api = RangeServer::new(vec![
+            modrinth_project(),
+            json(serde_json::json!([modrinth_version("older", 1, &cdn, older), modrinth_version("newer", 2, &cdn, newer)])),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+        let create = create_request(ResourceSource::Modrinth, "mod", None, None);
+        let task = state.control.reserve_resource(create.clone()).unwrap();
+        let error = run(&state, &task, create.clone()).err().unwrap();
+        assert_eq!(error.code, "resource.installAfterCreate");
+        let instances = state.snapshot().unwrap().instances;
+        assert_eq!(instances.len(), 1);
+        let existing = ResourceRequest {
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(), instance_id: Some(instances[0].id.clone()), file_id: None, resource_version_id: Some("newer".into()),
+            },
+            ..create
+        };
+        // Recorded when the instance was made, before the install, and saved at
+        // once (u0256_a_replaced_payload_is_saved_at_once), so a crash keeps it too.
+        let row = task_row(&state, &task);
+        assert_eq!(row.retry_request(), Some(crate::downloads::RetryRequest::Resource { request: existing.clone() }));
+        assert!(row.retryable);
+        drop((endpoints, api, cdn));
+
+        let (retried, planned) = state.control.queue_retry(&task).unwrap();
+        assert_eq!(planned, crate::downloads::RetryRequest::Resource { request: existing.clone() });
+        let cdn = RangeServer::new(vec![Scripted::ok(newer, "\"n\"")]);
+        let api = RangeServer::new(vec![modrinth_project(), json(modrinth_version("newer", 2, &cdn, newer))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        run(&state, &retried, existing).unwrap().installed().unwrap();
+        assert_eq!(fs::read(instance_mods(&state, &instances[0].id).join("newer.jar")).unwrap(), newer);
+        assert_eq!(state.snapshot().unwrap().instances.len(), 1, "no second instance");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn u0256_a_create_that_fails_before_its_instance_stays_a_pinned_create() {
+        let (root, state) = resource_fixture();
+        let (older, newer) = (b"older mod".as_slice(), b"newer mod".as_slice());
+        let cdn = RangeServer::new(vec![]);
+        let api = RangeServer::new(vec![
+            modrinth_project(),
+            json(serde_json::json!([modrinth_version("older", 1, &cdn, older), modrinth_version("newer", 2, &cdn, newer)])),
+        ]);
+        // No stand-in for the loader step and no window: it fails before the instance.
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let create = create_request(ResourceSource::Modrinth, "mod", None, None);
+        let task = state.control.reserve_resource(create.clone()).unwrap();
+        assert!(run(&state, &task, create.clone()).is_err());
+        assert!(state.snapshot().unwrap().instances.is_empty());
+        let row = task_row(&state, &task);
+        let pinned = create_request(ResourceSource::Modrinth, "mod", None, Some("newer"));
+        assert_eq!((row.retryable, row.retry_request()), (true, Some(crate::downloads::RetryRequest::Resource { request: pinned })));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn u0256_a_pinned_shader_create_accepts_the_version_a_latest_run_chose() {
+        let (root, state) = resource_fixture();
+        let bytes = b"shader pack".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"s\"")]);
+        // The newest 1.21.1 version declares only OptiFine; a "latest" Fabric create accepts it.
+        let mut version = modrinth_version("optifine-only", 1, &cdn, bytes);
+        version["loaders"] = serde_json::json!(["optifine"]);
+        version["files"][0]["filename"] = "optifine-only.zip".into();
+        version["files"][0]["url"] = format!("http://cdn.modrinth.com:{}/data/optifine-only.zip", port(&cdn)).into();
+        let project = json(serde_json::json!({"id": "fixture-project", "title": "Fixture", "project_type": "shader"}));
+        let api = RangeServer::new(vec![project, json(version)]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+        let request = create_request(ResourceSource::Modrinth, "shader", None, Some("optifine-only"));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let created = run(&state, &task, request).unwrap().created().unwrap();
+        let shaders = resource_target(&state, "fabric-test", Some(&created.instance.id), ResourceKind::Shader).unwrap().directory;
+        assert_eq!(fs::read(shaders.join("optifine-only.zip")).unwrap(), bytes);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c7_every_resource_install_takes_the_one_request_path() {
+        let resources = crate::storage::executable_source(include_str!("resources.rs"));
+        let curseforge = crate::storage::executable_source(include_str!("curseforge.rs"));
+        let downloads = crate::storage::executable_source(include_str!("downloads.rs"));
+        let body = |source: &str, marker: &str| -> String {
+            source.split_once(marker).unwrap_or_else(|| panic!("{marker}")).1.split_once("\n}").unwrap().0.to_owned()
+        };
+        for (source, command) in [
+            (&resources, "pub async fn install_resource("),
+            (&resources, "pub async fn create_instance_for_resource("),
+            (&curseforge, "pub async fn install_curseforge_resource("),
+        ] {
+            let body = body(source, command);
+            assert!(body.contains("run_resource_request("), "{command}");
+            assert!(!body.contains("with_reserved_resource_task("), "{command} installs only through the request path");
+        }
+        let run = body(&resources, "pub(crate) async fn run_resource_request(");
+        let flat: String = run.split_whitespace().collect::<Vec<_>>().join(" ");
+        for arm in [
+            "(ResourceSource::Modrinth, true) => ResourceOutcome::Installed(install_modrinth(",
+            "(ResourceSource::Curseforge, true) => { ResourceOutcome::Installed(crate::curseforge::install_curseforge(",
+            "(ResourceSource::Modrinth, false) => ResourceOutcome::Created(create_with_modrinth(",
+            "(ResourceSource::Curseforge, false) => { ResourceOutcome::Created(crate::curseforge::create_with_pinned_file(",
+        ] {
+            assert!(flat.contains(arm), "{arm}");
+        }
+        let validated = run.find("validate_resource_request(&request)?;").unwrap();
+        for arm in ["install_modrinth(", "crate::curseforge::install_curseforge(", "create_with_modrinth(", "crate::curseforge::create_with_pinned_file("] {
+            assert!(validated < run.find(arm).unwrap_or_else(|| panic!("{arm}")), "{arm}");
+        }
+        for (source, marker) in [
+            (&resources, "async fn install_modrinth("),
+            (&resources, "async fn create_with_modrinth("),
+            (&curseforge, "pub(crate) async fn install_curseforge("),
+            (&curseforge, "pub(crate) async fn create_with_pinned_file("),
+        ] {
+            assert!(body(source, marker).contains("with_reserved_resource_task("), "{marker}");
+        }
+        assert!(body(&downloads, "fn spawn_retry(").contains("crate::resources::run_queued_resource(app, state, id, request)"));
+        let queued = body(&resources, "pub(crate) async fn run_queued_resource(");
+        assert!(queued.find("run_resource_request(&state, Some(&app), &task, request)").unwrap() < queued.find("state.control.finish(&task").unwrap());
     }
 }
 

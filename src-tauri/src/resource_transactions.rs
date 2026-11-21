@@ -78,7 +78,7 @@ async fn identify(
     let mut output = HashMap::new();
     for batch in hashes.chunks(100) {
         let response = api
-            .post(format!("{API}/version_files"))
+            .post(format!("{}/version_files", modrinth_api()))
             .json(&serde_json::json!({"hashes": batch, "algorithm":"sha512"}))
             .send()
             .await
@@ -1710,7 +1710,7 @@ mod tests {
             .unwrap()
             .0;
         let curseforge = include_str!("curseforge.rs")
-            .split_once("pub async fn install_curseforge_resource(")
+            .split_once("pub(crate) async fn install_curseforge(")
             .unwrap()
             .1
             .split_once("#[cfg(test)]")
@@ -1728,8 +1728,8 @@ mod tests {
                 "CurseForge",
                 curseforge,
                 "with_reserved_resource_task",
-                "crate::resources::resource_target(&state",
-                "let key = service_key(&state)?",
+                "crate::resources::resource_target(state",
+                "let key = service_key(state)?",
             ),
         ] {
             let body = &crate::storage::executable_source(body);

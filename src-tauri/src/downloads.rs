@@ -43,6 +43,9 @@ pub(crate) enum RetryRequest {
 /// The stored form: a version, so a payload from a newer build loads as "not
 /// retryable" instead of failing the whole history.
 const RETRY_VERSION: u32 = 1;
+/// Resource payloads are version 2. Version-1 ones were recorded before
+/// resources could be retried, and may hold a Create whose instance was made.
+const RESOURCE_RETRY_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,8 +55,12 @@ struct RetryEnvelope {
 }
 
 impl RetryRequest {
+    fn version(&self) -> u32 {
+        if matches!(self, Self::Resource { .. }) { RESOURCE_RETRY_VERSION } else { RETRY_VERSION }
+    }
+
     fn stored(&self) -> serde_json::Value {
-        serde_json::to_value(RetryEnvelope { v: RETRY_VERSION, request: self.clone() }).unwrap_or(serde_json::Value::Null)
+        serde_json::to_value(RetryEnvelope { v: self.version(), request: self.clone() }).unwrap_or(serde_json::Value::Null)
     }
 }
 
@@ -93,7 +100,7 @@ impl DownloadJob {
     /// The payload, if it is one this build understands.
     pub(crate) fn retry_request(&self) -> Option<RetryRequest> {
         let envelope: RetryEnvelope = serde_json::from_value(self.retry.clone()?).ok()?;
-        (envelope.v == RETRY_VERSION).then_some(envelope.request)
+        (envelope.v == envelope.request.version()).then_some(envelope.request)
     }
 }
 
@@ -115,9 +122,20 @@ fn retry_plan(job: &DownloadJob, jobs: &[DownloadJob]) -> Result<RetryRequest, &
         None if job.retry.is_none() && job.kind == "install" => RetryRequest::Install { version_id: job.target.clone() },
         None => return Err(RETRY_UNSUPPORTED),
     };
-    match request {
+    match &request {
         RetryRequest::Install { .. } | RetryRequest::Loader { .. } | RetryRequest::ModrinthModpack { .. } => Ok(request),
+        // A payload edited on disk is never offered.
+        RetryRequest::Resource { request: resource } if crate::resources::validate_resource_request(resource).is_ok() => Ok(request),
         RetryRequest::Resource { .. } => Err(RETRY_UNSUPPORTED),
+    }
+}
+
+/// The label of a resource task, the same for a first run and a retry.
+fn resource_label(request: &ResourceRequest) -> &'static str {
+    match (&request.source, &request.target) {
+        (_, ResourceTarget::Create { .. }) => "创建实例并安装资源",
+        (ResourceSource::Modrinth, _) => "安装 Modrinth 资源及必需前置",
+        (ResourceSource::Curseforge, _) => "安装 CurseForge 资源",
     }
 }
 
@@ -317,7 +335,7 @@ fn retry_job(request: &RetryRequest) -> (&'static str, String, String, Option<St
             "安装 Modrinth 整合包".into(),
             name.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned),
         ),
-        RetryRequest::Resource { request } => ("resource", request.project_id.clone(), "安装资源".into(), None),
+        RetryRequest::Resource { request } => ("resource", request.project_id.clone(), resource_label(request).into(), None),
     }
 }
 
@@ -476,6 +494,12 @@ impl DownloadControl {
         self.create(NewJob { kind, target, label, display_target, reservation: None, start_now: true, retry: Some(request), retried_from: None })
     }
 
+    /// The payload recorded for `id`, if this build can read it.
+    pub(crate) fn retry_of(&self, id: &str) -> Option<RetryRequest> {
+        let state = self.scheduler.lock().ok()?;
+        state.jobs.iter().find(|job| job.id == id)?.retry_request()
+    }
+
     /// Replaces (or clears) the payload, e.g. once "latest" is resolved, or when
     /// a failure kept files that a second run would duplicate.
     pub(crate) fn set_retry(&self, id: &str, request: Option<RetryRequest>) {
@@ -505,12 +529,17 @@ impl DownloadControl {
                 }
             };
             let (kind, target, label, display) = retry_job(&request);
+            // A resource retry is claimed like a first run, with the identical request.
+            let reservation = match &request {
+                RetryRequest::Resource { request } => Some(Reservation::Resource(request.clone())),
+                _ => None,
+            };
             insert_job(state, &new_id, NewJob {
                 kind,
                 target: &target,
                 label: &label,
                 display_target: display.as_deref(),
-                reservation: None,
+                reservation,
                 start_now: false,
                 retry: Some(request.clone()),
                 retried_from: Some(id.to_owned()),
@@ -569,11 +598,7 @@ impl DownloadControl {
     }
 
     pub(crate) fn reserve_resource(&self, request: ResourceRequest) -> Result<String, String> {
-        let label = match (&request.source, &request.target) {
-            (_, ResourceTarget::Create { .. }) => "创建实例并安装资源",
-            (ResourceSource::Modrinth, _) => "安装 Modrinth 资源及必需前置",
-            (ResourceSource::Curseforge, _) => "安装 CurseForge 资源",
-        };
+        let label = resource_label(&request);
         let project_id = request.project_id.clone();
         let retry = RetryRequest::Resource { request: request.clone() };
         self.create(NewJob {
@@ -976,8 +1001,9 @@ fn spawn_retry(app: AppHandle, state: Arc<LauncherState>, id: String, request: R
                 include_optional,
             ));
         }
-        // retry_plan never offers these yet.
-        RetryRequest::Resource { .. } => state.control.finish(&id, Some(RETRY_UNSUPPORTED)),
+        RetryRequest::Resource { request } => {
+            tauri::async_runtime::spawn(crate::resources::run_queued_resource(app, state, id, request));
+        }
     }
 }
 #[tauri::command]
@@ -1293,12 +1319,21 @@ mod tests {
         // Readable fields under a newer version may mean something else there.
         let mut newer = row("newer", "install", "1.20.1", "failed");
         newer["retry"] = serde_json::json!({"v": 2, "request": {"kind": "install", "versionId": "1.20.1"}});
-        let journal = Journal::new(serde_json::json!([future, odd, newer, row("kept", "install", "1.19", "completed")]));
+        // A resource payload from before resources could be retried may hold a
+        // Create whose instance was made: it is not offered.
+        let mut legacy = row("legacy", "resource", "fixture-project", "interrupted");
+        legacy["retry"] = serde_json::json!({"v": 1, "request": {"kind": "resource", "request": {
+            "source": "modrinth", "projectId": "fixture-project", "resourceType": "mod",
+            "target": {"mode": "create", "gameVersion": "1.21.1", "loader": "fabric", "loaderVersion": null, "name": "Fixture"}
+        }}});
+        let journal = Journal::new(serde_json::json!([future, odd, newer, legacy, row("kept", "install", "1.19", "completed")]));
         let control = journal.load();
         assert_eq!(journal.corrupt_copies(), 0);
-        assert_eq!(control.list().len(), 4);
+        assert_eq!(control.list().len(), 5);
         assert!(!job(&control, "future").retryable);
         assert!(!job(&control, "newer").retryable, "a newer payload version is not read as this one");
+        assert!(!job(&control, "legacy").retryable, "a version-1 resource payload is not offered");
+        assert_eq!(job(&control, "legacy").retry_request(), None);
         assert!(!job(&control, "odd").retryable, "a payload this build cannot read is never guessed at");
         assert!(!job(&control, "kept").retryable, "completed tasks are not retried");
         assert_eq!(code(control.queue_retry("future").unwrap_err()), "download.retryUnsupported");
@@ -1349,16 +1384,30 @@ mod tests {
             assert!(!job(&control, &task).retryable, "{kind}");
             assert_eq!(code(control.queue_retry(&task).unwrap_err()), "download.retryUnsupported", "{kind}");
         }
-        let resource = control.reserve_resource(ResourceRequest {
+        // A resource runs again through its own reservation, claimed only with the identical request.
+        let request = ResourceRequest {
             source: ResourceSource::Modrinth,
             project_id: "AANobbMI".into(),
             resource_type: "mod".into(),
             target: ResourceTarget::Existing { version_id: "1.20.1".into(), instance_id: None, file_id: None, resource_version_id: Some("abc".into()) },
-        }).unwrap();
+        };
+        let resource = control.reserve_resource(request.clone()).unwrap();
         control.finish(&resource, Some("failed"));
-        let row = job(&control, &resource);
-        assert!(matches!(row.retry_request(), Some(RetryRequest::Resource { .. })), "recorded now for the later runner");
-        assert!(!row.retryable);
+        assert!(job(&control, &resource).retryable);
+        let (retried, planned) = control.queue_retry(&resource).unwrap();
+        assert_eq!(planned, RetryRequest::Resource { request: request.clone() });
+        let row = job(&control, &retried);
+        assert_eq!((row.kind.as_str(), row.label.as_str()), ("resource", "安装 Modrinth 资源及必需前置"));
+        let other = ResourceRequest { project_id: "BBNobbMI".into(), ..request.clone() };
+        assert!(control.claim_resource(&retried, other).is_err());
+        control.claim_resource(&retried, request.clone()).unwrap();
+        assert!(control.claim_resource(&retried, request.clone()).is_err(), "a claim is single-use");
+        control.cancel(&retried);
+        // A payload edited on disk into one the install would refuse is never offered.
+        let edited = control.reserve_resource(ResourceRequest { project_id: "../escape".into(), ..request }).unwrap();
+        control.finish(&edited, Some("failed"));
+        assert!(!job(&control, &edited).retryable);
+        assert_eq!(code(control.queue_retry(&edited).unwrap_err()), "download.retryUnsupported");
     }
 
     #[test]
@@ -1471,6 +1520,36 @@ mod tests {
             assert_eq!(parameters[..3], ["app", "state", "task"], "{signature}");
             assert_eq!(arguments[3..], parameters[3..], "{call}");
         }
+    }
+
+    #[test]
+    fn u0256_a_replaced_payload_is_saved_at_once() {
+        let journal = Journal::new(serde_json::Value::Null);
+        let control = journal.load();
+        let create = ResourceRequest {
+            source: ResourceSource::Modrinth,
+            project_id: "fixture-project".into(),
+            resource_type: "mod".into(),
+            target: ResourceTarget::Create {
+                game_version: "1.21.1".into(), loader: "fabric".into(), loader_version: None,
+                name: "Fixture".into(), file_id: None, resource_version_id: Some("newer".into()),
+            },
+        };
+        let task = control.reserve_resource(create.clone()).unwrap();
+        let existing = ResourceRequest {
+            target: ResourceTarget::Existing {
+                version_id: "fabric-test".into(), instance_id: Some("instance".into()), file_id: None, resource_version_id: Some("newer".into()),
+            },
+            ..create
+        };
+        control.set_retry(&task, Some(RetryRequest::Resource { request: existing.clone() }));
+        // Read back as a restarted launcher would, while the task is still live.
+        let reloaded = journal.load();
+        let row = job(&reloaded, &task);
+        assert_eq!(row.status, "interrupted");
+        assert_eq!(row.retry_request(), Some(RetryRequest::Resource { request: existing }));
+        assert!(row.retryable);
+        control.cancel(&task);
     }
 
     #[test]

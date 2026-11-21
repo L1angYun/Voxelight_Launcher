@@ -313,6 +313,15 @@ fn api_client(state: &LauncherState) -> Result<reqwest::Client, String> {
         .build()
         .map_err(|_| "无法创建 CurseForge API 客户端".into())
 }
+/// The CurseForge API base.
+fn curseforge_api() -> String {
+    #[cfg(test)]
+    if let Some(endpoints) = crate::resources::test_endpoints() {
+        return endpoints.curseforge_api;
+    }
+    API.to_owned()
+}
+
 async fn api<T: DeserializeOwned>(
     client: &reqwest::Client,
     key: &str,
@@ -320,7 +329,7 @@ async fn api<T: DeserializeOwned>(
     query: &[(String, String)],
 ) -> Result<T, String> {
     let response = client
-        .get(format!("{API}/{path}"))
+        .get(format!("{}/{path}", curseforge_api()))
         .query(query)
         .header("x-api-key", crate::curseforge_key::sensitive_cf_header(key)?)
         .send()
@@ -367,8 +376,10 @@ fn download_url(value: &str) -> Result<reqwest::Url, String> {
         "edge.forgecdn.net",
         "media.forgecdn.net",
     ];
-    if url.scheme() != "https"
-        || url.port_or_known_default() != Some(443)
+    // Tests serve the CDN over plain HTTP on a loopback port (TestEndpoints).
+    let test_http = cfg!(test) && url.scheme() == "http" && url.port().is_some();
+    if (url.scheme() != "https" && !test_http)
+        || (!test_http && url.port_or_known_default() != Some(443))
         || !hosts.contains(&url.host_str().unwrap_or(""))
         || !url.username().is_empty()
         || url.password().is_some()
@@ -764,6 +775,13 @@ async fn download(
                 attempt.error("重定向到非 CurseForge CDN")
             }
         }));
+    #[cfg(test)]
+    let builder = match crate::resources::test_endpoints() {
+        Some(endpoints) => ["mediafilez.forgecdn.net", "edge.forgecdn.net", "media.forgecdn.net"]
+            .into_iter()
+            .fold(builder, |builder, host| builder.resolve(host, endpoints.cdn)),
+        None => builder,
+    };
     let client = crate::network::for_state_builder(state, builder)?
         .build()
         .map_err(|_| "无法创建资源下载客户端")?;
@@ -954,28 +972,23 @@ pub(crate) async fn resolve_pinned_targets(
 
 pub(crate) async fn create_with_pinned_file(
     state: &Arc<LauncherState>,
-    app: &tauri::AppHandle,
+    app: Option<&tauri::AppHandle>,
     task_id: &str,
-    project_id: &str,
-    resource_type: &str,
-    file_id: u64,
-    game_version: &str,
-    loader: &str,
-    loader_version: Option<&str>,
-    name: &str,
+    request: crate::downloads::ResourceRequest,
 ) -> AppResult<crate::resources::ResourceInstanceResult> {
-    use crate::downloads::{ResourceRequest, ResourceSource, ResourceTarget};
+    use crate::downloads::ResourceTarget;
     use crate::resources::{create_resource_instance_then_install, require_resource_stopped, resource_target,
         with_reserved_resource_task, ResourceProgress};
-    let request = ResourceRequest {
-        source: ResourceSource::Curseforge, project_id: project_id.into(), resource_type: resource_type.into(),
-        target: ResourceTarget::Create { game_version: game_version.into(), loader: loader.into(),
-            loader_version: loader_version.map(str::to_owned), name: name.into(), file_id: Some(file_id), resource_version_id: None },
+    let ResourceTarget::Create { game_version, loader, loader_version, name, file_id: Some(file_id), .. } = request.target.clone() else {
+        return Err("请选择要安装的 CurseForge 文件".into());
     };
-    with_reserved_resource_task(state, task_id, request, async {
+    let (project_id, resource_type) = (request.project_id.clone(), request.resource_type.clone());
+    let (game_version, loader, loader_version, name) = (game_version.as_str(), loader.as_str(), loader_version.as_deref(), name.as_str());
+    let (project_id, resource_type) = (project_id.as_str(), resource_type.as_str());
+    with_reserved_resource_task(state, task_id, request.clone(), async {
         let kind = ResourceKind::parse(resource_type)?;
         let name = crate::commands::validate_instance_name(name)?;
-        let progress = ResourceProgress::new(Some(app), game_version);
+        let progress = ResourceProgress::new(app, game_version);
         progress.stage(state, "resource-preflight", "检查资源及必需前置");
         let key = service_key(state)?;
         let client = api_client(state)?;
@@ -986,14 +999,20 @@ pub(crate) async fn create_with_pinned_file(
         }
         state.control.checkpoint().await?;
         progress.stage(state, "resource-loader", "安装 Minecraft 及加载器");
-        let version_id = if loader == "vanilla" {
-            crate::minecraft::install(state, app, game_version).await?;
-            game_version.to_owned()
-        } else {
-            crate::loaders::install_loader_inner(state, app, loader, game_version, loader_version.unwrap_or("latest")).await?.version_id
+        let version_id = match crate::resources::prepared_version() {
+            Some(version_id) => version_id,
+            None => {
+                let app = app.ok_or_else(|| crate::errors::AppError::from("创建实例需要启动器窗口"))?;
+                if loader == "vanilla" {
+                    crate::minecraft::install(state, app, game_version).await?;
+                    game_version.to_owned()
+                } else {
+                    crate::loaders::install_loader_inner(state, app, loader, game_version, loader_version.unwrap_or("latest")).await?.version_id
+                }
+            }
         };
         progress.stage(state, "resource-create", "创建实例");
-        create_resource_instance_then_install(state, name, version_id.clone(), move |instance| async move {
+        create_resource_instance_then_install(state, task_id, name, version_id.clone(), move |instance| async move {
             require_resource_stopped(state, &version_id, Some(&instance.id))?;
             let target = resource_target(state, &version_id, Some(&instance.id), kind)?;
             crate::resources::resource_transactions::require_no_pending(&target.directory)?;
@@ -1021,23 +1040,36 @@ pub async fn install_curseforge_resource(
 ) -> AppResult<ResourceInstall> {
     use crate::downloads::{ResourceRequest, ResourceSource, ResourceTarget};
     let request = ResourceRequest {
-        source: ResourceSource::Curseforge, project_id: project_id.clone(), resource_type: resource_type.clone(),
-        target: ResourceTarget::Existing { version_id: version_id.clone(), instance_id: instance_id.clone(), file_id, resource_version_id: None },
+        source: ResourceSource::Curseforge, project_id, resource_type,
+        target: ResourceTarget::Existing { version_id, instance_id, file_id, resource_version_id: None },
     };
-    crate::resources::with_reserved_resource_task(&state, &task_id, request, async {
+    crate::resources::run_resource_request(state.inner(), None, &task_id, request).await?.installed()
+}
+
+pub(crate) async fn install_curseforge(
+    state: &Arc<LauncherState>,
+    task_id: &str,
+    request: crate::downloads::ResourceRequest,
+) -> AppResult<ResourceInstall> {
+    use crate::downloads::ResourceTarget;
+    let ResourceTarget::Existing { version_id, instance_id, file_id, .. } = request.target.clone() else {
+        return Err("资源文件标识无效".into());
+    };
+    let (project_id, resource_type, retry) = (request.project_id.clone(), request.resource_type.clone(), request.clone());
+    crate::resources::with_reserved_resource_task(state, task_id, request, async {
         let id = self::project_id(&project_id)?;
         let kind = ResourceKind::parse(&resource_type)?;
-        crate::resources::require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
+        crate::resources::require_resource_stopped(state, &version_id, instance_id.as_deref())?;
         let target =
-            crate::resources::resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
+            crate::resources::resource_target(state, &version_id, instance_id.as_deref(), kind)?;
         crate::resources::resource_transactions::require_no_pending(&target.directory)?;
-        let key = service_key(&state)?;
-        let client = api_client(&state)?;
+        let key = service_key(state)?;
+        let client = api_client(state)?;
         let directory = target.directory;
         let minecraft = target.minecraft;
         let loader = target.loader.as_deref();
         let detected =
-            crate::resources::resource_context(&state, &version_id, instance_id.as_deref())?.loader;
+            crate::resources::resource_context(state, &version_id, instance_id.as_deref())?.loader;
         let project: Response<Project> = api(&client, &key, &format!("mods/{id}"), &[]).await?;
         if project.data.id != id
             || project.data.game_id != 432
@@ -1059,10 +1091,12 @@ pub async fn install_curseforge_resource(
             let mut files = files_page(&client, &key, id, &minecraft, loader, 0).await?;
             files.retain(|file| compatible(file, &minecraft, loader));
             files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
-            files
+            let file = files
                 .into_iter()
                 .next()
-                .ok_or_else(|| crate::resources::no_compatible_version(&minecraft, loader))?
+                .ok_or_else(|| crate::resources::no_compatible_version(&minecraft, loader))?;
+            crate::resources::pin_retry(state, task_id, &retry, crate::resources::Pin::Curseforge(file.id));
+            file
         };
         if !compatible(&file, &minecraft, loader) {
             return Err(crate::resources::no_compatible_version(&minecraft, loader));
@@ -1074,7 +1108,7 @@ pub async fn install_curseforge_resource(
         }
         let game_dir = directory.parent().ok_or("目标游戏目录无效")?;
         check_dependencies(
-            &state,
+            state,
             &client,
             &key,
             &file,
@@ -1083,7 +1117,7 @@ pub async fn install_curseforge_resource(
             detected.as_deref(),
         )
         .await?;
-        let path = download(&state, &project.data, &file, &directory, kind).await?;
+        let path = download(state, &project.data, &file, &directory, kind).await?;
         Ok(ResourceInstall {
             name: project.data.name,
             file_name: file.file_name,
