@@ -5,6 +5,7 @@ import type { LocalResource } from "./types";
 import { Download, History, RefreshCw, Upload } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
+import { ExternalLink } from "../../components/ui/ExternalLink";
 import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
@@ -53,7 +54,7 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
   const { t, i18n } = useTranslation();
   const id = useId();
   const manager = useResourceManager(versionId, instanceId);
-  const { kind, setKind, view, setView, files, updates, history, busy, error, notice } = manager;
+  const { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice } = manager;
   const waitingForView = busy === view || (view === "files" && busy === "import");
   const showEmpty = !waitingForView && !error;
   return (
@@ -93,12 +94,22 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
         ))}</div> : showEmpty ? <EmptyState title={t("library:noResources")} description={t("library:noResourcesDescription")} /> : null
       ) : null}
       {view === "updates" ? (
-        updates === null ? (showEmpty ? <EmptyState title={t("library:updatesNotChecked")} /> : null) : updates.length ? <div className="vx-resource-list">{updates.map((update) => (
-          <div className="vx-resource-row" key={update.fileName}>
-            <div><strong>{update.name}</strong><small>{update.currentVersion} → {update.newVersion}</small></div>
-            <Button variant="secondary" onClick={() => void manager.applyUpdate(update)}>{t("library:update")}</Button>
-          </div>
-        ))}</div> : showEmpty ? <EmptyState title={t("library:noUpdates")} /> : null
+        <>
+          {curseforgeSkipped ? <p className="vx-inline-notice">{t("library:curseforgeSkipped")}</p> : null}
+          {curseforgeFailed ? <p className="vx-inline-notice">{t("library:curseforgeFailed")}</p> : null}
+          {updates === null ? (showEmpty ? <EmptyState title={t("library:updatesNotChecked")} /> : null) : updates.length ? <div className="vx-resource-list">{updates.map((update) => (
+            <div className="vx-resource-row" key={update.fileName}>
+              <div>
+                <strong>{update.name}</strong>
+                <small>{t(`library:source.${update.source}`)} · {update.currentVersion} → {update.newVersion}</small>
+                {update.manualOnly ? <small>{t("library:manualOnlyHint")}</small> : null}
+              </div>
+              {update.manualOnly
+                ? update.projectUrl ? <ExternalLink url={update.projectUrl}>{t("library:manualDownload")}</ExternalLink> : null
+                : <Button variant="secondary" onClick={() => void manager.applyUpdate(update)}>{t("library:update")}</Button>}
+            </div>
+          ))}</div> : showEmpty ? <EmptyState title={t("library:noUpdates")} /> : null}
+        </>
       ) : null}
       {view === "history" ? (
         history === null ? (showEmpty ? <EmptyState title={t("library:historyNotLoaded")} /> : null) : history.length ? <div className="vx-resource-list">{history.map((entry) => (

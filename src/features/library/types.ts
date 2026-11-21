@@ -34,6 +34,20 @@ export interface ResourceUpdate {
   projectId: string;
   newVersionId: string;
   enabled: boolean;
+  source: "modrinth" | "curseforge";
+  /** CurseForge file id of the new version (CurseForge rows only). */
+  newFileId?: number;
+  /** The author forbids third-party downloads: the user must download it by hand. */
+  manualOnly?: boolean;
+  /** https://www.curseforge.com/... project page, present on manualOnly rows. */
+  projectUrl?: string;
+}
+export interface ResourceUpdateCheck {
+  updates: ResourceUpdate[];
+  /** True when no CurseForge API key is configured, so CurseForge files were not checked. */
+  curseforgeSkipped: boolean;
+  /** CurseForge could not be checked (network or service failure); `updates` still holds the Modrinth rows. */
+  curseforgeError?: string;
 }
 export interface ResourceHistory {
   updateId: string;

@@ -14,11 +14,16 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 use tauri::State;
 use tokio::io::AsyncWriteExt;
+
+#[path = "curseforge_fingerprint.rs"]
+pub(crate) mod fingerprint;
+
+type ResourceUpdate = crate::resources::resource_transactions::ResourceUpdate;
 
 const API: &str = "https://api.curseforge.com/v1";
 const MAX_METADATA: usize = 16 * 1024 * 1024;
@@ -232,6 +237,13 @@ struct CfFile {
     file_date: String,
     #[serde(default)]
     is_server_pack: bool,
+    /// 1 release, 2 beta, 3 alpha.
+    #[serde(default)]
+    release_type: u32,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    file_fingerprint: u64,
 }
 #[derive(Clone, Deserialize)]
 struct CfHash {
@@ -322,52 +334,164 @@ fn curseforge_api() -> String {
     API.to_owned()
 }
 
+/// CurseForge asks for modest request rates: this process sends at most one
+/// request every 250 ms, retries a failed request at most 3 times (honouring
+/// Retry-After), and keeps answers (projects, files, searches, lookups) for
+/// 5 minutes. The key is a header and never part of a cache key.
+static PACER: crate::request_pacing::Pacer = crate::request_pacing::Pacer::new(Duration::from_millis(250));
+const MAX_RETRIES: u32 = 3;
+
+fn answer_cache() -> &'static crate::request_pacing::TtlCache<Vec<u8>> {
+    static CACHE: OnceLock<crate::request_pacing::TtlCache<Vec<u8>>> = OnceLock::new();
+    CACHE.get_or_init(|| crate::request_pacing::TtlCache::new(Duration::from_secs(5 * 60), 512))
+}
+
 async fn api<T: DeserializeOwned>(
     client: &reqwest::Client,
     key: &str,
     path: &str,
     query: &[(String, String)],
 ) -> Result<T, String> {
-    let response = client
-        .get(format!("{}/{path}", curseforge_api()))
-        .query(query)
-        .header("x-api-key", crate::curseforge_key::sensitive_cf_header(key)?)
-        .send()
-        .await
-        .map_err(|_| "CurseForge 连接失败，请检查网络后重试")?;
-    match response.status().as_u16() {
+    send_json(client, key, reqwest::Method::GET, path, query, None).await
+}
+
+async fn api_post<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    key: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<T, String> {
+    send_json(client, key, reqwest::Method::POST, path, &[], Some(body)).await
+}
+
+/// Runs requests for the task that owns the current operation, so a cancel
+/// drops them at once, with their pacing and retry waits. Only for code that
+/// runs inside that task (installs, updates, the update check): searches and
+/// project details are not tasks and must not stop with someone else's.
+async fn in_task<T>(
+    state: &LauncherState,
+    requests: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    state.control.during_cancellable_io(requests).await?
+}
+
+/// The answer to a 404: a project or file CurseForge no longer has.
+const NOT_FOUND: &str = "CurseForge 项目或文件不存在";
+
+/// One attempt's outcome: the body of a success, a retryable failure (with any
+/// Retry-After value), or a final failure.
+enum Attempt {
+    Done(Vec<u8>),
+    Retry(Option<String>, String),
+    Fail(String),
+}
+
+async fn send_json<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    key: &str,
+    method: reqwest::Method,
+    path: &str,
+    query: &[(String, String)],
+    body: Option<&serde_json::Value>,
+) -> Result<T, String> {
+    let base = curseforge_api();
+    let body = body
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|_| "CurseForge 请求内容无效")?;
+    let cache_key = format!(
+        "{base}\u{1f}{}",
+        crate::request_pacing::cache_key(method.as_str(), path, query, body.as_deref())
+    );
+    if let Some(bytes) = answer_cache().get(&cache_key, Instant::now()) {
+        return serde_json::from_slice(&bytes).map_err(|_| "CurseForge 数据格式无法解析".into());
+    }
+    let header = crate::curseforge_key::sensitive_cf_header(key)?;
+    let mut attempt = 0;
+    let bytes = loop {
+        let wait = PACER.reserve(Instant::now());
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        let mut request = client
+            .request(method.clone(), format!("{base}/{path}"))
+            .query(query)
+            .header("x-api-key", header.clone());
+        if let Some(body) = &body {
+            request = request
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.clone());
+        }
+        let outcome = match request.send().await {
+            Ok(response) => read_answer(response).await,
+            Err(_) => Attempt::Retry(None, "CurseForge 连接失败，请检查网络后重试".into()),
+        };
+        match outcome {
+            Attempt::Done(bytes) => break bytes,
+            Attempt::Fail(error) => return Err(error),
+            Attempt::Retry(retry_after, error) => {
+                attempt += 1;
+                match crate::request_pacing::retry_delay(
+                    retry_after.as_deref(),
+                    attempt,
+                    MAX_RETRIES,
+                    Duration::from_millis(500),
+                    Duration::from_secs(10),
+                    chrono::Utc::now(),
+                ) {
+                    Some(delay) => tokio::time::sleep(delay).await,
+                    None => return Err(error),
+                }
+            }
+        }
+    };
+    let value = serde_json::from_slice(&bytes).map_err(|_| "CurseForge 数据格式无法解析".to_string())?;
+    answer_cache().insert(cache_key, bytes, Instant::now());
+    Ok(value)
+}
+
+async fn read_answer(response: reqwest::Response) -> Attempt {
+    let status = response.status().as_u16();
+    match status {
         401 | 403 => {
-            return Err(
-                "CurseForge 拒绝访问，请检查你自己的 API Key、账号权限或该资源的第三方分发授权"
-                    .into(),
+            return Attempt::Fail(
+                "CurseForge 拒绝访问，请检查你自己的 API Key、账号权限或该资源的第三方分发授权".into(),
             )
         }
-        404 => return Err("CurseForge 项目或文件不存在".into()),
-        429 => return Err("CurseForge 请求过于频繁，请稍后重试".into()),
+        404 => return Attempt::Fail(NOT_FOUND.into()),
+        429 | 500..=599 => {
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let error = if status == 429 {
+                "CurseForge 请求过于频繁，请稍后重试".to_string()
+            } else {
+                format!("CurseForge 请求失败（HTTP {status}）")
+            };
+            return Attempt::Retry(retry_after, error);
+        }
+        _ if !response.status().is_success() => {
+            return Attempt::Fail(format!("CurseForge 请求失败（HTTP {status}）"))
+        }
         _ => {}
     }
-    if !response.status().is_success() {
-        return Err(format!(
-            "CurseForge 请求失败（HTTP {}）",
-            response.status().as_u16()
-        ));
-    }
-    if response
-        .content_length()
-        .is_some_and(|n| n > MAX_METADATA as u64)
-    {
-        return Err("CurseForge 元数据过大".into());
+    if response.content_length().is_some_and(|n| n > MAX_METADATA as u64) {
+        return Attempt::Fail("CurseForge 元数据过大".into());
     }
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| "读取 CurseForge 数据失败")?;
+        let Ok(chunk) = chunk else {
+            return Attempt::Retry(None, "读取 CurseForge 数据失败".into());
+        };
         if bytes.len().saturating_add(chunk.len()) > MAX_METADATA {
-            return Err("CurseForge 元数据超过限制".into());
+            return Attempt::Fail("CurseForge 元数据超过限制".into());
         }
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| "CurseForge 数据格式无法解析".into())
+    Attempt::Done(bytes)
 }
 fn download_url(value: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(value).map_err(|_| "CurseForge 下载地址无效")?;
@@ -388,18 +512,27 @@ fn download_url(value: &str) -> Result<reqwest::Url, String> {
     }
     Ok(url)
 }
-fn distribution_error(project: &Project, file: &CfFile) -> String {
-    let page = project
+/// The project's CurseForge page: its own link when that is HTTPS on
+/// curseforge.com without credentials, otherwise the page for its id (both
+/// inside the opener's scope).
+fn project_page(project: &Project) -> String {
+    project
         .links
         .website_url
         .as_deref()
-        .and_then(|value| {
-            let url = reqwest::Url::parse(value).ok()?;
-            (url.scheme() == "https"
-                && ["curseforge.com", "www.curseforge.com"].contains(&url.host_str().unwrap_or("")))
-            .then_some(value)
+        .filter(|value| {
+            reqwest::Url::parse(value).is_ok_and(|url| {
+                url.scheme() == "https"
+                    && ["curseforge.com", "www.curseforge.com"].contains(&url.host_str().unwrap_or(""))
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            })
         })
-        .unwrap_or("https://www.curseforge.com/minecraft");
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("https://www.curseforge.com/projects/{}", project.id))
+}
+fn distribution_error(project: &Project, file: &CfFile) -> String {
+    let page = project_page(project);
     format!("「{}」文件 {} 禁止第三方分发或未提供可用下载地址。请在项目页面手动下载授权文件并放入目标资源目录：{}。启动器不会拼接下载地址绕过限制。", project.name, file.id, page)
 }
 fn compatible(file: &CfFile, minecraft: &str, loader: Option<&str>) -> bool {
@@ -649,7 +782,7 @@ async fn check_dependencies(
             return Err("CurseForge 依赖关系回指当前项目，拒绝循环依赖".into());
         }
         let project: Response<Project> =
-            api(client, key, &format!("mods/{}", dependency.mod_id), &[]).await?;
+            in_task(state, api(client, key, &format!("mods/{}", dependency.mod_id), &[])).await?;
         let class = project.data.class_id.unwrap_or(0);
         let known = installed.get(&class);
         let dependency_loader = (class == 6).then_some(loader).flatten();
@@ -657,13 +790,9 @@ async fn check_dependencies(
         if known.is_some_and(|hashes| !hashes.is_empty()) {
             for offset in (0..500).step_by(50) {
                 state.control.checkpoint().await?;
-                let files = files_page(
-                    client,
-                    key,
-                    dependency.mod_id,
-                    minecraft,
-                    dependency_loader,
-                    offset,
+                let files = in_task(
+                    state,
+                    files_page(client, key, dependency.mod_id, minecraft, dependency_loader, offset),
                 )
                 .await?;
                 let short = files.len() < 50;
@@ -728,6 +857,7 @@ async fn download(
     file: &CfFile,
     directory: &Path,
     kind: ResourceKind,
+    duplicates: Duplicates<'_>,
 ) -> Result<PathBuf, String> {
     validate_id(&file.file_name)?;
     if !kind.accepts(&file.file_name) {
@@ -749,14 +879,29 @@ async fn download(
     crate::instances::checked_absolute(directory)?;
     fs::create_dir_all(directory).map_err(|_| "无法创建资源目录")?;
     let target = safe_join(directory, &file.file_name)?;
+    let staged = kind == ResourceKind::Mod && matches!(duplicates, Duplicates::SetAside(_));
     if target.exists() {
         if target.is_file() && matches(&file_hashes(&target)?, file.file_length, &expected) {
+            if let Duplicates::SetAside(aside) = duplicates {
+                if kind == ResourceKind::Mod {
+                    set_aside_duplicate_mods(&target, directory, &target, aside)?;
+                    // The selected file itself must still be there (its name may
+                    // differ in case only); otherwise nothing is committed.
+                    if !target.is_file() {
+                        return Err("选定文件已不在暂存目录中，原目录未改变".into());
+                    }
+                }
+            }
             return Ok(target);
         }
-        return Err(format!(
+        // In a staged replace a same-named enabled copy of this mod is set aside
+        // below; any other same-named file is still refused there.
+        if !staged {
+            return Err(format!(
             "已存在内容不同的同名文件 {}，已保留原文件，请先备份或重命名",
             file.file_name
         ));
+        }
     }
     let builder = reqwest::Client::builder()
         .user_agent(concat!(
@@ -790,10 +935,11 @@ async fn download(
         &format!(".curseforge-{}.part", uuid::Uuid::new_v4()),
     )?;
     let result = async {
-        let response = client
-            .get(url)
-            .send()
-            .await
+        // Downloads run inside a task: a cancel drops a stalled connection at once.
+        let response = state
+            .control
+            .during_cancellable_io(client.get(url).send())
+            .await?
             .map_err(|_| "CurseForge 下载连接失败")?;
         if !response.status().is_success() {
             return Err(format!(
@@ -818,7 +964,7 @@ async fn download(
         let mut md5 = md5::Context::new();
         let mut count = 0u64;
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
+        while let Some(chunk) = state.control.during_cancellable_io(stream.next()).await? {
             state.control.checkpoint().await?;
             let chunk = chunk.map_err(|_| "CurseForge 文件传输中断")?;
             state.control.throttle(chunk.len()).await?;
@@ -847,7 +993,12 @@ async fn download(
         crate::instances::checked_absolute(directory)?;
         let target = safe_join(directory, &file.file_name)?;
         if kind == ResourceKind::Mod {
-            refuse_duplicate_mod(&temporary, directory, &target)?;
+            match duplicates {
+                // A staged copy: other enabled copies (a same-named one included) move aside, journaled.
+                Duplicates::SetAside(aside) => set_aside_duplicate_mods(&temporary, directory, &temporary, aside)?,
+                Duplicates::Refuse => refuse_duplicate_mod(&temporary, directory, &target)?,
+                Duplicates::Keep => {}
+            }
         }
         if target.exists() {
             return Err("下载期间出现同名文件，现有文件未覆盖".into());
@@ -862,6 +1013,34 @@ async fn download(
         let _ = tokio::fs::remove_file(&temporary).await;
     }
     result
+}
+
+/// What a download does about other enabled copies of the same mod.
+#[derive(Clone, Copy)]
+enum Duplicates<'a> {
+    /// A new instance: refuse to add a second enabled copy.
+    Refuse,
+    /// A staged copy: move them into this folder (journaled, can be rolled back).
+    SetAside(&'a Path),
+    /// A disabled file is being updated: enabled copies are not touched.
+    Keep,
+}
+
+/// In a staged copy, moves every enabled jar other than `keep` declaring the
+/// mod ID of `downloaded` into `aside`, so the replacement is journaled and can
+/// be rolled back. Disabled copies and jars without a readable ID stay.
+fn set_aside_duplicate_mods(downloaded: &Path, directory: &Path, keep: &Path, aside: &Path) -> Result<(), String> {
+    let Some(mod_id) = crate::mod_metadata::declared_mod_id(downloaded) else {
+        return Ok(());
+    };
+    for name in crate::mod_metadata::enabled_jars_with_mod_id(directory, &mod_id, keep) {
+        let destination = safe_join(aside, &name)?;
+        if destination.exists() {
+            return Err("暂存的替换目录中已有同名文件，原目录未改变".into());
+        }
+        fs::rename(safe_join(directory, &name)?, destination).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Never leaves two enabled copies of one mod. A JAR
@@ -992,7 +1171,9 @@ pub(crate) async fn create_with_pinned_file(
         progress.stage(state, "resource-preflight", "检查资源及必需前置");
         let key = service_key(state)?;
         let client = api_client(state)?;
-        let (project, file) = get_pinned_file(&client, &key, project_id, resource_type, file_id, kind).await?;
+        let (project, file) = state.control
+            .during_cancellable_io(get_pinned_file(&client, &key, project_id, resource_type, file_id, kind))
+            .await??;
         crate::resource_targets::validate_pinned_creation_pair(&pinned_metadata(&file, kind), kind, loader, game_version)?;
         if !can_create_pinned(&file) {
             return Err(expected("请先为兼容实例安装此 CurseForge 文件的必需前置，再选择同一个文件重试。"));
@@ -1016,7 +1197,7 @@ pub(crate) async fn create_with_pinned_file(
             require_resource_stopped(state, &version_id, Some(&instance.id))?;
             let target = resource_target(state, &version_id, Some(&instance.id), kind)?;
             crate::resources::resource_transactions::require_no_pending(&target.directory)?;
-            let path = download(state, &project, &file, &target.directory, kind).await?;
+            let path = download(state, &project, &file, &target.directory, kind, Duplicates::Refuse).await?;
             progress.stage(state, "complete", "实例及资源安装完成");
             Ok(ResourceInstall {
                 name: project.name, file_name: file.file_name, path: path.to_string_lossy().into_owned(),
@@ -1070,7 +1251,7 @@ pub(crate) async fn install_curseforge(
         let loader = target.loader.as_deref();
         let detected =
             crate::resources::resource_context(state, &version_id, instance_id.as_deref())?.loader;
-        let project: Response<Project> = api(&client, &key, &format!("mods/{id}"), &[]).await?;
+        let project: Response<Project> = in_task(state, api(&client, &key, &format!("mods/{id}"), &[])).await?;
         if project.data.id != id
             || project.data.game_id != 432
             || project.data.class_id != Some(class_id(&resource_type)?)
@@ -1082,13 +1263,13 @@ pub(crate) async fn install_curseforge(
                 return Err("CurseForge 文件标识无效".into());
             }
             let response: Response<CfFile> =
-                api(&client, &key, &format!("mods/{id}/files/{file_id}"), &[]).await?;
+                in_task(state, api(&client, &key, &format!("mods/{id}/files/{file_id}"), &[])).await?;
             if response.data.id != file_id || response.data.mod_id != id {
                 return Err("CurseForge 文件不属于所选项目".into());
             }
             response.data
         } else {
-            let mut files = files_page(&client, &key, id, &minecraft, loader, 0).await?;
+            let mut files = in_task(state, files_page(&client, &key, id, &minecraft, loader, 0)).await?;
             files.retain(|file| compatible(file, &minecraft, loader));
             files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
             let file = files
@@ -1106,6 +1287,17 @@ pub(crate) async fn install_curseforge(
         {
             return Err(distribution_error(&project.data, &file).into());
         }
+        // The exact file alone is already installed: nothing to write, so its
+        // dependencies are not checked again.
+        if installed_already(&directory, &file)? && !other_enabled_copies(&directory, &file, kind)? {
+            return Ok(ResourceInstall {
+                name: project.data.name,
+                path: directory.join(&file.file_name).to_string_lossy().into_owned(),
+                file_name: file.file_name,
+                warning: Some("资源已是选定版本。".into()),
+                update_id: None,
+            });
+        }
         let game_dir = directory.parent().ok_or("目标游戏目录无效")?;
         check_dependencies(
             state,
@@ -1117,16 +1309,384 @@ pub(crate) async fn install_curseforge(
             detected.as_deref(),
         )
         .await?;
-        let path = download(state, &project.data, &file, &directory, kind).await?;
-        Ok(ResourceInstall {
-            name: project.data.name,
-            file_name: file.file_name,
-            path: path.to_string_lossy().into_owned(),
-            warning: (kind == ResourceKind::Shader)
-                .then(|| "光影文件已安装；游戏内仍需 Iris、OptiFine 或兼容加载器才能启用。".into()),
-            update_id: None,
-        })
+        Ok(replace_with_file(state, &directory, kind, &project.data, &file, None, true).await?)
     }).await
+}
+
+/// Whether another enabled jar in `directory` declares the same mod as the
+/// file of this name already there.
+fn other_enabled_copies(directory: &Path, file: &CfFile, kind: ResourceKind) -> Result<bool, String> {
+    if kind != ResourceKind::Mod {
+        return Ok(false);
+    }
+    let target = safe_join(directory, &file.file_name)?;
+    Ok(crate::mod_metadata::declared_mod_id(&target)
+        .is_some_and(|mod_id| !crate::mod_metadata::enabled_jars_with_mod_id(directory, &mod_id, &target).is_empty()))
+}
+
+/// Whether the exact file is already in `directory` (same name, size and hashes).
+fn installed_already(directory: &Path, file: &CfFile) -> Result<bool, String> {
+    let target = safe_join(directory, &file.file_name)?;
+    Ok(target.is_file() && matches(&file_hashes(&target)?, file.file_length, &expected_hashes(file)?))
+}
+
+/// Installs `file` into `directory` through a journaled staged copy that can be
+/// rolled back. The file being updated (`current`) and every other enabled copy
+/// of the same mod move aside; disabled copies and unknown jars stay. With
+/// `enabled: false` the new file is installed disabled.
+async fn replace_with_file(
+    state: &Arc<LauncherState>,
+    directory: &Path,
+    kind: ResourceKind,
+    project: &Project,
+    file: &CfFile,
+    current: Option<&str>,
+    enabled: bool,
+) -> Result<ResourceInstall, String> {
+    validate_id(&file.file_name)?;
+    crate::resources::resource_transactions::require_no_pending(directory)?;
+    let installed_name = if enabled { file.file_name.clone() } else { format!("{}.disabled", file.file_name) };
+    let projects = vec![format!("cf:{}", project.id)];
+    let (id, replaced) = crate::resources::resource_transactions::stage_commit(
+        state,
+        directory,
+        &project.name,
+        projects,
+        None,
+        |next, aside| async move {
+            if let Some(current) = current {
+                let from = safe_join(&next, current)?;
+                if !from.is_file() {
+                    return Err("待更新资源不存在".to_string());
+                }
+                fs::rename(&from, safe_join(&aside, current)?).map_err(|e| e.to_string())?;
+            }
+            if !enabled && safe_join(&next, &file.file_name)?.exists() {
+                return Err(format!("已存在同名文件 {}，停用的副本未更新，原目录未改变", file.file_name));
+            }
+            let duplicates = if enabled { Duplicates::SetAside(&aside) } else { Duplicates::Keep };
+            let downloaded = download(state, project, file, &next, kind, duplicates).await?;
+            if !enabled {
+                let disabled = safe_join(&next, &format!("{}.disabled", file.file_name))?;
+                crate::instances::publish_archive_file(&downloaded, &disabled)
+                    .map_err(|_| "已存在同名的停用文件，原目录未改变".to_string())?;
+            }
+            let mut replaced: Vec<String> = fs::read_dir(&aside)
+                .map_err(|e| e.to_string())?
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            replaced.sort();
+            Ok(replaced)
+        },
+    )
+    .await?;
+    let mut notices = Vec::new();
+    if !replaced.is_empty() {
+        notices.push(format!("已替换 {}，可在更新历史中回滚", replaced.join("、")));
+    }
+    if kind == ResourceKind::Shader {
+        notices.push("光影文件已安装；游戏内仍需 Iris、OptiFine 或兼容加载器才能启用。".into());
+    }
+    Ok(ResourceInstall {
+        name: project.name.clone(),
+        path: directory.join(&installed_name).to_string_lossy().into_owned(),
+        file_name: installed_name,
+        warning: (!notices.is_empty()).then(|| notices.join("；")),
+        update_id: Some(id),
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FingerprintAnswer {
+    #[serde(default)]
+    exact_matches: Vec<FingerprintMatch>,
+}
+#[derive(Deserialize)]
+struct FingerprintMatch {
+    id: u64,
+    file: CfFile,
+}
+
+/// A local file's fingerprint and what verifies a match for it.
+struct LocalFile {
+    name: String,
+    enabled: bool,
+    fingerprint: u32,
+    sha1: String,
+    size: u64,
+}
+
+/// The resource files in `directory` (enabled or `.disabled`) of this kind,
+/// except those in `skip`, with whether each is enabled.
+fn candidate_names(directory: &Path, kind: ResourceKind, skip: &HashSet<String>) -> Vec<(String, bool)> {
+    let Ok(entries) = fs::read_dir(directory) else { return Vec::new() };
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if skip.contains(&name) {
+            continue;
+        }
+        let (base, enabled) = match name.strip_suffix(".disabled") {
+            Some(base) => (base, false),
+            None => (name.as_str(), true),
+        };
+        if kind.accepts(base) {
+            names.push((name.clone(), enabled));
+        }
+    }
+    names.sort();
+    names
+}
+
+/// Fingerprints and hashes the named files, one blocking task each, with a
+/// cancel and pause check between files. Names that are not plain names,
+/// links, folders, unreadable files and files over 1 GiB are skipped.
+async fn local_files(state: &LauncherState, directory: &Path, names: Vec<(String, bool)>) -> Result<Vec<LocalFile>, String> {
+    let mut files = Vec::new();
+    for (name, enabled) in names {
+        state.control.checkpoint().await?;
+        let Ok(path) = safe_join(directory, &name) else { continue };
+        let file = tokio::task::spawn_blocking(move || {
+            let stat = fs::symlink_metadata(&path).ok()?;
+            if !stat.is_file() || crate::resources::linked(&stat) || stat.len() > MAX_FILE {
+                return None;
+            }
+            let fingerprint = fingerprint::fingerprint_file(&path, MAX_FILE).ok()?;
+            let (sha1, _, size) = file_hashes(&path).ok()?;
+            Some(LocalFile { name, enabled, fingerprint, sha1, size })
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        files.extend(file);
+    }
+    Ok(files)
+}
+
+/// Which local files CurseForge knows, by name. A 32-bit fingerprint can
+/// collide, so a match counts only when the mod, the game, the size and the
+/// SHA-1 all agree with the local file.
+async fn identify(client: &reqwest::Client, key: &str, files: &[LocalFile]) -> Result<HashMap<String, (u64, CfFile)>, String> {
+    let mut wanted: Vec<u32> = files.iter().map(|file| file.fingerprint).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let mut found: HashMap<String, (u64, CfFile)> = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for chunk in wanted.chunks(100) {
+        let answer: Response<FingerprintAnswer> =
+            api_post(client, key, "fingerprints/432", &serde_json::json!({ "fingerprints": chunk })).await?;
+        for matched in answer.data.exact_matches {
+            let file = matched.file;
+            if file.mod_id != matched.id || !(file.game_id == 0 || file.game_id == 432) {
+                continue;
+            }
+            let Ok(expected) = expected_hashes(&file) else { continue };
+            let Some(sha1) = expected.iter().find(|(algo, _)| *algo == 1).map(|(_, value)| value.as_str()) else {
+                continue;
+            };
+            for local in files.iter().filter(|local| u64::from(local.fingerprint) == file.file_fingerprint) {
+                if local.size == file.file_length && local.sha1.eq_ignore_ascii_case(sha1) {
+                    if found.get(&local.name).is_some_and(|(other, _)| *other != matched.id) {
+                        ambiguous.insert(local.name.clone());
+                    }
+                    found.insert(local.name.clone(), (matched.id, file.clone()));
+                }
+            }
+        }
+    }
+    // The same bytes listed under two mods identify neither.
+    found.retain(|name, _| !ambiguous.contains(name));
+    Ok(found)
+}
+
+/// The projects with these ids, fetched 100 per request. A project
+/// CurseForge does not return (removed, or another game's) is left out.
+async fn projects(state: &LauncherState, client: &reqwest::Client, key: &str, ids: &[u64]) -> Result<HashMap<u64, Project>, String> {
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut found = HashMap::new();
+    for chunk in ids.chunks(100) {
+        state.control.checkpoint().await?;
+        let answer: Response<Vec<Project>> =
+            match in_task(state, api_post(client, key, "mods", &serde_json::json!({ "modIds": chunk }))).await {
+                Ok(answer) => answer,
+                Err(error) if error == NOT_FOUND => continue,
+                Err(error) => return Err(error),
+            };
+        for project in answer.data {
+            if chunk.contains(&project.id) {
+                found.insert(project.id, project);
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether `candidate` is newer than `current`: by file time (parsed when
+/// both parse, which orders fractional seconds correctly), then by id.
+fn newer(candidate: &CfFile, current: &CfFile) -> bool {
+    let time = |file: &CfFile| chrono::DateTime::parse_from_rfc3339(&file.file_date).ok();
+    match (time(candidate), time(current)) {
+        (Some(a), Some(b)) if a != b => a > b,
+        (Some(_), Some(_)) => candidate.id > current.id,
+        _ => (candidate.file_date.as_str(), candidate.id) > (current.file_date.as_str(), current.id),
+    }
+}
+
+/// The newest compatible release newer than `current`. The file list comes
+/// newest first; pages are read until one holds the current file, runs short
+/// or yields a release, at most 10 pages of 50.
+async fn newest_release(
+    state: &LauncherState,
+    client: &reqwest::Client,
+    key: &str,
+    mod_id: u64,
+    minecraft: &str,
+    loader: Option<&str>,
+    current: &CfFile,
+) -> Result<Option<CfFile>, String> {
+    let mut best: Option<CfFile> = None;
+    for page in 0..10 {
+        state.control.checkpoint().await?;
+        let files = in_task(state, files_page(client, key, mod_id, minecraft, loader, page * 50)).await?;
+        let last = files.len() < 50 || files.iter().any(|file| file.id == current.id);
+        for file in files {
+            let eligible = file.release_type == 1
+                && file.is_available
+                && !file.is_server_pack
+                && compatible(&file, minecraft, loader)
+                && newer(&file, current);
+            if eligible && best.as_ref().is_none_or(|best| newer(&file, best)) {
+                best = Some(file);
+            }
+        }
+        if last || best.is_some() {
+            break;
+        }
+    }
+    Ok(best)
+}
+
+fn version_label(file: &CfFile) -> String {
+    if file.display_name.trim().is_empty() { file.file_name.clone() } else { file.display_name.clone() }
+}
+
+/// Update rows for the CurseForge files in `directory` that Modrinth did not
+/// identify (`skip`). Without a CurseForge key nothing is checked and the
+/// second value is true. Only release files are offered (no beta or alpha
+/// fallback); a file whose author forbids third-party downloads becomes a
+/// manual-download row.
+pub(crate) async fn curseforge_updates(
+    state: &LauncherState,
+    directory: &Path,
+    minecraft: &str,
+    loader: Option<&str>,
+    kind: ResourceKind,
+    resource_type: &str,
+    skip: &HashSet<String>,
+) -> Result<(Vec<ResourceUpdate>, bool), String> {
+    let Some(key) = crate::curseforge_key::effective_cf_key(&state.data_dir, None)? else {
+        return Ok((Vec::new(), true));
+    };
+    let names = candidate_names(directory, kind, skip);
+    if names.is_empty() {
+        return Ok((Vec::new(), false));
+    }
+    let class = class_id(resource_type)?;
+    let client = api_client(state)?;
+    let locals = local_files(state, directory, names).await?;
+    state.control.checkpoint().await?;
+    let identified = in_task(state, identify(&client, &key, &locals)).await?;
+    let ids: Vec<u64> = identified.values().map(|(id, _)| *id).collect();
+    let projects = projects(state, &client, &key, &ids).await?;
+    let mut names: Vec<_> = identified.keys().cloned().collect();
+    names.sort();
+    let mut rows = Vec::new();
+    for name in names {
+        state.control.checkpoint().await?;
+        let (mod_id, current) = &identified[&name];
+        // A project CurseForge no longer returns is skipped, not an error.
+        let Some(project) = projects.get(mod_id) else { continue };
+        if project.game_id != 432 || project.class_id != Some(class) {
+            continue;
+        }
+        let newest = match newest_release(state, &client, &key, *mod_id, minecraft, loader, current).await {
+            Ok(Some(newest)) => newest,
+            Ok(None) => continue,
+            // Its file list is gone: skip it; any other failure ends the check.
+            Err(error) if error == NOT_FOUND => continue,
+            Err(error) => return Err(error),
+        };
+        // No usable download (forbidden, missing or not the official CDN): the
+        // user downloads it from the project page.
+        let manual_only = project.allow_mod_distribution == Some(false)
+            || newest.download_url.as_deref().is_none_or(|url| download_url(url).is_err());
+        rows.push(ResourceUpdate {
+            file_name: name.clone(),
+            name: project.name.clone(),
+            current_version: version_label(current),
+            new_version: version_label(&newest),
+            project_id: mod_id.to_string(),
+            new_version_id: newest.id.to_string(),
+            enabled: locals.iter().any(|local| local.name == name && local.enabled),
+            source: "curseforge".into(),
+            new_file_id: Some(newest.id),
+            manual_only,
+            project_url: manual_only.then(|| project_page(project)),
+        });
+    }
+    Ok((rows, false))
+}
+
+/// Updates one identified CurseForge file to `new_file_id` through the
+/// journaled replace; a disabled file stays disabled. The current file must
+/// still be the one CurseForge identifies; the new one must belong to the same
+/// mod, pass the same checks as a pinned install and fit the instance.
+pub(crate) async fn update_one(
+    state: &Arc<LauncherState>,
+    directory: &Path,
+    minecraft: &str,
+    loader: Option<&str>,
+    detected: Option<&str>,
+    kind: ResourceKind,
+    resource_type: &str,
+    file_name: &str,
+    new_file_id: u64,
+) -> AppResult<ResourceInstall> {
+    validate_id(file_name)?;
+    if !(1..=u64::from(u32::MAX)).contains(&new_file_id) {
+        return Err("CurseForge 文件标识无效".into());
+    }
+    crate::resources::resource_transactions::require_no_pending(directory)?;
+    if !safe_join(directory, file_name)?.is_file() {
+        return Err("待更新资源不存在".into());
+    }
+    let key = service_key(state)?;
+    let client = api_client(state)?;
+    let enabled = !file_name.ends_with(".disabled");
+    let locals = local_files(state, directory, vec![(file_name.to_owned(), enabled)]).await?;
+    let identified = in_task(state, identify(&client, &key, &locals)).await?;
+    let (mod_id, current) = identified
+        .get(file_name)
+        .cloned()
+        .ok_or("无法确认此文件的 CurseForge 身份，未知资源不会被自动替换")?;
+    let (project, file) = state.control
+        .during_cancellable_io(get_pinned_file(&client, &key, &mod_id.to_string(), resource_type, new_file_id, kind))
+        .await??;
+    if file.id == current.id {
+        return Err("资源已是选定版本".into());
+    }
+    if !newer(&file, &current) {
+        return Err("所选 CurseForge 文件早于当前文件，更新不会降级".into());
+    }
+    if !compatible(&file, minecraft, loader) {
+        return Err(crate::resources::no_compatible_version(minecraft, loader));
+    }
+    let game_dir = directory.parent().ok_or("目标游戏目录无效")?;
+    check_dependencies(state, &client, &key, &file, game_dir, minecraft, detected).await?;
+    Ok(replace_with_file(state, directory, kind, &project, &file, Some(file_name), enabled).await?)
 }
 
 #[cfg(test)]
@@ -1324,6 +1884,9 @@ mod tests {
             ],
             file_date: "2026-01-01".into(),
             is_server_pack: false,
+            release_type: 1,
+            display_name: String::new(),
+            file_fingerprint: 0,
         };
         let details = curseforge_details(project, vec![file], "mod", "1.21.1");
         assert!(details.versions.iter().all(|version| version.compatible));

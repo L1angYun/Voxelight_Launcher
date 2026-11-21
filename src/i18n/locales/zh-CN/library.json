@@ -76,6 +76,14 @@
   "enabled": "已启用",
   "disabled": "已禁用",
   "update": "更新",
+  "manualDownload": "手动下载",
+  "manualOnlyHint": "作者只允许在 CurseForge 下载此文件。",
+  "curseforgeSkipped": "未设置 CurseForge API Key，未检查 CurseForge 文件的更新。",
+  "curseforgeFailed": "未能检查 CurseForge 文件的更新，下面只有 Modrinth 的结果。",
+  "source": {
+    "modrinth": "Modrinth",
+    "curseforge": "CurseForge"
+  },
   "updatesNotChecked": "尚未检查更新",
   "noUpdates": "没有可用更新",
   "historyNotLoaded": "尚未读取更新历史",

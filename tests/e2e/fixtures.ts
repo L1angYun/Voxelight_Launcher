@@ -616,7 +616,7 @@ export async function installLauncherFixture(
                 javaMajor: 21,
               },
             ];
-          if (name === "check_resource_updates") return [];
+          if (name === "check_resource_updates") return { updates: [], curseforgeSkipped: false };
           if (name === "diagnose_instance") return { kind: "empty", logPath: null, excerpt: "" };
           if (name === "get_system_appearance") return {
             accentColor: "#b4f17a", animationsEnabled: true, advancedEffectsEnabled: true, locale: options.language ?? "zh-CN",

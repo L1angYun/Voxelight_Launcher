@@ -50,6 +50,17 @@ pub struct ResourceUpdate {
     pub project_id: String,
     pub new_version_id: String,
     pub enabled: bool,
+    /// "modrinth" or "curseforge".
+    pub source: String,
+    /// The CurseForge file id of the new version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_file_id: Option<u64>,
+    /// The author forbids third-party downloads: the user downloads it by hand.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub manual_only: bool,
+    /// The CurseForge project page for a manual download.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -887,13 +898,89 @@ pub(super) async fn install(
             update_id: None,
         });
     }
+    let dependency_count = plan.len().saturating_sub(1);
+    let projects = plan.iter().map(|a| a.node.version.project_id.clone()).collect();
+    let (id, changed) = stage_commit(state, directory, name, projects, progress, |next, removed| async move {
+        let mut changed = 0;
+        for action in &plan {
+            state.control.checkpoint().await?;
+            for file in &action.remove {
+                let from = safe_join(&next, file)?;
+                let to = safe_join(&removed, file)?;
+                if from.is_file() {
+                    fs::rename(from, to).map_err(|e| e.to_string())?;
+                }
+            }
+            if action.keep.is_some() {
+                continue;
+            }
+            let file = primary_file(&action.node.version)?;
+            let raw = safe_join(&next, &file.filename)?;
+            if raw.exists() {
+                if !raw.is_file() {
+                    return Err("下载目标与原目录中的文件夹冲突，原目录未改变".into());
+                }
+                let alternate = safe_join(
+                    &removed,
+                    &format!("{}-{}", uuid::Uuid::new_v4(), file.filename),
+                )?;
+                fs::rename(&raw, alternate).map_err(|e| e.to_string())?;
+            }
+            let installed =
+                download_verified_progress(state, file, &next, kind, client(state, true)?, progress).await?;
+            if action.destination != file.filename {
+                let target = safe_join(&next, &action.destination)?;
+                if target.exists() {
+                    let alternate = safe_join(&removed, &format!("{}-disabled", uuid::Uuid::new_v4()))?;
+                    fs::rename(&target, alternate).map_err(|e| e.to_string())?;
+                }
+                fs::rename(installed, target).map_err(|e| e.to_string())?;
+            }
+            changed += 1;
+        }
+        Ok(changed)
+    })
+    .await?;
+    let mut notices = Vec::new();
+    if dependency_count > 0 {
+        notices.push(format!(
+            "已校验 {dependency_count} 个必需前置，本次新增或更新 {changed} 个资源"
+        ));
+    }
+    if kind == ResourceKind::Shader {
+        notices.push("光影仍需在游戏中配合 Iris、OptiFine 或兼容加载器启用".into());
+    }
+    Ok(ResourceInstall {
+        name: name.into(),
+        file_name: root_filename.clone(),
+        path: directory.join(root_filename).to_string_lossy().into_owned(),
+        warning: (!notices.is_empty()).then(|| notices.join("；")),
+        update_id: Some(id),
+    })
+}
+
+/// Stages a copy of `directory`, lets `apply` change the copy (moving every
+/// file it replaces into the folder it is given second), then journals and
+/// commits it in two no-replace renames. Returns the transaction id and what
+/// `apply` returned. Until the journal exists nothing can find or recover the
+/// copy, so a failure or cancel before then removes it.
+pub(crate) async fn stage_commit<T, F, Fut>(
+    state: &Arc<LauncherState>,
+    directory: &Path,
+    name: &str,
+    projects: Vec<String>,
+    progress: Option<&ResourceProgress>,
+    apply: F,
+) -> Result<(String, T), String>
+where
+    F: FnOnce(PathBuf, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
     let root = history_root(directory)?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     sweep_unjournaled(&root, std::time::Duration::from_secs(24 * 60 * 60));
     let id = uuid::Uuid::new_v4().to_string();
     let transaction = safe_join(&root, &id)?;
-    // Until the journal exists, nothing can find or recover this folder, so a
-    // failure or cancel before that point removes it instead of leaking a copy.
     let mut owned = crate::instances::StagingDirectory::create(transaction.clone())?;
     let next = safe_join(&transaction, "next")?;
     let before_exists = directory.exists();
@@ -922,46 +1009,10 @@ pub(super) async fn install(
     .map_err(|e| e.to_string())??;
     let removed = safe_join(&transaction, "staged-replaced")?;
     fs::create_dir_all(&removed).map_err(|e| e.to_string())?;
-    let mut changed = 0;
-    for action in &plan {
-        state.control.checkpoint().await?;
-        for file in &action.remove {
-            let from = safe_join(&next, file)?;
-            let to = safe_join(&removed, file)?;
-            if from.is_file() {
-                fs::rename(from, to).map_err(|e| e.to_string())?;
-            }
-        }
-        if action.keep.is_some() {
-            continue;
-        }
-        let file = primary_file(&action.node.version)?;
-        let raw = safe_join(&next, &file.filename)?;
-        if raw.exists() {
-            if !raw.is_file() {
-                return Err("下载目标与原目录中的文件夹冲突，原目录未改变".into());
-            }
-            let alternate = safe_join(
-                &removed,
-                &format!("{}-{}", uuid::Uuid::new_v4(), file.filename),
-            )?;
-            fs::rename(&raw, alternate).map_err(|e| e.to_string())?;
-        }
-        let installed =
-            download_verified_progress(state, file, &next, kind, client(state, true)?, progress).await?;
-        if action.destination != file.filename {
-            let target = safe_join(&next, &action.destination)?;
-            if target.exists() {
-                let alternate = safe_join(&removed, &format!("{}-disabled", uuid::Uuid::new_v4()))?;
-                fs::rename(&target, alternate).map_err(|e| e.to_string())?;
-            }
-            fs::rename(installed, target).map_err(|e| e.to_string())?;
-        }
-        changed += 1;
-    }
+    let output = apply(next.clone(), removed.clone()).await?;
     state.control.checkpoint().await?;
     let after = inventory(&next)?;
-    // Install only moves copied files into staged-replaced/, never deletes them.
+    // Apply only moves copied files into staged-replaced/, never deletes them.
     // A stage missing any of them was changed from outside (for example swept
     // by another launcher during a long pause) and must not be committed.
     if !stage_kept_every_file(&before, &after, &inventory(&removed)?) {
@@ -973,10 +1024,7 @@ pub(super) async fn install(
         created_at: chrono::Utc::now().to_rfc3339(),
         status: "staged".into(),
         directory: directory.to_string_lossy().into_owned(),
-        projects: plan
-            .iter()
-            .map(|a| a.node.version.project_id.clone())
-            .collect(),
+        projects,
         before_exists,
         before,
         after,
@@ -987,30 +1035,8 @@ pub(super) async fn install(
     if let Some(progress) = progress {
         progress.stage(state, "resource-commit", "提交已校验资源及必需前置");
     }
-    commit_using(
-        directory,
-        &transaction,
-        &path,
-        &mut journal,
-        rename_owned_directory,
-    )?;
-    let dependency_count = plan.len().saturating_sub(1);
-    let mut notices = Vec::new();
-    if dependency_count > 0 {
-        notices.push(format!(
-            "已校验 {dependency_count} 个必需前置，本次新增或更新 {changed} 个资源"
-        ));
-    }
-    if kind == ResourceKind::Shader {
-        notices.push("光影仍需在游戏中配合 Iris、OptiFine 或兼容加载器启用".into());
-    }
-    Ok(ResourceInstall {
-        name: name.into(),
-        file_name: root_filename.clone(),
-        path: directory.join(root_filename).to_string_lossy().into_owned(),
-        warning: (!notices.is_empty()).then(|| notices.join("；")),
-        update_id: Some(id),
-    })
+    commit_using(directory, &transaction, &path, &mut journal, rename_owned_directory)?;
+    Ok((id, output))
 }
 
 pub(super) async fn updates(
@@ -1019,17 +1045,20 @@ pub(super) async fn updates(
     minecraft: &str,
     loader: Option<&str>,
     kind: ResourceKind,
-) -> Result<Vec<ResourceUpdate>, String> {
+) -> Result<(Vec<ResourceUpdate>, HashSet<String>), String> {
     require_no_pending(directory)?;
     let api = client(state, false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let mut results = Vec::new();
+    // Every file Modrinth identified, updatable or not: CurseForge skips them.
+    let mut identified = HashSet::new();
     let mut cache = HashMap::<String, Option<Version>>::new();
     for entry in locals {
         state.control.checkpoint().await?;
         let Some(current) = entry.version else {
             continue;
         };
+        identified.insert(entry.file_name.clone());
         if !cache.contains_key(&current.project_id) {
             cache.insert(
                 current.project_id.clone(),
@@ -1067,9 +1096,13 @@ pub(super) async fn updates(
             project_id: current.project_id,
             new_version_id: new.id.clone(),
             enabled: entry.enabled,
+            source: "modrinth".into(),
+            new_file_id: None,
+            manual_only: false,
+            project_url: None,
         });
     }
-    Ok(results)
+    Ok((results, identified))
 }
 
 pub(super) async fn update_one(
@@ -1332,7 +1365,10 @@ mod tests {
     #[test]
     fn c1_staging_is_kept_once_the_journal_is_saved() {
         let source = crate::storage::executable_source(include_str!("resource_transactions.rs"));
-        let (_, body) = source.split_once("pub(super) async fn install(").unwrap();
+        let (_, install) = source.split_once("pub(super) async fn install(").unwrap();
+        let (install, _) = install.split_once("\n}").unwrap();
+        assert!(install.contains("stage_commit(state, directory, name, projects, progress,"), "the Modrinth install stages through stage_commit");
+        let (_, body) = source.split_once("pub(crate) async fn stage_commit<").unwrap();
         let (body, _) = body.split_once("\n}").unwrap();
         let swept = body.find("sweep_unjournaled(&root,").unwrap();
         let created = body.find("StagingDirectory::create(transaction.clone())").unwrap();

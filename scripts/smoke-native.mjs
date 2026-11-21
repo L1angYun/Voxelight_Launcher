@@ -1221,7 +1221,9 @@ try {
         instanceId: instance.id,
         resourceType: "mod",
       };
-      const candidates = await invoke("check_resource_updates", args);
+      const check = await invoke("check_resource_updates", args);
+      assert.equal(typeof check.curseforgeSkipped, "boolean");
+      const candidates = check.updates;
       assert(candidates.length > 0);
       assert(candidates.every((item) => item.fileName !== "unknown-user.jar"));
       const candidate = candidates.find(

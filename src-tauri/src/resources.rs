@@ -1676,21 +1676,45 @@ async fn install_modrinth(
     }).await
 }
 
+/// The update rows of one resource folder, from Modrinth and CurseForge.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceUpdateCheck {
+    pub updates: Vec<resource_transactions::ResourceUpdate>,
+    /// No CurseForge key is configured, so CurseForge files were not checked.
+    pub curseforge_skipped: bool,
+    /// CurseForge could not be checked; the Modrinth rows are still complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub curseforge_error: Option<String>,
+}
+
+/// A CurseForge failure keeps the Modrinth rows (reported beside them); a
+/// cancel still ends the whole check.
+fn curseforge_part(
+    result: Result<(Vec<resource_transactions::ResourceUpdate>, bool), String>,
+) -> AppResult<(Vec<resource_transactions::ResourceUpdate>, bool, Option<String>)> {
+    match result {
+        Ok((rows, skipped)) => Ok((rows, skipped, None)),
+        Err(error) if error == CANCELLED => Err(expected(error)),
+        Err(error) => Ok((Vec::new(), false, Some(error))),
+    }
+}
+
 #[tauri::command]
 pub async fn check_resource_updates(
     state: tauri::State<'_, Arc<LauncherState>>,
     version_id: String,
     instance_id: Option<String>,
     resource_type: String,
-) -> AppResult<Vec<resource_transactions::ResourceUpdate>> {
+) -> AppResult<ResourceUpdateCheck> {
     let kind = ResourceKind::parse(&resource_type)?;
     let _operation = state.operation.lock().await;
     let task = state
         .control
-        .begin("resource-check", &version_id, "检查 Modrinth 资源更新")?;
-    let result: AppResult<Vec<resource_transactions::ResourceUpdate>> = async {
+        .begin("resource-check", &version_id, "检查资源更新")?;
+    let result: AppResult<ResourceUpdateCheck> = async {
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
-        resource_transactions::updates(
+        let (mut updates, identified) = resource_transactions::updates(
             &state,
             &target.directory,
             &target.minecraft,
@@ -1698,7 +1722,23 @@ pub async fn check_resource_updates(
             kind,
         )
         .await
-        .map_err(expected)
+        .map_err(expected)?;
+        // Modrinth wins: a file it identified never gets a CurseForge row.
+        let curseforge = crate::curseforge::curseforge_updates(
+            &state,
+            &target.directory,
+            &target.minecraft,
+            target.loader.as_deref(),
+            kind,
+            &resource_type,
+            &identified,
+        )
+        .await;
+        // A cancel is never reported as a finished check, whatever CurseForge answered.
+        state.control.checkpoint().await.map_err(expected)?;
+        let (curseforge, curseforge_skipped, curseforge_error) = curseforge_part(curseforge)?;
+        updates.extend(curseforge);
+        Ok(ResourceUpdateCheck { updates, curseforge_skipped, curseforge_error })
     }
     .await;
     state.control.finish(
@@ -1719,6 +1759,8 @@ pub async fn update_resource(
     resource_type: String,
     file_name: String,
     new_version_id: String,
+    source: Option<String>,
+    new_file_id: Option<u64>,
 ) -> AppResult<ResourceInstall> {
     let kind = ResourceKind::parse(&resource_type)?;
     let _operation = state.operation.lock().await;
@@ -1728,6 +1770,26 @@ pub async fn update_resource(
         .begin("resource-update", &file_name, "更新资源及必需前置")?;
     let result: AppResult<ResourceInstall> = async {
         let target = resource_target(&state, &version_id, instance_id.as_deref(), kind)?;
+        match source.as_deref() {
+            None | Some("modrinth") => {}
+            Some("curseforge") => {
+                let new_file_id = new_file_id.ok_or_else(|| expected("CurseForge 文件标识无效"))?;
+                let detected = resource_context(&state, &version_id, instance_id.as_deref())?.loader;
+                return crate::curseforge::update_one(
+                    state.inner(),
+                    &target.directory,
+                    &target.minecraft,
+                    target.loader.as_deref(),
+                    detected.as_deref(),
+                    kind,
+                    &resource_type,
+                    &file_name,
+                    new_file_id,
+                )
+                .await;
+            }
+            Some(_) => return Err(expected("资源来源无效")),
+        }
         resource_transactions::update_one(
             state.inner(),
             &target.directory,
@@ -2104,6 +2166,7 @@ mod tests {
         for (source, command, lock, writer) in [
             (modrinth, "async fn install_modrinth(", "with_reserved_resource_task(", "resource_transactions::install("),
             (modrinth, "pub async fn update_resource(", LOCK, "resource_transactions::update_one("),
+            (modrinth, "pub async fn update_resource(", LOCK, "crate::curseforge::update_one("),
             (modrinth, "pub async fn rollback_resource_update(", LOCK, "resource_transactions::rollback("),
             (modrinth, "pub async fn toggle_resource(", LOCK, "fs::rename(&source, &target)"),
             (curseforge, "pub(crate) async fn install_curseforge(", "with_reserved_resource_task(", "let key = service_key("),
@@ -2945,7 +3008,7 @@ mod tests {
         // Start the unchanged serving deadline after state/client construction;
         // preparing independent clients under Cargo load is not HTTP work.
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
             let mut served = 0;
             while served < 3 {
                 match listener.accept() {
@@ -3719,6 +3782,2017 @@ mod tests {
         assert!(body(&downloads, "fn spawn_retry(").contains("crate::resources::run_queued_resource(app, state, id, request)"));
         let queued = body(&resources, "pub(crate) async fn run_queued_resource(");
         assert!(queued.find("run_resource_request(&state, Some(&app), &task, request)").unwrap() < queued.find("state.control.finish(&task").unwrap());
+    }
+
+    // ---- C8: CurseForge replacement, updates, retries and caching ------------
+
+    fn c8_jar_bytes(mod_id: &str) -> Vec<u8> {
+        c8_jar(mod_id, "1")
+    }
+
+    /// A jar declaring `mod_id`; each `version` gives different bytes.
+    fn c8_jar(mod_id: &str, version: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(
+            "fabric.mod.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(format!(r#"{{"id":"{mod_id}","version":"{version}"}}"#).as_bytes())
+            .unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn c8_snapshot(directory: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut files: Vec<_> = fs::read_dir(directory)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| {
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    }
+
+    fn c8_fingerprint_of(file: serde_json::Value, bytes: &[u8]) -> serde_json::Value {
+        let mut file = file;
+        file["fileFingerprint"] =
+            crate::curseforge::fingerprint::fingerprint_bytes(bytes).into();
+        file
+    }
+
+    fn c8_fingerprint_answer(file: serde_json::Value) -> Scripted {
+        json(serde_json::json!({
+            "data": {"exactMatches": [{"id": 456, "file": file}]}
+        }))
+    }
+
+    /// A project answer (`{"data": {...}}`) as the batch lookup (POST mods) lists it.
+    fn c8_listed(project: serde_json::Value) -> Scripted {
+        json(serde_json::json!({"data": [project["data"].clone()]}))
+    }
+
+    /// The fixture project as the batch lookup lists it.
+    fn c8_project_list() -> Scripted {
+        c8_listed(serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": true
+        }}))
+    }
+
+    fn c8_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn c8_expect_error<T, E>(result: Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => panic!("{context} unexpectedly succeeded"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn c8_installing_another_version_replaces_the_enabled_copy_in_one_journaled_commit() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        // Every copy has its own bytes, so a skipped download, a renamed old copy
+        // or a rewritten disabled copy shows up below.
+        let enabled_bytes = c8_jar("example", "2");
+        let third_bytes = c8_jar("example", "3");
+        let disabled_bytes = c8_jar("example", "0");
+        let unknown_bytes = b"not a jar".to_vec();
+        let other_bytes = c8_jar_bytes("other");
+        fs::write(directory.join("example-2.jar"), &enabled_bytes).unwrap();
+        fs::write(directory.join("example-3.jar"), &third_bytes).unwrap();
+        fs::write(directory.join("example-0.jar.disabled"), &disabled_bytes).unwrap();
+        fs::write(directory.join("unknown.jar"), &unknown_bytes).unwrap();
+        fs::write(directory.join("other.jar"), &other_bytes).unwrap();
+
+        let new_bytes = c8_jar("example", "1");
+        let cdn = RangeServer::new(vec![Scripted::ok(&new_bytes, "\"e\"")]);
+        let file_id = 1001_u64;
+        let file = curseforge_file(file_id, "example-1.jar", 2, &cdn, &new_bytes);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(file_id),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        let update_id = installed
+            .update_id
+            .clone()
+            .expect("the replacement is journaled");
+        assert_eq!(installed.file_name, "example-1.jar");
+        assert!(
+            installed
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("example-2.jar") && warning.contains("example-3.jar")),
+            "{:?}",
+            installed.warning
+        );
+        assert_eq!(fs::read(directory.join("example-1.jar")).unwrap(), new_bytes);
+        assert_eq!(cdn.count(), 1, "the new file is downloaded");
+        assert!(!directory.join("example-2.jar").exists());
+        assert!(!directory.join("example-3.jar").exists());
+        assert_eq!(
+            fs::read(directory.join("example-0.jar.disabled")).unwrap(),
+            disabled_bytes
+        );
+        assert_eq!(fs::read(directory.join("unknown.jar")).unwrap(), unknown_bytes);
+        assert_eq!(fs::read(directory.join("other.jar")).unwrap(), other_bytes);
+        let journals = journals(&state);
+        assert_eq!(journals.len(), 1, "{journals:?}");
+        let journal: serde_json::Value = serde_json::from_str(&journals[0]).unwrap();
+        assert_eq!(journal["projects"], serde_json::json!(["cf:456"]));
+
+        let rolled_back = resource_transactions::rollback(&directory, &update_id).unwrap();
+        assert_eq!(rolled_back.status, "rolledBack");
+        assert_eq!(
+            fs::read(directory.join("example-2.jar")).unwrap(),
+            enabled_bytes,
+            "rollback restores the replaced file byte for byte"
+        );
+        assert_eq!(
+            fs::read(directory.join("example-3.jar")).unwrap(),
+            third_bytes,
+            "rollback restores the second enabled copy too"
+        );
+        assert!(!directory.join("example-1.jar").exists());
+        assert_eq!(
+            fs::read(directory.join("example-0.jar.disabled")).unwrap(),
+            disabled_bytes
+        );
+        assert_eq!(fs::read(directory.join("unknown.jar")).unwrap(), unknown_bytes);
+        assert_eq!(fs::read(directory.join("other.jar")).unwrap(), other_bytes);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_update_check_offers_the_newest_release_and_skips_modrinth_files() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"local curseforge update fixture".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(
+            curseforge_file(1000, "a.jar", 1, &cdn, bytes),
+            bytes,
+        );
+        let mut current_page = c8_fingerprint_of(
+            curseforge_file(1000, "a.jar", 1, &cdn, bytes),
+            bytes,
+        );
+        current_page["releaseType"] = serde_json::json!(1);
+        let mut newest = curseforge_file(1001, "a-1001.jar", 2, &cdn, b"new release".as_slice());
+        newest["releaseType"] = serde_json::json!(1);
+        let mut beta = curseforge_file(1002, "a-1002.jar", 3, &cdn, b"new beta".as_slice());
+        beta["releaseType"] = serde_json::json!(2);
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current),
+            c8_project_list(),
+            json(serde_json::json!({"data": [current_page, newest, beta]})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        let (rows, skipped) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "curseforge");
+        assert_eq!(rows[0].new_file_id, Some(1001));
+        assert!(!rows[0].manual_only);
+        assert!(rows[0].enabled);
+        assert_eq!(api.count(), 3);
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods"), "projects are looked up in one batch");
+
+        let skip: HashSet<String> = ["a.jar".to_owned()].into_iter().collect();
+        let (rows, skipped) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &skip,
+            ))
+            .unwrap();
+        assert!(rows.is_empty());
+        assert!(!skipped);
+        assert_eq!(api.count(), 3, "a skipped file is never fingerprinted");
+
+        if crate::curseforge_key::builtin_cf_key().is_none() {
+            crate::secrets::save_service_secret(&state.data_dir, "curseforge-api-key", "").unwrap();
+            let (rows, skipped) = runtime
+                .block_on(crate::curseforge::curseforge_updates(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    &HashSet::new(),
+                ))
+                .unwrap();
+            assert!(rows.is_empty());
+            assert!(skipped);
+            assert_eq!(api.count(), 3, "without a key nothing is requested");
+        }
+        drop(endpoints);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_fingerprint_match_with_the_wrong_size_or_sha1_is_not_an_identity() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"fingerprint identity fixture".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let identity =
+            c8_fingerprint_of(curseforge_file(1000, "a.jar", 1, &cdn, bytes), bytes);
+        let runtime = c8_runtime();
+        for (label, matched) in [
+            ("wrong size", {
+                let mut file = identity.clone();
+                file["fileLength"] = serde_json::json!(bytes.len() + 1);
+                file
+            }),
+            ("wrong sha1", {
+                let mut file = identity.clone();
+                file["hashes"][0]["value"] = serde_json::json!("0".repeat(40));
+                file
+            }),
+            ("another mod", {
+                let mut file = identity.clone();
+                file["modId"] = serde_json::json!(789);
+                file
+            }),
+            ("another game", {
+                let mut file = identity.clone();
+                file["gameId"] = serde_json::json!(1);
+                file
+            }),
+        ] {
+            let api = RangeServer::new(vec![c8_fingerprint_answer(matched)]);
+            let endpoints = Endpoints::set(&state, &api, &cdn);
+            let (rows, skipped) = runtime
+                .block_on(crate::curseforge::curseforge_updates(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    &HashSet::new(),
+                ))
+                .unwrap();
+            assert!(rows.is_empty(), "{label}");
+            assert!(!skipped);
+            assert_eq!(
+                api.header(0, ":path").as_deref(),
+                Some("/fingerprints/432"),
+                "{label}: the game's fingerprint endpoint"
+            );
+            assert_eq!(
+                api.count(),
+                1,
+                "{label}: an unverified match must not be looked up"
+            );
+            drop(endpoints);
+        }
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_file_the_author_keeps_on_curseforge_is_a_manual_update() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let old_bytes = b"old manual download".as_slice();
+        fs::write(directory.join("old.jar"), old_bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(
+            curseforge_file(1000, "old.jar", 1, &cdn, old_bytes),
+            old_bytes,
+        );
+        let mut newest = curseforge_file(
+            1001,
+            "new.jar",
+            2,
+            &cdn,
+            b"new manual download".as_slice(),
+        );
+        newest["releaseType"] = serde_json::json!(1);
+        let project_page = "https://www.curseforge.com/minecraft/mc-mods/fixture";
+        let project = serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": false,
+            "links": {"websiteUrl": project_page}
+        }});
+        let runtime = c8_runtime();
+        let run_updates = |project: serde_json::Value, files: Vec<serde_json::Value>| {
+            let api = RangeServer::new(vec![
+                c8_fingerprint_answer(current.clone()),
+                c8_listed(project),
+                json(serde_json::json!({"data": files})),
+            ]);
+            let endpoints = Endpoints::set(&state, &api, &cdn);
+            let (rows, skipped) = runtime
+                .block_on(crate::curseforge::curseforge_updates(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    &HashSet::new(),
+                ))
+                .unwrap();
+            assert!(!skipped);
+            drop(endpoints);
+            rows
+        };
+
+        let rows = run_updates(project.clone(), vec![current.clone(), newest.clone()]);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].manual_only);
+        assert_eq!(rows[0].project_url.as_deref(), Some(project_page));
+        assert_eq!(rows[0].new_file_id, Some(1001));
+
+        let mut allowed = project.clone();
+        allowed["data"]["allowModDistribution"] = serde_json::json!(true);
+        let mut without_url = newest.clone();
+        without_url.as_object_mut().unwrap().remove("downloadUrl");
+        let rows = run_updates(allowed, vec![current.clone(), without_url]);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].manual_only);
+        assert_eq!(rows[0].project_url.as_deref(), Some(project_page));
+
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current.clone()),
+            json(project.clone()),
+            json(serde_json::json!({"data": newest})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let before = c8_snapshot(&directory);
+        let error = c8_expect_error(
+            runtime.block_on(crate::curseforge::update_one(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                "old.jar",
+                1001,
+            )),
+            "an update the author keeps manual",
+        );
+        assert!(
+            error
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("禁止第三方分发")),
+            "{error:?}"
+        );
+        assert_eq!(c8_snapshot(&directory), before);
+        assert!(journals(&state).is_empty());
+        drop(endpoints);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_update_keeps_a_disabled_file_disabled_and_a_foreign_file_changes_nothing() {
+        {
+            let (root, state) = resource_fixture();
+            save_curseforge_key(&state);
+            let directory = mods(&state);
+            fs::create_dir_all(&directory).unwrap();
+            let old_bytes = b"old disabled file".as_slice();
+            fs::write(directory.join("old.jar.disabled"), old_bytes).unwrap();
+            let new_bytes = b"new file for a disabled slot".as_slice();
+            let cdn = RangeServer::new(vec![Scripted::ok(new_bytes, "\"n\"")]);
+            let current = c8_fingerprint_of(
+                curseforge_file(1000, "old.jar", 1, &cdn, old_bytes),
+                old_bytes,
+            );
+            let new_file = curseforge_file(1001, "new.jar", 2, &cdn, new_bytes);
+            let api = RangeServer::new(vec![
+                c8_fingerprint_answer(current.clone()),
+                curseforge_project(),
+                json(serde_json::json!({"data": new_file})),
+            ]);
+            let endpoints = Endpoints::set(&state, &api, &cdn);
+            let runtime = c8_runtime();
+            let installed = runtime
+                .block_on(crate::curseforge::update_one(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    "old.jar.disabled",
+                    1001,
+                ))
+                .unwrap();
+            assert_eq!(installed.file_name, "new.jar.disabled");
+            assert!(installed.update_id.is_some());
+            assert!(!directory.join("old.jar.disabled").exists());
+            assert_eq!(
+                fs::read(directory.join("new.jar.disabled")).unwrap(),
+                new_bytes
+            );
+            assert_eq!(journals(&state).len(), 1);
+            drop(endpoints);
+            drop(state);
+            cleanup_fixture(root);
+        }
+
+        {
+            let (root, state) = resource_fixture();
+            save_curseforge_key(&state);
+            let directory = mods(&state);
+            fs::create_dir_all(&directory).unwrap();
+            let old_bytes = b"foreign update current".as_slice();
+            fs::write(directory.join("old.jar"), old_bytes).unwrap();
+            let cdn = RangeServer::new(Vec::new());
+            let current = c8_fingerprint_of(
+                curseforge_file(1000, "old.jar", 1, &cdn, old_bytes),
+                old_bytes,
+            );
+            let mut foreign =
+                curseforge_file(1001, "new.jar", 2, &cdn, b"foreign new file".as_slice());
+            foreign["modId"] = serde_json::json!(789);
+            let api = RangeServer::new(vec![
+                c8_fingerprint_answer(current),
+                curseforge_project(),
+                json(serde_json::json!({"data": foreign})),
+            ]);
+            let endpoints = Endpoints::set(&state, &api, &cdn);
+            let before = c8_snapshot(&directory);
+            let runtime = c8_runtime();
+            let error = c8_expect_error(
+                runtime.block_on(crate::curseforge::update_one(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    "old.jar",
+                    1001,
+                )),
+                "an update with a file from another mod",
+            );
+            assert!(
+                error
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("文件不属于所选项目")),
+                "{error:?}"
+            );
+            assert_eq!(c8_snapshot(&directory), before);
+            assert!(journals(&state).is_empty());
+            drop(endpoints);
+            drop(state);
+            cleanup_fixture(root);
+        }
+
+        {
+            let (root, state) = resource_fixture();
+            save_curseforge_key(&state);
+            let directory = mods(&state);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("foreign.jar"), b"nobody can identify this").unwrap();
+            let cdn = RangeServer::new(Vec::new());
+            let api = RangeServer::new(vec![json(serde_json::json!({
+                "data": {"exactMatches": []}
+            }))]);
+            let endpoints = Endpoints::set(&state, &api, &cdn);
+            let before = c8_snapshot(&directory);
+            let runtime = c8_runtime();
+            let error = c8_expect_error(
+                runtime.block_on(crate::curseforge::update_one(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    "foreign.jar",
+                    1001,
+                )),
+                "an update of an unidentified file",
+            );
+            assert!(
+                error
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("无法确认此文件的 CurseForge 身份")),
+                "{error:?}"
+            );
+            assert_eq!(api.count(), 1);
+            assert_eq!(c8_snapshot(&directory), before);
+            assert!(journals(&state).is_empty());
+            drop(endpoints);
+            drop(state);
+            cleanup_fixture(root);
+        }
+    }
+
+    #[test]
+    fn c8_requests_retry_after_429_and_answers_are_cached() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"retry and cache fixture".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(
+            curseforge_file(1000, "a.jar", 1, &cdn, bytes),
+            bytes,
+        );
+        let mut current_page = current.clone();
+        current_page["releaseType"] = serde_json::json!(1);
+        let mut newest = curseforge_file(
+            1001,
+            "new.jar",
+            2,
+            &cdn,
+            b"new retried file".as_slice(),
+        );
+        newest["releaseType"] = serde_json::json!(1);
+        let api = RangeServer::new(vec![
+            Scripted::status(429).with_headers(vec![("Retry-After", "0".into())]),
+            c8_fingerprint_answer(current),
+            c8_project_list(),
+            json(serde_json::json!({"data": [current_page, newest]})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        let (rows, skipped) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].new_file_id, Some(1001));
+        assert_eq!(
+            api.count(),
+            4,
+            "one retried fingerprint request and the three answers"
+        );
+
+        let (rows, _) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].new_file_id, Some(1001));
+        assert_eq!(
+            api.count(),
+            4,
+            "the same requests are served from the answer cache"
+        );
+        drop(endpoints);
+
+        let api = RangeServer::new(vec![
+            Scripted::status(401),
+            Scripted::status(401),
+            Scripted::status(401),
+            Scripted::status(401),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = c8_expect_error(
+            runtime.block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            )),
+            "a 401 answer",
+        );
+        assert!(error.contains("拒绝访问"), "{error}");
+        assert_eq!(api.count(), 1, "401 is final and is not retried");
+        drop(endpoints);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_staged_replace_sets_aside_the_same_mod_but_refuses_another() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let old_bytes = {
+            use std::io::Write;
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file(
+                "fabric.mod.json",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(br#"{"id":"example","version":"old"}"#).unwrap();
+            zip.finish().unwrap().into_inner()
+        };
+        fs::write(directory.join("example.jar"), &old_bytes).unwrap();
+        let new_bytes = c8_jar_bytes("example");
+        // One answer for this install, one for the refused second attempt below.
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(&new_bytes, "\"e\""),
+            Scripted::ok(&new_bytes, "\"e\""),
+        ]);
+        let file = curseforge_file(1001, "example.jar", 2, &cdn, &new_bytes);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file.clone()})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(1001),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request.clone())
+            .unwrap()
+            .installed()
+            .unwrap();
+        let update_id = installed
+            .update_id
+            .clone()
+            .expect("the replaced file is journaled");
+        assert_eq!(installed.file_name, "example.jar");
+        assert!(
+            installed
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("example.jar")),
+            "{:?}",
+            installed.warning
+        );
+        assert_eq!(fs::read(directory.join("example.jar")).unwrap(), new_bytes);
+        let found = journals(&state);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let journal: serde_json::Value = serde_json::from_str(&found[0]).unwrap();
+        let history = directory
+            .parent()
+            .unwrap()
+            .join(".launcher-resource-history")
+            .join("mods");
+        let transaction = history.join(journal["id"].as_str().unwrap());
+        assert_eq!(
+            fs::read(transaction.join("staged-replaced").join("example.jar")).unwrap(),
+            old_bytes,
+            "the previous copy is in the journal"
+        );
+        let rolled_back = resource_transactions::rollback(&directory, &update_id).unwrap();
+        assert_eq!(rolled_back.status, "rolledBack");
+        assert_eq!(
+            fs::read(directory.join("example.jar")).unwrap(),
+            old_bytes,
+            "rollback restores the old bytes byte for byte"
+        );
+        drop(_endpoints);
+
+        // A same-named JAR declaring another mod is not a duplicate of the file
+        // being installed, so it is still refused and the live folder is unchanged.
+        let other_bytes = c8_jar_bytes("other");
+        fs::write(directory.join("example.jar"), &other_bytes).unwrap();
+        let before = c8_snapshot(&directory);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = c8_expect_error(
+            run(&state, &task, request),
+            "a same-named jar of another mod",
+        );
+        assert!(
+            error
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("同名文件")),
+            "{error:?}"
+        );
+        assert_eq!(c8_snapshot(&directory), before, "the refused install changes nothing");
+        assert_eq!(journals(&state).len(), 1, "the refused install makes no journal");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_an_exact_file_with_another_enabled_copy_is_journaled_and_rolls_back() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = c8_jar_bytes("example");
+        let copy_bytes = {
+            use std::io::Write;
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file(
+                "fabric.mod.json",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(br#"{"id":"example","version":"copy"}"#).unwrap();
+            zip.finish().unwrap().into_inner()
+        };
+        fs::write(directory.join("example-1.jar"), &bytes).unwrap();
+        fs::write(directory.join("example-2.jar"), &copy_bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let file_id = 2001_u64;
+        let file = curseforge_file(file_id, "example-1.jar", 2, &cdn, &bytes);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file.clone()})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(file_id),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request.clone())
+            .unwrap()
+            .installed()
+            .unwrap();
+        let update_id = installed
+            .update_id
+            .clone()
+            .expect("another enabled copy makes this a journaled replace");
+        assert_eq!(installed.file_name, "example-1.jar");
+        assert!(
+            installed
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("example-2.jar")),
+            "{:?}",
+            installed.warning
+        );
+        assert_eq!(fs::read(directory.join("example-1.jar")).unwrap(), bytes);
+        assert!(!directory.join("example-2.jar").exists());
+        assert_eq!(journals(&state).len(), 1);
+        let rolled_back = resource_transactions::rollback(&directory, &update_id).unwrap();
+        assert_eq!(rolled_back.status, "rolledBack");
+        assert_eq!(
+            fs::read(directory.join("example-2.jar")).unwrap(),
+            copy_bytes,
+            "rollback restores the enabled copy that was set aside"
+        );
+        drop(_endpoints);
+
+        // With no other enabled copy the same install is an already-selected
+        // version: no journal and no directory change.
+        fs::remove_file(directory.join("example-2.jar")).unwrap();
+        let before = c8_snapshot(&directory);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "example-1.jar");
+        assert!(installed.update_id.is_none(), "the exact version alone is already installed");
+        assert_eq!(installed.warning.as_deref(), Some("资源已是选定版本。"));
+        assert_eq!(c8_snapshot(&directory), before);
+        assert_eq!(journals(&state).len(), 1, "no second journal is made");
+        assert_eq!(cdn.count(), 0, "the exact file needs no download");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_disabled_update_leaves_enabled_copies_and_refuses_a_new_name() {
+        {
+            let (root, state) = resource_fixture();
+            save_curseforge_key(&state);
+            let directory = mods(&state);
+            fs::create_dir_all(&directory).unwrap();
+            let old_bytes = c8_jar("example", "old");
+            let duplicate_bytes = c8_jar("example", "9");
+            let new_bytes = c8_jar("example", "new");
+            fs::write(directory.join("old.jar.disabled"), &old_bytes).unwrap();
+            fs::write(directory.join("example-9.jar"), &duplicate_bytes).unwrap();
+            let cdn = RangeServer::new(vec![Scripted::ok(&new_bytes, "\"n\"")]);
+            let current = c8_fingerprint_of(
+                curseforge_file(3000, "old.jar", 1, &cdn, &old_bytes),
+                &old_bytes,
+            );
+            let new_file = curseforge_file(3001, "new.jar", 2, &cdn, &new_bytes);
+            let api = RangeServer::new(vec![
+                c8_fingerprint_answer(current),
+                curseforge_project(),
+                json(serde_json::json!({"data": new_file})),
+            ]);
+            let _endpoints = Endpoints::set(&state, &api, &cdn);
+            let runtime = c8_runtime();
+            let installed = runtime
+                .block_on(crate::curseforge::update_one(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    "old.jar.disabled",
+                    3001,
+                ))
+                .unwrap();
+            assert_eq!(installed.file_name, "new.jar.disabled");
+            assert!(installed.update_id.is_some());
+            assert!(!directory.join("old.jar.disabled").exists());
+            assert_eq!(
+                fs::read(directory.join("new.jar.disabled")).unwrap(),
+                new_bytes
+            );
+            assert_eq!(
+                fs::read(directory.join("example-9.jar")).unwrap(),
+                duplicate_bytes,
+                "the enabled copy is untouched"
+            );
+            assert!(
+                directory.join("example-9.jar").exists(),
+                "the enabled copy stays enabled"
+            );
+            assert_eq!(journals(&state).len(), 1);
+            drop(state);
+            cleanup_fixture(root);
+        }
+
+        {
+            let (root, state) = resource_fixture();
+            save_curseforge_key(&state);
+            let directory = mods(&state);
+            fs::create_dir_all(&directory).unwrap();
+            let old_bytes = c8_jar("example", "old");
+            let blocked_bytes = c8_jar("example", "blocked");
+            let new_bytes = c8_jar("example", "new");
+            fs::write(directory.join("old.jar.disabled"), &old_bytes).unwrap();
+            fs::write(directory.join("new.jar"), &blocked_bytes).unwrap();
+            let cdn = RangeServer::new(Vec::new());
+            let current = c8_fingerprint_of(
+                curseforge_file(3100, "old.jar", 1, &cdn, &old_bytes),
+                &old_bytes,
+            );
+            let new_file = curseforge_file(3101, "new.jar", 2, &cdn, &new_bytes);
+            let api = RangeServer::new(vec![
+                c8_fingerprint_answer(current),
+                curseforge_project(),
+                json(serde_json::json!({"data": new_file})),
+            ]);
+            let _endpoints = Endpoints::set(&state, &api, &cdn);
+            let before = c8_snapshot(&directory);
+            let runtime = c8_runtime();
+            let error = c8_expect_error(
+                runtime.block_on(crate::curseforge::update_one(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    "old.jar.disabled",
+                    3101,
+                )),
+                "a disabled update whose new name already exists",
+            );
+            assert!(
+                error
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("同名文件")),
+                "{error:?}"
+            );
+            assert_eq!(c8_snapshot(&directory), before);
+            assert!(
+                journals(&state).is_empty(),
+                "the refused update leaves no journal"
+            );
+            drop(state);
+            cleanup_fixture(root);
+        }
+    }
+
+    #[test]
+    fn c8_an_older_file_is_not_an_update_and_never_downgrades() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"current later file".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(
+            curseforge_file(4000, "a.jar", 20, &cdn, bytes),
+            bytes,
+        );
+        let mut current_page = curseforge_file(4000, "a.jar", 20, &cdn, bytes);
+        current_page["releaseType"] = serde_json::json!(1);
+        let mut older = curseforge_file(4001, "older.jar", 10, &cdn, b"older release".as_slice());
+        older["releaseType"] = serde_json::json!(1);
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current),
+            c8_project_list(),
+            json(serde_json::json!({"data": [current_page, older.clone()]})),
+            curseforge_project(),
+            json(serde_json::json!({"data": older})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        let (rows, skipped) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert!(rows.is_empty(), "an older release is not an update");
+        let before = c8_snapshot(&directory);
+        let error = c8_expect_error(
+            runtime.block_on(crate::curseforge::update_one(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                "a.jar",
+                4001,
+            )),
+            "an update to an older file",
+        );
+        assert!(
+            error
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("更新不会降级")),
+            "{error:?}"
+        );
+        assert_eq!(c8_snapshot(&directory), before);
+        assert!(journals(&state).is_empty());
+        assert_eq!(api.count(), 5);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_no_beta_or_alpha_fallback_for_a_release() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"release only current".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(
+            curseforge_file(5000, "a.jar", 1, &cdn, bytes),
+            bytes,
+        );
+        let mut current_page = curseforge_file(5000, "a.jar", 1, &cdn, bytes);
+        current_page["releaseType"] = serde_json::json!(1);
+        let mut beta = curseforge_file(5001, "beta.jar", 2, &cdn, b"newer beta".as_slice());
+        beta["releaseType"] = serde_json::json!(2);
+        let mut alpha = curseforge_file(5002, "alpha.jar", 3, &cdn, b"newer alpha".as_slice());
+        alpha["releaseType"] = serde_json::json!(3);
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current),
+            c8_project_list(),
+            json(serde_json::json!({"data": [current_page, beta, alpha]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let (rows, skipped) = c8_runtime()
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert!(rows.is_empty(), "a newer beta or alpha is not offered as an update");
+        assert_eq!(api.count(), 3);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_curseforge_failure_keeps_modrinth_rows_but_a_cancel_stops_the_check() {
+        let row = || resource_transactions::ResourceUpdate {
+            file_name: "a.jar".into(),
+            name: "Fixture".into(),
+            current_version: "1".into(),
+            new_version: "2".into(),
+            project_id: "456".into(),
+            new_version_id: "2".into(),
+            enabled: true,
+            source: "modrinth".into(),
+            new_file_id: None,
+            manual_only: false,
+            project_url: None,
+        };
+        let (rows, skipped, error) = curseforge_part(Ok((vec![row()], true))).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(skipped);
+        assert!(error.is_none());
+
+        let error = c8_expect_error(
+            curseforge_part(Err(CANCELLED.into())),
+            "a cancelled update check",
+        );
+        assert_eq!(error.code, "download.cancelled");
+
+        let (rows, skipped, error) = curseforge_part(Err("CurseForge 请求失败（HTTP 500）".into())).unwrap();
+        assert!(rows.is_empty());
+        assert!(!skipped);
+        assert_eq!(error.as_deref(), Some("CurseForge 请求失败（HTTP 500）"));
+    }
+
+    #[test]
+    fn c8_a_file_verified_under_two_mods_is_not_an_identity() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"ambiguous local file".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let first = c8_fingerprint_of(curseforge_file(6000, "a.jar", 1, &cdn, bytes), bytes);
+        let mut second = c8_fingerprint_of(curseforge_file(6001, "a.jar", 1, &cdn, bytes), bytes);
+        second["modId"] = serde_json::json!(789);
+        let api = RangeServer::new(vec![json(serde_json::json!({
+            "data": {"exactMatches": [
+                {"id": 456, "file": first},
+                {"id": 789, "file": second},
+            ]}
+        }))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let (rows, skipped) = c8_runtime()
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert!(rows.is_empty(), "the same bytes under two mods identify neither");
+        assert_eq!(api.count(), 1, "an ambiguous identity makes no project request");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_bad_folder_entries_do_not_stop_the_update_check() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = root.join("m");
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"identified among bad entries".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        fs::create_dir(directory.join("x.jar")).unwrap();
+        let bad_name = format!("{}.jar", "z".repeat(157));
+        assert!(validate_id(&bad_name).is_err());
+        fs::write(directory.join(&bad_name), b"invalid name").unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(curseforge_file(7000, "a.jar", 1, &cdn, bytes), bytes);
+        let mut newer = curseforge_file(7001, "a-new.jar", 2, &cdn, b"new release".as_slice());
+        newer["releaseType"] = serde_json::json!(1);
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current),
+            c8_project_list(),
+            json(serde_json::json!({
+                "data": [curseforge_file(7000, "a.jar", 1, &cdn, bytes), newer]
+            })),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let (rows, skipped) = c8_runtime()
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert_eq!(rows.len(), 1, "the readable identified file is still checked");
+        assert_eq!(rows[0].file_name, "a.jar");
+        assert_eq!(rows[0].new_file_id, Some(7001));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_the_project_page_rejects_missing_insecure_and_credentialed_links() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"project page fixture".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(curseforge_file(8000, "a.jar", 1, &cdn, bytes), bytes);
+        let current_page = curseforge_file(8000, "a.jar", 1, &cdn, bytes);
+        let mut newest = curseforge_file(8001, "a-new.jar", 2, &cdn, b"new release".as_slice());
+        newest["releaseType"] = serde_json::json!(1);
+        newest.as_object_mut().unwrap().remove("downloadUrl");
+        let project = |link: Option<&str>| {
+            let mut project = serde_json::json!({"data": {
+                "id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+                "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": true
+            }});
+            if let Some(link) = link {
+                project["data"]["links"] = serde_json::json!({"websiteUrl": link});
+            }
+            project
+        };
+        let fallback = "https://www.curseforge.com/projects/456";
+        let runtime = c8_runtime();
+        for (label, link, expected) in [
+            ("missing", None, fallback),
+            ("http", Some("http://www.curseforge.com/minecraft/mc-mods/x"), fallback),
+            (
+                "userinfo",
+                Some("https://user@www.curseforge.com/minecraft/mc-mods/x"),
+                fallback,
+            ),
+            (
+                "valid",
+                Some("https://www.curseforge.com/minecraft/mc-mods/x"),
+                "https://www.curseforge.com/minecraft/mc-mods/x",
+            ),
+        ] {
+            let api = RangeServer::new(vec![
+                c8_fingerprint_answer(current.clone()),
+                c8_listed(project(link)),
+                json(serde_json::json!({"data": [current_page.clone(), newest.clone()]})),
+            ]);
+            let endpoints = Endpoints::set(&state, &api, &cdn);
+            let (rows, skipped) = runtime
+                .block_on(crate::curseforge::curseforge_updates(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    &HashSet::new(),
+                ))
+                .unwrap();
+            assert!(!skipped, "{label}");
+            assert_eq!(rows.len(), 1, "{label}");
+            assert!(rows[0].manual_only, "{label}");
+            assert_eq!(rows[0].project_url.as_deref(), Some(expected), "{label}");
+            drop(endpoints);
+        }
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_release_on_a_later_file_page_is_offered() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"paged update fixture".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(curseforge_file(9000, "a.jar", 1, &cdn, bytes), bytes);
+        let current_page = curseforge_file(9000, "a.jar", 1, &cdn, bytes);
+        let betas: Vec<_> = (0..50_u64)
+            .map(|index| {
+                let mut beta = curseforge_file(
+                    9100 + index,
+                    &format!("beta-{index}.jar"),
+                    10,
+                    &cdn,
+                    b"beta release".as_slice(),
+                );
+                beta["releaseType"] = serde_json::json!(2);
+                beta
+            })
+            .collect();
+        let mut release = curseforge_file(9200, "release.jar", 2, &cdn, b"release file".as_slice());
+        release["releaseType"] = serde_json::json!(1);
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current),
+            c8_project_list(),
+            json(serde_json::json!({"data": betas})),
+            json(serde_json::json!({"data": [release, current_page]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let (rows, skipped) = c8_runtime()
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].new_file_id, Some(9200));
+        assert!(
+            api.header(2, ":path")
+                .as_deref()
+                .is_some_and(|path| path.contains("index=0")),
+            "{:?}",
+            api.header(2, ":path")
+        );
+        assert!(
+            api.header(3, ":path")
+                .as_deref()
+                .is_some_and(|path| path.contains("index=50")),
+            "{:?}",
+            api.header(3, ":path")
+        );
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_retry_classes_and_retry_after_on_5xx() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("a.jar"), b"retry fixture").unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let runtime = c8_runtime();
+        let run_check = |api: &RangeServer| {
+            let _endpoints = Endpoints::set(&state, api, &cdn);
+            runtime.block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+        };
+
+        for (status, label) in [(403_u16, "拒绝访问"), (404, "不存在")] {
+            let api = RangeServer::new(vec![Scripted::status(status)]);
+            let error = c8_expect_error(run_check(&api), "a final CurseForge error");
+            assert!(error.contains(label), "{status}: {error}");
+            assert_eq!(api.count(), 1, "HTTP {status} is not retried");
+        }
+
+        let api = RangeServer::new((0..4).map(|_| Scripted::status(503)).collect());
+        let error = c8_expect_error(run_check(&api), "four 503 answers");
+        assert!(error.contains("HTTP 503"), "{error}");
+        assert_eq!(api.count(), 4, "the first request and three retries");
+
+        let api = RangeServer::new(vec![
+            Scripted::status(503).with_headers(vec![("Retry-After", "5".into())]),
+            json(serde_json::json!({"data": {"exactMatches": []}})),
+        ]);
+        // Five seconds: without Retry-After the wait is 500 ms, and the pacer
+        // shared with the other tests cannot add three and a half seconds.
+        let started = std::time::Instant::now();
+        let (rows, skipped) = run_check(&api).unwrap();
+        assert!(rows.is_empty());
+        assert!(!skipped);
+        assert!(
+            started.elapsed() >= Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(api.count(), 2);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_uncached_requests_are_paced() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let first_bytes = b"paced first".as_slice();
+        let second_bytes = b"paced second".as_slice();
+        fs::write(directory.join("a.jar"), first_bytes).unwrap();
+        fs::write(directory.join("b.jar"), second_bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let first = c8_fingerprint_of(
+            curseforge_file(10000, "a.jar", 1, &cdn, first_bytes),
+            first_bytes,
+        );
+        let mut second = c8_fingerprint_of(
+            curseforge_file(10001, "b.jar", 1, &cdn, second_bytes),
+            second_bytes,
+        );
+        second["modId"] = serde_json::json!(789);
+        let current_page = curseforge_file(10000, "a.jar", 1, &cdn, first_bytes);
+        let projects = serde_json::json!({"data": [
+            {"id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+                "classId": 6, "downloadCount": 0.0, "authors": []},
+            {"id": 789, "gameId": 432, "name": "Other", "slug": "other", "summary": "Other",
+                "classId": 6, "downloadCount": 0.0, "authors": []},
+        ]});
+        // Fingerprints, the project batch, then one file page per mod.
+        let api = RangeServer::new(vec![
+            json(serde_json::json!({"data": {"exactMatches": [
+                {"id": 456, "file": first},
+                {"id": 789, "file": second},
+            ]}})),
+            json(projects),
+            json(serde_json::json!({"data": [current_page]})),
+            json(serde_json::json!({"data": []})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let started = std::time::Instant::now();
+        let (rows, skipped) = c8_runtime()
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(!skipped);
+        assert!(rows.is_empty());
+        assert_eq!(api.count(), 4, "four uncached requests");
+        assert!(
+            elapsed >= Duration::from_millis(750),
+            "four requests must be paced over at least 750 ms: {elapsed:?}"
+        );
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_modrinth_identified_files_are_skipped_by_curseforge() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"modrinth identified local file".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let version = modrinth_version("identified", 1, &cdn, bytes);
+        let hash = format!("{:x}", sha2::Sha512::digest(bytes));
+        let mut by_hash = serde_json::Map::new();
+        by_hash.insert(hash, version.clone());
+        let api = RangeServer::new(vec![
+            json(serde_json::Value::Object(by_hash)),
+            json(serde_json::json!([version])),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        let (rows, identified) = runtime
+            .block_on(resource_transactions::updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+            ))
+            .unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(
+            identified,
+            ["a.jar".to_owned()].into_iter().collect::<HashSet<_>>()
+        );
+        assert_eq!(
+            api.header(0, ":path").as_deref(),
+            Some("/version_files"),
+            "Modrinth identifies the local SHA-512"
+        );
+        assert_eq!(api.count(), 2);
+        drop(endpoints);
+
+        let curseforge = RangeServer::new(vec![Scripted::status(403)]);
+        let _endpoints = Endpoints::set(&state, &curseforge, &cdn);
+        let (rows, skipped) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &identified,
+            ))
+            .unwrap();
+        assert!(rows.is_empty());
+        assert!(!skipped);
+        assert_eq!(
+            curseforge.count(),
+            0,
+            "a file Modrinth identified is never sent to CurseForge"
+        );
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_cancel_drops_a_stalled_curseforge_request_at_once() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"stalled request fixture".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(curseforge_file(11000, "a.jar", 1, &cdn, bytes), bytes);
+        let runtime = c8_runtime();
+        // The check stalls at each of its requests in turn: (answers, requests seen).
+        for (label, script, stalled_at) in [
+            ("the fingerprint request", vec![Scripted::silent()], 1),
+            (
+                "a retry wait",
+                vec![
+                    Scripted::status(503).with_headers(vec![("Retry-After", "10".into())]),
+                    Scripted::silent(),
+                ],
+                1,
+            ),
+            ("the project batch", vec![c8_fingerprint_answer(current.clone()), Scripted::silent()], 2),
+            (
+                "a file page",
+                vec![c8_fingerprint_answer(current.clone()), c8_project_list(), Scripted::silent()],
+                3,
+            ),
+        ] {
+            let api = RangeServer::new(script);
+            let endpoints = Endpoints::set(&state, &api, &cdn);
+            let task = state.control.begin("resource-check", "fabric-test", "检查资源更新").unwrap();
+            let skip = HashSet::new();
+            // Timed from the cancel: other tests share the process-wide pacer.
+            let (result, cancelled) = runtime.block_on(async {
+                let check = crate::curseforge::curseforge_updates(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    &skip,
+                );
+                let cancel = async {
+                    // A build that stops before the stall fails below instead of hanging here
+                    // (the pacer is shared with every other test, so reaching it can be slow).
+                    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                    while api.count() < stalled_at && std::time::Instant::now() < deadline {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    state.control.cancel(&task);
+                    std::time::Instant::now()
+                };
+                futures_util::future::join(check, cancel).await
+            });
+            let elapsed = cancelled.elapsed();
+            assert_eq!(result.map(|_| ()).unwrap_err(), CANCELLED, "{label}");
+            assert!(elapsed < Duration::from_secs(2), "{label}: the cancel waited {elapsed:?}");
+            assert_eq!(api.count(), stalled_at, "{label}: nothing is sent after the cancel");
+            state.control.finish(&task, Some(CANCELLED));
+            drop(endpoints);
+        }
+
+        // Updating one file stalls at the project request, then at the download.
+        let stalled_cdn = RangeServer::new(vec![Scripted::silent()]);
+        let new_file = curseforge_file(11001, "a-new.jar", 2, &stalled_cdn, b"stalled new file".as_slice());
+        for (label, script, cdn) in [
+            ("the project request", vec![c8_fingerprint_answer(current.clone()), Scripted::silent()], &cdn),
+            (
+                "the file download",
+                vec![
+                    c8_fingerprint_answer(current.clone()),
+                    curseforge_project(),
+                    json(serde_json::json!({"data": new_file})),
+                ],
+                &stalled_cdn,
+            ),
+        ] {
+            let api = RangeServer::new(script);
+            let endpoints = Endpoints::set(&state, &api, cdn);
+            let before = c8_snapshot(&directory);
+            let task = state.control.begin("resource-update", "a.jar", "更新资源及必需前置").unwrap();
+            let (result, cancelled) = runtime.block_on(async {
+                let update = crate::curseforge::update_one(
+                    &state,
+                    &directory,
+                    "1.21.1",
+                    Some("fabric"),
+                    Some("fabric"),
+                    ResourceKind::Mod,
+                    "mod",
+                    "a.jar",
+                    11001,
+                );
+                let cancel = async {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                    while (api.count() < 2 || (std::ptr::eq(cdn, &stalled_cdn) && cdn.count() == 0))
+                        && std::time::Instant::now() < deadline
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    state.control.cancel(&task);
+                    std::time::Instant::now()
+                };
+                futures_util::future::join(update, cancel).await
+            });
+            let error = c8_expect_error(result, label);
+            assert_eq!(error.code, "download.cancelled", "{label}: {error:?}");
+            assert!(cancelled.elapsed() < Duration::from_secs(2), "{label}: {:?}", cancelled.elapsed());
+            assert_eq!(c8_snapshot(&directory), before, "{label}");
+            assert!(journals(&state).is_empty(), "{label}");
+            state.control.finish(&task, Some(CANCELLED));
+            drop(endpoints);
+        }
+        assert_eq!(stalled_cdn.count(), 1, "the download was reached once");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_retry_waits_until_an_http_date_retry_after() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("a.jar"), b"dated retry fixture").unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        // Timed from before the date is made; the date is more than four whole
+        // seconds ahead once its seconds are cut off. Without the date the wait
+        // is 500 ms, and the shared pacer cannot add three and a half seconds.
+        let started = std::time::Instant::now();
+        let date = (chrono::Utc::now() + chrono::Duration::seconds(5))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        let api = RangeServer::new(vec![
+            Scripted::status(503).with_headers(vec![("Retry-After", date.clone())]),
+            json(serde_json::json!({"data": {"exactMatches": []}})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let (rows, skipped) = c8_runtime()
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(rows.is_empty() && !skipped);
+        assert_eq!(api.count(), 2);
+        assert!(
+            started.elapsed() >= Duration::from_secs(4),
+            "Retry-After {date} was not honoured: {:?}",
+            started.elapsed()
+        );
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_removed_project_or_file_list_skips_only_that_file() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let local = |name: &str, mod_id: u64, file_id: u64| {
+            let bytes = format!("{name} removed project fixture").into_bytes();
+            fs::write(directory.join(name), &bytes).unwrap();
+            let mut file = c8_fingerprint_of(curseforge_file(file_id, name, 1, &cdn, &bytes), &bytes);
+            file["modId"] = serde_json::json!(mod_id);
+            file
+        };
+        // a.jar: its file list is gone (404); b.jar: CurseForge no longer returns
+        // its project; c.jar: a normal update.
+        let a = local("a.jar", 456, 12000);
+        let b = local("b.jar", 789, 12100);
+        let c = local("c.jar", 321, 12200);
+        let fingerprints = json(serde_json::json!({"data": {"exactMatches": [
+            {"id": 456, "file": a}, {"id": 789, "file": b}, {"id": 321, "file": c},
+        ]}}));
+        let project = |id: u64| serde_json::json!({
+            "id": id, "gameId": 432, "name": format!("Fixture {id}"), "slug": "fixture", "summary": "Fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": true
+        });
+        let mut release = curseforge_file(12201, "c-new.jar", 2, &cdn, b"c release".as_slice());
+        release["modId"] = serde_json::json!(321);
+        release["releaseType"] = serde_json::json!(1);
+        let api = RangeServer::new(vec![
+            fingerprints,
+            json(serde_json::json!({"data": [project(456), project(321)]})),
+            Scripted::status(404),
+            json(serde_json::json!({"data": [release]})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        let (rows, skipped) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(!skipped);
+        assert_eq!(rows.len(), 1, "only c.jar has an update");
+        assert_eq!(rows[0].file_name, "c.jar");
+        assert_eq!(rows[0].new_file_id, Some(12201));
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods"), "one batch for all three projects");
+        assert!(api.header(2, ":path").is_some_and(|path| path.starts_with("/mods/456/files")));
+        assert!(api.header(3, ":path").is_some_and(|path| path.starts_with("/mods/321/files")));
+        assert_eq!(api.count(), 4, "no request for the project CurseForge did not return");
+        drop(endpoints);
+
+        // A service failure is not one file's problem: the CurseForge part fails.
+        fs::remove_file(directory.join("b.jar")).unwrap();
+        fs::remove_file(directory.join("c.jar")).unwrap();
+        let a = local("a.jar", 456, 12000);
+        let mut answers = vec![
+            json(serde_json::json!({"data": {"exactMatches": [{"id": 456, "file": a}]}})),
+            json(serde_json::json!({"data": [project(456)]})),
+        ];
+        answers.extend((0..4).map(|_| Scripted::status(500)));
+        let api = RangeServer::new(answers);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = c8_expect_error(
+            runtime.block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            )),
+            "a file list that keeps failing",
+        );
+        assert!(error.contains("HTTP 500"), "{error}");
+        assert_eq!(api.count(), 6);
+        drop(_endpoints);
+
+        // A 404 for the whole project batch skips those projects, it does not end the check.
+        let a = local("a.jar", 456, 12000);
+        let api = RangeServer::new(vec![
+            json(serde_json::json!({"data": {"exactMatches": [{"id": 456, "file": a}]}})),
+            Scripted::status(404),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let (rows, skipped) = runtime
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert!(rows.is_empty() && !skipped);
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods"));
+        assert_eq!(api.count(), 2);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_a_download_address_off_the_cdn_makes_a_manual_row() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"off cdn fixture".as_slice();
+        fs::write(directory.join("a.jar"), bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let current = c8_fingerprint_of(curseforge_file(13000, "a.jar", 1, &cdn, bytes), bytes);
+        let mut newest = curseforge_file(13001, "a-new.jar", 2, &cdn, b"off cdn release".as_slice());
+        newest["releaseType"] = serde_json::json!(1);
+        newest["downloadUrl"] = serde_json::json!("https://files.example.invalid/a-new.jar");
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current.clone()),
+            c8_project_list(),
+            json(serde_json::json!({"data": [current, newest]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let (rows, _) = c8_runtime()
+            .block_on(crate::curseforge::curseforge_updates(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                &HashSet::new(),
+            ))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].manual_only, "a download the launcher would refuse is offered as a manual download");
+        assert_eq!(rows[0].project_url.as_deref(), Some("https://www.curseforge.com/projects/456"));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_updating_a_file_that_is_gone_asks_nothing() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let api = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = c8_expect_error(
+            c8_runtime().block_on(crate::curseforge::update_one(
+                &state,
+                &directory,
+                "1.21.1",
+                Some("fabric"),
+                Some("fabric"),
+                ResourceKind::Mod,
+                "mod",
+                "gone.jar",
+                14001,
+            )),
+            "an update of a file that was moved away",
+        );
+        assert!(error.detail.as_deref().is_some_and(|detail| detail.contains("待更新资源不存在")), "{error:?}");
+        assert_eq!(api.count(), 0);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c8_reselecting_the_installed_file_does_not_check_its_dependencies() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = c8_jar("example", "1");
+        fs::write(directory.join("example-1.jar"), &bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let mut file = curseforge_file(15001, "example-1.jar", 2, &cdn, &bytes);
+        file["dependencies"] = serde_json::json!([{"modId": 999, "relationType": 3}]);
+        let api = RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": file}))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(15001),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert!(installed.update_id.is_none());
+        assert_eq!(installed.warning.as_deref(), Some("资源已是选定版本。"));
+        assert_eq!(api.count(), 2, "the dependency of a file already there is not looked up");
+        assert_eq!(fs::read(directory.join("example-1.jar")).unwrap(), bytes);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    /// Windows and macOS folders ignore case: `New.jar` is the selected `new.jar`.
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn c8_a_file_whose_name_differs_only_in_case_is_the_selected_file() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = c8_jar("example", "1");
+        fs::write(directory.join("New.jar"), &bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let file = curseforge_file(16001, "new.jar", 2, &cdn, &bytes);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(16001),
+                resource_version_id: None,
+            },
+        };
+        let install = |file: &serde_json::Value| {
+            let api = RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": file}))]);
+            let _endpoints = Endpoints::set(&state, &api, &cdn);
+            let task = state.control.reserve_resource(request.clone()).unwrap();
+            run(&state, &task, request.clone()).unwrap().installed().unwrap()
+        };
+        let installed = install(&file);
+        assert!(installed.update_id.is_none(), "{:?}", installed.warning);
+        assert_eq!(installed.warning.as_deref(), Some("资源已是选定版本。"));
+        assert_eq!(fs::read(directory.join("New.jar")).unwrap(), bytes);
+        assert!(journals(&state).is_empty());
+
+        // With another enabled copy, only that copy moves aside; New.jar stays.
+        let copy = c8_jar("example", "2");
+        fs::write(directory.join("example-2.jar"), &copy).unwrap();
+        let installed = install(&file);
+        assert!(installed.update_id.is_some());
+        let names: Vec<_> = c8_snapshot(&directory).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["New.jar"], "the selected file stays and the copy is set aside");
+        assert_eq!(fs::read(directory.join("New.jar")).unwrap(), bytes);
+        assert_eq!(cdn.count(), 0);
+        drop(state);
+        cleanup_fixture(root);
+    }
+}
+
+#[cfg(test)]
+mod c8_wiring {
+    #[test]
+    fn c8_curseforge_installs_and_updates_go_through_the_journaled_replace() {
+        let resources = crate::storage::executable_source(include_str!("resources.rs"));
+        let curseforge = crate::storage::executable_source(include_str!("curseforge.rs"));
+        let body = |source: &str, marker: &str| -> String {
+            source.split_once(marker).unwrap_or_else(|| panic!("{marker}")).1.split_once("
+}").unwrap().0.to_owned()
+        };
+        // The update check runs CurseForge after Modrinth, skipping what Modrinth identified.
+        let check = body(&resources, "pub async fn check_resource_updates(");
+        let modrinth = check.find("resource_transactions::updates(").unwrap();
+        let curse = check.find("crate::curseforge::curseforge_updates(").unwrap();
+        assert!(modrinth < curse && check[curse..].contains("&identified,"));
+        assert!(check.contains("curseforge_part("), "a CurseForge failure keeps the Modrinth rows");
+        // A cancel is checked after CurseForge answered, before its failure becomes a notice.
+        let guard = check.find("state.control.checkpoint().await.map_err(expected)?").unwrap();
+        assert!(curse < guard && guard < check.find("curseforge_part(curseforge)").unwrap());
+        // Installing into an instance and updating both use the staged, journaled replace.
+        let install = body(&curseforge, "pub(crate) async fn install_curseforge(");
+        assert!(install.contains("replace_with_file(state, &directory, kind, &project.data, &file, None, true)"));
+        assert!(!install.contains("download(state"), "no direct write into the live folder");
+        let update = body(&curseforge, "pub(crate) async fn update_one(");
+        assert!(update.find("identify(&client, &key, &locals)").unwrap() < update.find("get_pinned_file(").unwrap());
+        assert!(update.trim_end().ends_with("Ok(replace_with_file(state, directory, kind, &project, &file, Some(file_name), enabled).await?)"));
+        let replace = body(&curseforge, "async fn replace_with_file(");
+        assert!(replace.find("require_no_pending(directory)").unwrap() < replace.find("stage_commit(").unwrap());
+        assert!(replace.contains("download(state, project, file, &next, kind, duplicates)"), "writes only into the staged copy");
+        assert!(replace.contains("if enabled { Duplicates::SetAside(&aside) } else { Duplicates::Keep }"), "a disabled update leaves enabled copies alone");
+    }
+
+    /// Every CurseForge request made inside a task is raced against its cancel
+    /// (requests outside a task, such as searches, must not be).
+    #[test]
+    fn c8_every_curseforge_request_in_a_task_can_be_cancelled() {
+        let curseforge = crate::storage::executable_source(include_str!("curseforge.rs"));
+        let body = |marker: &str| -> String {
+            let text = curseforge.split_once(marker).unwrap_or_else(|| panic!("{marker}")).1.split_once("\n}").unwrap().0;
+            text.chars().filter(|c| !c.is_whitespace()).collect()
+        };
+        for marker in [
+            "async fn check_dependencies(",
+            "pub(crate) async fn install_curseforge(",
+            "pub(crate) async fn create_with_pinned_file(",
+            "async fn projects(",
+            "async fn newest_release(",
+            "pub(crate) async fn curseforge_updates(",
+            "pub(crate) async fn update_one(",
+        ] {
+            let text = body(marker);
+            let mut calls = 0;
+            for call in ["api(", "api_post(", "files_page(", "identify(", "get_pinned_file("] {
+                for (at, _) in text.match_indices(call) {
+                    if text[..at].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                        continue;
+                    }
+                    calls += 1;
+                    assert!(
+                        text[..at].ends_with("in_task(state,") || text[..at].ends_with("during_cancellable_io("),
+                        "{marker} calls {call} outside in_task"
+                    );
+                }
+            }
+            assert!(calls > 0, "{marker} makes CurseForge requests");
+        }
+        let download = body("async fn download(");
+        assert!(download.contains("during_cancellable_io(client.get(url).send())"));
+        assert!(download.contains("whileletSome(chunk)=state.control.during_cancellable_io(stream.next()).await?"));
+        // Searches and details are not tasks.
+        for marker in ["pub async fn search_curseforge(", "pub async fn get_curseforge_project_details("] {
+            assert!(!body(marker).contains("in_task("), "{marker}");
+        }
     }
 }
 

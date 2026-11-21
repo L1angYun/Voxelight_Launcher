@@ -380,17 +380,45 @@ pub(crate) fn declared_mod_id(path: &Path) -> Option<String> {
 
 /// An enabled JAR in `directory`, other than `skip`, that declares `mod_id`.
 pub(crate) fn enabled_jar_with_mod_id(directory: &Path, mod_id: &str, skip: &Path) -> Option<String> {
-    for entry in fs::read_dir(directory).ok()?.flatten() {
+    enabled_jars_with_mod_id(directory, mod_id, skip).into_iter().next()
+}
+
+/// Every enabled jar in `directory` (other than `skip`) declaring `mod_id`,
+/// by name. Disabled copies, links and jars without a readable ID are not listed.
+pub(crate) fn enabled_jars_with_mod_id(directory: &Path, mod_id: &str, skip: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(directory) else { return Vec::new() };
+    let skip_size = fs::metadata(skip).ok().map(|stat| stat.len());
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if path == skip || !name.to_ascii_lowercase().ends_with(".jar") { continue; }
         let Ok(stat) = fs::symlink_metadata(&path) else { continue; };
         if !stat.is_file() || crate::resources::linked(&stat) { continue; }
+        // The kept file under another spelling (case on Windows and macOS, or
+        // another Unicode form) is still the kept file.
+        if skip_size == Some(stat.len()) && same_file(&path, skip) { continue; }
         if cached_metadata(&path, &stat).is_some_and(|metadata| metadata.mod_id == mod_id) {
-            return Some(name);
+            names.push(name);
         }
     }
-    None
+    names.sort();
+    names
+}
+
+/// Whether two paths name the same file, as the file system decides (it alone
+/// knows whether a folder ignores case). False when either cannot be read.
+fn same_file(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((fs::metadata(left), fs::metadata(right)), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
+    }
+    // Windows: the final path of an open handle is the name on disk.
+    #[cfg(not(unix))]
+    {
+        matches!((fs::canonicalize(left), fs::canonicalize(right)), (Ok(a), Ok(b)) if a == b)
+    }
 }
 
 pub(crate) fn read_icon(path: &Path) -> Option<String> {

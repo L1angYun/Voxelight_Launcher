@@ -10,6 +10,7 @@ import type {
   ResourceHistory,
   ResourceKind,
   ResourceUpdate,
+  ResourceUpdateCheck,
   ResourceView,
   RollbackResult,
   Screenshot,
@@ -22,6 +23,8 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   const [view, setView] = useState<ResourceView>("files");
   const [files, setFiles] = useState<LocalResource[]>([]);
   const [updates, setUpdates] = useState<ResourceUpdate[] | null>(null);
+  const [curseforgeSkipped, setCurseforgeSkipped] = useState(false);
+  const [curseforgeFailed, setCurseforgeFailed] = useState(false);
   const [history, setHistory] = useState<ResourceHistory[] | null>(null);
   const [busy, setBusy] = useState(versionId && desktop ? "files" : "");
   const [error, setError] = useState("");
@@ -53,6 +56,8 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     ++generation.current;
     setFiles([]);
     setUpdates(null);
+    setCurseforgeSkipped(false);
+    setCurseforgeFailed(false);
     setHistory(null);
     setView("files");
     setBusy("");
@@ -69,14 +74,24 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     const request = ++generation.current;
     setView("updates");
     setUpdates(null);
+    setCurseforgeSkipped(false);
+    setCurseforgeFailed(false);
     setBusy("updates");
     setError("");
     setNotice("");
     try {
-      const result = await command<ResourceUpdate[]>("check_resource_updates", selectionArgs());
-      if (request === generation.current) setUpdates(result);
+      const result = await command<ResourceUpdateCheck>("check_resource_updates", selectionArgs());
+      if (request === generation.current) {
+        setUpdates(result.updates);
+        setCurseforgeSkipped(result.curseforgeSkipped);
+        setCurseforgeFailed(Boolean(result.curseforgeError));
+      }
     } catch (cause) {
-      if (request === generation.current) setUpdates(null);
+      if (request === generation.current) {
+        setUpdates(null);
+        setCurseforgeSkipped(false);
+        setCurseforgeFailed(false);
+      }
       report(request, cause);
     } finally {
       if (request === generation.current) setBusy("");
@@ -121,24 +136,47 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   }, [busy, refresh, report, selectionArgs]);
 
   const applyUpdate = useCallback(async (update: ResourceUpdate) => {
-    if (!desktop || busy) return;
+    if (!desktop || busy || update.manualOnly) return;
     const request = ++generation.current;
+    const target = selectionArgs();
     setBusy(`update:${update.fileName}`);
     setError("");
     setNotice("");
     try {
-      await command("update_resource", { ...selectionArgs(), fileName: update.fileName, newVersionId: update.newVersionId });
+      await command("update_resource", {
+        ...target,
+        fileName: update.fileName,
+        newVersionId: update.newVersionId,
+        source: update.source,
+        newFileId: update.newFileId ?? null,
+      });
       if (request !== generation.current) return;
       setUpdates((previous) => previous?.filter((item) => item.fileName !== update.fileName) ?? previous);
       setHistory(null);
       setNotice("resourceUpdated");
-      await refresh();
+      let newFiles: LocalResource[];
+      try {
+        newFiles = await command<LocalResource[]>("list_local_resources", target);
+      } catch (cause) {
+        // The update happened but the folder could not be read again: nothing
+        // listed from before it is shown as still there.
+        if (request === generation.current) {
+          setFiles([]);
+          setUpdates(null);
+          setCurseforgeSkipped(false);
+          setCurseforgeFailed(false);
+        }
+        throw cause;
+      }
+      if (request !== generation.current) return;
+      setFiles(newFiles);
+      setUpdates((previous) => previous?.filter((item) => newFiles.some((file) => file.fileName === item.fileName)) ?? previous);
     } catch (cause) {
       report(request, cause);
     } finally {
       if (request === generation.current) setBusy("");
     }
-  }, [busy, refresh, report, selectionArgs]);
+  }, [busy, report, selectionArgs]);
 
   const rollback = useCallback(async (entry: ResourceHistory, confirmation = entry.name) => {
     if (!desktop || busy || entry.canRecover || entry.status !== "committed" || !window.confirm(confirmation)) return;
@@ -151,6 +189,8 @@ export function useResourceManager(versionId: string, instanceId?: string) {
       if (request !== generation.current) return;
       setHistory((previous) => previous?.map((item) => item.updateId === result.updateId ? { ...item, status: result.status } : item) ?? previous);
       setUpdates(null);
+      setCurseforgeSkipped(false);
+      setCurseforgeFailed(false);
       setNotice("resourceRolledBack");
       await refresh();
     } catch (cause) {
@@ -173,6 +213,8 @@ export function useResourceManager(versionId: string, instanceId?: string) {
       setHistory((previous) => previous?.map((item) => item.updateId === result.updateId
         ? { ...item, status: result.status, canRecover: false } : item) ?? previous);
       setUpdates(null);
+      setCurseforgeSkipped(false);
+      setCurseforgeFailed(false);
       setNotice("resourceRecovered");
       const [newHistory, newFiles] = await Promise.all([
         command<ResourceHistory[]>("list_resource_update_history", target),
@@ -209,7 +251,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     }
   }, [busy, kind, refresh, report, selectionArgs, t]);
 
-  return { kind, setKind, view, setView, files, updates, history, busy, error, notice, refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles };
+  return { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice, refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles };
 }
 
 export function useWorlds(versionId: string, instanceId?: string) {

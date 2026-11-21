@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import { createLauncherI18n } from "../../i18n";
 import { command, defaults, type Bootstrap, type Instance, type ResourceProject } from "../../lib/launcher";
-import type { ModpackVersion } from "./types";
+import type { LocalResource, ModpackVersion, ResourceUpdate } from "./types";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { instanceTabRegistry } from "../../app/registry";
 import { LibraryPage } from "./LibraryPage";
@@ -35,6 +35,7 @@ vi.mock("../../lib/launcher", async (importOriginal) => ({
 vi.mock("../../app/controller/LauncherProvider", () => ({
   useLauncher: () => mockLauncher,
 }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
 vi.mock("../../app/AppearanceProvider", () => ({
   useAppearance: () => ({ effects: "lite", reducedMotion: true, reducedTransparency: false, highContrast: false }),
 }));
@@ -289,7 +290,9 @@ describe("library and instance details", () => {
     commandMock.mockImplementation(async (name, args) => {
       if (name !== commandName) return normal(name, args);
       requests++;
-      return requests === 1 ? new Promise((_resolve, fail) => { reject = fail; }) : [];
+      return requests === 1
+        ? new Promise((_resolve, fail) => { reject = fail; })
+        : commandName === "check_resource_updates" ? { updates: [], curseforgeSkipped: false } : [];
     });
     await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
     const request = () => [...container.querySelectorAll<HTMLButtonElement>(".vx-toolbar button")].find((button) => button.textContent === action)!.click();
@@ -301,6 +304,261 @@ describe("library and instance details", () => {
     await act(async () => request());
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector(".vx-empty h2")?.textContent).toBe(emptyTitle);
+  });
+
+  it("sends each update row's source and CurseForge file id when applying it", async () => {
+    const updates: ResourceUpdate[] = [
+      { fileName: "curseforge.jar", name: "CF Fixture", currentVersion: "1.0", newVersion: "1.1",
+        projectId: "curseforge-project", newVersionId: "curseforge-version", enabled: true, source: "curseforge", newFileId: 24680 },
+      { fileName: "modrinth.jar", name: "MR Fixture", currentVersion: "2.0", newVersion: "2.1",
+        projectId: "modrinth-project", newVersionId: "modrinth-version", enabled: true, source: "modrinth" },
+    ];
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_resource_updates") return { updates, curseforgeSkipped: false };
+      if (name === "list_local_resources") return [{
+        name: "modrinth.jar", fileName: "modrinth.jar", path: "modrinth.jar", enabled: true, size: 1,
+      }];
+      return [];
+    });
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    await act(async () => find("检查更新").click());
+    expect([...container.querySelectorAll(".vx-resource-row small")].map((node) => node.textContent)).toEqual([
+      "CurseForge · 1.0 → 1.1",
+      "Modrinth · 2.0 → 2.1",
+    ]);
+    const updateButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".vx-resource-row button")];
+    expect(updateButtons()).toHaveLength(2);
+    await act(async () => updateButtons()[0].click());
+    expect(commandMock).toHaveBeenCalledWith("update_resource", {
+      versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack",
+      fileName: "curseforge.jar", newVersionId: "curseforge-version", source: "curseforge", newFileId: 24680,
+    });
+    expect(updateButtons()).toHaveLength(1);
+    await act(async () => updateButtons()[0].click());
+    expect(commandMock).toHaveBeenCalledWith("update_resource", {
+      versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack",
+      fileName: "modrinth.jar", newVersionId: "modrinth-version", source: "modrinth", newFileId: null,
+    });
+  });
+
+  it("drops every update row whose file the applied update removed", async () => {
+    const updates: ResourceUpdate[] = [
+      { fileName: "a.jar", name: "CF A", currentVersion: "1.0", newVersion: "1.1",
+        projectId: "a-project", newVersionId: "a-version", enabled: true, source: "curseforge", newFileId: 11 },
+      { fileName: "b.jar", name: "CF B", currentVersion: "2.0", newVersion: "2.1",
+        projectId: "b-project", newVersionId: "b-version", enabled: true, source: "curseforge", newFileId: 22 },
+    ];
+    const fileLists: LocalResource[][] = [
+      [],
+      [{ name: "a-1.1.jar", fileName: "a-1.1.jar", path: "a-1.1.jar", enabled: true, size: 1 }],
+    ];
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_resource_updates") return { updates, curseforgeSkipped: false };
+      if (name === "list_local_resources") return fileLists.shift() ?? [];
+      return [];
+    });
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    await act(async () => find("检查更新").click());
+    const rows = () => [...container.querySelectorAll<HTMLElement>(".vx-resource-row")];
+    expect(rows().map((row) => row.querySelector("strong")?.textContent)).toEqual(["CF A", "CF B"]);
+    await act(async () => rows()[0].querySelector<HTMLButtonElement>("button")!.click());
+    expect(rows()).toHaveLength(0);
+    expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(2);
+  });
+
+  it("keeps an update row whose file still exists after applying a different row", async () => {
+    const updates: ResourceUpdate[] = [
+      { fileName: "a.jar", name: "CF A", currentVersion: "1.0", newVersion: "1.1",
+        projectId: "a-project", newVersionId: "a-version", enabled: true, source: "curseforge", newFileId: 11 },
+      { fileName: "b.jar", name: "CF B", currentVersion: "2.0", newVersion: "2.1",
+        projectId: "b-project", newVersionId: "b-version", enabled: true, source: "curseforge", newFileId: 22 },
+    ];
+    const fileLists: LocalResource[][] = [
+      [],
+      [
+        { name: "a-1.1.jar", fileName: "a-1.1.jar", path: "a-1.1.jar", enabled: true, size: 1 },
+        { name: "b.jar", fileName: "b.jar", path: "b.jar", enabled: true, size: 2 },
+      ],
+      [],
+    ];
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_resource_updates") return { updates, curseforgeSkipped: false };
+      if (name === "list_local_resources") return fileLists.shift() ?? [];
+      return [];
+    });
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    const rows = () => [...container.querySelectorAll<HTMLElement>(".vx-resource-row")];
+    await act(async () => find("检查更新").click());
+    expect(rows()).toHaveLength(2);
+    await act(async () => rows()[0].querySelector<HTMLButtonElement>("button")!.click());
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0].querySelector("strong")?.textContent).toBe("CF B");
+    await act(async () => rows()[0].querySelector<HTMLButtonElement>("button")!.click());
+    expect(commandMock).toHaveBeenCalledWith("update_resource", {
+      versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack",
+      fileName: "b.jar", newVersionId: "b-version", source: "curseforge", newFileId: 22,
+    });
+    expect(rows()).toHaveLength(0);
+  });
+
+  it("lists nothing from before an update when reading the folder again fails", async () => {
+    const updates: ResourceUpdate[] = [
+      { fileName: "a.jar", name: "CF A", currentVersion: "1.0", newVersion: "1.1",
+        projectId: "a-project", newVersionId: "a-version", enabled: true, source: "curseforge", newFileId: 11 },
+      { fileName: "b.jar", name: "CF B", currentVersion: "2.0", newVersion: "2.1",
+        projectId: "b-project", newVersionId: "b-version", enabled: true, source: "curseforge", newFileId: 22 },
+    ];
+    let lists = 0;
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_resource_updates") return { updates, curseforgeSkipped: true };
+      if (name === "list_local_resources") {
+        lists++;
+        if (lists > 1) throw new Error("Fixture folder unreadable");
+        return [
+          { name: "a.jar", fileName: "a.jar", path: "a.jar", enabled: true, size: 1 },
+          { name: "b.jar", fileName: "b.jar", path: "b.jar", enabled: true, size: 2 },
+        ];
+      }
+      return [];
+    });
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    const tab = (label: string) => [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find((node) => node.textContent === label)!;
+    const rows = () => [...container.querySelectorAll<HTMLElement>(".vx-resource-row")];
+    expect(rows()).toHaveLength(2);
+    await act(async () => find("检查更新").click());
+    expect(rows()).toHaveLength(2);
+    await act(async () => rows()[0].querySelector<HTMLButtonElement>("button")!.click());
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(rows()).toHaveLength(0);
+    expect(container.textContent).not.toContain("未设置 CurseForge API Key");
+    await act(async () => tab("文件").click());
+    expect(rows()).toHaveLength(0);
+  });
+
+  it.each([
+    ["回滚", "rollback_resource_update", { status: "committed", canRecover: false }],
+    ["恢复中断事务", "recover_resource_update", { status: "rollingBack", canRecover: true }],
+  ])("clears the CurseForge notices when %s empties the update list", async (action, commandName, state) => {
+    const entry = { updateId: "fixture-entry", name: "资源更新", createdAt: "2026-11-16", projects: [], ...state };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_resource_updates") return { updates: [], curseforgeSkipped: false, curseforgeError: "fixture" };
+      if (name === "list_resource_update_history") return [entry];
+      if (name === commandName) return { updateId: entry.updateId, restoredFiles: 1, status: "rolledBack" };
+      return [];
+    });
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    const tab = (label: string) => [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find((node) => node.textContent === label)!;
+    const failed = "未能检查 CurseForge 文件的更新，下面只有 Modrinth 的结果。";
+    try {
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => find("检查更新").click());
+      expect(container.textContent).toContain(failed);
+      await act(async () => find("更新历史").click());
+      await act(async () => find(action).click());
+      expect(commandMock.mock.calls.some(([name]) => name === commandName)).toBe(true);
+      await act(async () => tab("更新").click());
+      expect(container.textContent).not.toContain(failed);
+      expect(container.querySelector(".vx-empty h2")?.textContent).toBe("尚未检查更新");
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("offers a manual download link instead of an update action for restricted CurseForge files", async () => {
+    const projectUrl = "https://www.curseforge.com/minecraft/mc-mods/manual-fixture";
+    const update: ResourceUpdate = {
+      fileName: "manual.jar", name: "Manual Fixture", currentVersion: "1.0", newVersion: "1.1",
+      projectId: "manual-project", newVersionId: "manual-version", enabled: true,
+      source: "curseforge", newFileId: 13579, manualOnly: true, projectUrl,
+    };
+    commandMock.mockImplementation(async (name) => name === "check_resource_updates"
+      ? { updates: [update], curseforgeSkipped: false }
+      : []);
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    await act(async () => find("检查更新").click());
+    const row = container.querySelector<HTMLElement>(".vx-resource-row")!;
+    expect(row.textContent).toContain("CurseForge");
+    expect(row.textContent).toContain("作者只允许在 CurseForge 下载此文件。");
+    expect(row.querySelector("button")).toBeNull();
+    const link = row.querySelector<HTMLAnchorElement>("a")!;
+    expect(link.textContent).toBe("手动下载");
+    expect(link.getAttribute("href")).toBe(projectUrl);
+    await act(async () => link.click());
+    expect(commandMock.mock.calls.some(([name]) => name === "update_resource")).toBe(false);
+  });
+
+  it.each<[string, ResourceUpdate[]]>([
+    ["a populated list", [{
+      fileName: "curseforge.jar", name: "CF Fixture", currentVersion: "1.0", newVersion: "1.1",
+      projectId: "curseforge-project", newVersionId: "curseforge-version", enabled: true, source: "curseforge", newFileId: 9876,
+    }]],
+    ["an empty list", []],
+  ])("shows the CurseForge-skipped notice with %s", async (_label, updates) => {
+    commandMock.mockImplementation(async (name) => name === "check_resource_updates"
+      ? { updates, curseforgeSkipped: true }
+      : []);
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    await act(async () => find("检查更新").click());
+    expect(container.textContent).toContain("未设置 CurseForge API Key，未检查 CurseForge 文件的更新。");
+    expect(container.querySelectorAll(".vx-inline-notice")).toHaveLength(1);
+  });
+
+  it("shows the CurseForge failure notice while keeping the Modrinth rows", async () => {
+    const updates: ResourceUpdate[] = [{
+      fileName: "modrinth.jar", name: "MR Fixture", currentVersion: "2.0", newVersion: "2.1",
+      projectId: "modrinth-project", newVersionId: "modrinth-version", enabled: true, source: "modrinth",
+    }];
+    commandMock.mockImplementation(async (name) => name === "check_resource_updates"
+      ? { updates, curseforgeSkipped: false, curseforgeError: "CurseForge 服务暂时不可用" }
+      : []);
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    await act(async () => find("检查更新").click());
+    expect(container.textContent).toContain("未能检查 CurseForge 文件的更新，下面只有 Modrinth 的结果。");
+    expect(container.textContent).not.toContain("CurseForge 服务暂时不可用");
+    expect(container.querySelectorAll(".vx-inline-notice")).toHaveLength(1);
+    const rows = [...container.querySelectorAll(".vx-resource-row")];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("MR Fixture");
+    expect(rows[0].textContent).toContain("Modrinth · 2.0 → 2.1");
+  });
+
+  it("clears both CurseForge notices after a failed check and a clean result", async () => {
+    let checks = 0;
+    let fail: (error: Error) => void = () => {};
+    commandMock.mockImplementation(async (name) => {
+      if (name !== "check_resource_updates") return [];
+      checks++;
+      if (checks === 1) return { updates: [], curseforgeSkipped: true, curseforgeError: "fixture-curseforge-diagnostic" };
+      if (checks === 2) return new Promise((_resolve, reject) => { fail = reject; });
+      return { updates: [], curseforgeSkipped: false };
+    });
+    await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+    const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+    const notices = () => [...container.querySelectorAll(".vx-inline-notice")].map((node) => node.textContent);
+    await act(async () => find("检查更新").click());
+    expect(notices()).toEqual([
+      "未设置 CurseForge API Key，未检查 CurseForge 文件的更新。",
+      "未能检查 CurseForge 文件的更新，下面只有 Modrinth 的结果。",
+    ]);
+    expect(container.textContent).not.toContain("fixture-curseforge-diagnostic");
+    expect(container.querySelector(".vx-empty h2")?.textContent).toBe("没有可用更新");
+    await act(async () => find("检查更新").click());
+    expect(notices()).toEqual([]);
+    await act(async () => fail(new Error("Fixture request failed")));
+    expect(notices()).toEqual([]);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    await act(async () => find("检查更新").click());
+    expect(notices()).toEqual([]);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector(".vx-empty h2")?.textContent).toBe("没有可用更新");
   });
 
   it("only recovers an interrupted resource transaction after confirmation", async () => {

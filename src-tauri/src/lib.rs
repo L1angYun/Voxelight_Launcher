@@ -24,6 +24,7 @@ mod network;
 mod parts;
 mod path_grants;
 mod platform;
+mod request_pacing;
 mod process_output;
 mod processes;
 mod resource_targets;

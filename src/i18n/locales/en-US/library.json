@@ -76,6 +76,14 @@
   "enabled": "Enabled",
   "disabled": "Disabled",
   "update": "Update",
+  "manualDownload": "Download manually",
+  "manualOnlyHint": "The author only allows downloads from CurseForge.",
+  "curseforgeSkipped": "No CurseForge API key is set, so CurseForge files were not checked for updates.",
+  "curseforgeFailed": "CurseForge files could not be checked for updates; only Modrinth results are shown.",
+  "source": {
+    "modrinth": "Modrinth",
+    "curseforge": "CurseForge"
+  },
   "updatesNotChecked": "Updates not checked",
   "noUpdates": "No updates available",
   "historyNotLoaded": "History not loaded",
