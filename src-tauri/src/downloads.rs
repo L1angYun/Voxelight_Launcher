@@ -138,6 +138,8 @@ pub struct DownloadControl {
     limit_kib: AtomicU64,
     next_slot: Mutex<Instant>,
     journal: Option<PathBuf>,
+    /// Milliseconds without data before a transfer fails; 0 is the default.
+    stall_ms: AtomicU64,
 }
 
 impl Default for DownloadControl {
@@ -148,6 +150,7 @@ impl Default for DownloadControl {
             limit_kib: AtomicU64::new(0),
             next_slot: Mutex::new(Instant::now()),
             journal: None,
+            stall_ms: AtomicU64::new(0),
         }
     }
 }
@@ -569,6 +572,19 @@ impl DownloadControl {
             Some(signal) => checkpoint(signal).await,
             None => Ok(()),
         }
+    }
+
+    /// How long a transfer may go without data (crate::parts::STALL).
+    pub(crate) fn stall_limit(&self) -> Duration {
+        match self.stall_ms.load(Ordering::Relaxed) {
+            0 => crate::parts::STALL,
+            ms => Duration::from_millis(ms),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_stall_limit(&self, limit: Duration) {
+        self.stall_ms.store(limit.as_millis().max(1) as u64, Ordering::Relaxed);
     }
 
     pub async fn during_cancellable_io<F: Future>(&self, future: F) -> Result<F::Output, String> {

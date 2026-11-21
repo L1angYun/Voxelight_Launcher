@@ -21,6 +21,7 @@ mod models;
 mod mod_metadata;
 mod modpacks;
 mod network;
+mod parts;
 mod path_grants;
 mod platform;
 mod process_output;
@@ -140,6 +141,14 @@ pub fn run() {
             app.manage(path_grants::PathGrants::default());
             app.manage(std::sync::Arc::new(updates::UpdateService::default()));
             tauri::async_runtime::spawn_blocking(updates::sweep::sweep_on_startup);
+            {
+                // Parts nobody resumed for a week, then the oldest above 4 GiB (U0266).
+                let (data_dir, game_directory) = (state.data_dir.clone(), config.game_directory.clone());
+                tauri::async_runtime::spawn_blocking(move || {
+                    let game_root = processes::configured_game_root(Path::new(&game_directory)).ok();
+                    parts::sweep_on_startup(parts::startup_stores(&data_dir, game_root.as_deref()));
+                });
+            }
             app.manage(state.clone());
             #[cfg(windows)]
             if let Ok(snapshot) = state.snapshot() {

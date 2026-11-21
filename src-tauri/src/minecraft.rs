@@ -1160,6 +1160,24 @@ impl DownloadPolicy<'_> {
     }
 }
 
+impl crate::parts::Hooks for DownloadPolicy<'_> {
+    async fn cancellable<F: std::future::Future>(&self, future: F) -> Result<F::Output, String> {
+        DownloadPolicy::cancellable(*self, future).await
+    }
+    async fn checkpoint(&self) -> Result<(), String> {
+        DownloadPolicy::checkpoint(*self).await
+    }
+    async fn throttle(&self, bytes: usize) -> Result<(), String> {
+        DownloadPolicy::throttle(*self, bytes).await
+    }
+    fn stall_limit(&self) -> Duration {
+        match self {
+            Self::Foreground(control) | Self::Preview(control) => control.stall_limit(),
+            Self::Uncapped => crate::parts::STALL,
+        }
+    }
+}
+
 async fn download_once(
     client: &reqwest::Client,
     file: &Download,
@@ -1173,8 +1191,9 @@ async fn download_once(
     tokio::fs::create_dir_all(parent)
         .await
         .map_err(|e| e.to_string())?;
-    let response = policy
-        .cancellable(client.get(request_url).send())
+    // A file transfer fails when it stalls, not when it takes long.
+    let request = client.get(request_url).timeout(crate::parts::TRANSFER_TIMEOUT);
+    let response = crate::parts::within_stall(&policy, request.send())
         .await?
         // reqwest errors print the request URL; keep it (and any signed query) out of logs.
         .map_err(|error| error.without_url().to_string())?
@@ -1195,7 +1214,7 @@ async fn download_once(
     let mut chunks = response.bytes_stream();
     let mut hash = Sha1::new();
     let mut size = 0u64;
-    while let Some(chunk) = policy.cancellable(chunks.next()).await? {
+    while let Some(chunk) = crate::parts::within_stall(&policy, chunks.next()).await? {
         policy.checkpoint().await?;
         let chunk = chunk.map_err(|error| error.to_string())?;
         size += chunk.len() as u64;
@@ -1227,6 +1246,64 @@ async fn download_once(
         .map_err(|error| format!("保存已校验文件失败：{error}"))
 }
 
+/// One attempt that continues this file's part (U0266) instead of starting at
+/// byte zero. The whole part is checked against the metadata SHA-1 and size
+/// before it replaces the target; a part that fails is discarded.
+async fn download_resumable(
+    client: &reqwest::Client,
+    file: &Download,
+    url: &str,
+    policy: DownloadPolicy<'_>,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+    slot: &mut Option<crate::parts::ResumablePart>,
+) -> Result<(), String> {
+    trusted_url(url)?;
+    let size = file.size.ok_or("续传需要已知的文件大小")?;
+    let requested = reqwest::Url::parse(&resolve_request_url(url, resolver)?).map_err(|_| "下载地址格式错误")?;
+    let parent = file.path.parent().ok_or("下载路径缺少父目录")?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut hash = Sha1::new();
+    crate::parts::transfer(client.get(requested.clone()), &requested, slot, size, &policy, &|_| Ok(()), &mut |bytes| hash.update(bytes))
+        .await?;
+    let part = slot.take().ok_or("下载分片不可用")?;
+    if format!("{:x}", hash.finalize()) != file.sha1 {
+        part.discard();
+        return Err("SHA-1 或文件大小校验失败".into());
+    }
+    // A cancel here keeps the complete part; the next attempt only checks it.
+    policy.checkpoint().await?;
+    crate::parts::publish_off_task(part, &file.path)
+        .await
+        .map_err(|error| format!("保存已校验文件失败：{error}"))
+}
+
+/// Where parts for `target` live: under the configured game root or the
+/// launcher data directory that holds it, so publishing is a rename on one
+/// volume. Other targets keep the one-shot download.
+fn part_store_for(state: &LauncherState, file: &Download) -> Option<crate::parts::PartStore> {
+    if !file.size.is_some_and(|size| size >= crate::parts::RESUME_MIN) || !valid_sha1(&file.sha1) {
+        return None;
+    }
+    // The canonical root, as the install builds its targets from it.
+    let game_root = state
+        .snapshot()
+        .ok()
+        .and_then(|snapshot| crate::processes::configured_game_root(Path::new(&snapshot.config.game_directory)).ok());
+    part_root_for(game_root, &state.data_dir, &file.path).map(crate::parts::PartStore::new)
+}
+
+/// The parts folder for `target`: inside the root (the game root first) that
+/// holds it.
+fn part_root_for(game_root: Option<PathBuf>, data_dir: &Path, target: &Path) -> Option<PathBuf> {
+    game_root
+        .into_iter()
+        .chain(std::iter::once(data_dir.to_path_buf()))
+        .find(|root| !root.as_os_str().is_empty() && root.is_absolute() && target.starts_with(root))
+        .map(|root| root.join(".launcher-temp").join("parts"))
+}
+
 #[cfg(test)]
 pub(crate) async fn ensure_download_with_control(
     client: &reqwest::Client,
@@ -1247,7 +1324,7 @@ pub(crate) async fn ensure_download_with_source_and_control(
     let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
     ensure_download_with_policy(
         state.client()?, state.mirror_client().map(Some), file, source, policy, &identity_url,
-        Some(&state.data_dir), false,
+        Some(&state.data_dir), false, part_store_for(state, file).as_ref(),
     ).await
 }
 
@@ -1264,7 +1341,7 @@ pub(crate) async fn ensure_loader_download(
     let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
     ensure_download_with_policy(
         state.client()?, state.mirror_client().map(Some), file, source, policy, &identity_url,
-        Some(&state.data_dir), true,
+        Some(&state.data_dir), true, part_store_for(state, file).as_ref(),
     ).await
 }
 
@@ -1277,7 +1354,7 @@ async fn ensure_download_with_source_and_control_resolved(
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<bool, String> {
     let policy = control.map_or(DownloadPolicy::Uncapped, DownloadPolicy::Foreground);
-    ensure_download_with_policy(client, mirror, file, source, policy, resolver, None, false).await
+    ensure_download_with_policy(client, mirror, file, source, policy, resolver, None, false, None).await
 }
 
 pub(crate) async fn ensure_preview_download(
@@ -1287,7 +1364,7 @@ pub(crate) async fn ensure_preview_download(
 ) -> Result<bool, String> {
     // As before, default skin bytes are fetched from their verified official
     // client URL, even when official metadata came from an enabled mirror.
-    ensure_download_with_policy(client, Ok(None), file, "official", DownloadPolicy::Preview(control), &identity_url, None, false).await
+    ensure_download_with_policy(client, Ok(None), file, "official", DownloadPolicy::Preview(control), &identity_url, None, false, None).await
 }
 
 async fn ensure_download_with_policy(
@@ -1299,11 +1376,23 @@ async fn ensure_download_with_policy(
     resolver: &(dyn Fn(&str) -> String + Sync),
     fallback_data_dir: Option<&Path>,
     loader_install: bool,
+    parts: Option<&crate::parts::PartStore>,
 ) -> Result<bool, String> {
     policy.checkpoint().await?;
     if file_valid(file).await? {
         return Ok(false);
     }
+    // Files of 1 MiB or more continue their part across attempts, cancels and
+    // restarts. Without a part (held by another download, or none applies)
+    // the file is fetched in one go as before.
+    let key = parts
+        .and(file.size.filter(|size| *size >= crate::parts::RESUME_MIN))
+        .and_then(|size| crate::parts::PartKey::new(crate::parts::Algo::Sha1, &file.sha1, size));
+    let open_part = || -> Option<crate::parts::ResumablePart> {
+        let (store, key, size) = (parts?, key.as_ref()?, file.size?);
+        store.open(key, size).ok().flatten()
+    };
+    let mut slot = open_part();
     if file.url.is_empty() {
         return Err(format!(
             "缺少安装器后处理生成的文件：{}；请重新安装对应加载器",
@@ -1324,30 +1413,75 @@ async fn ensure_download_with_policy(
     };
     let attempts = if candidates.len() == 1 { 3 } else { 1 };
     let mut errors = Vec::new();
-    for candidate in candidates {
+    let mut tries = 0;
+    // Bytes a candidate added during this download are not thrown away by a
+    // later candidate from another origin (that one fetches in one go).
+    let mut written_here = false;
+    let count = candidates.len();
+    for (index, candidate) in candidates.into_iter().enumerate() {
         let candidate_client = if candidate.mirror {
             mirror_client.unwrap_or(client)
         } else {
             client
         };
-        for attempt in 0..attempts {
+        let origin = resolve_request_url(&candidate.url, resolver)
+            .ok()
+            .and_then(|url| reqwest::Url::parse(&url).ok())
+            .map(|url| crate::parts::origin(&url))
+            .unwrap_or_default();
+        // One try stays in reserve for each later candidate, so a source that
+        // keeps adding bytes never starves the fallback to the next one.
+        let reserve = count - index - 1;
+        let mut attempt = 0;
+        let mut refetched = false;
+        while attempt < attempts && tries + reserve < MAX_DOWNLOAD_TRIES {
+            tries += 1;
             policy.checkpoint().await?;
-            match download_once(candidate_client, file, &candidate.url, policy, resolver).await {
-                Ok(()) => return Ok(true),
-                Err(error) => {
-                    if candidate.mirror && strict_loader {
-                        if let Some(data_dir) = fallback_data_dir {
-                            record_loader_mirror_fallback(data_dir, LoaderMirrorStage::Artifact);
-                        }
-                    }
-                    // No full URL: a signed query string must not reach the log.
-                    errors.push(format!("{}：{error}", candidate_label(&candidate.url, candidate.mirror)));
+            if slot.is_none() && key.is_some() {
+                slot = open_part();
+            }
+            let protect = written_here && slot.as_ref().is_some_and(|part| part.holds_bytes_from_another(&origin));
+            let before = slot.as_ref().map(crate::parts::ResumablePart::mark);
+            let result = if slot.is_some() && !protect {
+                download_resumable(candidate_client, file, &candidate.url, policy, resolver, &mut slot).await
+            } else {
+                download_once(candidate_client, file, &candidate.url, policy, resolver).await
+            };
+            if result.is_ok() && protect {
+                // The file is in place; the other source's bytes are not needed.
+                if let Some(part) = slot.take() {
+                    part.discard();
                 }
             }
+            // An attempt that continued the part and added bytes does not use up
+            // the budget, so a long file finishes over several interrupted
+            // attempts. One that started over (a server ignoring Range) does.
+            let after = slot.as_ref().map(crate::parts::ResumablePart::mark);
+            let progressed = crate::parts::progressed(before.as_ref(), after.as_ref());
+            written_here = slot.is_some() && (written_here || crate::parts::wrote(before.as_ref(), after.as_ref()));
+            // A discarded part (failed check, wrong range) gets one fetch from
+            // zero on the same candidate before the next candidate is tried.
+            let discarded = before.is_some() && slot.is_none() && result.is_err();
+            if !progressed && !(discarded && !refetched) {
+                attempt += 1;
+            }
+            refetched |= discarded;
+            match result {
+                Ok(()) => return Ok(true),
+                // No full URL: a signed query string must not reach the log.
+                Err(error) => errors.push(format!("{}：{error}", candidate_label(&candidate.url, candidate.mirror))),
+            }
             policy.checkpoint().await?;
-            if attempt + 1 < attempts {
-                policy.cancellable(tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))))
+            if attempt < attempts && tries + reserve < MAX_DOWNLOAD_TRIES {
+                policy.cancellable(tokio::time::sleep(Duration::from_millis(500 * attempt.max(1) as u64)))
                     .await?;
+            }
+        }
+        // One record per rejected mirror, however many tries it took (the
+        // reserve gives every candidate at least one).
+        if candidate.mirror && strict_loader {
+            if let Some(data_dir) = fallback_data_dir {
+                record_loader_mirror_fallback(data_dir, LoaderMirrorStage::Artifact);
             }
         }
     }
@@ -1357,6 +1491,10 @@ async fn ensure_download_with_policy(
         errors.join("；")
     ))
 }
+
+/// Every attempt of one file, over all candidates, including attempts that
+/// added bytes to its part (each later candidate keeps one in reserve).
+const MAX_DOWNLOAD_TRIES: usize = 12;
 
 /// Whether a download uses the allowlisted client for mirror candidates and logs
 /// a rejected mirror: every loader-install download, plus loader hosts anywhere.
@@ -5641,6 +5779,416 @@ mod tests {
                 directory.display()
             );
         });
+    }
+
+    use crate::parts::range_server::{RangeServer, Scripted};
+
+    /// 3 MiB of bytes that differ by position, so a misplaced byte changes the hash.
+    fn u0266_bytes(size: usize) -> Vec<u8> {
+        (0..size).map(|index| (index * 31 % 251) as u8).collect()
+    }
+
+    struct U0266 {
+        directory: PathBuf,
+        store: crate::parts::PartStore,
+        file: Download,
+    }
+
+    impl U0266 {
+        fn new(label: &str, bytes: &[u8]) -> Self {
+            let directory = source_test_directory(&format!("u0266-{label}"));
+            fs::create_dir_all(directory.join("game")).unwrap();
+            Self {
+                store: crate::parts::PartStore::new(directory.join(".launcher-temp").join("parts")),
+                file: Download {
+                    path: directory.join("game").join("client.jar"),
+                    url: "https://piston-data.mojang.com/v1/objects/fixture/client.jar".into(),
+                    sha1: format!("{:x}", Sha1::digest(bytes)),
+                    size: Some(bytes.len() as u64),
+                },
+                directory,
+            }
+        }
+        async fn run(&self, server: &RangeServer, policy: DownloadPolicy<'_>) -> Result<bool, String> {
+            self.run_from(server, policy, "official").await
+        }
+        /// With "auto" or "bmclapi" both the official host and the mirror are
+        /// candidates; the server sees which one from the path.
+        async fn run_from(&self, server: &RangeServer, policy: DownloadPolicy<'_>, source: &str) -> Result<bool, String> {
+            let client = crate::storage::test_client();
+            let address = server.address.clone();
+            let resolve = move |url: &str| TestServer::resolve(&address, url);
+            ensure_download_with_policy(&client, Ok(Some(&client)), &self.file, source, policy, &resolve, None, false, Some(&self.store)).await
+        }
+        fn parts(&self) -> Vec<String> {
+            let mut names: Vec<_> = fs::read_dir(self.store.root())
+                .map(|entries| entries.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect())
+                .unwrap_or_default();
+            names.sort();
+            names
+        }
+        fn target_entries(&self) -> Vec<String> {
+            fs::read_dir(self.directory.join("game")).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()
+        }
+    }
+
+    impl Drop for U0266 {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Runtime::new().unwrap().block_on(future)
+    }
+
+    #[test]
+    fn u0266_an_interrupted_download_resumes_from_its_offset_without_sending_bytes_twice() {
+        let bytes = u0266_bytes(3 * MIB);
+        let fixture = U0266::new("resume", &bytes);
+        let server = RangeServer::new(vec![
+            Scripted::ok(&bytes, "\"v1\"").cut(MIB),
+            Scripted::partial(&bytes, MIB, "\"v1\""),
+        ]);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+        assert_eq!(server.count(), 2);
+        assert_eq!(server.header(0, "range"), None);
+        assert_eq!(server.header(1, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(server.header(1, "if-range").as_deref(), Some("\"v1\""));
+        assert_eq!(server.sent.load(Ordering::SeqCst), 3 * MIB, "every byte was sent once");
+        assert_eq!(fixture.target_entries(), ["client.jar"], "no part beside the target");
+        assert!(fixture.parts().is_empty(), "the published part leaves nothing behind: {:?}", fixture.parts());
+    }
+
+    #[test]
+    fn u0266_a_server_that_ignores_range_restarts_the_part_cleanly() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("ignore-range", &bytes);
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").cut(MIB), Scripted::ok(&bytes, "\"v1\"")]);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(server.header(1, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes, "no byte appended twice");
+    }
+
+    #[test]
+    fn u0266_a_wrong_range_discards_the_part_and_the_next_attempt_starts_over() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("wrong-range", &bytes);
+        let wrong = Scripted::partial(&bytes, 0, "\"v1\"")
+            .with_headers(vec![("ETag", "\"v1\"".into()), ("Content-Range", format!("bytes 0-{}/{}", bytes.len() - 1, bytes.len()))]);
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").cut(MIB), wrong, Scripted::ok(&bytes, "\"v2\"")]);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(server.count(), 3);
+        assert_eq!(server.header(1, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(server.header(2, "range"), None, "the part was discarded, so the whole file is asked for");
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_a_changed_file_answers_if_range_with_the_whole_file() {
+        let old = u0266_bytes(2 * MIB);
+        let mut bytes = old.clone();
+        bytes[0] ^= 0xff;
+        let fixture = U0266::new("if-range", &bytes);
+        // The first attempt got half of an older file; the server now has a new tag.
+        let server = RangeServer::new(vec![Scripted::ok(&old, "\"old\"").cut(MIB), Scripted::ok(&bytes, "\"new\"")]);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(server.header(1, "if-range").as_deref(), Some("\"old\""));
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_a_corrupted_prefix_fails_the_check_and_one_full_download_follows() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("corrupt", &bytes);
+        let server = RangeServer::new(vec![Scripted::partial(&bytes, MIB, "\"v1\""), Scripted::ok(&bytes, "\"v1\"")]);
+        // A part from this server with one damaged byte, as a disk or another program might leave it.
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &fixture.file.sha1, bytes.len() as u64).unwrap();
+        let mut part = fixture.store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        let origin = crate::parts::Validator { origin: format!("http://{}", server.address), etag: Some("\"v1\"".into()), last_modified: None };
+        part.restart(origin).unwrap();
+        let mut kept = bytes[..MIB].to_vec();
+        kept[10] ^= 1;
+        part.append(&kept).unwrap();
+        drop(part);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(server.count(), 2);
+        assert_eq!(server.header(0, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(server.header(1, "range"), None);
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_a_cancelled_download_keeps_its_part_outside_the_target_and_resumes_next_time() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("cancel", &bytes);
+        // One server for both runs: a resume goes back to the same origin.
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").stall(MIB), Scripted::partial(&bytes, MIB, "\"v1\"")]);
+        block_on(async {
+            let control = crate::downloads::DownloadControl::default();
+            let task = control.begin("install", "fixture", "Fixture").unwrap();
+            let download = fixture.run(&server, DownloadPolicy::Foreground(&control));
+            tokio::pin!(download);
+            let cancel = async {
+                let part = fixture.store.root().join(format!("sha1-{}-{}.part", fixture.file.sha1, bytes.len()));
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while fs::metadata(&part).map_or(0, |meta| meta.len()) < MIB as u64 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                control.cancel(&task);
+            };
+            let (result, ()) = futures_util::future::join(download, cancel).await;
+            assert!(result.unwrap_err().contains("任务已取消"));
+        });
+        assert_eq!(fixture.target_entries(), Vec::<String>::new(), "nothing beside the target");
+        let parts = fixture.parts();
+        assert!(parts.iter().any(|name| name.ends_with(".part")) && parts.iter().any(|name| name.ends_with(".json")), "{parts:?}");
+        // A later run (a new task, or after a restart) continues from the recorded offset.
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(server.header(1, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_a_part_held_elsewhere_falls_back_to_a_whole_download() {
+        let bytes = u0266_bytes(MIB + 10);
+        let fixture = U0266::new("held", &bytes);
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &fixture.file.sha1, bytes.len() as u64).unwrap();
+        let held = fixture.store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"")]);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+        assert_eq!(server.header(0, "range"), None);
+        // On disk, not only in memory: the held part and its folder are untouched.
+        assert_eq!(fixture.parts(), [format!("sha1-{}-{}.lock", fixture.file.sha1, bytes.len()), format!("sha1-{}-{}.part", fixture.file.sha1, bytes.len())]);
+        assert_eq!(fs::metadata(fixture.store.root().join(format!("sha1-{}-{}.part", fixture.file.sha1, bytes.len()))).unwrap().len(), 0);
+        assert!(fixture.store.open(&key, bytes.len() as u64).unwrap().is_none(), "still held");
+        drop(held);
+    }
+
+    #[test]
+    fn u0266_small_files_never_create_parts() {
+        let bytes = u0266_bytes(MIB - 1);
+        let fixture = U0266::new("small", &bytes);
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").cut(1000), Scripted::ok(&bytes, "\"v1\"")]);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(server.header(1, "range"), None, "a small file is fetched whole again");
+        assert!(!fixture.store.root().exists(), "no parts folder for small files");
+    }
+
+    #[test]
+    fn u0266_a_stalled_transfer_fails_after_the_stall_limit_and_resumes() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("stall", &bytes);
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").stall(MIB), Scripted::partial(&bytes, MIB, "\"v1\"")]);
+        let control = crate::downloads::DownloadControl::default();
+        // Generous enough for a loaded machine, well below the server's 10 s hold.
+        control.set_stall_limit(Duration::from_secs(2));
+        let _task = control.begin("install", "fixture", "Fixture").unwrap();
+        let started = std::time::Instant::now();
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Foreground(&control))).unwrap());
+        assert!(started.elapsed() < Duration::from_secs(8), "the stall ended the attempt, not the server's release");
+        assert_eq!(server.header(1, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_attempts_that_add_bytes_do_not_use_up_the_retry_budget() {
+        let bytes = u0266_bytes(5 * MIB);
+        let fixture = U0266::new("budget", &bytes);
+        // Five interrupted attempts, each adding one MiB: more than the three a single source gets.
+        let mut script = vec![Scripted::ok(&bytes, "\"v1\"").cut(MIB)];
+        for from in 1..5 {
+            script.push(Scripted::partial(&bytes, from * MIB, "\"v1\"").cut(if from < 4 { MIB } else { usize::MAX }));
+        }
+        let server = RangeServer::new(script);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).unwrap());
+        assert_eq!(server.count(), 5);
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    const OFFICIAL_PATH: &str = "/piston-data.mojang.com/";
+
+    #[test]
+    fn u0266_a_discarded_part_gets_one_fresh_fetch_from_the_same_source() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("discard-auto", &bytes);
+        // A complete part that fails its check: discarded without a request.
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &fixture.file.sha1, bytes.len() as u64).unwrap();
+        let mut part = fixture.store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        part.restart(crate::parts::Validator::default()).unwrap();
+        let mut damaged = bytes.clone();
+        damaged[0] ^= 1;
+        part.append(&damaged).unwrap();
+        drop(part);
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"")]);
+        // "auto": official first, then the mirror, one attempt each.
+        assert!(block_on(fixture.run_from(&server, DownloadPolicy::Uncapped, "auto")).unwrap());
+        assert_eq!(server.count(), 1);
+        assert!(server.header(0, ":path").unwrap().starts_with(OFFICIAL_PATH), "the official source fetched it again from zero");
+        assert_eq!(server.header(0, "range"), None);
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_a_source_that_keeps_adding_bytes_leaves_a_try_for_the_fallback() {
+        let bytes = u0266_bytes(16 * MIB);
+        let fixture = U0266::new("reserve", &bytes);
+        // "bmclapi": the mirror first, official as the fallback. The mirror adds one MiB per try.
+        let mut script = vec![Scripted::ok(&bytes, "\"v1\"").cut(MIB)];
+        for from in 1..11 {
+            script.push(Scripted::partial(&bytes, from * MIB, "\"v1\"").cut(MIB));
+        }
+        script.push(Scripted::partial(&bytes, 11 * MIB, "\"v1\""));
+        let server = RangeServer::new(script);
+        assert!(block_on(fixture.run_from(&server, DownloadPolicy::Uncapped, "bmclapi")).unwrap());
+        assert_eq!(server.count(), 12);
+        for index in 0..11 {
+            assert!(!server.header(index, ":path").unwrap().starts_with(OFFICIAL_PATH), "try {index} went to the mirror");
+        }
+        assert!(server.header(11, ":path").unwrap().starts_with(OFFICIAL_PATH), "the last try was kept for official");
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_a_server_that_always_starts_over_uses_up_the_attempts() {
+        let bytes = u0266_bytes(5 * MIB);
+        let fixture = U0266::new("restarts", &bytes);
+        // Every answer is a whole-file 200 cut a little further each time.
+        let mut script: Vec<_> = (1..5).map(|mib| Scripted::ok(&bytes, "\"v1\"").cut(mib * MIB)).collect();
+        script.push(Scripted::ok(&bytes, "\"v1\""));
+        let server = RangeServer::new(script);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Uncapped)).is_err());
+        // The first try is free (it started an empty part); the three restarts are charged.
+        assert_eq!(server.count(), 4);
+        assert!(!fixture.file.path.exists());
+    }
+
+    #[test]
+    fn u0266_parts_go_under_the_root_that_holds_the_target() {
+        let game = Path::new("D:\\Games\\MC");
+        let data = Path::new("C:\\Users\\x\\AppData\\Local\\dev.voxelight.launcher");
+        let parts = |root: &Path| root.join(".launcher-temp").join("parts");
+        assert_eq!(part_root_for(Some(game.to_path_buf()), data, &game.join("libraries").join("a.jar")), Some(parts(game)));
+        assert_eq!(part_root_for(Some(game.to_path_buf()), data, &data.join("runtimes").join("java.exe")), Some(parts(data)));
+        assert_eq!(part_root_for(None, data, &data.join("runtimes").join("java.exe")), Some(parts(data)));
+        assert_eq!(part_root_for(Some(game.to_path_buf()), data, Path::new("E:\\elsewhere\\server.jar")), None);
+        assert_eq!(part_root_for(Some(PathBuf::from("relative")), data, Path::new("relative\\a.jar")), None);
+    }
+
+    #[test]
+    fn u0266_the_launcher_picks_parts_through_the_canonical_game_root() {
+        // The configured spelling differs from the canonical one (case); the
+        // install builds its targets from the canonical root.
+        let directory = source_test_directory("u0266-canonical");
+        let game = directory.join("Game");
+        fs::create_dir_all(&game).unwrap();
+        let spelled = PathBuf::from(game.to_string_lossy().to_ascii_lowercase());
+        let canonical = crate::processes::configured_game_root(&game).unwrap();
+        let mut data = crate::models::Persisted::default();
+        data.config.game_directory = spelled.to_string_lossy().into_owned();
+        let state = LauncherState::test_fixture(directory.join("profile"), data, crate::storage::test_client());
+        let file = Download {
+            path: canonical.join("libraries").join("big.jar"),
+            url: "https://libraries.minecraft.net/big.jar".into(),
+            sha1: "a".repeat(40),
+            size: Some(2 * MIB as u64),
+        };
+        let store = part_store_for(&state, &file).expect("a large file under the game root resumes");
+        assert_eq!(store.root(), canonical.join(".launcher-temp").join("parts"));
+        assert!(part_store_for(&state, &Download { size: Some(1000), ..file.clone() }).is_none(), "small files do not");
+        drop(state);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    /// Routes the mirror host to one server and every other host to another.
+    fn two_servers(official: &RangeServer, mirror: &RangeServer) -> impl Fn(&str) -> String + Sync {
+        let (official, mirror) = (official.address.clone(), mirror.address.clone());
+        move |url: &str| {
+            let host = reqwest::Url::parse(url).unwrap().host_str().unwrap_or_default().to_owned();
+            TestServer::resolve(if host == BMCLAPI_HOST { &mirror } else { &official }, url)
+        }
+    }
+
+    async fn run_routed(fixture: &U0266, resolve: &(dyn Fn(&str) -> String + Sync), source: &str) -> Result<bool, String> {
+        let client = crate::storage::test_client();
+        ensure_download_with_policy(&client, Ok(Some(&client)), &fixture.file, source, DownloadPolicy::Uncapped, resolve, None, false, Some(&fixture.store)).await
+    }
+
+    fn sidecar(fixture: &U0266) -> serde_json::Value {
+        let name = format!("sha1-{}-{}.json", fixture.file.sha1, fixture.file.size.unwrap());
+        serde_json::from_slice(&fs::read(fixture.store.root().join(name)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn u0266_a_later_source_never_throws_away_bytes_an_earlier_source_added() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("protect", &bytes);
+        // "bmclapi": the mirror adds 1 MiB, then fails; official's one try is cut too.
+        let mirror = RangeServer::new(vec![Scripted::ok(&bytes, "\"m\"").cut(MIB), Scripted::status(503)]);
+        let official = RangeServer::new(vec![Scripted::ok(&bytes, "\"o\"").cut(MIB / 2)]);
+        let resolve = two_servers(&official, &mirror);
+        assert!(block_on(run_routed(&fixture, &resolve, "bmclapi")).is_err());
+        assert_eq!(official.header(0, "range"), None);
+        let record = sidecar(&fixture);
+        assert_eq!(record["done"], MIB as u64, "official fetched in one go and left the mirror's bytes");
+        assert_eq!(record["validator"]["origin"], format!("http://{}", mirror.address));
+        // Next run: the mirror continues its own bytes.
+        drop((mirror, official));
+        let mirror = RangeServer::new(vec![Scripted::partial(&bytes, MIB, "\"m\"")]);
+        let official = RangeServer::new(vec![]);
+        let resolve = two_servers(&official, &mirror);
+        // The new server listens elsewhere: point the kept bytes at it, as the same host would be.
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &fixture.file.sha1, bytes.len() as u64).unwrap();
+        let mut part = fixture.store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        let mut kept = vec![0u8; 0];
+        part.hash_prefix(|piece| kept.extend_from_slice(piece)).unwrap();
+        part.restart(crate::parts::Validator { origin: format!("http://{}", mirror.address), etag: Some("\"m\"".into()), last_modified: None }).unwrap();
+        part.append(&kept).unwrap();
+        drop(part);
+        assert!(block_on(run_routed(&fixture, &resolve, "bmclapi")).unwrap());
+        assert_eq!(mirror.header(0, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(mirror.header(0, "if-range").as_deref(), Some("\"m\""));
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_bytes_left_by_another_source_in_an_earlier_run_still_restart_from_zero() {
+        let bytes = u0266_bytes(2 * MIB);
+        let fixture = U0266::new("foreign", &bytes);
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &fixture.file.sha1, bytes.len() as u64).unwrap();
+        let mut part = fixture.store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        part.restart(crate::parts::Validator { origin: "https://bmclapi2.bangbang93.com".into(), etag: Some("\"v1\"".into()), last_modified: None }).unwrap();
+        part.append(&bytes[..MIB]).unwrap();
+        drop(part);
+        // "auto": official first. Its first try restarts the foreign part (not charged),
+        // the second continues its own bytes.
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").cut(MIB), Scripted::partial(&bytes, MIB, "\"v1\"")]);
+        assert!(block_on(fixture.run_from(&server, DownloadPolicy::Uncapped, "auto")).unwrap());
+        assert_eq!(server.count(), 2);
+        assert!(server.header(0, ":path").unwrap().starts_with(OFFICIAL_PATH));
+        assert!(server.header(1, ":path").unwrap().starts_with(OFFICIAL_PATH), "official kept its turn");
+        assert_eq!(server.header(0, "range"), None);
+        assert_eq!(server.header(1, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn u0266_a_rejected_strict_mirror_is_recorded_once() {
+        let source = crate::storage::executable_source(include_str!("minecraft.rs"));
+        let (_, body) = source.split_once("async fn ensure_download_with_policy(").unwrap();
+        let (body, _) = body.split_once("\n}").unwrap();
+        assert_eq!(body.matches("record_loader_mirror_fallback(").count(), 1);
+        let record = body.find("record_loader_mirror_fallback(").unwrap();
+        let attempts = body.find("while attempt < attempts").unwrap();
+        let loop_end = body[attempts..].find("\n        }\n").map(|end| attempts + end).unwrap();
+        assert!(record > loop_end, "after the candidate's tries, not inside them");
     }
 }
 

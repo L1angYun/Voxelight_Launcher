@@ -256,7 +256,13 @@ fn sweep_pack_downloads(directory: &Path, min_age: std::time::Duration) {
     let Ok(entries) = fs::read_dir(directory) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".mrpack")) else { continue };
+        // A downloaded archive, or the copy stage_copy was making when the launcher stopped.
+        let Some(id) = name.to_str().and_then(|name| {
+            name.strip_suffix(".mrpack")
+                .or_else(|| name.strip_prefix(".pack-stage-").and_then(|rest| rest.strip_suffix(".part")))
+        }) else {
+            continue;
+        };
         if !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.hyphenated().to_string() == id) {
             continue;
         }
@@ -347,98 +353,246 @@ async fn fetch_verified(
     let cache = safe_join(&cache_root, &format!("{cache_key}.bin"))?;
     let cached = if cache.is_file() { Some(hashes(&cache)?) } else { None };
     if cached.filter(&matches).is_some() {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        if target.exists() {
-            return Err("整合包文件目标已存在".into());
-        }
-        fs::copy(&cache, target).map_err(|e| e.to_string())?;
-        return staged_receipt(target, false, &matches);
+        return stage_copy(&cache, target, false, &matches).await;
     }
     let network = client(&state, true)?;
-    let mut last_error = "整合包没有受支持的下载地址".to_owned();
-    for url in urls.iter().take(8) {
-        state.control.checkpoint().await?;
-        let parsed = match allowed_download(url) {
-            Ok(value) => value,
-            Err(error) => {
-                last_error = error;
-                continue;
-            }
-        };
-        let temporary = safe_join(
-            &cache_root,
-            &format!(".pack-download-{}.part", uuid::Uuid::new_v4()),
-        )?;
-        let result: Result<(String, String, u64), String> = async {
-            let response = network
-                .get(parsed)
-                .send()
-                .await
-                .map_err(|_| "整合包文件下载失败")?;
-            if !response.status().is_success() {
-                return Err(format!(
-                    "整合包文件下载失败（HTTP {}）",
-                    response.status().as_u16()
-                ));
-            }
-            allowed_download(response.url().as_str())?;
-            if response.content_length().is_some_and(|n| n != size) {
-                return Err("整合包文件声明大小不一致".into());
-            }
-            let mut output = tokio::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temporary)
-                .await
-                .map_err(|e| e.to_string())?;
-            let mut stream = response.bytes_stream();
-            let mut a = Sha1::new();
-            let mut b = Sha512::new();
-            let mut count = 0u64;
-            while let Some(chunk) = stream.next().await {
-                state.control.checkpoint().await?;
-                let chunk = chunk.map_err(|_| "整合包文件传输中断")?;
-                state.control.throttle(chunk.len()).await?;
-                count = count.saturating_add(chunk.len() as u64);
-                if count > size {
-                    return Err("整合包文件超过声明大小".into());
-                }
-                a.update(&chunk);
-                b.update(&chunk);
-                output.write_all(&chunk).await.map_err(|e| e.to_string())?;
-            }
-            output.sync_all().await.map_err(|e| e.to_string())?;
-            drop(output);
-            let values = (format!("{:x}", a.finalize()), format!("{:x}", b.finalize()), count);
-            if !matches(&values) {
-                return Err("整合包文件哈希或大小校验失败".into());
-            }
-            checked_absolute(&cache)?;
-            fs::rename(&temporary, &cache).map_err(|e| e.to_string())?;
-            Ok(values)
+    // Parts of 1 MiB or more continue across attempts, cancels and restarts
+    // (U0266); a part held by another download falls back to a part of our own.
+    let parts = crate::parts::PartStore::new(cache_root.join(".parts"));
+    let key = if size >= crate::parts::RESUME_MIN {
+        match (sha512, sha1) {
+            (Some(hex), _) => crate::parts::PartKey::new(crate::parts::Algo::Sha512, hex, size),
+            (None, Some(hex)) => crate::parts::PartKey::new(crate::parts::Algo::Sha1, hex, size),
+            (None, None) => None,
         }
-        .await;
-        match result {
-            Ok(_) => {
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                if target.exists() {
-                    return Err("整合包目标文件已存在，拒绝覆盖".into());
-                }
-                fs::copy(&cache, target).map_err(|e| e.to_string())?;
-                return staged_receipt(target, true, &matches);
-            }
-            Err(error) => {
-                last_error = error;
-                let _ = fs::remove_file(&temporary);
-                state.control.checkpoint().await?;
-            }
+    } else {
+        None
+    };
+    let mut allowed = Vec::new();
+    let mut rejected = None;
+    for url in urls.iter().take(8) {
+        match allowed_download(url) {
+            Ok(url) => allowed.push(url),
+            Err(error) => rejected = Some(error),
         }
     }
-    Err(last_error)
+    let download = PackFileDownload { network: &network, parts: &parts, key: key.as_ref(), cache_root: &cache_root, cache: &cache, size };
+    download.into_cache(&allowed, &state.control, &trusted_response, &matches, rejected).await?;
+    stage_copy(&cache, target, true, &matches).await
+}
+
+/// Every try of one modpack file at one URL, including tries that continued its part.
+const MAX_PACK_FILE_TRIES: usize = 12;
+
+/// One modpack file on its way into the content-addressed cache.
+struct PackFileDownload<'a> {
+    network: &'a reqwest::Client,
+    parts: &'a crate::parts::PartStore,
+    key: Option<&'a crate::parts::PartKey>,
+    cache_root: &'a Path,
+    cache: &'a Path,
+    size: u64,
+}
+
+impl PackFileDownload<'_> {
+    /// Brings the verified file into the cache from `urls`. As for game files:
+    /// a try that continued the part is free, a stall and a discarded part get
+    /// one more try at the same URL, tries per URL are capped, and bytes an
+    /// earlier URL wrote are not thrown away for another origin.
+    async fn into_cache(
+        &self,
+        urls: &[reqwest::Url],
+        control: &crate::downloads::DownloadControl,
+        check: &ResponseCheck,
+        matches: &(dyn Fn(&(String, String, u64)) -> bool + Sync),
+        rejected: Option<String>,
+    ) -> Result<(), String> {
+        let mut slot = None;
+        let mut last_error = rejected.unwrap_or_else(|| "整合包没有受支持的下载地址".to_owned());
+        let mut written_here = false;
+        for url in urls {
+            let origin = crate::parts::origin(url);
+            let (mut tries, mut refetched, mut restalled) = (0, false, false);
+            loop {
+                tries += 1;
+                control.checkpoint().await?;
+                if slot.is_none() {
+                    slot = self.key.and_then(|key| self.parts.open(key, self.size).ok().flatten());
+                }
+                let protect = written_here && slot.as_ref().is_some_and(|part| part.holds_bytes_from_another(&origin));
+                let before = slot.as_ref().map(crate::parts::ResumablePart::mark);
+                let result = if slot.is_some() && !protect {
+                    match fetch_part(self.network, url, &mut slot, self.size, control, check).await {
+                        Ok(values) => self.publish_part(&mut slot, &values, matches).await,
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    let whole = fetch_whole(self.network, url, self.cache_root, self.cache, self.size, control, check, &|values: &(String, String, u64)| matches(values)).await;
+                    if whole.is_ok() && protect {
+                        if let Some(part) = slot.take() {
+                            part.discard();
+                        }
+                    }
+                    whole.map(|_| ())
+                };
+                let error = match result {
+                    Ok(()) => return Ok(()),
+                    Err(error) => error,
+                };
+                let after = slot.as_ref().map(crate::parts::ResumablePart::mark);
+                let progressed = crate::parts::progressed(before.as_ref(), after.as_ref());
+                written_here = slot.is_some() && (written_here || crate::parts::wrote(before.as_ref(), after.as_ref()));
+                let discarded = before.is_some() && slot.is_none();
+                let stalled = error == crate::parts::STALLED;
+                let again = progressed || (discarded && !refetched) || (stalled && !restalled);
+                refetched |= discarded;
+                restalled |= stalled;
+                last_error = error;
+                control.checkpoint().await?;
+                if !again || tries >= MAX_PACK_FILE_TRIES {
+                    break;
+                }
+                control.during_cancellable_io(tokio::time::sleep(std::time::Duration::from_millis(500))).await?;
+            }
+        }
+        Err(last_error)
+    }
+
+    /// Checks the whole part and moves it into the cache; a part that fails is discarded.
+    async fn publish_part(
+        &self,
+        slot: &mut Option<crate::parts::ResumablePart>,
+        values: &(String, String, u64),
+        matches: &(dyn Fn(&(String, String, u64)) -> bool + Sync),
+    ) -> Result<(), String> {
+        let part = slot.take().ok_or("下载分片不可用")?;
+        if !matches(values) {
+            part.discard();
+            return Err("整合包文件哈希或大小校验失败".into());
+        }
+        checked_absolute(self.cache)?;
+        crate::parts::publish_off_task(part, self.cache).await.map_err(|e| e.to_string())
+    }
+}
+
+/// The modpack client's transfers use the task's cancel, pause, throttle and stall limit.
+impl crate::parts::Hooks for &crate::downloads::DownloadControl {
+    async fn cancellable<F: std::future::Future>(&self, future: F) -> Result<F::Output, String> {
+        self.during_cancellable_io(future).await
+    }
+    async fn checkpoint(&self) -> Result<(), String> {
+        crate::downloads::DownloadControl::checkpoint(self).await
+    }
+    async fn throttle(&self, bytes: usize) -> Result<(), String> {
+        crate::downloads::DownloadControl::throttle(self, bytes).await
+    }
+    fn stall_limit(&self) -> std::time::Duration {
+        crate::downloads::DownloadControl::stall_limit(self)
+    }
+}
+
+/// Where a response came from after redirects; tests pass a local server.
+type ResponseCheck = dyn Fn(&reqwest::Response) -> Result<(), String> + Sync;
+
+fn trusted_response(response: &reqwest::Response) -> Result<(), String> {
+    allowed_download(response.url().as_str()).map(|_| ())
+}
+
+/// One attempt through the resumable part; returns the hashes of the whole part.
+async fn fetch_part(
+    network: &reqwest::Client,
+    url: &reqwest::Url,
+    slot: &mut Option<crate::parts::ResumablePart>,
+    size: u64,
+    control: &crate::downloads::DownloadControl,
+    check: &ResponseCheck,
+) -> Result<(String, String, u64), String> {
+    let mut a = Sha1::new();
+    let mut b = Sha512::new();
+    crate::parts::transfer(network.get(url.clone()), url, slot, size, &control, check, &mut |bytes| {
+        a.update(bytes);
+        b.update(bytes);
+    })
+    .await?;
+    Ok((format!("{:x}", a.finalize()), format!("{:x}", b.finalize()), size))
+}
+
+/// One attempt in one go (small files, or a part held elsewhere). The part is
+/// owned before the first await and removed however the attempt ends.
+async fn fetch_whole(
+    network: &reqwest::Client,
+    url: &reqwest::Url,
+    cache_root: &Path,
+    cache: &Path,
+    size: u64,
+    control: &crate::downloads::DownloadControl,
+    check: &ResponseCheck,
+    matches: &impl Fn(&(String, String, u64)) -> bool,
+) -> Result<(String, String, u64), String> {
+    use crate::parts::within_stall;
+    let request = network.get(url.clone()).timeout(crate::parts::TRANSFER_TIMEOUT);
+    let response = within_stall(&control, request.send()).await?.map_err(|_| "整合包文件下载失败")?;
+    if !response.status().is_success() {
+        return Err(format!("整合包文件下载失败（HTTP {}）", response.status().as_u16()));
+    }
+    check(&response)?;
+    if response.content_length().is_some_and(|n| n != size) {
+        return Err("整合包文件声明大小不一致".into());
+    }
+    let mut part = crate::download_io::DownloadPart::create(safe_join(
+        cache_root,
+        &format!(".pack-download-{}.part", uuid::Uuid::new_v4()),
+    )?)
+    .map_err(|e| e.to_string())?;
+    let mut stream = response.bytes_stream();
+    let mut a = Sha1::new();
+    let mut b = Sha512::new();
+    let mut count = 0u64;
+    while let Some(chunk) = within_stall(&control, stream.next()).await? {
+        control.checkpoint().await?;
+        let chunk = chunk.map_err(|_| "整合包文件传输中断")?;
+        control.throttle(chunk.len()).await?;
+        count = count.saturating_add(chunk.len() as u64);
+        if count > size {
+            return Err("整合包文件超过声明大小".into());
+        }
+        a.update(&chunk);
+        b.update(&chunk);
+        part.file().write_all(&chunk).await.map_err(|e| e.to_string())?;
+    }
+    part.file().sync_all().await.map_err(|e| e.to_string())?;
+    let values = (format!("{:x}", a.finalize()), format!("{:x}", b.finalize()), count);
+    if !matches(&values) {
+        return Err("整合包文件哈希或大小校验失败".into());
+    }
+    checked_absolute(cache)?;
+    part.publish(cache).map_err(|e| e.to_string())?;
+    Ok(values)
+}
+
+/// Copies a verified cache file into the stage without replacing anything
+/// there (H08): through a part beside the target, then a no-replace move.
+async fn stage_copy(
+    cache: &Path,
+    target: &Path,
+    downloaded: bool,
+    matches: &impl Fn(&(String, String, u64)) -> bool,
+) -> Result<VerifiedPackFile, String> {
+    let parent = target.parent().ok_or("整合包文件目标缺少父目录")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let mut part = crate::download_io::DownloadPart::create(parent.join(format!(".pack-stage-{}.part", uuid::Uuid::new_v4())))
+        .map_err(|e| e.to_string())?;
+    let mut input = tokio::fs::File::open(cache).await.map_err(|e| e.to_string())?;
+    tokio::io::copy(&mut input, part.file()).await.map_err(|e| e.to_string())?;
+    part.file().sync_all().await.map_err(|e| e.to_string())?;
+    part.publish_new(target).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            "整合包目标文件已存在，拒绝覆盖".to_owned()
+        } else {
+            error.to_string()
+        }
+    })?;
+    staged_receipt(target, downloaded, matches)
 }
 
 /// Validate all ZIP member paths, case collisions, symlinks and total expanded size before extraction.
@@ -2298,8 +2452,17 @@ mod tests {
         assert!(sweep < guard && guard < fetch && fetch < import);
         let (_, fetch) = source.split_once("async fn fetch_verified(").unwrap();
         let (fetch, _) = fetch.split_once("\n}").unwrap();
-        assert_eq!(fetch.matches("staged_receipt(target, ").count(), 2);
-        assert_eq!(fetch.matches("&matches);").count(), 2);
+        // Both the cache hit and the download stage through stage_copy, which
+        // ends by verifying the staged copy.
+        assert_eq!(fetch.matches("stage_copy(&cache, target, ").count(), 2);
+        assert!(fetch.contains("stage_copy(&cache, target, false, &matches)") && fetch.contains("stage_copy(&cache, target, true, &matches)"));
+        assert!(!fetch.contains("staged_receipt("), "the receipt comes from stage_copy");
+        let (_, stage) = source.split_once("async fn stage_copy(").unwrap();
+        let (stage, _) = stage.split_once("\n}").unwrap();
+        assert!(stage.trim_end().ends_with("staged_receipt(target, downloaded, matches)"));
+        assert_eq!(stage.matches("staged_receipt(").count(), 1);
+        assert!(!stage.contains("VerifiedPackFile::receipt("), "stage_copy takes its receipt only from the staged copy");
+        assert!(stage.contains("part.publish_new(target)"), "the stage never replaces a file");
         assert!(!fetch.contains("VerifiedPackFile::receipt("));
     }
 
@@ -2310,18 +2473,21 @@ mod tests {
         let ours = root.join(format!("{}.mrpack", uuid::Uuid::new_v4()));
         let user = root.join("my-pack.mrpack");
         let other = root.join(format!("{}.zip", uuid::Uuid::new_v4()));
-        for path in [&ours, &user, &other] {
+        // The copy stage_copy was making when the launcher stopped, and a look-alike.
+        let stage = root.join(format!(".pack-stage-{}.part", uuid::Uuid::new_v4()));
+        let foreign = root.join(".pack-stage-notauuid.part");
+        for path in [&ours, &user, &other, &stage, &foreign] {
             fs::write(path, b"archive").unwrap();
         }
         sweep_pack_downloads(&root, std::time::Duration::from_secs(24 * 60 * 60));
-        let young_kept = ours.is_file();
+        let young_kept = ours.is_file() && stage.is_file();
         sweep_pack_downloads(&root, std::time::Duration::ZERO);
         let guarded = root.join("guarded.mrpack");
         fs::write(&guarded, b"archive").unwrap();
         drop(RemoveOnDrop(guarded.clone()));
-        let kept = [young_kept, ours.exists(), user.is_file(), other.is_file(), guarded.exists()];
+        let kept = [young_kept, ours.exists(), stage.exists(), user.is_file(), other.is_file(), foreign.is_file(), guarded.exists()];
         cleanup(&root);
-        assert_eq!(kept, [true, false, true, true, false]);
+        assert_eq!(kept, [true, false, false, true, true, true, false]);
     }
 
     #[test]
@@ -2483,6 +2649,368 @@ mod tests {
         }
         zip.finish().unwrap();
         assert!(inspect_zip(&path).is_err());
+        cleanup(&root);
+    }
+
+    use crate::parts::range_server::{RangeServer, Scripted};
+
+    const MIB: usize = 1024 * 1024;
+
+    fn u0266_bytes(size: usize) -> Vec<u8> {
+        (0..size).map(|index| (index * 17 % 253) as u8).collect()
+    }
+
+    fn local(server: &RangeServer) -> reqwest::Url {
+        reqwest::Url::parse(&format!("http://{}/pack/file.jar", server.address)).unwrap()
+    }
+
+    fn any_response(_: &reqwest::Response) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Runtime::new().unwrap().block_on(future)
+    }
+
+    #[test]
+    fn u0266_a_modpack_file_resumes_its_part_and_hashes_every_byte() {
+        let root = test_root();
+        let bytes = u0266_bytes(2 * MIB + 7);
+        let size = bytes.len() as u64;
+        let sha512 = format!("{:x}", Sha512::digest(&bytes));
+        let store = crate::parts::PartStore::new(root.join("pack-cache").join(".parts"));
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &sha512, size).unwrap();
+        let network = crate::storage::test_client();
+        let control = crate::downloads::DownloadControl::default();
+        let _task = control.begin("install", "fixture", "Fixture").unwrap();
+        // The first attempt is cut after 1 MiB; the second asks for the rest from the same origin.
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"p2\"").cut(MIB), Scripted::partial(&bytes, MIB, "\"p2\"")]);
+        let url = local(&server);
+        let mut slot = store.open(&key, size).unwrap();
+        assert!(block_on(fetch_part(&network, &url, &mut slot, size, &control, &any_response)).is_err());
+        let values = block_on(fetch_part(&network, &url, &mut slot, size, &control, &any_response)).unwrap();
+        assert_eq!(server.header(1, "range").as_deref(), Some(format!("bytes={MIB}-").as_str()));
+        assert_eq!(values, (format!("{:x}", Sha1::digest(&bytes)), sha512, size));
+        assert_eq!(server.sent.load(std::sync::atomic::Ordering::SeqCst), bytes.len(), "every byte sent once");
+        let cache = root.join("pack-cache").join("file.bin");
+        slot.take().unwrap().publish_replace(&cache).unwrap();
+        assert_eq!(fs::read(&cache).unwrap(), bytes);
+        drop(control);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn u0266_cancelling_a_modpack_download_that_waits_for_headers_is_prompt() {
+        let root = test_root();
+        let cache_root = root.join("pack-cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let network = crate::storage::test_client();
+        let observations = block_on(async {
+            let mut observations = Vec::new();
+            for resumable in [false, true] {
+                let control = crate::downloads::DownloadControl::default();
+                let task = control.begin("install", "fixture", "Fixture").unwrap();
+                let server = RangeServer::new(vec![Scripted::silent()]);
+                let url = local(&server);
+                let size = 3 * MIB as u64;
+                let store = crate::parts::PartStore::new(cache_root.join(".parts"));
+                let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &"a".repeat(40), size).unwrap();
+                let mut slot = if resumable { store.open(&key, size).unwrap() } else { None };
+                let cache = cache_root.join("file.bin");
+                let fetch = async {
+                    if resumable {
+                        fetch_part(&network, &url, &mut slot, size, &control, &any_response).await.map(|_| ())
+                    } else {
+                        fetch_whole(&network, &url, &cache_root, &cache, size, &control, &any_response, &|_| true).await.map(|_| ())
+                    }
+                };
+                tokio::pin!(fetch);
+                let cancel = async {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while server.count() == 0 {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    control.cancel(&task);
+                };
+                use futures_util::future::{select, Either};
+                if let Either::Left((result, _)) = select(fetch.as_mut(), Box::pin(cancel)).await {
+                    panic!("the stalled request finished: {result:?}");
+                }
+                let result = tokio::time::timeout(Duration::from_millis(500), &mut fetch).await;
+                let prompt = result.is_ok_and(|result| result.is_err_and(|error| error.contains("任务已取消")));
+                observations.push((resumable, prompt));
+            }
+            observations
+        });
+        // No part can exist yet while headers are awaited; the mid-body test checks leaks.
+        assert_eq!(observations, [(false, true), (true, true)]);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn u0266_staging_a_cached_file_never_replaces_one_that_appeared() {
+        let root = test_root();
+        fs::create_dir_all(root.join("stage")).unwrap();
+        let cache = root.join("cache.bin");
+        let bytes = b"cached modpack file";
+        fs::write(&cache, bytes).unwrap();
+        let sizes = (format!("{:x}", Sha1::digest(bytes)), format!("{:x}", Sha512::digest(bytes)), bytes.len() as u64);
+        let matches = |values: &(String, String, u64)| *values == sizes;
+        let target = root.join("stage").join("mods").join("a.jar");
+        let receipt = block_on(stage_copy(&cache, &target, true, &matches)).unwrap();
+        assert_eq!((receipt.size, receipt.downloaded), (bytes.len() as u64, true));
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        fs::write(&target, b"user file").unwrap();
+        let error = block_on(stage_copy(&cache, &target, false, &matches)).err().unwrap();
+        assert!(error.contains("已存在"), "{error}");
+        assert_eq!(fs::read(&target).unwrap(), b"user file");
+        let leftovers: Vec<_> = fs::read_dir(target.parent().unwrap()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(leftovers.len(), 1, "no stage part is left beside the target: {leftovers:?}");
+        cleanup(&root);
+    }
+    #[test]
+    fn u0266_cancelling_a_modpack_download_mid_body_leaves_no_part_in_the_cache_and_keeps_the_resumable_one() {
+        let root = test_root();
+        let cache_root = root.join("pack-cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let bytes = u0266_bytes(3 * MIB);
+        let size = bytes.len() as u64;
+        let sha1 = format!("{:x}", Sha1::digest(&bytes));
+        let network = crate::storage::test_client();
+        let store = crate::parts::PartStore::new(cache_root.join(".parts"));
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &sha1, size).unwrap();
+        let observations = block_on(async {
+            let mut observations = Vec::new();
+            // (resumable, cancelled: else the future is dropped, as a failing sibling does)
+            for (resumable, cancels) in [(false, true), (true, true), (false, false)] {
+                let control = crate::downloads::DownloadControl::default();
+                let task = control.begin("install", "fixture", "Fixture").unwrap();
+                let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"p\"").stall(MIB)]);
+                let url = local(&server);
+                let mut slot = if resumable { store.open(&key, size).unwrap() } else { None };
+                let cache = cache_root.join("file.bin");
+                // Read the size from the file: a directory listing on Windows reports
+                // a stale size for a file that is still open for writing.
+                let written = |dir: &Path, suffix: &str| {
+                    fs::read_dir(dir).map(|entries| entries.flatten().filter(|entry| entry.file_name().to_string_lossy().ends_with(suffix)).map(|entry| fs::metadata(entry.path()).map_or(0, |meta| meta.len())).max().unwrap_or(0)).unwrap_or(0)
+                };
+                let prompt = {
+                let fetch = async {
+                    if resumable {
+                        fetch_part(&network, &url, &mut slot, size, &control, &any_response).await.map(|_| ())
+                    } else {
+                        fetch_whole(&network, &url, &cache_root, &cache, size, &control, &any_response, &|_| true).await.map(|_| ())
+                    }
+                };
+                tokio::pin!(fetch);
+                let cancel = async {
+                    let (dir, suffix) = if resumable { (cache_root.join(".parts"), ".part") } else { (cache_root.clone(), ".part") };
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while written(&dir, suffix) < MIB as u64 {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    if cancels {
+                        control.cancel(&task);
+                    }
+                };
+                use futures_util::future::{select, Either};
+                if let Either::Left((result, _)) = select(fetch.as_mut(), Box::pin(cancel)).await {
+                    panic!("the stalled body finished: {result:?}");
+                }
+                if !cancels {
+                    // Dropped here, mid-body, without a cancel.
+                    true
+                } else {
+                    let result = tokio::time::timeout(Duration::from_millis(500), &mut fetch).await;
+                    result.is_ok_and(|result| result.is_err_and(|error| error.contains("任务已取消")))
+                }
+                };
+                drop(slot);
+                let leaked = fs::read_dir(&cache_root).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with(".pack-download-"));
+                observations.push((resumable, prompt, leaked));
+            }
+            observations
+        });
+        assert_eq!(observations, [(false, true, false), (true, true, false), (false, true, false)]);
+        // The resumable attempt kept its bytes and their record for next time.
+        let mut slot = store.open(&key, size).unwrap();
+        assert_eq!(slot.as_ref().unwrap().done(), MIB as u64);
+        slot.take().unwrap().discard();
+        cleanup(&root);
+    }
+
+    fn pack_download<'a>(network: &'a reqwest::Client, store: &'a crate::parts::PartStore, key: &'a crate::parts::PartKey, root: &'a Path, cache: &'a Path, size: u64) -> PackFileDownload<'a> {
+        PackFileDownload { network, parts: store, key: Some(key), cache_root: root, cache, size }
+    }
+
+    #[test]
+    fn u0266_a_modpack_file_continues_at_the_same_url_after_an_interruption_or_a_bad_part() {
+        let root = test_root();
+        let cache_root = root.join("pack-cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let bytes = u0266_bytes(3 * MIB);
+        let size = bytes.len() as u64;
+        let sha1 = format!("{:x}", Sha1::digest(&bytes));
+        let sha512 = format!("{:x}", Sha512::digest(&bytes));
+        let matches = |values: &(String, String, u64)| values.0 == sha1 && values.1 == sha512 && values.2 == size;
+        let network = crate::storage::test_client();
+        let store = crate::parts::PartStore::new(cache_root.join(".parts"));
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &sha512, size).unwrap();
+        let cache = cache_root.join("file.bin");
+        let control = crate::downloads::DownloadControl::default();
+        let _task = control.begin("install", "fixture", "Fixture").unwrap();
+
+        // (a) Cut after 1 MiB: the same URL continues with a Range request.
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").cut(MIB), Scripted::partial(&bytes, MIB, "\"v1\"")]);
+        let download = pack_download(&network, &store, &key, &cache_root, &cache, size);
+        block_on(download.into_cache(&[local(&server)], &control, &any_response, &matches, None)).unwrap();
+        assert_eq!(server.count(), 2);
+        assert_eq!(server.header(1, "range").as_deref(), Some(format!("bytes={MIB}-").as_str()));
+        assert_eq!(fs::read(&cache).unwrap(), bytes);
+        fs::remove_file(&cache).unwrap();
+
+        // (b) A complete part with one wrong byte: discarded, then one fetch from zero.
+        let mut part = store.open(&key, size).unwrap().unwrap();
+        part.restart(crate::parts::Validator::default()).unwrap();
+        let mut damaged = bytes.clone();
+        damaged[7] ^= 1;
+        part.append(&damaged).unwrap();
+        drop(part);
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"")]);
+        block_on(download.into_cache(&[local(&server)], &control, &any_response, &matches, None)).unwrap();
+        assert_eq!(server.count(), 1);
+        assert_eq!(server.header(0, "range"), None);
+        assert_eq!(fs::read(&cache).unwrap(), bytes);
+        fs::remove_file(&cache).unwrap();
+
+        // (c) A stall: one more try at the same URL continues the part.
+        control.set_stall_limit(Duration::from_secs(2));
+        let server = RangeServer::new(vec![Scripted::ok(&bytes, "\"v1\"").stall(MIB), Scripted::partial(&bytes, MIB, "\"v1\"")]);
+        block_on(download.into_cache(&[local(&server)], &control, &any_response, &matches, None)).unwrap();
+        assert_eq!(server.header(1, "range").as_deref(), Some(format!("bytes={MIB}-").as_str()));
+        assert_eq!(fs::read(&cache).unwrap(), bytes);
+        drop(control);
+        cleanup(&root);
+    }
+
+    struct PackFixture {
+        root: PathBuf,
+        cache_root: PathBuf,
+        cache: PathBuf,
+        bytes: Vec<u8>,
+        sha512: String,
+        network: reqwest::Client,
+        store: crate::parts::PartStore,
+        key: crate::parts::PartKey,
+        control: crate::downloads::DownloadControl,
+    }
+
+    impl PackFixture {
+        fn new(size: usize) -> Self {
+            let root = test_root();
+            let cache_root = root.join("pack-cache");
+            fs::create_dir_all(&cache_root).unwrap();
+            let bytes = u0266_bytes(size);
+            let sha512 = format!("{:x}", Sha512::digest(&bytes));
+            let store = crate::parts::PartStore::new(cache_root.join(".parts"));
+            let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &sha512, size as u64).unwrap();
+            let control = crate::downloads::DownloadControl::default();
+            control.begin("install", "fixture", "Fixture").unwrap();
+            let cache = cache_root.join("file.bin");
+            Self { root, cache_root, cache, bytes, sha512, network: crate::storage::test_client(), store, key, control }
+        }
+
+        fn run(&self, urls: &[reqwest::Url]) -> Result<(), String> {
+            let download = pack_download(&self.network, &self.store, &self.key, &self.cache_root, &self.cache, self.bytes.len() as u64);
+            let matches = |values: &(String, String, u64)| values.1 == self.sha512;
+            block_on(download.into_cache(urls, &self.control, &any_response, &matches, None))
+        }
+
+        fn record(&self) -> Value {
+            let name = format!("sha512-{}-{}.json", self.sha512, self.bytes.len());
+            serde_json::from_slice(&fs::read(self.cache_root.join(".parts").join(name)).unwrap()).unwrap()
+        }
+    }
+
+    impl Drop for PackFixture {
+        fn drop(&mut self) {
+            cleanup(&self.root);
+        }
+    }
+
+    #[test]
+    fn u0266_a_modpack_file_gets_one_more_try_after_a_stall_without_bytes() {
+        let fixture = PackFixture::new(2 * MIB);
+        fixture.control.set_stall_limit(Duration::from_millis(700));
+        // Headers that never come, twice in a row: one more try, not two.
+        let server = RangeServer::new(vec![Scripted::silent(), Scripted::silent(), Scripted::ok(&fixture.bytes, "\"v1\"")]);
+        assert_eq!(fixture.run(&[local(&server)]).unwrap_err(), crate::parts::STALLED);
+        assert_eq!(server.count(), 2);
+        drop(server);
+        // One stall, then an answer: the second try brings the file.
+        let server = RangeServer::new(vec![Scripted::silent(), Scripted::ok(&fixture.bytes, "\"v1\"")]);
+        fixture.run(&[local(&server)]).unwrap();
+        assert_eq!(server.count(), 2);
+        assert_eq!(fs::read(&fixture.cache).unwrap(), fixture.bytes);
+    }
+
+    #[test]
+    fn u0266_a_second_modpack_url_never_throws_away_bytes_the_first_one_added() {
+        let fixture = PackFixture::new(2 * MIB);
+        let bytes = &fixture.bytes;
+        let first = RangeServer::new(vec![Scripted::ok(bytes, "\"a\"").cut(MIB), Scripted::status(503)]);
+        let second = RangeServer::new(vec![Scripted::ok(bytes, "\"b\"").cut(MIB / 2)]);
+        assert!(fixture.run(&[local(&first), local(&second)]).is_err());
+        assert_eq!(first.count(), 2);
+        assert_eq!(first.header(1, "range").as_deref(), Some(format!("bytes={MIB}-").as_str()));
+        assert_eq!(second.header(0, "range"), None);
+        let record = fixture.record();
+        assert_eq!(record["done"], MIB as u64, "the second origin fetched in one go and left the part alone");
+        assert_eq!(record["validator"]["origin"], format!("http://{}", first.address));
+    }
+
+    #[test]
+    fn u0266_a_modpack_file_stops_at_the_try_cap_even_while_each_try_adds_bytes() {
+        let fixture = PackFixture::new(64);
+        // Every try adds one byte, then the body breaks off: only the cap ends this.
+        let mut script = vec![Scripted::ok(&fixture.bytes, "\"v1\"").cut(1)];
+        script.extend((1..20).map(|from| Scripted::partial(&fixture.bytes, from, "\"v1\"").cut(1)));
+        let server = RangeServer::new(script);
+        assert!(fixture.run(&[local(&server)]).is_err());
+        assert_eq!(server.count(), MAX_PACK_FILE_TRIES);
+        assert_eq!(fixture.record()["done"], MAX_PACK_FILE_TRIES as u64);
+    }
+
+    #[test]
+    fn u0266_a_modpack_file_gives_up_on_a_url_after_its_tries() {
+        let root = test_root();
+        let cache_root = root.join("pack-cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let bytes = u0266_bytes(2 * MIB);
+        let size = bytes.len() as u64;
+        let sha512 = format!("{:x}", Sha512::digest(&bytes));
+        let matches = |values: &(String, String, u64)| values.1 == sha512;
+        let network = crate::storage::test_client();
+        let store = crate::parts::PartStore::new(cache_root.join(".parts"));
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &sha512, size).unwrap();
+        let cache = cache_root.join("file.bin");
+        let control = crate::downloads::DownloadControl::default();
+        let _task = control.begin("install", "fixture", "Fixture").unwrap();
+        // Every answer is a whole-file 200 cut early: no try continues the part.
+        let server = RangeServer::new((0..6).map(|_| Scripted::ok(&bytes, "\"v1\"").cut(MIB)).collect());
+        let download = pack_download(&network, &store, &key, &cache_root, &cache, size);
+        let result = block_on(download.into_cache(&[local(&server)], &control, &any_response, &matches, None));
+        assert!(result.is_err());
+        // The first try started an empty part (free); the second restarted it: not progress.
+        assert_eq!(server.count(), 2);
+        assert!(!cache.exists());
+        drop(control);
         cleanup(&root);
     }
 }
