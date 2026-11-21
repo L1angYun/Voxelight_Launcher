@@ -5,7 +5,7 @@ rem
 rem Why this exists: Windows PowerShell refuses to run an unsigned .ps1 when the
 rem file carries a Low integrity label (it treats such files as untrusted and
 rem demands a signature - no execution policy except Bypass gets around it).
-rem This project tree inherited Low integrity labels from a sandboxed run, so
+rem A checkout can inherit Low integrity labels (from a sandboxed tool, say), so
 rem `scripts\build.ps1` can fail with "is not digitally signed" in a plain
 rem shell. Calling it through this wrapper with -ExecutionPolicy Bypass (process
 rem scope only, nothing is changed system-wide) sidesteps that.

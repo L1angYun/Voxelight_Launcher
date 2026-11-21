@@ -2,7 +2,7 @@
 //! design: release metadata from GitHub (API first, static update.json when
 //! rate limited) and the Gitee mirror, checked at the same time in Auto mode.
 //! Every request is made here in Rust, through the user's proxy, with no
-//! automatic redirects. See docs/superpowers/plans/2026-11-17-voxelight-self-update.md.
+//! automatic redirects.
 pub(crate) mod checker;
 pub(crate) mod download;
 pub(crate) mod helper;

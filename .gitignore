@@ -27,3 +27,9 @@ __pycache__/
 # Local agent settings (dev-server previews, permissions) stay on this machine.
 .claude/
 .codex/
+.superpowers/
+.cursor/
+.playwright-mcp/
+.mcp.json
+CLAUDE.md
+AGENTS.md

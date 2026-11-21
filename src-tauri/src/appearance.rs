@@ -134,8 +134,8 @@ fn read_config_preset(path: &str) -> Result<Config, String> {
 }
 
 /// Older presets can carry heap flags in the custom JVM arguments, which the
-/// memory fields now own. Drop them so the preset still imports (2026-11-20
-/// ruling C5-7); the values are not migrated and the save checks still run.
+/// memory fields now own. Drop them so the preset still imports; the values
+/// are not migrated and the save checks still run.
 fn strip_heap_arguments(config: &mut Config) -> Result<bool, String> {
     let arguments = shell_words::split(&config.jvm_arguments).map_err(|_| "JVM 参数引号不匹配")?;
     let kept: Vec<_> = arguments.iter().filter(|arg| !crate::memory::is_memory_argument(arg)).collect();

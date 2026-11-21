@@ -318,6 +318,81 @@ function inspectPublicText(path, buffer) {
       diagnostic(path, lineAt(text, match.index), "VOXELIGHT_CF_API_KEY");
     }
   }
+  inspectLocalPaths(path, text);
+}
+
+// Local agent workspaces and instruction files, and development-process
+// records, never belong in the repository, now or in history.
+const AGENT_PATH = /^(?:\.claude|\.codex|\.superpowers|\.cursor|\.playwright-mcp)(?:\/|$)|^\.mcp\.json$|(?:^|\/)(?:CLAUDE|AGENTS)\.md$/i;
+const PROCESS_PATH = /^docs\/(?:superpowers|reports)(?:\/|$)/i;
+const HISTORY_PATHSPECS = [
+  ":(top,icase).claude", ":(top,icase).codex", ":(top,icase).superpowers", ":(top,icase).cursor",
+  ":(top,icase).playwright-mcp", ":(top,icase).mcp.json", ":(top,icase,glob)**/CLAUDE.md",
+  ":(top,icase,glob)**/AGENTS.md", ":(top,icase)docs/superpowers", ":(top,icase)docs/reports",
+];
+// Hidden files are usually tool scratch files; these are the expected ones.
+const DOTFILES = new Set([".gitignore", ".gitattributes", ".editorconfig"]);
+// Images, fonts and archives only where the app, installer, tests, licenses or README use them.
+const MEDIA_EXTENSIONS = new Set([...BINARY_EXTENSIONS, ".bmp"]);
+const MEDIA_FOLDERS = ["public/", "src-tauri/icons/", "src-tauri/installer/windows/assets/", "tests/fixtures/", "licenses/", "docs/images/"];
+// Product names of AI tools, for commit messages.
+const TOOL_NAMES = /\b(?:Claude|Codex|DeepSeek|Gemini|Copilot|ChatGPT)\b|\bgpt-\d/g;
+
+function inspectPaths(path) {
+  if (AGENT_PATH.test(path)) diagnostic(path, 1, "agent-path");
+  if (PROCESS_PATH.test(path)) diagnostic(path, 1, "process-path");
+  const parts = path.split("/");
+  const hidden = parts.some((part, index) => part.startsWith(".") && !(index === 0 && part === ".github") && !(index === parts.length - 1 && DOTFILES.has(part)));
+  if (hidden && !cargoPath(path) && !AGENT_PATH.test(path)) diagnostic(path, 1, "dot-path");
+  if (MEDIA_EXTENSIONS.has(extname(path).toLowerCase()) && !MEDIA_FOLDERS.some(folder => path.startsWith(folder))) diagnostic(path, 1, "media-path");
+}
+
+function inspectHistory(root) {
+  const names = git(root, ["log", "--all", "--full-history", "--root", "--no-renames", "-m", "--format=", "--name-only", "-z", "--", ...HISTORY_PATHSPECS]);
+  for (const path of names.toString("utf8").split("\0")) {
+    const name = path.replace(/^\n+/, "");
+    if (AGENT_PATH.test(name)) diagnostic(name, 1, "agent-history");
+    else if (PROCESS_PATH.test(name)) diagnostic(name, 1, "process-history");
+  }
+  // Lines added anywhere in history: a local path that was committed and then
+  // removed is still public once pushed.
+  const patches = git(root, ["log", "--all", "--root", "-p", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "--format=%x00%H", "--", ".", ":(exclude,glob)**/package-lock.json", ":(exclude,glob)**/Cargo.lock"], { maxBuffer: 1024 * 1024 * 1024 }).toString("utf8");
+  for (const chunk of patches.split("\0").filter(Boolean)) {
+    const commit = chunk.slice(0, chunk.indexOf("\n")).trim().slice(0, 12);
+    let file = null;
+    for (const line of chunk.split("\n")) {
+      if (line.startsWith("+++ ")) file = line === "+++ /dev/null" ? null : line.slice(4).replace(/^"?b\//, "").replace(/"$/, "");
+      else if (file && line.startsWith("+")) {
+        PROFILE_PATH.lastIndex = 0;
+        WORKSPACE_PATH.lastIndex = 0;
+        if (localPathsIn(line.slice(1)).length) diagnostic(`${file}@${commit}`, 1, "local-path-history");
+      }
+    }
+  }
+  const messages = git(root, ["log", "--all", "--format=%x00%H%n%B"]).toString("utf8");
+  for (const entry of messages.split("\0").filter(Boolean)) {
+    const commit = entry.slice(0, entry.indexOf("\n")).trim().slice(0, 12);
+    const body = entry.slice(entry.indexOf("\n") + 1);
+    for (const index of [...localPathsIn(body), ...[...body.matchAll(TOOL_NAMES)].map(match => match.index)]) {
+      diagnostic(`commit ${commit}`, lineAt(body, index), "commit-message");
+    }
+  }
+}
+// A real user profile or this workspace in text. Test fixtures use the
+// placeholder names below; a variable such as %USERPROFILE% never matches.
+const SEP = String.raw`(?:\\\\|\\|/)+`;
+const PROFILE_PATH = new RegExp(String.raw`[A-Za-z]:${SEP}Users${SEP}([^\\/"'\s<>%$\{\}*?|:]+)`, "gi");
+const PROFILE_PLACEHOLDERS = new Set(["public", "default", "default user", "all users", "test", "user", "username", "example", "me", "x"]);
+const WORKSPACE_PATH = new RegExp(String.raw`(?:[A-Za-z]:${SEP}|(?:^|[\s"'(=])/[a-z]/)CodeX(?:\\|/|\b)|VoxelightLauncher-(?:worklogs|private)\b`, "gi");
+
+/** Offsets of real user-profile and workspace paths in `text`. */
+function localPathsIn(text) {
+  const profiles = [...text.matchAll(PROFILE_PATH)].filter(match => !PROFILE_PLACEHOLDERS.has(match[1].toLowerCase()));
+  return [...profiles, ...text.matchAll(WORKSPACE_PATH)].map(match => match.index);
+}
+
+function inspectLocalPaths(path, text) {
+  for (const index of localPathsIn(text)) diagnostic(path, lineAt(text, index), "local-path");
 }
 
 function outputDirectory(path) {
@@ -446,6 +521,9 @@ function inspect(root) {
       if (cargoPath(name)) diagnostic(name, 1, "cargo-history");
     }
   }
+
+  for (const path of new Set([...paths, ...entries.map(entry => entry.path)])) inspectPaths(path);
+  inspectHistory(root);
 
   const documents = [...paths].map(path => workingDocument(root, path, privateMode)).filter(Boolean);
   const workingConfigs = documents.filter(document => CONFIG_PATHS.has(document.path));

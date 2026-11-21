@@ -18,7 +18,7 @@ const spacingScale = new Map(Object.entries({
 const panelCurves = new Map([["--radius-sm", "6px"], ["--radius-md", "12px"], ["--radius-lg", "12px"]]);
 // R2-05 acceptance explicitly exempts window buttons and Lens controls.
 // Keep only this existing window selector/value pair exempt, not feature buttons
-// in general: docs/superpowers/specs/2026-11-05-voxelight-review-round2-fixes.md.
+// in general.
 const windowControlGeometry = new Map([["min-height", "34px"], ["border-radius", "var(--radius-window-control)"]]);
 function approvedWindowGeometry(declaration, filename, selectors) {
   return filename === "src/app/shell.css" && selectors.length === 1

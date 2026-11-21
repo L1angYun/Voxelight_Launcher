@@ -686,3 +686,109 @@ test("private mode checks Git URL rewriting instead of trusting a disabled-looki
   repo.git("config", "--local", "url.https://example.invalid/rewrite.git.pushInsteadOf", "DISABLED-private-never-pushes");
   rejected(repo.check(), ".git/config:1:remote.pushurl");
 });
+
+// Local machine paths are assembled here so this file never contains one.
+const profilePath = ["C:", "Users", "sam", "AppData", "Local", "Temp"].join("\\");
+const workspacePath = ["E:", "Code" + "X", "project"].join("/");
+
+for (const path of [".claude/settings.json", ".codex/config.toml", ".superpowers/brief.md", ".cursor/rules", ".playwright-mcp/x.png", ".mcp.json", "CLAUDE.md", "src/AGENTS.md"]) {
+  test(`agent files are rejected at ${path}`, t => {
+    const repo = repository(t);
+    repo.write(path, "agent\n");
+    rejected(repo.check(), `${path}:1:agent-path`);
+  });
+}
+
+test("process records and hidden scratch files are rejected; the expected dotfiles pass", t => {
+  const repo = repository(t);
+  repo.write("docs/reports/round.md", "# report\n");
+  repo.write("docs/superpowers/plans/plan.md", "# plan\n");
+  repo.write("src/visual/.capture.mjs", "// scratch\n");
+  const result = repo.check();
+  rejected(result, "docs/reports/round.md:1:process-path");
+  rejected(result, "docs/superpowers/plans/plan.md:1:process-path");
+  rejected(result, "src/visual/.capture.mjs:1:dot-path");
+
+  const clean = repository(t);
+  clean.write(".gitignore", "node_modules/\n");
+  clean.write(".github/workflows/ci.yml", "on: push\n");
+  clean.write("docs/guide.md", "# guide\n");
+  assert.equal(clean.check().status, 0);
+});
+
+test("images and fonts are accepted only in the asset, fixture, license and README image folders", t => {
+  const repo = repository(t);
+  repo.write("tests/e2e/shot.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  rejected(repo.check(), "tests/e2e/shot.png:1:media-path");
+
+  const clean = repository(t);
+  for (const path of ["public/fonts/a.woff2", "src-tauri/icons/icon.ico", "src-tauri/installer/windows/assets/scene.bmp", "tests/fixtures/skin.png", "licenses/fonts/a.ttf", "docs/images/home.png"]) {
+    clean.write(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  }
+  assert.equal(clean.check().status, 0);
+});
+
+for (const [name, text] of [
+  ["a user profile", profilePath],
+  ["an escaped user profile", profilePath.replaceAll("\\", "\\\\")],
+  ["a forward-slash user profile", profilePath.replaceAll("\\", "/")],
+  ["the workspace root", workspacePath],
+  ["a shell-style workspace root", " /e/" + "Code" + "X/project"],
+  ["the worklogs folder", "Voxelight" + "Launcher-" + "worklogs/round6"],
+  ["the private clone", "Voxelight" + "Launcher-" + "private"],
+]) {
+  test(`text naming ${name} is rejected`, t => {
+    const repo = repository(t);
+    repo.write("notes.md", `# notes\nsee ${text}\n`);
+    rejected(repo.check(), "notes.md:2:local-path");
+  });
+}
+
+test("placeholder and variable profile paths remain allowed", t => {
+  const repo = repository(t);
+  const lines = [
+    ["C:", "Users", "Test", "AppData"].join("\\"),
+    ["C:", "Users", "Public", "Documents"].join("\\"),
+    ["C:", "Users", "%USERNAME%"].join("\\"),
+    ["C:", "Users", "<user>"].join("\\"),
+    ["C:", "Users", "x"].join("\\\\"),
+    ["C:", "Users", "me", "bin"].join("/"),
+    "%USERPROFILE%\AppData",
+    "https://github.com/openai/" + "codex",
+  ];
+  repo.write("notes.md", lines.join("\n") + "\n");
+  assert.equal(repo.check().status, 0);
+});
+
+test("history keeps rejecting agent files, process records and local paths after they are removed", t => {
+  const repo = repository(t);
+  repo.write(".claude/launch.json", "{}\n");
+  repo.write("docs/reports/round.md", "# report\n");
+  repo.write("notes.md", `see ${workspacePath}\n`);
+  repo.git("add", "-f", "-A");
+  repo.git("commit", "-qm", "guard fixture");
+  const added = repo.git("rev-parse", "HEAD").slice(0, 12);
+  repo.git("rm", "-q", "-r", ".claude", "docs/reports");
+  repo.write("notes.md", "clean\n");
+  repo.commit();
+  const result = repo.check();
+  rejected(result, ".claude/launch.json:1:agent-history");
+  rejected(result, "docs/reports/round.md:1:process-history");
+  rejected(result, `notes.md@${added}:1:local-path-history`);
+});
+
+test("commit messages may not name AI tools or local paths", t => {
+  for (const message of ["Round 4: " + "Code" + "x fixes", "tidy " + "gpt-" + "6 output", `evidence in ${profilePath}`]) {
+    const repo = repository(t);
+    repo.write("a.txt", "a\n");
+    repo.git("add", "-A");
+    repo.git("commit", "-qm", message);
+    const commit = repo.git("rev-parse", "HEAD").slice(0, 12);
+    rejected(repo.check(), `commit ${commit}:1:commit-message`);
+  }
+  const clean = repository(t);
+  clean.write("a.txt", "a\n");
+  clean.git("add", "-A");
+  clean.git("commit", "-qm", "chore: ignore local .claude and .codex settings");
+  assert.equal(clean.check().status, 0);
+});

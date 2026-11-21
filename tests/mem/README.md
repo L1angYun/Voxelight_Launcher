@@ -1,6 +1,6 @@
 # Memory measurement harness
 
-Reproduces the numbers in `docs/superpowers/plans/2026-11-17-voxelight-todo.md` §2. It is not part of `npm test` or the e2e suite.
+Measures how much memory the launcher uses. It is not part of `npm test` or the e2e suite.
 
 **What is measured:** the "Memory" column in Task Manager's Processes tab. That column is the *private working set* of the whole process tree. On an integrated GPU, WebGL and compositor allocations live in system memory and show up there.
 

@@ -587,7 +587,7 @@ fn commit_staged_libraries(stage: &Path, root: &Path) -> Result<(), String> {
 
 /// The checked artifacts to prefetch, plus how many declared a remote URL that
 /// the allowlist rejects. Those are left to the installer, as before C8, but
-/// the caller logs that they were skipped (ruling C8-5).
+/// the caller logs that they were skipped.
 fn installer_seed_downloads(stage: &Path, profile: &Value) -> Result<(Vec<Download>, usize), String> {
     let libraries_root = safe_join(stage, "libraries")?;
     let Some(libraries) = profile["libraries"].as_array() else {

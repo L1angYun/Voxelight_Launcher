@@ -76,7 +76,7 @@ pub async fn save_config(
     save_approved_config_with_scope(&state, config, Some(&previous), preserve_appearance).map_err(expected)
 }
 
-/// Ruling C7-1: name the instances that would inherit an https:// proxy.
+/// Names the instances that would inherit an https:// proxy.
 fn reject_inherited_tls(config: &Config, instances: &[crate::models::Instance]) -> AppResult<()> {
     let names = crate::network::instances_blocking_tls(config, instances)?;
     if names.is_empty() {

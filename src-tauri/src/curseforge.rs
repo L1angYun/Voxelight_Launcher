@@ -846,7 +846,7 @@ async fn download(
     result
 }
 
-/// Ruling C6-1 (2026-11-20): never leave two enabled copies of one mod. A JAR
+/// Never leaves two enabled copies of one mod. A JAR
 /// whose mod ID cannot be read keeps the previous behaviour.
 fn refuse_duplicate_mod(downloaded: &Path, directory: &Path, target: &Path) -> Result<(), String> {
     let Some(mod_id) = crate::mod_metadata::declared_mod_id(downloaded) else {

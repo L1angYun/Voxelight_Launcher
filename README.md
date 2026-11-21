@@ -4,7 +4,7 @@ Voxelight Launcher is a Minecraft Java desktop launcher built with Rust, Tauri 2
 
 This directory contains only the active Rust application. WinUI is not part of this project.
 
-![Voxelight Launcher 0.5.0 home](docs/screenshots/0.5.0/home-dark-1440.png)
+![Voxelight Launcher 0.5.0 home](docs/images/home-0.5.0.png)
 
 _Screenshot from 0.5.0. The current interface differs; an updated screenshot will replace it._
 
@@ -48,7 +48,7 @@ npm ci
 npm run desktop:dev
 ```
 
-Build the Windows desktop executable with `powershell -File scripts/build.ps1 -NoBundle`. Omit `-NoBundle` when building an NSIS installer for release. The script wraps Tauri, configures the Rust PATH, and prints output paths from the configured Cargo target directory. It does not copy artifacts to `releases/<version>/`. Create the matching source archive separately with `npm run source:package` from the same checkout used to build the binary; this command writes to the untracked `releases/<version>/` directory. See the [0.6.0 implementation and verification report](docs/reports/frontend-completion-0.6.0.md) for measured results and manual checks still outstanding. The NSIS installer uses current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
+Build the Windows desktop executable with `powershell -File scripts/build.ps1 -NoBundle`. Omit `-NoBundle` when building an NSIS installer for release. The script wraps Tauri, configures the Rust PATH, and prints output paths from the configured Cargo target directory. It does not copy artifacts to `releases/<version>/`. Create the matching source archive separately with `npm run source:package` from the same checkout used to build the binary; this command writes to the untracked `releases/<version>/` directory. The NSIS installer uses current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
 
 Settings → About checks for stable releases on GitHub and on the Gitee mirror, at startup when that option is on. **Download and update** downloads the installer, verifies its size and SHA-256 against the release's `update.json`, closes the launcher and runs the installer as an upgrade, then reopens the launcher. It is refused while a game, a managed server, a download or another launcher using the same installation is running. The installer refuses downgrades in this mode.
 
@@ -117,8 +117,6 @@ Test state is created below `src-tauri/target/native-*`; do not point the test o
 
 ## Features and research
 
-Start with [the documentation index](docs/README.md) for the current design, verification reports and directory layout.
-
-See `docs/migration-status.md` for verified functionality and remaining limitations, and `docs/launcher-feature-catalog.md` for the competing-launcher feature inventory. Third-party component attribution is in `THIRD_PARTY_NOTICES.md`.
+Third-party component attribution is in `THIRD_PARTY_NOTICES.md`.
 
 Microsoft device authorization requires your own OAuth Client ID. CurseForge requires your own API Key and is subject to each project's distribution permissions. Neither is configured by default; missing credentials are not treated as a successful login or restricted-download test.

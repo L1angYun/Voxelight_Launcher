@@ -316,7 +316,7 @@ impl Settings {
 // CONNECT 407 is not an HTTP response exposed by reqwest 0.12.28. It is a
 // private hyper-util tunnel source; classify but never return/display that text.
 /// Names of instances whose own game proxy mode inherits the launcher proxy,
-/// when that proxy is https:// (ruling C7-1): Java cannot inherit a TLS proxy.
+/// when that proxy is https://, because Java cannot inherit a TLS proxy.
 pub(crate) fn instances_blocking_tls(
     config: &crate::models::Config,
     instances: &[crate::models::Instance],

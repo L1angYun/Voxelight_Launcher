@@ -1762,7 +1762,7 @@ pub async fn toggle_resource(
     validate_id(&file_name)?;
     let target = {
         let _operation = state.operation.lock().await;
-        // Enabling or disabling is a write to the game directory (2026-11-20 ruling C3-2).
+        // Enabling or disabling is a write to the game directory.
         require_resource_stopped(&state, &version_id, instance_id.as_deref())?;
         let directory = resource_directory(
             &state.snapshot()?,

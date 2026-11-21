@@ -16,10 +16,9 @@ interface Oklch {
 }
 
 const DEFAULT_ACCENT = "#b4f17a";
-// Revision 7, corrected edge coordinates: the darkest of 576 adjacent
-// medians is (223,221.5,215.5), left of the full-mode Close control.
-// Subtract four per channel and round down to an 8-bit color. Ink is unchanged.
-// Evidence: <workspace>/<worklogs>/review-round2/2026-11-07/follow-ups/focus/recomputed-reference.json
+// At the corrected edge coordinates, the darkest of 576 adjacent medians is
+// (223,221.5,215.5), left of the full-mode Close control. Subtract four per
+// channel and round down to an 8-bit color. Ink is unchanged.
 const LIGHT_INDICATOR_COMPOSITE_REFERENCE = "#dbd9d3";
 
 function clamp(value: number, min = 0, max = 1) {

@@ -396,10 +396,10 @@ mod tests {
     fn restart_manager_sees_other_users_of_a_running_executable() {
         let me = current().unwrap();
         let exe = std::env::current_exe().unwrap();
-        // A test binary built under a Low-integrity folder (<workspace> here) runs at
-        // Low IL, where Restart Manager cannot open its session (ERROR_WRITE_FAULT).
+        // A test binary built in a folder with a Low integrity label runs at Low
+        // IL, where Restart Manager cannot open its session (ERROR_WRITE_FAULT).
         // Production fails closed in that case; this check is then run from a
-        // Medium-IL copy of the test binary (see the round-6 report).
+        // Medium-IL copy of the test binary.
         if let Err(error) = other_users(&exe, Some(me)) {
             assert!(error.ends_with("（start 29）"), "{error}");
             eprintln!("skipped at low integrity: {error}");

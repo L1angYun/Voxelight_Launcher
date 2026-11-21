@@ -479,7 +479,7 @@ function levelDat() {
         10,
         "Data",
         Buffer.concat([
-          nbtTag(8, "LevelName", nbtString("Codex fixture world")),
+          nbtTag(8, "LevelName", nbtString("Smoke fixture world")),
           nbtTag(4, "LastPlayed", last),
           nbtTag(3, "GameType", mode),
           nbtTag(1, "hardcore", Buffer.from([0])),
@@ -523,7 +523,7 @@ async function startMockServer() {
         if (packet.length === 1 && packet[0] === 0) {
           const json = Buffer.from(
             JSON.stringify({
-              version: { name: "Codex protocol fixture", protocol: 763 },
+              version: { name: "Smoke protocol fixture", protocol: 763 },
               players: { max: 20, online: 3 },
               description: { text: "Local smoke server" },
             }),
@@ -660,7 +660,7 @@ try {
         "downloadSource",
       ])
         assert(field in initial.config, `Missing ${field}`);
-      const secret = `Codex-Smoke-Only-${randomUUID()}`;
+      const secret = `Voxelight-Smoke-Only-${randomUUID()}`;
       assert.equal(
         await invoke("set_service_secret", { service: "curseforge", secret }),
         true,
@@ -760,7 +760,7 @@ try {
       (job) => !["running", "queued", "paused"].includes(job.status),
     );
   }, 60000);
-  await invoke("add_offline_account", { username: "CodexSmoke" });
+  await invoke("add_offline_account", { username: "VoxelSmoke" });
   await invoke("save_config", {
     config: {
       ...initial.config,
@@ -883,7 +883,7 @@ try {
     async () => {
       const clone = await invoke("clone_instance", {
         instanceId: fixtureInstance.id,
-        name: "Codex copied fixture",
+        name: "Smoke copied fixture",
       });
       assert.notEqual(clone.gameDirectory, fixtureInstance.gameDirectory);
       assert.equal(
@@ -940,7 +940,7 @@ try {
       await invoke("export_modrinth_modpack", {
         instanceId: fixtureInstance.id,
         outputPath,
-        name: "Codex export fixture",
+        name: "Smoke export fixture",
         includeConfigs: true,
         includeResourcePacks: false,
         includeShaderPacks: false,
@@ -949,7 +949,7 @@ try {
       });
       const imported = await invoke("import_modpack", {
         path: outputPath,
-        name: "Codex imported export",
+        name: "Smoke imported export",
         includeOptional: false,
       });
       assert.equal(imported.instance.versionId, baseVersion);
@@ -969,7 +969,7 @@ try {
               formatVersion: 1,
               game: "minecraft",
               versionId: "fixture-1",
-              name: "Codex minimal fixture",
+              name: "Smoke minimal fixture",
               files: [],
               dependencies: { minecraft: baseVersion },
             }),
@@ -979,7 +979,7 @@ try {
       );
       const minimal = await invoke("import_modpack", {
         path: manual,
-        name: "Codex minimal pack",
+        name: "Smoke minimal pack",
         includeOptional: false,
       });
       assert.equal(
@@ -1009,7 +1009,7 @@ try {
       const worlds = await invoke("list_worlds", args);
       assert.equal(
         worlds.find((world) => world.folderName === "WorldFixture").name,
-        "Codex fixture world",
+        "Smoke fixture world",
       );
       const outputPath = path.join(work, "world-fixture.zip");
       await invoke("backup_world", {
@@ -1050,7 +1050,7 @@ try {
           [
             "pack.mcmeta",
             JSON.stringify({
-              pack: { pack_format: 15, description: "Codex local fixture" },
+              pack: { pack_format: 15, description: "Smoke local fixture" },
             }),
           ],
         ]),
@@ -1076,7 +1076,7 @@ try {
         ...args,
         entry: {
           index: 0,
-          name: "Codex local protocol fixture",
+          name: "Smoke local protocol fixture",
           address,
           icon: null,
           hideAddress: false,

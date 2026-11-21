@@ -981,7 +981,7 @@ async fn start_managed_server_inner(
     {
         return Err("另一个由启动器管理的服务端已使用此端口，请先更换端口".into());
     }
-    // Ruling C7-2: the server follows the global game proxy mode, and a TLS
+    // The server follows the global game proxy mode, and a TLS
     // proxy is refused before any download, file write or task record.
     let proxy_args = server_proxy_args(&state.snapshot()?.config)?;
     let _download = state
