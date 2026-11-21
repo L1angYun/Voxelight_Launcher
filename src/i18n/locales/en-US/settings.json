@@ -223,5 +223,47 @@
       "heapArguments": "Set memory with the memory fields and remove -Xms, -Xmx or -XX:…HeapSize from the custom JVM arguments.",
       "invalid": "Some settings are invalid. Review the highlighted values and try again."
     }
+  },
+  "updates": {
+    "section": "Updates",
+    "checkOnStartup": "Check for updates on startup",
+    "checkOnStartupTip": "Use the selected update source at startup to check stable releases. You can also check at any time.",
+    "source": "Update source",
+    "sourceTip": "Choose where to check for and download updates. Auto checks GitHub and Gitee together.",
+    "sources": {
+      "auto": "Auto",
+      "github": "GitHub",
+      "gitee": "Gitee"
+    },
+    "checkNow": "Check for updates",
+    "openRelease": "Open release notes",
+    "install": "Download and update",
+    "retryInstall": "Retry update",
+    "installTip": "After the new installer is downloaded and verified, the launcher closes, the installer upgrades it and opens it again.",
+    "cancel": "Cancel update",
+    "progress": "Update download progress",
+    "installWhenIdle": "Quit the game to install the update.",
+    "notes": "Release notes for {{version}}",
+    "openFailed": "Could not open the release page. Try again.",
+    "helperFailed": "The update did not complete. Reopen Voxelight to retry, or download the installer from the release page.",
+    "helperLogs": "Failure diagnostic logs:",
+    "notice": "Version {{version}} is available. Review and install it in Settings → About.",
+    "review": "View update",
+    "status": {
+      "notChecked": "Updates have not been checked.",
+      "checking": "Checking for updates…",
+      "available": "Version {{version}} is available.",
+      "noInstaller": "Version {{version}} is available without a compatible installer. See the release notes.",
+      "current": "Your version {{version}} is up to date.",
+      "stale": "The update source offers {{version}}, which is older than a version seen before, so it was ignored. Try again later or choose another update source.",
+      "failed": "Could not check for updates. Try again or choose another update source.",
+      "rateLimited": "GitHub's request limit was reached and fallback update information is unavailable. Try again later.",
+      "timedOut": "The update check timed out. Try again or choose another update source.",
+      "downloading": "Downloading installer… {{percent}}%",
+      "preparing": "Installer verified. Preparing update…",
+      "cancelled": "Update cancelled.",
+      "downloadFailed": "The installer could not be downloaded or verified. Try again or download it from the release page.",
+      "installFailed": "The download finished, but installation could not start. Try again or download it from the release page."
+    }
   }
 }

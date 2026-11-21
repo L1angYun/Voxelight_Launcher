@@ -89,7 +89,15 @@
     "update.handOffFailed": "The update could not be handed to the installer. Nothing was changed; try again.",
     "update.invalidText": "The update message is invalid.",
     "update.otherInstance": "Another launcher window (another profile) is running from this folder. Close it before installing the update.",
-    "update.otherInstanceUnknown": "The launcher could not confirm that no other launcher is running, so the update was not installed."
+    "update.otherInstanceUnknown": "The launcher could not confirm that no other launcher is running, so the update was not installed.",
+    "update.checkFailed": "Could not check for updates. Try again or choose another update source.",
+    "update.rateLimited": "GitHub's request limit was reached and fallback update information is unavailable. Try again later.",
+    "update.timedOut": "The update check timed out. Try again or choose another update source.",
+    "update.downloadFailed": "The installer could not be downloaded or verified. Try again or download it from the release page.",
+    "update.cancelled": "Update cancelled.",
+    "update.sourceChanged": "The update source changed. Check for updates again.",
+    "update.notOffered": "There is no update to download. Check for updates first.",
+    "update.sourceInvalid": "The update source is not valid."
   },
   "storage": {
     "fallbackTitle": "Using a fallback data profile",

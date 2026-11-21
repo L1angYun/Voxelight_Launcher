@@ -152,6 +152,8 @@ identifier = "launcher-updates"
 description = "Allow the launcher self-update commands in the local main window."
 commands.allow = [
   "check_launcher_update",
+  "get_launcher_update_state",
+  "set_launcher_update_preferences",
   "download_launcher_update",
   "cancel_launcher_update",
   "install_launcher_update_and_exit",

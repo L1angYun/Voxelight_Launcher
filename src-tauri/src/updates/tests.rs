@@ -527,7 +527,7 @@ fn a_check_records_the_highest_version_seen_and_flags_a_frozen_source() {
 }
 
 #[test]
-fn saving_an_unknown_update_source_is_refused() {
+fn the_general_save_and_preset_import_keep_the_update_preferences() {
     let dir = crate::instances::StagingDirectory::create(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/update-tests").join(uuid::Uuid::new_v4().to_string()),
     )
@@ -535,11 +535,14 @@ fn saving_an_unknown_update_source_is_refused() {
     let state = LauncherState::test_fixture(dir.path().join("profile"), Default::default(), crate::storage::test_client());
     let mut config = state.snapshot().unwrap().config;
     config.game_directory = dir.path().join("game").to_string_lossy().into_owned();
-    config.update_source = "mirror".into();
-    assert_eq!(crate::commands::save_config_inner(&state, config.clone()).err().as_deref(), Some("更新来源无效"));
-    config.update_source = "gitee".into();
-    config.check_for_updates = false;
-    let saved = crate::commands::save_config_inner(&state, config).unwrap();
+    for (source, check) in [("mirror", false), ("gitee", false)] {
+        config.update_source = source.into();
+        config.check_for_updates = check;
+        let saved = crate::commands::save_config_inner(&state, config.clone()).unwrap();
+        assert_eq!((saved.update_source.as_str(), saved.check_for_updates), ("auto", true), "{source}");
+    }
+    let service = UpdateService::default();
+    let saved = set_preferences_with(&state, &service, false, "gitee").unwrap();
     assert_eq!((saved.update_source.as_str(), saved.check_for_updates), ("gitee", false));
     drop(state);
 }
@@ -903,14 +906,216 @@ fn the_download_uses_only_the_offered_package_and_reuses_a_staged_one() {
     request_cancel(&service);
     assert_eq!(service.download_state.load(std::sync::atomic::Ordering::SeqCst), IDLE);
 
-    // Changing the source after the check requires a new check; nothing is contacted.
-    let mut config = state.snapshot().unwrap().config;
-    config.update_source = "gitee".into();
-    config.game_directory = dir.path().join("game").to_string_lossy().into_owned();
-    crate::commands::save_config_inner(&state, config).unwrap();
+    // A source changed after the check (by any writer) requires a new check; nothing is contacted.
+    set_source(&state, "gitee");
     let changed = run(download_with(&state, &service, &Fake::default(), root.path(), &|_, _| {}));
     assert_eq!(changed.err().as_deref(), Some("更新来源已更改，请重新检查更新"));
     assert_eq!(service.download_state.load(std::sync::atomic::Ordering::SeqCst), IDLE, "the in-progress state is cleared");
+    drop(service);
+    assert!(root.leftovers().is_empty());
+    drop(state);
+}
+
+fn preference_fixture(source: &str) -> (crate::instances::StagingDirectory, LauncherState) {
+    let dir = crate::instances::StagingDirectory::create(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/update-tests").join(uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let mut data = crate::models::Persisted::default();
+    data.config.update_source = source.into();
+    data.config.game_directory = dir.path().join("game").to_string_lossy().into_owned();
+    let state = LauncherState::test_fixture(dir.path().join("profile"), data, crate::storage::test_client());
+    (dir, state)
+}
+
+fn newer_release() -> serde_json::Value {
+    let mut json = release_json("v99.0.0", &sha_of(BYTES), BYTES.len() as u64);
+    json["assets"][0]["name"] = json!(installer_name((99, 0, 0)));
+    json
+}
+
+#[test]
+fn the_state_reports_the_last_check_for_the_saved_source_and_the_download_phase() {
+    let (_dir, state) = preference_fixture("github");
+    let service = UpdateService::default();
+    let servers = crate::server_manager::ServerRegistry::default();
+    let empty = state_with(&state, &service, &servers).unwrap();
+    assert_eq!(empty.current_version, display_version(current_version()));
+    assert_eq!((empty.check, empty.download, empty.staged), (None, "idle", None));
+
+    let view = run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(newer_release()))]), chrono::Utc::now())).unwrap();
+    assert_eq!(state_with(&state, &service, &servers).unwrap().check, Some(view.clone()));
+    for (phase, name) in [(RUNNING, "downloading"), (CANCELLING, "cancelling"), (INSTALLING, "installing"), (IDLE, "idle")] {
+        service.download_state.store(phase, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(state_with(&state, &service, &servers).unwrap().download, name);
+    }
+
+    // A source saved another way hides a check made with the old one.
+    set_source(&state, "gitee");
+    assert_eq!(state_with(&state, &service, &servers).unwrap().check, None);
+
+    // A check that fails clears the previous result (HSR clears it when a check starts).
+    set_source(&state, "github");
+    assert_eq!(state_with(&state, &service, &servers).unwrap().check, Some(view));
+    let failed = run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, status(500))]), chrono::Utc::now()));
+    assert!(failed.is_err());
+    assert_eq!(state_with(&state, &service, &servers).unwrap().check, None);
+    assert!(service.offered.lock().unwrap().is_none(), "a failed check leaves nothing to download");
+    drop(state);
+}
+
+#[test]
+fn the_state_lists_a_staged_installer() {
+    let (_dir, state) = preference_fixture("github");
+    let service = UpdateService::default();
+    let servers = crate::server_manager::ServerRegistry::default();
+    let root = Root::new();
+    run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(newer_release()))]), chrono::Utc::now())).unwrap();
+    let url = super::sources::file_url(Source::GitHub, "v99.0.0", &installer_name((99, 0, 0)));
+    let staged = run(download_with(&state, &service, &Fake::with(vec![(&url, body(BYTES))]), root.path(), &|_, _| {})).unwrap();
+    assert_eq!(state_with(&state, &service, &servers).unwrap().staged, Some(staged));
+    // While a download holds the slot the state reports the phase, not a stale file.
+    let slot = run(async { service.staged.lock().await });
+    assert_eq!(state_with(&state, &service, &servers).unwrap().staged, None);
+    drop(slot);
+    drop(service);
+    assert!(root.leftovers().is_empty());
+    drop(state);
+}
+
+#[test]
+fn update_preferences_save_at_once_and_a_new_source_clears_the_check() {
+    let (_dir, state) = preference_fixture("github");
+    let service = UpdateService::default();
+    let servers = crate::server_manager::ServerRegistry::default();
+    let invalid = set_preferences_with(&state, &service, true, "sourceforge").err().map(|error| error.code);
+    assert_eq!(invalid.as_deref(), Some("update.sourceInvalid"));
+
+    run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(newer_release()))]), chrono::Utc::now())).unwrap();
+    // The toggle alone keeps the result.
+    let config = set_preferences_with(&state, &service, false, "github").unwrap();
+    assert!(!config.check_for_updates);
+    assert!(!state.snapshot().unwrap().config.check_for_updates, "saved, not only returned");
+    assert!(service.offered.lock().unwrap().is_some());
+    assert!(state_with(&state, &service, &servers).unwrap().check.is_some());
+
+    // While a download runs (or the install holds the service) the source cannot change; the toggle can.
+    for phase in [RUNNING, CANCELLING, INSTALLING] {
+        service.download_state.store(phase, std::sync::atomic::Ordering::SeqCst);
+        let refused = set_preferences_with(&state, &service, true, "gitee").err().map(|error| error.code);
+        assert_eq!(refused.as_deref(), Some("update.downloading"));
+        assert_eq!(state.snapshot().unwrap().config.update_source, "github");
+        set_preferences_with(&state, &service, true, "github").unwrap();
+    }
+    service.download_state.store(IDLE, std::sync::atomic::Ordering::SeqCst);
+
+    let config = set_preferences_with(&state, &service, true, "gitee").unwrap();
+    assert_eq!((config.check_for_updates, config.update_source.as_str()), (true, "gitee"));
+    assert!(service.offered.lock().unwrap().is_none(), "the next download needs a check with the new source");
+    assert_eq!(state_with(&state, &service, &servers).unwrap().check, None);
+    drop(state);
+}
+
+#[test]
+fn a_source_change_while_the_download_waits_for_the_slot_is_refused() {
+    let (_dir, state) = preference_fixture("github");
+    let service = UpdateService::default();
+    let root = Root::new();
+    run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(newer_release()))]), chrono::Utc::now())).unwrap();
+    let fake = Fake::default();
+    run(async {
+        let slot = service.staged.lock().await;
+        let download = download_with(&state, &service, &fake, root.path(), &|_, _| {});
+        let change = async {
+            // The download has claimed RUNNING and waits for the slot; the source changes meanwhile.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            set_source(&state, "gitee");
+            drop(slot);
+        };
+        let (result, ()) = futures_util::future::join(download, change).await;
+        assert_eq!(result.err().as_deref(), Some(SOURCE_CHANGED));
+    });
+    assert_eq!(service.download_state.load(std::sync::atomic::Ordering::SeqCst), IDLE);
+    drop(service);
+    assert!(root.leftovers().is_empty());
+    drop(state);
+}
+
+#[test]
+fn update_errors_reach_the_renderer_as_stable_codes() {
+    let code = |error: crate::errors::AppError| (error.code, error.detail);
+    let quota = format!("{} （12:00 后恢复），改读更新信息也失败：x", super::checker::QUOTA_EXHAUSTED);
+    assert_eq!(code(check_error(quota.clone())), ("update.rateLimited".into(), Some(quota)));
+    let late = format!("Gitee {}", super::checker::TIMED_OUT);
+    assert_eq!(code(check_error(late.clone())), ("update.timedOut".into(), Some(late)));
+    assert_eq!(code(check_error("Gitee 更新检查失败（HTTP 500）".into())).0, "update.checkFailed");
+    assert_eq!(code(check_error("proxy.tlsInheritance".into())).0, "proxy.tlsInheritance", "network codes pass through");
+    for (detail, expected) in [
+        (crate::downloads::CANCELLED, "update.cancelled"),
+        (SOURCE_CHANGED, "update.sourceChanged"),
+        (NOT_OFFERED, "update.notOffered"),
+        (ALREADY_DOWNLOADING, "update.downloading"),
+        ("安装包的大小或 SHA-256 校验失败", "update.downloadFailed"),
+    ] {
+        let (code, kept) = code(download_error(detail.to_owned()));
+        assert_eq!((code.as_str(), kept.as_deref()), (expected, Some(detail)));
+    }
+}
+
+fn set_source(state: &LauncherState, source: &str) {
+    state
+        .update(|data| {
+            data.config.update_source = source.into();
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn the_state_names_what_would_refuse_the_install() {
+    let (_dir, state) = preference_fixture("github");
+    let service = UpdateService::default();
+    let servers = crate::server_manager::ServerRegistry::default();
+    assert_eq!(state_with(&state, &service, &servers).unwrap().busy, None);
+    // The operation lock first, as hold_idle takes it.
+    let operation = run(async { state.operation.lock().await });
+    assert_eq!(state_with(&state, &service, &servers).unwrap().busy, Some("update.tasksRunning"));
+    drop(operation);
+    servers.fixture_alive("server");
+    assert_eq!(state_with(&state, &service, &servers).unwrap().busy, Some("update.serverRunning"));
+    let servers = crate::server_manager::ServerRegistry::default();
+    service.download_state.store(RUNNING, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(state_with(&state, &service, &servers).unwrap().busy, Some("update.downloading"));
+    service.download_state.store(IDLE, std::sync::atomic::Ordering::SeqCst);
+    drop(state);
+}
+
+#[test]
+fn a_cancel_that_arrives_as_the_download_ends_still_stops_it_and_keeps_the_file() {
+    let (_dir, state) = preference_fixture("github");
+    let service = UpdateService::default();
+    let root = Root::new();
+    run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(newer_release()))]), chrono::Utc::now())).unwrap();
+    let url = super::sources::file_url(Source::GitHub, "v99.0.0", &installer_name((99, 0, 0)));
+    run(download_with(&state, &service, &Fake::with(vec![(&url, body(BYTES))]), root.path(), &|_, _| {})).unwrap();
+    // The next call finds the file staged; a cancel lands while it is past every transfer.
+    let fake = Fake::default();
+    run(async {
+        let slot = service.staged.lock().await;
+        let download = download_with(&state, &service, &fake, root.path(), &|_, _| {});
+        let cancel = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            request_cancel(&service);
+            drop(slot);
+        };
+        let (result, ()) = futures_util::future::join(download, cancel).await;
+        assert_eq!(result.err().as_deref(), Some(crate::downloads::CANCELLED));
+    });
+    assert_eq!(service.download_state.load(std::sync::atomic::Ordering::SeqCst), IDLE);
+    let servers = crate::server_manager::ServerRegistry::default();
+    assert!(state_with(&state, &service, &servers).unwrap().staged.is_some(), "the verified file stays for the next attempt");
+    // Without a cancel the staged file is reused.
+    run(download_with(&state, &service, &fake, root.path(), &|_, _| {})).unwrap();
     drop(service);
     assert!(root.leftovers().is_empty());
     drop(state);

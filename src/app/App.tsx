@@ -16,6 +16,7 @@ import { deriveWorldState } from "../components/world/deriveWorldState";
 import { useLauncher } from "./controller/LauncherProvider";
 import { useAppearance } from "./AppearanceProvider";
 import { ToastProvider, useToast } from "../components/ui/ToastProvider";
+import { LauncherUpdateProvider, UpdateNoticeBridge } from "../features/updates/LauncherUpdates";
 import { LoadingStatus } from "../components/ui/LoadingStatus";
 import { Button } from "../components/ui/Button";
 import { StorageRecoveryNotice } from "./StorageRecoveryNotice";
@@ -55,6 +56,8 @@ function AppShell() {
     page: NavigationPage; direction: number; visit: number;
   }>({ page: "home", direction: 1, visit: 0 });
   const [navResetTick, setNavResetTick] = useState(0);
+  // "View update" opens Settings → About for that one visit only.
+  const [updateReview, setUpdateReview] = useState<{ tick: number; visit: number } | null>(null);
   const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
@@ -82,6 +85,10 @@ function AppShell() {
   return (
     <>
       <LauncherNoticeBridge />
+      <UpdateNoticeBridge onReview={() => {
+        setUpdateReview(current => ({ tick: (current?.tick ?? 0) + 1, visit: page === "settings" ? visit : visit + 1 }));
+        navigate("settings");
+      }} />
       <a className="vx-skip-link" href="#main-content">{t("shell:a11y.skipToContent")}</a>
       <div className="vx-app-body" data-current-page={page}>
         {/* Global WorldScene background — runs on all pages for glass refraction */}
@@ -126,7 +133,7 @@ function AppShell() {
             {page === "multiplayer" ? <MultiplayerPage /> : null}
             {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
             {page === "accounts" ? <AccountsPage /> : null}
-            {page === "settings" ? <SettingsPage /> : null}
+            {page === "settings" ? <SettingsPage reviewUpdates={updateReview?.visit === visit ? updateReview.tick : 0} /> : null}
           </PageErrorBoundary>
           </PageStage>}
           </AnimatePresence>
@@ -139,7 +146,7 @@ function AppShell() {
 export function App() {
   return (
     <AppProviders>
-      <ToastProvider><AppShell /></ToastProvider>
+      <ToastProvider><LauncherUpdateProvider><AppShell /></LauncherUpdateProvider></ToastProvider>
     </AppProviders>
   );
 }

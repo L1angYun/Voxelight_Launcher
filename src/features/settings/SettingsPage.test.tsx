@@ -598,3 +598,16 @@ describe("global settings", () => {
     expect(container.textContent).not.toContain("Something went wrong");
   });
 });
+
+describe("Settings review request", () => {
+  it("opens About and focuses the update action once, not on every return to About", async () => {
+    const i18n = createLauncherI18n("en-US", "en-US");
+    await i18n.initPromise;
+    await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(SettingsPage, { reviewUpdates: 1 }))));
+    expect(container.textContent).toContain("Updates");
+    expect(document.activeElement?.textContent?.trim()).toBe("Check for updates");
+    await click("General");
+    await click("About");
+    expect(document.activeElement?.textContent?.trim()).not.toBe("Check for updates");
+  });
+});

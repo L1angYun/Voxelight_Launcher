@@ -2,8 +2,12 @@ import { useTranslation } from "react-i18next";
 import { ExternalLink } from "../../components/ui/ExternalLink";
 import packageJson from "../../../package.json";
 import type { SettingsSectionProps } from "./types";
+import { UpdateSettings } from "./UpdateSettings";
 
-export function AboutSettings(_props: Pick<SettingsSectionProps, "onError">) {
+export function AboutSettings({ focusUpdates, onFocusHandled, ...props }: Pick<SettingsSectionProps, "config" | "onPersistedPatch" | "onError"> & {
+  focusUpdates?: number;
+  onFocusHandled?: () => void;
+}) {
   const { t } = useTranslation();
   return (
     <div className="vx-settings-section">
@@ -20,6 +24,7 @@ export function AboutSettings(_props: Pick<SettingsSectionProps, "onError">) {
         <p>{t("settings:about.dataNotice")}</p>
         <p>{t("settings:about.secretNotice")}</p>
       </section>
+      <UpdateSettings {...props} focusRequest={focusUpdates} onFocusHandled={onFocusHandled} />
     </div>
   );
 }

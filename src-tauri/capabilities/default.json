@@ -50,6 +50,12 @@
           "url": "https://github.com/L1angYun/Voxelight_Launcher"
         },
         {
+          "url": "https://github.com/L1angYun/Voxelight_Launcher/releases/tag/*"
+        },
+        {
+          "url": "https://gitee.com/liangyun_Liu/Voxelight_Launcher/releases/tag/*"
+        },
+        {
           "url": "https://bmclapi2.bangbang93.com/"
         },
         {

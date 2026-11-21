@@ -268,6 +268,8 @@ pub fn run() {
             network::test_proxy_connection,
             source_select::get_download_source_verdict,
             updates::check_launcher_update,
+            updates::get_launcher_update_state,
+            updates::set_launcher_update_preferences,
             updates::download_launcher_update,
             updates::cancel_launcher_update,
             updates::install_launcher_update_and_exit,

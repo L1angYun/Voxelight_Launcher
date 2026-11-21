@@ -60,6 +60,11 @@ async fn json_of(response: Response) -> Result<serde_json::Value, String> {
     strict_json(&read_body(response, MAX_METADATA_BYTES).await?)
 }
 
+/// The start of the quota diagnosis, so the renderer can name it (update.rateLimited).
+pub(crate) const QUOTA_EXHAUSTED: &str = "GitHub API 调用次数已用完";
+/// The end of a source's deadline message (update.timedOut).
+pub(crate) const TIMED_OUT: &str = "更新检查超时";
+
 async fn read_github(transport: &dyn Transport, limit: &RateLimit, now: DateTime<Utc>) -> Result<Release, String> {
     let until = match limit.until(now) {
         Some(until) => until,
@@ -82,7 +87,7 @@ async fn read_github(transport: &dyn Transport, limit: &RateLimit, now: DateTime
     // As in HSR, a failed fallback still reports the quota diagnosis and when it ends.
     read_github_fallback(transport).await.map_err(|error| {
         let local = until.with_timezone(&chrono::Local).format("%H:%M");
-        format!("GitHub API 调用次数已用完（{local} 后恢复），改读更新信息也失败：{error}")
+        format!("{QUOTA_EXHAUSTED}（{local} 后恢复），改读更新信息也失败：{error}")
     })
 }
 
@@ -137,7 +142,7 @@ async fn read_source(
     };
     tokio::time::timeout(deadline, read)
         .await
-        .unwrap_or_else(|_| Err(format!("{} 更新检查超时", source.label())))
+        .unwrap_or_else(|_| Err(format!("{} {TIMED_OUT}", source.label())))
 }
 
 /// Picks between the two answers (HSR `Select`): a higher version wins; the

@@ -247,9 +247,6 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
     if !["official", "auto", "bmclapi"].contains(&config.download_source.as_str()) {
         return Err("下载源无效".into());
     }
-    if crate::updates::Preference::parse(&config.update_source).is_none() {
-        return Err("更新来源无效".into());
-    }
     let saved = state.update(|data| {
         if let Some(approved) = approved_against {
             let approval_current = if preserve_appearance {
@@ -265,6 +262,10 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
             // An appearance save can interleave after the native path dialog.
             keep_saved_appearance(&mut config, &data.config);
         }
+        // Only set_launcher_update_preferences changes these: it waits for a
+        // running update download and clears a check made with another source.
+        config.check_for_updates = data.config.check_for_updates;
+        config.update_source.clone_from(&data.config.update_source);
         let previous = approved_against.unwrap_or(&data.config);
         if previous.jvm_arguments != data.config.jvm_arguments && config.jvm_arguments == previous.jvm_arguments {
             return Err(crate::errors::STORAGE_STATE_CHANGED.into());

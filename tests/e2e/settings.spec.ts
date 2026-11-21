@@ -212,3 +212,51 @@ test("fallback profile shows both the active directory and retained primary stat
   await page.getByRole("navigation", {name:"主导航"}).getByRole("button",{name:"设置",exact:true}).click();
   await expect(warning).toBeVisible();
 });
+
+test("the startup update notice opens Settings → About once and installs from there", async ({ page }) => {
+  await installLauncherFixture(page, { launcherUpdate: { latestVersion: "99.0.0" } });
+  await page.goto("/?next-ui");
+  const notice = page.locator(".vx-toast");
+  await expect(notice).toContainText("发现新版本 99.0.0，可在“设置 → 关于”中查看和安装。");
+  await notice.getByRole("button", { name: "查看更新", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "版本更新", exact: true })).toBeVisible();
+  const status = page.getByTestId("launcher-update-status");
+  await expect(status).toHaveText("发现新版本 99.0.0。");
+  const install = page.getByRole("button", { name: "下载并更新", exact: true });
+  await expect(install).toBeFocused();
+  await expect(page.locator(".vx-toast")).toHaveCount(0);
+
+  // Leaving and coming back opens General again; the session result stays.
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  await nav.getByRole("button", { name: "角色", exact: true }).click();
+  await nav.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "版本更新", exact: true })).toHaveCount(0);
+  await page.locator(".vx-settings-nav").getByRole("button", { name: "关于", exact: true }).click();
+  await expect(status).toHaveText("发现新版本 99.0.0。");
+
+  await page.getByRole("button", { name: "下载并更新", exact: true }).click();
+  await expect(status).toHaveText("安装包已校验，正在准备更新…");
+  const recorded = await calls(page);
+  expect(recorded.filter(({ name }) => name === "check_launcher_update")).toHaveLength(1);
+  expect(recorded.find(({ name }) => name === "install_launcher_update_and_exit")?.args).toEqual({
+    errorText: "更新未完成。请重新打开 Voxelight 后重试，或从发布页手动下载安装包。",
+    logsText: "故障诊断日志：",
+  });
+});
+
+test("the update source and the startup check save at once", async ({ page }) => {
+  await installLauncherFixture(page);
+  await openSettings(page);
+  await page.locator(".vx-settings-nav").getByRole("button", { name: "关于", exact: true }).click();
+  await expect(page.getByTestId("launcher-update-status")).toHaveText(`当前版本 ${packageJson.version} 已是最新。`);
+  await page.getByLabel("启动时检查更新", { exact: true }).uncheck();
+  await selectValue(page, "更新来源", "gitee");
+  await expect(page.getByTestId("launcher-update-status")).toHaveText("尚未检查更新。");
+  await expect(page.getByText(/有未保存的更改/)).toHaveCount(0);
+  const persisted = await page.evaluate(async () => (await (window as unknown as {
+    __TAURI_INTERNALS__: { invoke: (name: string) => Promise<{ config: Record<string, unknown> }> };
+  }).__TAURI_INTERNALS__.invoke("bootstrap")).config);
+  expect(persisted).toMatchObject({ checkForUpdates: false, updateSource: "gitee" });
+  const saved = (await calls(page)).filter(({ name }) => name === "set_launcher_update_preferences").map(({ args }) => args);
+  expect(saved).toEqual([{ checkForUpdates: false, updateSource: "auto" }, { checkForUpdates: false, updateSource: "gitee" }]);
+});

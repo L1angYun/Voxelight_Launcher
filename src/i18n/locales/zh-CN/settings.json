@@ -222,5 +222,47 @@
       "heapArguments": "请在内存设置里调整内存，并从自定义 JVM 参数中删除 -Xms、-Xmx 或 -XX:…HeapSize 参数。",
       "invalid": "部分设置无效，请检查输入后重试。"
     }
+  },
+  "updates": {
+    "section": "版本更新",
+    "checkOnStartup": "启动时检查更新",
+    "checkOnStartupTip": "启动时通过所选更新来源检查正式发布版本，也可以随时手动检查。",
+    "source": "更新来源",
+    "sourceTip": "选择检查和下载更新的来源。自动模式同时检查 GitHub 和 Gitee。",
+    "sources": {
+      "auto": "自动",
+      "github": "GitHub",
+      "gitee": "Gitee"
+    },
+    "checkNow": "检查更新",
+    "openRelease": "打开发布说明",
+    "install": "下载并更新",
+    "retryInstall": "重试更新",
+    "installTip": "下载并校验新版安装包后，启动器会退出，由安装程序完成升级并重新打开启动器。",
+    "cancel": "取消更新",
+    "progress": "更新下载进度",
+    "installWhenIdle": "退出游戏后即可更新。",
+    "notes": "{{version}} 更新说明",
+    "openFailed": "无法打开发布页面，请重试。",
+    "helperFailed": "更新未完成。请重新打开 Voxelight 后重试，或从发布页手动下载安装包。",
+    "helperLogs": "故障诊断日志：",
+    "notice": "发现新版本 {{version}}，可在“设置 → 关于”中查看和安装。",
+    "review": "查看更新",
+    "status": {
+      "notChecked": "尚未检查更新。",
+      "checking": "正在检查更新…",
+      "available": "发现新版本 {{version}}。",
+      "noInstaller": "发现新版本 {{version}}，但没有兼容的安装包。可查看发布说明。",
+      "current": "当前版本 {{version}} 已是最新。",
+      "stale": "更新来源提供的 {{version}} 比之前见过的版本旧，已忽略。请稍后重试或切换更新来源。",
+      "failed": "无法检查更新，请重试或切换更新来源。",
+      "rateLimited": "GitHub 访问受限，备用更新信息也未能获取。请稍后重试。",
+      "timedOut": "检查更新超时，请重试或切换更新来源。",
+      "downloading": "正在下载安装包… {{percent}}%",
+      "preparing": "安装包已校验，正在准备更新…",
+      "cancelled": "已取消更新。",
+      "downloadFailed": "下载或校验安装包失败。请重试，或从发布页手动下载。",
+      "installFailed": "已下载，但未能开始安装。请重试，或从发布页手动下载。"
+    }
   }
 }

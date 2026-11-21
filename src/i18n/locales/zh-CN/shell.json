@@ -89,7 +89,15 @@
     "update.handOffFailed": "无法把更新交给安装程序，什么都没有改动，请重试。",
     "update.invalidText": "更新提示文字无效。",
     "update.otherInstance": "此文件夹中还有另一个启动器（其他配置）正在运行。请先关闭它，再安装更新。",
-    "update.otherInstanceUnknown": "无法确认是否有其他启动器正在运行，因此没有安装更新。"
+    "update.otherInstanceUnknown": "无法确认是否有其他启动器正在运行，因此没有安装更新。",
+    "update.checkFailed": "无法检查更新，请重试或切换更新来源。",
+    "update.rateLimited": "GitHub 访问受限，备用更新信息也未能获取。请稍后重试。",
+    "update.timedOut": "检查更新超时，请重试或切换更新来源。",
+    "update.downloadFailed": "下载或校验安装包失败。请重试，或从发布页手动下载。",
+    "update.cancelled": "已取消更新。",
+    "update.sourceChanged": "更新来源已更改，请重新检查更新。",
+    "update.notOffered": "没有可下载的更新，请先检查更新。",
+    "update.sourceInvalid": "更新来源无效。"
   },
   "storage": {
     "fallbackTitle": "当前使用备用数据档",

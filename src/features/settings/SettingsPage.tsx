@@ -22,7 +22,8 @@ const sectionIcons = { general: SlidersHorizontal, appearance: Palette, game: Ga
 const appearanceKeys = new Set<keyof Config>(appearanceFields);
 type SaveResult = { ok: true } | { ok: false; error: LauncherError };
 
-export function SettingsPage() {
+/** `reviewUpdates` changes when the startup notice asks to review the update. */
+export function SettingsPage({ reviewUpdates = 0 }: { reviewUpdates?: number }) {
   const { t, i18n } = useTranslation();
   const {
     config,
@@ -31,7 +32,18 @@ export function SettingsPage() {
     saveConfig,
     reload,
   } = useLauncher();
-  const [section, setSection] = useState<Section>("general");
+  const [section, setSection] = useState<Section>(reviewUpdates ? "about" : "general");
+  // The review request focuses the update action once, not on every return to About.
+  // Parent effects run after the child's, so the handled tick is remembered here.
+  const [focusUpdates, setFocusUpdates] = useState(0);
+  const handledReview = useRef(0);
+  const focusHandled = useCallback(() => setFocusUpdates(0), []);
+  useEffect(() => {
+    if (!reviewUpdates || reviewUpdates === handledReview.current) return;
+    handledReview.current = reviewUpdates;
+    setSection("about");
+    setFocusUpdates(reviewUpdates);
+  }, [reviewUpdates]);
   const [draft, setDraft] = useState(config);
   const [actionError, setActionError] = useState<LauncherError | null>(null);
   const [actionNotice, setActionNotice] = useState<{ code: string; params?: Record<string, unknown> } | null>(null);
@@ -184,7 +196,7 @@ export function SettingsPage() {
           {section === "game" ? <GameSettings {...sectionProps} /> : null}
           {section === "java" ? <JavaSettings {...sectionProps} /> : null}
           {section === "downloads" ? <DownloadSettings {...sectionProps} savedConfig={savedConfig.current} /> : null}
-          {section === "about" ? <AboutSettings onError={onError} /> : null}
+          {section === "about" ? <AboutSettings {...sectionProps} focusUpdates={focusUpdates} onFocusHandled={focusHandled} /> : null}
         </SectionPanel>
       </div>
     </PageShell>

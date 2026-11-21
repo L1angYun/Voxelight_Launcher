@@ -44,6 +44,7 @@
     "shortDescription": "Voxelight Minecraft Java 启动器 · Rust + Tauri",
     "category": "Game",
     "windows": {
+      "allowDowngrades": false,
       "nsis": {
         "installMode": "currentUser",
         "template": "installer/windows/installer.nsi",

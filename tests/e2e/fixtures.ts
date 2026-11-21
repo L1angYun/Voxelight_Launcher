@@ -2,6 +2,7 @@
 import type { WorldMaterial, WorldSceneId } from "../../src/components/world/types";
 import { appearanceFields, type Instance } from "../../src/lib/launcher";
 import type { DownloadTask } from "../../src/features/downloads/useDownloadTasks";
+import packageJson from "../../package.json" with { type: "json" };
 
 export async function installLauncherFixture(
   page: Page,
@@ -30,9 +31,11 @@ export async function installLauncherFixture(
     launchDelay?: number;
     manualLaunchCompletion?: boolean;
     settingsOperationLocked?: boolean;
+    /** A newer stable release the update check finds (none: this build is the newest). */
+    launcherUpdate?: { latestVersion: string };
   } = {},
 ) {
-  await page.addInitScript(({ options, appearanceKeys }) => {
+  await page.addInitScript(({ options, appearanceKeys, appVersion }) => {
     const texture = (color: string, cape = false) => {
       const canvas = document.createElement("canvas");
       canvas.width = 64;
@@ -115,6 +118,8 @@ export async function installLauncherFixture(
       customBackground: null,
       javaAutoDownload: true,
       defaultSkin: options.defaultModel === "slim" ? "alex" : "steve",
+      checkForUpdates: true,
+      updateSource: "auto",
     };
     const installedVersions = Array.from(
       { length: Math.max(0, Math.floor(options.versionDirectoryCount ?? 1)) },
@@ -425,6 +430,29 @@ export async function installLauncherFixture(
             Object.assign(config, args?.patch);
             return { ...config };
           }
+          // Self-update (updates::*): the check finds options.launcherUpdate, else this build.
+          if (name === "get_launcher_update_state") return { currentVersion: appVersion, check: null, download: "idle", staged: null };
+          if (name === "check_launcher_update") {
+            const latest = options.launcherUpdate?.latestVersion ?? appVersion;
+            const newer = latest !== appVersion;
+            return {
+              currentVersion: appVersion, latestVersion: latest, status: newer ? "newer" : "current", source: "github",
+              releaseUrl: `https://github.com/L1angYun/Voxelight_Launcher/releases/tag/v${latest}`,
+              notes: newer ? `Synthetic notes for ${latest}` : null, installerSize: newer ? 4096 : null,
+            };
+          }
+          if (name === "set_launcher_update_preferences") {
+            Object.assign(config, { checkForUpdates: args?.checkForUpdates === true, updateSource: String(args?.updateSource) });
+            return { ...config };
+          }
+          if (name === "download_launcher_update") {
+            const latest = options.launcherUpdate?.latestVersion ?? appVersion;
+            emit("launcher://update-progress", { downloaded: 4096, total: 4096 });
+            return { version: latest, fileName: `VoxelightLauncher-${latest}-x64-setup.exe`, size: 4096 };
+          }
+          // The real launcher exits here and the helper runs the installer.
+          if (name === "install_launcher_update_and_exit") return new Promise(() => {});
+          if (name === "cancel_launcher_update") return null;
           if (name === "save_config") {
             if (settingsOperationLocked) throw { code: "config.busy", params: {} };
             const appearance = args?.preserveAppearance === true
@@ -656,5 +684,5 @@ export async function installLauncherFixture(
         },
       },
     });
-  }, { options, appearanceKeys: [...appearanceFields, "customBackground"] as const });
+  }, { options, appearanceKeys: [...appearanceFields, "customBackground"] as const, appVersion: packageJson.version });
 }
