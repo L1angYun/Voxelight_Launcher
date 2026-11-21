@@ -7,6 +7,7 @@ import { command, events } from "../../lib/launcher";
 import { LauncherError } from "../../lib/errors";
 import { createLauncherI18n } from "../../i18n";
 import { DownloadsPage } from "./DownloadsPage";
+import { TaskList } from "./TaskList";
 import {
   taskActions,
   useDownloadTasks,
@@ -253,12 +254,14 @@ describe("download task center", () => {
     expect(taskActions("queued")).toEqual(["cancel"]);
     expect(taskActions("running")).toEqual(["pause", "cancel"]);
     expect(taskActions("paused")).toEqual(["resume", "cancel"]);
-    expect(taskActions("interrupted")).toEqual(["retry"]);
-    expect(taskActions("completed")).toEqual([]);
-    expect(taskActions("failed")).toContain("retry");
-    expect(taskActions("cancelled")).toEqual(["retry"]);
-    expect(taskActions("failed", "resource")).toEqual([]);
-    expect(taskActions("future-status")).toEqual([]);
+    // Retry follows the backend's computed flag, whatever the kind.
+    expect(taskActions("interrupted", true)).toEqual(["retry"]);
+    expect(taskActions("completed", true)).toEqual([]);
+    expect(taskActions("failed", true)).toEqual(["retry"]);
+    expect(taskActions("cancelled", true)).toEqual(["retry"]);
+    expect(taskActions("failed", false)).toEqual([]);
+    expect(taskActions("failed")).toEqual([]);
+    expect(taskActions("future-status", true)).toEqual([]);
   });
 
   it("localizes kind, stage and status without showing legacy labels", async () => {
@@ -333,8 +336,8 @@ describe("download task center", () => {
 
   it("retries only recoverable installation history and refreshes the shared list", async () => {
     currentTasks = [
-      task({ id: "failed-install", status: "failed", stage: "failed" }),
-      task({ id: "failed-resource", kind: "resource", status: "failed", stage: "failed" }),
+      task({ id: "failed-install", status: "failed", stage: "failed", retryable: true }),
+      task({ id: "failed-resource", kind: "resource", status: "failed", stage: "failed", retryable: false }),
       task({ id: "completed", status: "completed", stage: "complete" }),
     ];
     await render();
@@ -366,8 +369,45 @@ describe("download task center", () => {
     expect(container.querySelectorAll(".vx-empty")).toHaveLength(1);
   });
 
+  it("offers Retry for any kind the backend marks retryable, and explains a second retry", async () => {
+    currentTasks = [
+      task({ id: "failed-loader", kind: "loader", target: "1.20.1", status: "failed", stage: "failed", retryable: true }),
+      task({ id: "failed-pack", kind: "modpack", target: "pack", status: "interrupted", stage: "interrupted", retryable: true }),
+      task({ id: "failed-export", kind: "export", status: "failed", stage: "failed", retryable: false }),
+    ];
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_download_tasks") return snapshot();
+      if (name === "retry_download_task" && (args as { taskId: string }).taskId === "failed-pack") throw new LauncherError("download.alreadyRetried");
+      if (name === "retry_download_task") return "retry-loader";
+      return null;
+    });
+    await render();
+    expect(article("failed-export").querySelectorAll("button")).toHaveLength(0);
+    await act(async () => button(article("failed-loader"), "Retry").click());
+    expect(commandMock).toHaveBeenCalledWith("retry_download_task", { taskId: "failed-loader" });
+    await act(async () => button(article("failed-pack"), "Retry").click());
+    expect(container.textContent).toContain("This task was already retried. Use the newer task instead.");
+  });
+
+  it("suggests retrying an interrupted task only when it can be retried", async () => {
+    currentTasks = [
+      task({ id: "again", kind: "loader", status: "interrupted", stage: "interrupted", retryable: true }),
+      task({ id: "final", kind: "export", status: "interrupted", stage: "interrupted", retryable: false }),
+    ];
+    // History rows are compact; the full row is the one that carries the description.
+    const i18n = createLauncherI18n("en-US", "en-US");
+    await i18n.initPromise;
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(TaskList, {
+        tasks: currentTasks, rates: {}, busyTaskId: null, onAction: () => undefined,
+      })));
+    });
+    expect(article("again").querySelector(".vx-task-row__message")?.textContent).toBe("The launcher closed before this task finished. Retry to reuse verified files.");
+    expect(article("final").querySelector(".vx-task-row__message")?.textContent).toBe("The launcher closed before this task finished.");
+  });
+
   it("shows a localized expected error when a retry target no longer exists", async () => {
-    currentTasks = [task({ id: "missing", status: "failed", stage: "failed" })];
+    currentTasks = [task({ id: "missing", status: "failed", stage: "failed", retryable: true })];
     commandMock.mockImplementation(async (name) => {
       if (name === "list_download_tasks") return snapshot();
       if (name === "retry_download_task") throw new LauncherError("download.notFound");

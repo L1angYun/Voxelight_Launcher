@@ -537,9 +537,13 @@ pub async fn install_version(
         .operation
         .try_lock()
         .map_err(|_| "已有安装或启动准备任务运行，请等待完成")?;
-    let task = state
-        .control
-        .begin("install", &version_id, &format!("Minecraft {version_id}"))?;
+    let task = state.control.begin_recorded(
+        "install",
+        &version_id,
+        &format!("Minecraft {version_id}"),
+        None,
+        crate::downloads::RetryRequest::Install { version_id: version_id.clone() },
+    )?;
     let result = minecraft::install(&state, &app, &version_id).await;
     state
         .control

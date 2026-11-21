@@ -4093,9 +4093,15 @@ mod tests {
         assert!(!launch.contains("require_install_root_stopped"), "a second instance may still launch");
         assert!(launch.contains("&game_dir, &root, owner);"), "launch records its library root");
         let loaders = crate::storage::executable_source(include_str!("loaders.rs"));
-        let (_, loader) = loaders.split_once("pub async fn install_loader_inner(").unwrap();
+        // Every loader install (interactive, retried, and the inner one other
+        // installs call) goes through install_loader_resolving.
+        let (_, inner) = loaders.split_once("pub async fn install_loader_inner(").unwrap();
+        let (inner, _) = inner.split_once("\n}").unwrap();
+        assert!(inner.contains("install_loader_resolving(state, app, loader, game_version, loader_version, &|_| {}).await"));
+        let (_, loader) = loaders.split_once("async fn install_loader_resolving(").unwrap();
         let (loader, _) = loader.split_once("\n}").unwrap();
         let checked = loader.find("minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;").unwrap();
+        assert!(loader.find("resolved(&version);").unwrap() < checked, "the resolved version is recorded before anything is installed");
         assert!(checked < loader.find("minecraft::install(state, app, game_version)").unwrap());
         assert!(checked < loader.find("lightweight_loader(").unwrap());
     }

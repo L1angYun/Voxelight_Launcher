@@ -22,6 +22,40 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::watch;
 
 pub(crate) const CANCELLED: &str = "任务已取消，已校验文件保留供下次复用";
+pub(crate) const RETRY_UNSUPPORTED: &str = "请回到对应资源、整合包或备份页面重新执行；已校验文件会复用";
+pub(crate) const ALREADY_RETRIED: &str = "此任务已经重试过，请在新的任务上操作";
+const STILL_ACTIVE: &str = "该任务仍在执行或排队";
+
+/// What a task needs to run again from the Downloads page (U0256). Only the
+/// ids and names the user chose: never URLs, paths or secrets, so every retry
+/// resolves metadata and passes the host checks again. A request for the
+/// latest version records the version the first attempt resolved.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+pub(crate) enum RetryRequest {
+    Install { version_id: String },
+    Loader { loader: String, game_version: String, loader_version: String },
+    ModrinthModpack { project_id: String, modpack_version_id: String, name: Option<String>, include_optional: bool },
+    /// Recorded now; its runner comes with the resource install refactor (C7).
+    Resource { request: ResourceRequest },
+}
+
+/// The stored form: a version, so a payload from a newer build loads as "not
+/// retryable" instead of failing the whole history.
+const RETRY_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetryEnvelope {
+    v: u32,
+    request: RetryRequest,
+}
+
+impl RetryRequest {
+    fn stored(&self) -> serde_json::Value {
+        serde_json::to_value(RetryEnvelope { v: RETRY_VERSION, request: self.clone() }).unwrap_or(serde_json::Value::Null)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +76,49 @@ pub struct DownloadJob {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// The retry payload as stored ({"v":1,"request":…}), kept as raw JSON so
+    /// an unknown shape never makes the history unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<serde_json::Value>,
+    /// The task this one retried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retried_from: Option<String>,
+    /// Computed for every snapshot from the payload and the history; a stored
+    /// value is never trusted.
+    #[serde(default)]
+    pub retryable: bool,
+}
+
+impl DownloadJob {
+    /// The payload, if it is one this build understands.
+    pub(crate) fn retry_request(&self) -> Option<RetryRequest> {
+        let envelope: RetryEnvelope = serde_json::from_value(self.retry.clone()?).ok()?;
+        (envelope.v == RETRY_VERSION).then_some(envelope.request)
+    }
+}
+
+/// Whether `job` can run again now, and with what. Live tasks, completed
+/// ones, ones already retried and kinds without a runner cannot.
+fn retry_plan(job: &DownloadJob, jobs: &[DownloadJob]) -> Result<RetryRequest, &'static str> {
+    if matches!(job.status.as_str(), "running" | "paused" | "queued") {
+        return Err(STILL_ACTIVE);
+    }
+    if !matches!(job.status.as_str(), "failed" | "interrupted" | "cancelled") {
+        return Err(RETRY_UNSUPPORTED);
+    }
+    if jobs.iter().any(|other| other.retried_from.as_deref() == Some(job.id.as_str())) {
+        return Err(ALREADY_RETRIED);
+    }
+    // Rows from before payloads were recorded: an install is retried by its target.
+    let request = match job.retry_request() {
+        Some(request) => request,
+        None if job.retry.is_none() && job.kind == "install" => RetryRequest::Install { version_id: job.target.clone() },
+        None => return Err(RETRY_UNSUPPORTED),
+    };
+    match request {
+        RetryRequest::Install { .. } | RetryRequest::Loader { .. } | RetryRequest::ModrinthModpack { .. } => Ok(request),
+        RetryRequest::Resource { .. } => Err(RETRY_UNSUPPORTED),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -59,7 +136,7 @@ enum RunSignal {
     Finished,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ResourceRequest {
     pub source: ResourceSource,
@@ -68,14 +145,14 @@ pub(crate) struct ResourceRequest {
     pub target: ResourceTarget,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ResourceSource {
     Modrinth,
     Curseforge,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub(crate) enum ResourceTarget {
     Existing {
@@ -165,9 +242,82 @@ fn update_state(job: &mut DownloadJob, status: &str, stage: Option<&str>, messag
 }
 
 fn snapshot_of(state: &Scheduler) -> DownloadSnapshot {
-    DownloadSnapshot {
-        revision: state.revision,
-        tasks: state.jobs.clone(),
+    let mut tasks = state.jobs.clone();
+    for task in &mut tasks {
+        task.retryable = retry_plan(task, &state.jobs).is_ok();
+    }
+    DownloadSnapshot { revision: state.revision, tasks }
+}
+
+/// A new task row, the same for every way a task is created.
+struct NewJob<'a> {
+    kind: &'a str,
+    target: &'a str,
+    label: &'a str,
+    display_target: Option<&'a str>,
+    reservation: Option<Reservation>,
+    start_now: bool,
+    retry: Option<RetryRequest>,
+    retried_from: Option<String>,
+}
+
+fn insert_job(state: &mut Scheduler, id: &str, job: NewJob<'_>) -> Option<()> {
+    if job.start_now && state.active.is_some() {
+        return None;
+    }
+    if job.start_now {
+        state.active = Some(id.to_owned());
+    }
+    let time = chrono::Utc::now().to_rfc3339();
+    state.jobs.push(DownloadJob {
+        id: id.to_owned(),
+        kind: job.kind.into(),
+        target: job.target.into(),
+        label: job.label.into(),
+        display_target: job.display_target.map(str::to_owned),
+        status: if job.start_now { "running" } else { "queued" }.into(),
+        stage: "queued".into(),
+        completed: 0,
+        total: 0,
+        bytes_completed: 0,
+        bytes_total: 0,
+        message: if job.start_now { "正在准备" } else { "等待执行" }.into(),
+        error: None,
+        created_at: time.clone(),
+        updated_at: time,
+        retry: job.retry.as_ref().map(RetryRequest::stored),
+        retried_from: job.retried_from,
+        retryable: false,
+    });
+    state.live.insert(
+        id.to_owned(),
+        PendingTask {
+            signal: watch::channel(RunSignal::Ready).0,
+            reservation: job.reservation,
+            claimed: false,
+            starting_game: false,
+        },
+    );
+    if state.jobs.len() > 200 {
+        if let Some(index) = state.jobs.iter().position(|job| !state.live.contains_key(&job.id)) {
+            state.jobs.remove(index);
+        }
+    }
+    Some(())
+}
+
+/// How a retried task is queued: its kind, target and labels.
+fn retry_job(request: &RetryRequest) -> (&'static str, String, String, Option<String>) {
+    match request {
+        RetryRequest::Install { version_id } => ("install", version_id.clone(), format!("Minecraft {version_id}"), None),
+        RetryRequest::Loader { loader, game_version, .. } => ("loader", game_version.clone(), format!("安装 {loader}"), None),
+        RetryRequest::ModrinthModpack { project_id, name, .. } => (
+            "modpack",
+            project_id.clone(),
+            "安装 Modrinth 整合包".into(),
+            name.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned),
+        ),
+        RetryRequest::Resource { request } => ("resource", request.project_id.clone(), "安装资源".into(), None),
     }
 }
 
@@ -296,63 +446,100 @@ impl DownloadControl {
         reservation: Option<Reservation>,
         start_now: bool,
     ) -> Result<String, String> {
+        self.create(NewJob { kind, target, label, display_target, reservation, start_now, retry: None, retried_from: None })
+    }
+
+    fn create(&self, job: NewJob<'_>) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
-        let time = chrono::Utc::now().to_rfc3339();
-        self.mutate(true, |state| {
-            if start_now && state.active.is_some() {
-                return None;
-            }
-            if start_now {
-                state.active = Some(id.clone());
-            }
-            state.jobs.push(DownloadJob {
-                id: id.clone(),
-                kind: kind.into(),
-                target: target.into(),
-                label: label.into(),
-                display_target: display_target.map(str::to_owned),
-                status: if start_now { "running" } else { "queued" }.into(),
-                stage: "queued".into(),
-                completed: 0,
-                total: 0,
-                bytes_completed: 0,
-                bytes_total: 0,
-                message: if start_now {
-                    "正在准备"
-                } else {
-                    "等待执行"
-                }
-                .into(),
-                error: None,
-                created_at: time.clone(),
-                updated_at: time,
-            });
-            state.live.insert(
-                id.clone(),
-                PendingTask {
-                    signal: watch::channel(RunSignal::Ready).0,
-                    reservation,
-                    claimed: false,
-                    starting_game: false,
-                },
-            );
-            if state.jobs.len() > 200 {
-                if let Some(index) = state
-                    .jobs
-                    .iter()
-                    .position(|job| !state.live.contains_key(&job.id))
-                {
-                    state.jobs.remove(index);
-                }
-            }
-            Some(())
-        })
-        .ok_or("已有下载或启动准备任务运行")?;
+        self.mutate(true, |state| insert_job(state, &id, job)).ok_or("已有下载或启动准备任务运行")?;
         Ok(id)
     }
 
     pub fn enqueue(&self, kind: &str, target: &str, label: &str) -> Result<String, String> {
         self.create_job(kind, target, label, None, None, false)
+    }
+
+    /// A queued task that records how to run it again.
+    pub(crate) fn enqueue_recorded(&self, kind: &str, target: &str, label: &str, request: RetryRequest) -> Result<String, String> {
+        self.create(NewJob { kind, target, label, display_target: None, reservation: None, start_now: false, retry: Some(request), retried_from: None })
+    }
+
+    /// A task that starts now and records how to run it again.
+    pub(crate) fn begin_recorded(
+        &self,
+        kind: &str,
+        target: &str,
+        label: &str,
+        display_target: Option<&str>,
+        request: RetryRequest,
+    ) -> Result<String, String> {
+        self.create(NewJob { kind, target, label, display_target, reservation: None, start_now: true, retry: Some(request), retried_from: None })
+    }
+
+    /// Replaces (or clears) the payload, e.g. once "latest" is resolved, or when
+    /// a failure kept files that a second run would duplicate.
+    pub(crate) fn set_retry(&self, id: &str, request: Option<RetryRequest>) {
+        self.mutate(true, |state| {
+            let job = state.jobs.iter_mut().find(|job| job.id == id)?;
+            job.retry = request.as_ref().map(RetryRequest::stored);
+            Some(())
+        });
+    }
+
+    /// Checks that `id` can run again and queues the new task, in one step, so
+    /// two clicks cannot both retry it. The old row stays as it was.
+    pub(crate) fn queue_retry(&self, id: &str) -> Result<(String, RetryRequest), String> {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let mut refusal: Option<&'static str> = None;
+        let request = self.mutate(true, |state| {
+            let job = state.jobs.iter().find(|job| job.id == id);
+            let plan = match job {
+                Some(job) => retry_plan(job, &state.jobs),
+                None => Err("任务不存在"),
+            };
+            let request = match plan {
+                Ok(request) => request,
+                Err(reason) => {
+                    refusal = Some(reason);
+                    return None;
+                }
+            };
+            let (kind, target, label, display) = retry_job(&request);
+            insert_job(state, &new_id, NewJob {
+                kind,
+                target: &target,
+                label: &label,
+                display_target: display.as_deref(),
+                reservation: None,
+                start_now: false,
+                retry: Some(request.clone()),
+                retried_from: Some(id.to_owned()),
+            })?;
+            Some(request)
+        });
+        match (request, refusal) {
+            (Some(request), _) => Ok((new_id, request)),
+            (None, Some(reason)) => Err(reason.into()),
+            (None, None) => Err("下载任务状态异常".into()),
+        }
+    }
+
+    /// Runs a queued task when its turn comes: behind the operation lock,
+    /// with cancel honoured while it waits, and its result recorded.
+    pub(crate) async fn run_queued<T, F, Fut>(&self, operation: &tokio::sync::Mutex<()>, id: &str, run: F) -> Option<Result<T, String>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, String>>,
+    {
+        let Ok(_guard) = self.wait_for_turn(operation, id).await else {
+            return None;
+        };
+        if !self.activate(id) {
+            return None;
+        }
+        let result = run().await;
+        self.finish(id, result.as_ref().err().map(String::as_str));
+        Some(result)
     }
 
     pub fn reserve_launch(
@@ -388,7 +575,17 @@ impl DownloadControl {
             (ResourceSource::Curseforge, _) => "安装 CurseForge 资源",
         };
         let project_id = request.project_id.clone();
-        self.create_job("resource", &project_id, label, None, Some(Reservation::Resource(request)), false)
+        let retry = RetryRequest::Resource { request: request.clone() };
+        self.create(NewJob {
+            kind: "resource",
+            target: &project_id,
+            label,
+            display_target: None,
+            reservation: Some(Reservation::Resource(request)),
+            start_now: false,
+            retry: Some(retry),
+            retried_from: None,
+        })
     }
 
     pub(crate) fn claim_resource(&self, id: &str, request: ResourceRequest) -> Result<(), String> {
@@ -743,28 +940,45 @@ pub async fn queue_install(
     version_id: String,
 ) -> Result<String, String> {
     crate::storage::validate_id(&version_id)?;
-    let id = state
-        .control
-        .enqueue("install", &version_id, &format!("Minecraft {version_id}"))?;
+    let id = state.control.enqueue_recorded(
+        "install",
+        &version_id,
+        &format!("Minecraft {version_id}"),
+        RetryRequest::Install { version_id: version_id.clone() },
+    )?;
     spawn_install(app, state.inner().clone(), id.clone(), version_id);
     Ok(id)
 }
 fn spawn_install(app: AppHandle, state: Arc<LauncherState>, id: String, version: String) {
     tauri::async_runtime::spawn(async move {
-        let Ok(_guard) = state.control.wait_for_turn(&state.operation, &id).await else {
-            return;
-        };
-        if !state.control.activate(&id) {
-            return;
-        }
-        let result = minecraft::install(&state, &app, &version).await;
-        state
-            .control
-            .finish(&id, result.as_ref().err().map(String::as_str));
-        if let Err(error) = result {
+        let result = state.control.run_queued(&state.operation, &id, || minecraft::install(&state, &app, &version)).await;
+        if let Some(Err(error)) = result {
             minecraft::log(&app, &state, "error", error);
         }
     });
+}
+
+/// Starts the runner for a retried task; the task is already queued.
+fn spawn_retry(app: AppHandle, state: Arc<LauncherState>, id: String, request: RetryRequest) {
+    match request {
+        RetryRequest::Install { version_id } => spawn_install(app, state, id, version_id),
+        RetryRequest::Loader { loader, game_version, loader_version } => {
+            tauri::async_runtime::spawn(crate::loaders::run_queued_loader(app, state, id, loader, game_version, loader_version));
+        }
+        RetryRequest::ModrinthModpack { project_id, modpack_version_id, name, include_optional } => {
+            tauri::async_runtime::spawn(crate::modpacks::run_queued_modpack(
+                app,
+                state,
+                id,
+                project_id,
+                modpack_version_id,
+                name,
+                include_optional,
+            ));
+        }
+        // retry_plan never offers these yet.
+        RetryRequest::Resource { .. } => state.control.finish(&id, Some(RETRY_UNSUPPORTED)),
+    }
 }
 #[tauri::command]
 pub async fn retry_download_task(
@@ -772,23 +986,11 @@ pub async fn retry_download_task(
     state: State<'_, Arc<LauncherState>>,
     task_id: String,
 ) -> AppResult<String> {
-    let job = state
-        .control
-        .list()
-        .into_iter()
-        .find(|job| job.id == task_id)
-        .ok_or_else(|| expected("任务不存在"))?;
-    if job.kind != "install" {
-        return Err(expected(
-            "请回到对应资源、整合包或备份页面重新执行；已校验文件会复用",
-        ));
-    }
-    if ["running", "paused", "queued"].contains(&job.status.as_str()) {
-        return Err(expected("该任务仍在执行或排队"));
-    }
-    queue_install(app, state, job.target)
-        .await
-        .map_err(expected)
+    // Queued behind the operation lock like any other queued task; a request
+    // for "latest" reuses the version the first attempt resolved.
+    let (id, request) = state.control.queue_retry(&task_id).map_err(expected)?;
+    spawn_retry(app, state.inner().clone(), id.clone(), request);
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -1021,5 +1223,270 @@ mod tests {
             assert!(*control.next_slot.lock().unwrap() >= preview_slot + Duration::from_millis(1));
             control.finish(&next, None);
         });
+    }
+
+    struct Journal(PathBuf);
+
+    impl Journal {
+        fn new(rows: serde_json::Value) -> Self {
+            let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/u0256-probes").join(uuid::Uuid::new_v4().to_string());
+            fs::create_dir_all(&directory).unwrap();
+            if !rows.is_null() {
+                fs::write(directory.join("download-jobs.json"), serde_json::to_vec(&rows).unwrap()).unwrap();
+            }
+            Self(directory)
+        }
+        fn load(&self) -> DownloadControl {
+            DownloadControl::load(self.0.clone(), 0).unwrap()
+        }
+        fn corrupt_copies(&self) -> usize {
+            fs::read_dir(&self.0).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("download-jobs-corrupt-")).count()
+        }
+    }
+
+    impl Drop for Journal {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn row(id: &str, kind: &str, target: &str, status: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "kind": kind, "target": target, "label": "Fixture", "status": status, "stage": status,
+            "completed": 0, "total": 0, "bytesCompleted": 0, "bytesTotal": 0, "message": "", "error": null,
+            "createdAt": "2026-11-20T00:00:00Z", "updatedAt": "2026-11-20T00:00:00Z"
+        })
+    }
+
+    fn job(control: &DownloadControl, id: &str) -> DownloadJob {
+        control.list().into_iter().find(|job| job.id == id).unwrap()
+    }
+
+    fn code(error: String) -> String {
+        crate::errors::expected(error).code
+    }
+
+    #[test]
+    fn u0256_an_old_journal_loads_and_only_legacy_installs_are_retryable() {
+        let journal = Journal::new(serde_json::json!([
+            row("old-install", "install", "1.20.1", "failed"),
+            row("old-resource", "resource", "AANobbMI", "failed"),
+            row("old-loader", "loader", "1.20.1", "failed"),
+            row("old-running", "install", "1.21", "running"),
+        ]));
+        let control = journal.load();
+        assert_eq!(journal.corrupt_copies(), 0, "the history is kept");
+        assert!(job(&control, "old-install").retryable, "an old install row retries by its target");
+        assert!(!job(&control, "old-resource").retryable, "no payload, no runner");
+        assert!(!job(&control, "old-loader").retryable, "an old loader row never recorded its loader");
+        let interrupted = job(&control, "old-running");
+        assert_eq!(interrupted.status, "interrupted");
+        assert!(interrupted.retryable);
+    }
+
+    #[test]
+    fn u0256_an_unknown_payload_loads_as_not_retryable_without_losing_history() {
+        let mut future = row("future", "loader", "1.20.1", "failed");
+        future["retry"] = serde_json::json!({"v": 99, "request": {"kind": "teleport"}});
+        let mut odd = row("odd", "install", "1.20.1", "failed");
+        odd["retry"] = serde_json::json!({"v": 1, "request": {"kind": "install", "versionId": "1.20.1", "extra": true}});
+        // Readable fields under a newer version may mean something else there.
+        let mut newer = row("newer", "install", "1.20.1", "failed");
+        newer["retry"] = serde_json::json!({"v": 2, "request": {"kind": "install", "versionId": "1.20.1"}});
+        let journal = Journal::new(serde_json::json!([future, odd, newer, row("kept", "install", "1.19", "completed")]));
+        let control = journal.load();
+        assert_eq!(journal.corrupt_copies(), 0);
+        assert_eq!(control.list().len(), 4);
+        assert!(!job(&control, "future").retryable);
+        assert!(!job(&control, "newer").retryable, "a newer payload version is not read as this one");
+        assert!(!job(&control, "odd").retryable, "a payload this build cannot read is never guessed at");
+        assert!(!job(&control, "kept").retryable, "completed tasks are not retried");
+        assert_eq!(code(control.queue_retry("future").unwrap_err()), "download.retryUnsupported");
+    }
+
+    #[test]
+    fn u0256_payloads_survive_a_restart_and_an_interrupted_task_retries_with_them() {
+        let journal = Journal::new(serde_json::Value::Null);
+        let request = RetryRequest::Loader { loader: "fabric".into(), game_version: "1.20.1".into(), loader_version: "0.15.11".into() };
+        let task = {
+            let control = journal.load();
+            control.enqueue_recorded("loader", "1.20.1", "安装 fabric", request.clone()).unwrap()
+        };
+        let control = journal.load();
+        let row = job(&control, &task);
+        assert_eq!(row.status, "interrupted");
+        assert_eq!(row.retry_request(), Some(request.clone()));
+        assert!(row.retryable);
+        let on_disk = fs::read_to_string(journal.0.join("download-jobs.json")).unwrap();
+        assert!(on_disk.contains("\"v\": 1") && on_disk.contains("\"loaderVersion\": \"0.15.11\""), "{on_disk}");
+        let (retried, planned) = control.queue_retry(&task).unwrap();
+        assert_eq!(planned, request);
+        let new_row = job(&control, &retried);
+        assert_eq!((new_row.kind.as_str(), new_row.status.as_str(), new_row.retried_from.as_deref()), ("loader", "queued", Some(task.as_str())));
+        assert_eq!(new_row.retry_request(), Some(request));
+        let old = job(&control, &task);
+        assert_eq!((old.status.as_str(), old.retryable), ("interrupted", false), "the old row stays, and is not retried twice");
+        assert_eq!(code(control.queue_retry(&task).unwrap_err()), "download.alreadyRetried");
+        control.cancel(&retried);
+    }
+
+    #[test]
+    fn u0256_retry_refuses_live_missing_and_unsupported_tasks() {
+        let journal = Journal::new(serde_json::Value::Null);
+        let control = journal.load();
+        let running = control.begin_recorded("install", "1.20.1", "Minecraft 1.20.1", None, RetryRequest::Install { version_id: "1.20.1".into() }).unwrap();
+        assert_eq!(code(control.queue_retry(&running).unwrap_err()), "download.active");
+        assert!(!job(&control, &running).retryable);
+        control.set_paused(&running, true);
+        assert_eq!(code(control.queue_retry(&running).unwrap_err()), "download.active");
+        control.finish(&running, None);
+        assert_eq!(code(control.queue_retry(&running).unwrap_err()), "download.retryUnsupported", "a completed task is not retried");
+        assert_eq!(code(control.queue_retry("missing").unwrap_err()), "download.notFound");
+        // Kinds without a runner: no payload, or a resource payload before its runner exists.
+        for kind in ["export", "backup", "restore", "clone", "world-import", "server-start", "launch", "modpack"] {
+            let task = control.begin(kind, "fixture", "Fixture").unwrap();
+            control.finish(&task, Some("failed"));
+            assert!(!job(&control, &task).retryable, "{kind}");
+            assert_eq!(code(control.queue_retry(&task).unwrap_err()), "download.retryUnsupported", "{kind}");
+        }
+        let resource = control.reserve_resource(ResourceRequest {
+            source: ResourceSource::Modrinth,
+            project_id: "AANobbMI".into(),
+            resource_type: "mod".into(),
+            target: ResourceTarget::Existing { version_id: "1.20.1".into(), instance_id: None, file_id: None, resource_version_id: Some("abc".into()) },
+        }).unwrap();
+        control.finish(&resource, Some("failed"));
+        let row = job(&control, &resource);
+        assert!(matches!(row.retry_request(), Some(RetryRequest::Resource { .. })), "recorded now for the later runner");
+        assert!(!row.retryable);
+    }
+
+    #[test]
+    fn u0256_a_resolved_version_replaces_latest_and_a_kept_failure_clears_the_payload() {
+        let journal = Journal::new(serde_json::Value::Null);
+        let control = journal.load();
+        let latest = RetryRequest::Loader { loader: "fabric".into(), game_version: "1.20.1".into(), loader_version: "latest".into() };
+        let task = control.begin_recorded("loader", "1.20.1", "安装 fabric", None, latest).unwrap();
+        let resolved = RetryRequest::Loader { loader: "fabric".into(), game_version: "1.20.1".into(), loader_version: "0.15.11".into() };
+        control.set_retry(&task, Some(resolved.clone()));
+        control.finish(&task, Some("network"));
+        let (_, planned) = control.queue_retry(&task).unwrap();
+        assert_eq!(planned, resolved, "the retry repeats exactly what the first attempt chose");
+        let pack = control.begin_recorded("modpack", "pack", "安装 Modrinth 整合包", Some("My pack"), RetryRequest::ModrinthModpack {
+            project_id: "pack".into(), modpack_version_id: "v1".into(), name: Some("My pack".into()), include_optional: false,
+        }).unwrap();
+        control.set_retry(&pack, None);
+        control.finish(&pack, Some("kept"));
+        assert!(!job(&control, &pack).retryable);
+    }
+
+    #[test]
+    fn u0256_a_queued_retry_waits_for_the_operation_lock_and_honours_cancel() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let journal = Journal::new(serde_json::Value::Null);
+            let control = journal.load();
+            let operation = tokio::sync::Mutex::new(());
+            let request = RetryRequest::Install { version_id: "1.20.1".into() };
+            let first = control.enqueue_recorded("install", "1.20.1", "Minecraft 1.20.1", request).unwrap();
+            control.cancel(&first);
+            let (retried, _) = control.queue_retry(&first).unwrap();
+
+            // Behind the lock: the runner does not start until the lock is free.
+            let held = operation.lock().await;
+            let ran = std::sync::atomic::AtomicBool::new(false);
+            let inside = std::sync::Mutex::new(None);
+            let run = control.run_queued(&operation, &retried, || async {
+                ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                // While it runs, the lock is held and the task shows as running.
+                *inside.lock().unwrap() = Some((operation.try_lock().is_err(), job(&control, &retried).status));
+                Err::<(), String>("synthetic failure".into())
+            });
+            tokio::pin!(run);
+            assert!(tokio::time::timeout(Duration::from_millis(100), &mut run).await.is_err());
+            assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(job(&control, &retried).status, "queued");
+            drop(held);
+            assert_eq!(run.await, Some(Err("synthetic failure".into())));
+            assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(inside.lock().unwrap().take(), Some((true, "running".to_owned())));
+            assert!(operation.try_lock().is_ok(), "the lock is released afterwards");
+            let row = job(&control, &retried);
+            assert_eq!((row.status.as_str(), row.retryable), ("failed", true));
+
+            // Cancelled while waiting: the runner never starts.
+            let (again, _) = control.queue_retry(&retried).unwrap();
+            let held = operation.lock().await;
+            let never = control.run_queued(&operation, &again, || async {
+                if true {
+                    panic!("a cancelled task never runs");
+                }
+                Ok::<(), String>(())
+            });
+            tokio::pin!(never);
+            assert!(tokio::time::timeout(Duration::from_millis(50), &mut never).await.is_err());
+            control.cancel(&again);
+            assert_eq!(never.await, None);
+            drop(held);
+            assert_eq!(job(&control, &again).status, "cancelled");
+        });
+    }
+
+    #[test]
+    fn u0256_two_retries_of_one_task_queue_only_one() {
+        let journal = Journal::new(serde_json::Value::Null);
+        let control = Arc::new(journal.load());
+        let task = control.enqueue_recorded("install", "1.20.1", "Minecraft 1.20.1", RetryRequest::Install { version_id: "1.20.1".into() }).unwrap();
+        control.cancel(&task);
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8).map(|_| {
+            let control = control.clone();
+            let task = task.clone();
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                control.queue_retry(&task).is_ok()
+            })
+        }).collect();
+        let queued = threads.into_iter().map(|thread| thread.join().unwrap()).filter(|ok| *ok).count();
+        assert_eq!(queued, 1);
+        assert_eq!(control.list().iter().filter(|job| job.retried_from.as_deref() == Some(task.as_str())).count(), 1);
+    }
+
+    #[test]
+    fn u0256_a_retry_hands_each_payload_value_to_the_parameter_of_its_name() {
+        fn list(source: &str, opening: &str) -> Vec<String> {
+            let (_, rest) = source.split_once(opening).unwrap();
+            let (items, _) = rest.split_once(')').unwrap();
+            items.split(',').map(|item| item.split(':').next().unwrap().trim().to_owned()).filter(|item| !item.is_empty()).collect()
+        }
+        let downloads = include_str!("downloads.rs");
+        let (_, spawn) = downloads.split_once("fn spawn_retry(").unwrap();
+        let (spawn, _) = spawn.split_once("\n}").unwrap();
+        for (call, source, signature) in [
+            ("crate::loaders::run_queued_loader(", include_str!("loaders.rs"), "pub(crate) async fn run_queued_loader("),
+            ("crate::modpacks::run_queued_modpack(", include_str!("modpacks.rs"), "pub(crate) async fn run_queued_modpack("),
+        ] {
+            let (arguments, parameters) = (list(spawn, call), list(source, signature));
+            assert_eq!(arguments[..3], ["app", "state", "id"], "{call}");
+            assert_eq!(parameters[..3], ["app", "state", "task"], "{signature}");
+            assert_eq!(arguments[3..], parameters[3..], "{call}");
+        }
+    }
+
+    #[test]
+    fn u0256_payloads_hold_only_ids_and_names() {
+        let requests = [
+            RetryRequest::Install { version_id: "1.20.1".into() },
+            RetryRequest::Loader { loader: "forge".into(), game_version: "1.20.1".into(), loader_version: "47.2.0".into() },
+            RetryRequest::ModrinthModpack { project_id: "1KVo5zza".into(), modpack_version_id: "abc".into(), name: Some("Pack".into()), include_optional: true },
+        ];
+        for request in requests {
+            let stored = request.stored().to_string();
+            for forbidden in ["http", "\\\\", ":/", "key", "token", "password", "path"] {
+                assert!(!stored.to_ascii_lowercase().contains(forbidden), "{stored}");
+            }
+            let round: RetryEnvelope = serde_json::from_str(&stored).unwrap();
+            assert_eq!(round.request, request);
+        }
     }
 }

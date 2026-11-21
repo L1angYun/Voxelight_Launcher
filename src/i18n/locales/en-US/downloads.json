@@ -6,6 +6,7 @@
   "historyCount": "{{count}} in history",
   "taskTitle": "{{kind}} · {{target}}",
   "interruptedDescription": "The launcher closed before this task finished. Retry to reuse verified files.",
+  "interruptedNoRetry": "The launcher closed before this task finished.",
   "tasks": {
     "kind": {
       "install": "Game installation",
@@ -90,7 +91,8 @@
     "download": {
       "notFound": "This task no longer exists. Refresh and try again.",
       "retryUnsupported": "Return to the content, modpack, or backup page to run this task again. Verified files will be reused.",
-      "active": "This task is still running or queued."
+      "active": "This task is still running or queued.",
+      "alreadyRetried": "This task was already retried. Use the newer task instead."
     }
   },
   "subtitle": "Review active tasks and download history.",

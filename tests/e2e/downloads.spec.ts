@@ -123,8 +123,8 @@ test("cancelling the active task starts the next queued task", async ({ page }) 
 test("failed installations retry while unsupported history stays read-only", async ({ page }) => {
   await installLauncherFixture(page);
   await mockTasks(page, [
-    task({ id: "failed-install", status: "failed", stage: "failed" }),
-    task({ id: "failed-resource", kind: "resource", target: "sodium", status: "failed", stage: "failed" }),
+    task({ id: "failed-install", status: "failed", stage: "failed", retryable: true }),
+    task({ id: "failed-resource", kind: "resource", target: "sodium", status: "failed", stage: "failed", retryable: false }),
     task({ id: "completed", status: "completed", stage: "complete" }),
   ]);
   await openDownloads(page);

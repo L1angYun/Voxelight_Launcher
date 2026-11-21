@@ -1293,17 +1293,10 @@ async fn import_inner(
     // Cancelling while the lock is written must still leave only the disposable stage.
     state.control.checkpoint().await?;
     if let Err(error) = owned_stage.publish(&final_dir) {
-        return Err(format!(
-            "无法提交整合包，完整暂存目录保留在 {}：{error}",
-            owned_stage.path().display()
-        ));
+        return Err(format!("{PACK_STAGE_KEPT} {}：{error}", owned_stage.path().display()));
     }
-    let instance = instances::register(state, instance).map_err(|e| {
-        format!(
-            "整合包文件已完整保留在 {}，登记失败：{e}",
-            final_dir.display()
-        )
-    })?;
+    let instance = instances::register(state, instance)
+        .map_err(|e| format!("{PACK_FILES_KEPT} {}，登记失败：{e}", final_dir.display()))?;
     Ok(PackImportResult {
         instance,
         downloaded,
@@ -1450,11 +1443,70 @@ pub async fn install_modrinth_modpack(
     identifier(&project_id)?;
     identifier(&modpack_version_id)?;
     let _operation = state.operation.lock().await;
-    let task = match name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
-        Some(name) => state.control.begin_with_display("modpack", &project_id, "安装 Modrinth 整合包", name)?,
-        None => state.control.begin("modpack", &project_id, "安装 Modrinth 整合包")?,
+    let display = name.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    let retry = crate::downloads::RetryRequest::ModrinthModpack {
+        project_id: project_id.clone(),
+        modpack_version_id: modpack_version_id.clone(),
+        name: name.clone(),
+        include_optional: include_optional.unwrap_or(false),
     };
-    let result = async {
+    let task = state.control.begin_recorded("modpack", &project_id, "安装 Modrinth 整合包", display, retry)?;
+    let result = install_modrinth_modpack_body(&app, &state, &project_id, &modpack_version_id, name, include_optional.unwrap_or(false)).await;
+    forget_retry_when_kept(&state, &task, &result);
+    state
+        .control
+        .finish(&task, result.as_ref().err().map(String::as_str));
+    result.map_err(crate::errors::expected)
+}
+
+/// A Modrinth modpack install retried from the Downloads page: queued behind
+/// the operation lock, then the same install as the interactive one.
+pub(crate) async fn run_queued_modpack(
+    app: AppHandle,
+    state: Arc<LauncherState>,
+    task: String,
+    project_id: String,
+    modpack_version_id: String,
+    name: Option<String>,
+    include_optional: bool,
+) {
+    let result = state
+        .control
+        .run_queued(&state.operation, &task, || async {
+            let result = install_modrinth_modpack_body(&app, &state, &project_id, &modpack_version_id, name, include_optional).await;
+            forget_retry_when_kept(&state, &task, &result);
+            result
+        })
+        .await;
+    if let Some(Err(error)) = result {
+        crate::minecraft::log(&app, &state, "error", error);
+    }
+}
+
+/// A failure after the pack was staged or published keeps those files; a
+/// second run would make another copy, so such a task is not offered again.
+fn forget_retry_when_kept<T>(state: &LauncherState, task: &str, result: &Result<T, String>) {
+    if result.as_ref().err().is_some_and(|error| error.starts_with(PACK_STAGE_KEPT) || error.starts_with(PACK_FILES_KEPT)) {
+        state.control.set_retry(task, None);
+    }
+}
+
+pub(crate) const PACK_STAGE_KEPT: &str = "无法提交整合包，完整暂存目录保留在";
+pub(crate) const PACK_FILES_KEPT: &str = "整合包文件已完整保留在";
+
+async fn install_modrinth_modpack_body(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+    project_id: &str,
+    modpack_version_id: &str,
+    name: Option<String>,
+    include_optional: bool,
+) -> Result<PackImportResult, String> {
+    async {
+        // A retried install reads these from the journal on disk, so both
+        // callers pass this check before any request is built from them.
+        identifier(project_id)?;
+        identifier(modpack_version_id)?;
         // The operation lock is held from here to the dependency install, so
         // refusing now is final and saves downloading a pack that cannot install.
         crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)?;
@@ -1488,12 +1540,12 @@ pub async fn install_modrinth_modpack(
         )
         .await?;
         import_inner(
-            &app,
-            state.inner(),
+            app,
+            state,
             &archive,
             name.or(Some(project.title)),
             None,
-            include_optional.unwrap_or(false),
+            include_optional,
             Some(PackOrigin::Modrinth {
                 project_id: project.id,
                 version_id: version.id,
@@ -1502,11 +1554,7 @@ pub async fn install_modrinth_modpack(
         )
         .await
     }
-    .await;
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
-    result.map_err(crate::errors::expected)
+    .await
 }
 
 pub(crate) fn instance_dependencies(
@@ -2429,11 +2477,27 @@ mod tests {
         let guard = import.find("crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;").unwrap();
         assert!(guard < import.find("inspect_zip_limits_controlled(").unwrap());
         assert!(guard < import.find("instances::StagingDirectory::create(stage_name)?").unwrap());
+        // The command takes the operation lock, then runs the shared body; a
+        // retried install reaches the same body behind the lock (run_queued).
         let online = body("pub async fn install_modrinth_modpack(");
-        let guard = online.find("crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)?;").unwrap();
-        assert!(online.find("state.operation.lock().await").unwrap() < guard);
-        assert!(guard < online.find("fetch_verified(").unwrap());
+        assert!(online.find("state.operation.lock().await").unwrap() < online.find("install_modrinth_modpack_body(").unwrap());
         assert!(online.trim_end().ends_with("result.map_err(crate::errors::expected)"), "the code reaches the UI");
+        let queued = body("pub(crate) async fn run_queued_modpack(");
+        assert!(queued.find(".run_queued(&state.operation, &task,").unwrap() < queued.find("install_modrinth_modpack_body(").unwrap());
+        // Both paths clear the retry of a failure that kept files, and a failed
+        // retry reaches the log as a failed loader retry does.
+        let forget = "forget_retry_when_kept(&state, &task, &result);";
+        assert!(online.find("install_modrinth_modpack_body(").unwrap() < online.find(forget).unwrap());
+        assert!(online.find(forget).unwrap() < online.find(".finish(&task,").unwrap());
+        assert!(queued.find("install_modrinth_modpack_body(").unwrap() < queued.find(forget).unwrap());
+        let logged = queued.find("if let Some(Err(error)) = result {").unwrap();
+        assert!(queued[logged..].contains("crate::minecraft::log(&app, &state, \"error\", error);"));
+        let shared = body("async fn install_modrinth_modpack_body(");
+        let guard = shared.find("crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)?;").unwrap();
+        // The journal's ids are checked before the guard and before any URL uses them.
+        let ids = [shared.find("identifier(project_id)?;").unwrap(), shared.find("identifier(modpack_version_id)?;").unwrap()];
+        assert!(ids.iter().all(|&index| index < guard && index < shared.find("format!(\"{API}/").unwrap()));
+        assert!(guard < shared.find("fetch_verified(").unwrap());
         let loaders = crate::storage::executable_source(include_str!("loaders.rs"));
         let (_, loader) = loaders.split_once("pub async fn install_loader(").unwrap();
         let (loader, _) = loader.split_once("\n}").unwrap();
@@ -2443,7 +2507,7 @@ mod tests {
     #[test]
     fn c1_online_install_sweeps_guards_and_verifies_the_staged_copy() {
         let source = crate::storage::executable_source(include_str!("modpacks.rs"));
-        let (_, body) = source.split_once("pub async fn install_modrinth_modpack(").unwrap();
+        let (_, body) = source.split_once("async fn install_modrinth_modpack_body(").unwrap();
         let (body, _) = body.split_once("\n}").unwrap();
         let sweep = body.find("sweep_pack_downloads(&directory,").unwrap();
         let guard = body.find("let _downloaded = RemoveOnDrop(archive.clone());").unwrap();
@@ -3011,6 +3075,37 @@ mod tests {
         assert_eq!(server.count(), 2);
         assert!(!cache.exists());
         drop(control);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn u0256_a_modpack_failure_that_kept_files_is_not_offered_again() {
+        let root = test_root();
+        let state = LauncherState::test_fixture(root.join("profile"), Default::default(), crate::storage::test_client());
+        let request = crate::downloads::RetryRequest::ModrinthModpack {
+            project_id: "pack".into(),
+            modpack_version_id: "v1".into(),
+            name: None,
+            include_optional: false,
+        };
+        let cases = [
+            (format!("{PACK_STAGE_KEPT} C:\\stage：denied"), false),
+            (format!("{PACK_FILES_KEPT} C:\\pack，登记失败：busy"), false),
+            ("整合包文件下载失败（HTTP 503）".to_owned(), true),
+        ];
+        for (error, retryable) in cases {
+            let task = state.control.begin_recorded("modpack", "pack", "安装 Modrinth 整合包", None, request.clone()).unwrap();
+            let result: Result<(), String> = Err(error.clone());
+            forget_retry_when_kept(&state, &task, &result);
+            state.control.finish(&task, Some(&error));
+            let row = state.control.list().into_iter().find(|job| job.id == task).unwrap();
+            assert_eq!(row.retryable, retryable, "{error}");
+        }
+        // The real messages start with these constants.
+        let source = crate::storage::executable_source(include_str!("modpacks.rs"));
+        assert!(source.contains("format!(\"{PACK_STAGE_KEPT} {}：{error}\", owned_stage.path().display())"));
+        assert!(source.contains("format!(\"{PACK_FILES_KEPT} {}，登记失败：{e}\", final_dir.display())"));
+        drop(state);
         cleanup(&root);
     }
 }

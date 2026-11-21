@@ -228,6 +228,8 @@ export async function installLauncherFixture(
         error: "Synthetic diagnostic",
         createdAt: "2026-10-24T08:00:00Z",
         updatedAt: "2026-10-24T08:18:00Z",
+        // As the backend computes it for an install row without a payload.
+        retryable: true,
       },
       ...history,
     ] : [];

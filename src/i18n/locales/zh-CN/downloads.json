@@ -6,6 +6,7 @@
   "historyCount": "{{count}} 项历史任务",
   "taskTitle": "{{kind}} · {{target}}",
   "interruptedDescription": "启动器关闭时任务尚未完成；重试可复用已校验文件。",
+  "interruptedNoRetry": "启动器关闭时任务尚未完成。",
   "tasks": {
     "kind": {
       "install": "游戏安装",
@@ -90,7 +91,8 @@
     "download": {
       "notFound": "任务已不存在，请刷新后重试。",
       "retryUnsupported": "请回到对应资源、整合包或备份页面重新执行，已校验文件会复用。",
-      "active": "任务仍在执行或排队。"
+      "active": "任务仍在执行或排队。",
+      "alreadyRetried": "此任务已经重试过，请在新的任务上操作。"
     }
   },
   "subtitle": "查看进行中的任务和下载历史。",

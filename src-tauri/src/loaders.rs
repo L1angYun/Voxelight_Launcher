@@ -730,6 +730,19 @@ pub async fn install_loader_inner(
     game_version: &str,
     loader_version: &str,
 ) -> Result<LoaderInstallResult, String> {
+    install_loader_resolving(state, app, loader, game_version, loader_version, &|_| {}).await
+}
+
+/// `resolved` hears the exact loader version before anything is installed,
+/// so a task that asked for "latest" can record what it chose (U0256).
+async fn install_loader_resolving(
+    state: &LauncherState,
+    app: &AppHandle,
+    loader: &str,
+    game_version: &str,
+    loader_version: &str,
+    resolved: &(dyn Fn(&str) + Sync),
+) -> Result<LoaderInstallResult, String> {
     loader_name(loader)?;
     validate_id(game_version)?;
     if matches!(loader, "forge" | "neoforge") {
@@ -754,6 +767,7 @@ pub async fn install_loader_inner(
         }
         loader_version.to_owned()
     };
+    resolved(&version);
     state.control.checkpoint().await?;
     let root = minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
     let (_, base) = minecraft::install(state, app, game_version).await?;
@@ -798,10 +812,14 @@ pub async fn install_loader(
         .operation
         .try_lock()
         .map_err(|_| "已有安装或启动准备任务运行")?;
-    let task = state
-        .control
-        .begin("loader", &game_version, &format!("安装 {loader}"))?;
-    let result = install_loader_inner(&state, &app, &loader, &game_version, &loader_version).await;
+    let task = state.control.begin_recorded(
+        "loader",
+        &game_version,
+        &format!("安装 {loader}"),
+        None,
+        loader_retry(&loader, &game_version, &loader_version),
+    )?;
+    let result = install_loader_recorded(&state, &app, &task, &loader, &game_version, &loader_version).await;
     state
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
@@ -809,6 +827,48 @@ pub async fn install_loader(
         minecraft::log(&app, &state, "error", error);
     }
     result.map_err(crate::errors::expected)
+}
+
+fn loader_retry(loader: &str, game_version: &str, loader_version: &str) -> crate::downloads::RetryRequest {
+    crate::downloads::RetryRequest::Loader {
+        loader: loader.into(),
+        game_version: game_version.into(),
+        loader_version: loader_version.into(),
+    }
+}
+
+/// Installs a loader for task `task`, recording the version it resolved.
+async fn install_loader_recorded(
+    state: &LauncherState,
+    app: &AppHandle,
+    task: &str,
+    loader: &str,
+    game_version: &str,
+    loader_version: &str,
+) -> Result<LoaderInstallResult, String> {
+    let record = |version: &str| state.control.set_retry(task, Some(loader_retry(loader, game_version, version)));
+    install_loader_resolving(state, app, loader, game_version, loader_version, &record).await
+}
+
+/// A loader install retried from the Downloads page: queued behind the
+/// operation lock, then the same install as the interactive one.
+pub(crate) async fn run_queued_loader(
+    app: AppHandle,
+    state: Arc<LauncherState>,
+    task: String,
+    loader: String,
+    game_version: String,
+    loader_version: String,
+) {
+    let result = state
+        .control
+        .run_queued(&state.operation, &task, || {
+            install_loader_recorded(&state, &app, &task, &loader, &game_version, &loader_version)
+        })
+        .await;
+    if let Some(Err(error)) = result {
+        minecraft::log(&app, &state, "error", error);
+    }
 }
 
 pub(crate) async fn authlib_injector(state: &LauncherState) -> Result<PathBuf, String> {
@@ -1054,5 +1114,26 @@ mod tests {
         assert!(validate_profile(&profile, "1.21.1").is_ok());
         assert!(validate_profile(&profile, "1.20.1").is_err());
         assert!(loader_name("../../untrusted").is_err());
+    }
+
+    #[test]
+    fn u0256_loader_tasks_record_their_request_and_the_version_they_resolved() {
+        let source = crate::storage::executable_source(include_str!("loaders.rs"));
+        let body = |name: &str| {
+            let (_, rest) = source.split_once(name).unwrap();
+            rest.split_once("\n}").unwrap().0.to_owned()
+        };
+        // Interactive: fail-fast lock, a recorded task, the recording install.
+        let interactive = body("pub async fn install_loader(");
+        let lock = interactive.find(".try_lock()").unwrap();
+        let begin = interactive.find("state.control.begin_recorded(").unwrap();
+        assert!(lock < begin && begin < interactive.find("install_loader_recorded(").unwrap());
+        // Retried: queued behind the operation lock, the same recording install.
+        let queued = body("pub(crate) async fn run_queued_loader(");
+        assert!(queued.find(".run_queued(&state.operation, &task,").unwrap() < queued.find("install_loader_recorded(").unwrap());
+        // The resolved version replaces "latest" in the task's payload.
+        let recorded = body("async fn install_loader_recorded(");
+        assert!(recorded.contains("state.control.set_retry(task, Some(loader_retry(loader, game_version, version)))"));
+        assert!(recorded.contains("install_loader_resolving(state, app, loader, game_version, loader_version, &record)"));
     }
 }

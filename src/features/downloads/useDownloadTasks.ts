@@ -18,6 +18,10 @@ export interface DownloadTask {
   error?: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Computed by the backend: the task ended and it knows how to run it again. */
+  retryable?: boolean;
+  /** The task this one retried. */
+  retriedFrom?: string | null;
 }
 
 export interface DownloadTaskSnapshot {
@@ -43,9 +47,9 @@ export interface DownloadTasksModel {
 const liveStatuses = new Set(["queued", "running", "paused"]);
 const activeOrder: Record<string, number> = { running: 0, queued: 1, paused: 2 };
 
-export function taskActions(status: string, kind = "install"): DownloadTaskAction[] {
+export function taskActions(status: string, retryable = false): DownloadTaskAction[] {
   if (["failed", "interrupted", "cancelled"].includes(status)) {
-    return kind === "install" ? ["retry"] : [];
+    return retryable ? ["retry"] : [];
   }
   if (status === "running") return ["pause", "cancel"];
   if (status === "paused") return ["resume", "cancel"];
@@ -132,7 +136,7 @@ export function useDownloadTasks(): DownloadTasksModel {
 
   const act = useCallback(async (task: DownloadTask, action: DownloadTaskAction) => {
     const current = previousTasks.current.find(item => item.id === task.id);
-    if (!mounted.current || busy.current || !current || !taskActions(current.status, current.kind).includes(action)) return;
+    if (!mounted.current || busy.current || !current || !taskActions(current.status, current.retryable).includes(action)) return;
     const session = lifecycle.current;
     busy.current = true;
     setBusyTaskId(task.id);

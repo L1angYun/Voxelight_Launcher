@@ -159,7 +159,7 @@ function TaskRow({
           total: filesTotal,
         })
       : t("downloads:progress.byteLabelUnknown", { completed: bytesCompleted });
-  const actions = taskActions(task.status, task.kind);
+  const actions = taskActions(task.status, task.retryable);
   const actionButtons = actions.map(action => {
     const Icon = actionIcons[action], label = t(`common:actions.${action}`);
     return <Button key={action} variant="ghost" size="sm" icon={<Icon size={14} />}
@@ -271,7 +271,7 @@ function TaskRow({
       ) : null}
       {task.status === "interrupted" ? (
         <p className="vx-task-row__message">
-          {t("downloads:interruptedDescription")}
+          {t(task.retryable ? "downloads:interruptedDescription" : "downloads:interruptedNoRetry")}
         </p>
       ) : null}
 

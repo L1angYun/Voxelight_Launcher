@@ -118,6 +118,7 @@ pub fn expected(detail: impl Into<String>) -> AppError {
                 "download.retryUnsupported"
             }
             "该任务仍在执行或排队" => "download.active",
+            crate::downloads::ALREADY_RETRIED => "download.alreadyRetried",
             "只能结束由本启动器启动、且仍在运行的游戏进程" => "game.notRunning",
             "正在处理此游戏的结束请求" => "game.stopBusy",
             "无法确认或结束游戏进程" => "game.stopFailed",
