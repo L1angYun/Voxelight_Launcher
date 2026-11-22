@@ -33,7 +33,10 @@ fastnbt = "2"
 md5 = "0.7"
 uuid = { version = "1", features = ["v4"] }
 # ZIP enables flate2 without selecting a codec; the direct dependency selects the Rust backend.
-zip = { version = "=9.2.3", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
+# 9.2.3 is the floor: earlier 9.x releases are inside GHSA-fpwh-q2m5-vfm2 (the Unicode path
+# field fix). Cargo.lock pins the version actually built, and a different one changes the
+# licence inventory, so `node scripts/check-licenses.mjs` fails until it is regenerated.
+zip = { version = "9.2.3", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 regex = "1"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
