@@ -42,6 +42,7 @@ pub(crate) const RESOURCE_RECOVERY_CONFLICT: &str = "resource.recoveryConflict";
 pub(crate) const RESOURCE_RECOVERY_INCOMPLETE: &str = "resource.recoveryIncomplete";
 pub(crate) const RESOURCE_RECOVERY_NOT_NEEDED: &str = "resource.recoveryNotNeeded";
 pub(crate) const RESOURCE_RECOVERY_REQUIRED: &str = "存在未完成的资源事务，请先在更新历史中恢复。";
+pub(crate) const RESTORE_PENDING: &str = "此实例有未完成的备份恢复或整合包更新，请先在实例备份中恢复，再启动或修改实例。";
 pub(crate) const INSTALL_GAME_RUNNING: &str = "同一游戏目录中有游戏正在运行。请先退出游戏，再安装版本或加载器。";
 
 pub(crate) const LOADER_REINSTALL_PREFIX: &str = "加载器版本元数据损坏，需重新安装：";
@@ -96,6 +97,7 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             crate::modpacks::pack_update::SHARED_ROOT => "modpack.sharedRoot",
             crate::modpacks::PLATFORM_UNREACHABLE | crate::modpacks::PLATFORM_INTERRUPTED => "modpack.platformUnavailable",
             RESOURCE_RECOVERY_REQUIRED => "resource.recoveryRequired",
+            RESTORE_PENDING => "instance.restorePending",
             INSTALL_GAME_RUNNING => "install.gameRunning",
             crate::auth::CLIENT_MISSING => "auth.clientIdRequired",
             crate::auth::CLIENT_REJECTED => "auth.clientRejected",

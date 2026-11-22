@@ -53,6 +53,7 @@
     "instance.running": "此实例已在运行，请勿重复启动。",
     "install.gameRunning": "同一游戏目录中有游戏正在运行。请先退出游戏，再安装版本或加载器。",
     "instance.notFound": "实例不存在，请刷新实例列表。",
+    "instance.restorePending": "此实例有未完成的备份恢复或整合包更新。请先在实例备份中完成恢复，再启动或修改此实例。",
     "backup.notFound": "没有找到对应的实例备份。",
     "backup.invalid": "备份清单无效，无法使用此备份。",
     "backup.path": "备份路径无效，请更换保存位置。",

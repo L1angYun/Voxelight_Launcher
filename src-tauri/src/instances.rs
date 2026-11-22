@@ -528,6 +528,8 @@ pub async fn update_instance(
     game_proxy_mode: Option<String>,
 ) -> crate::errors::AppResult<Instance> {
     let previous = instance(&state.snapshot()?, &instance_id)?;
+    // Checked again under the lock; this one only spares a native dialog.
+    require_no_pending_restore(&state, &instance_id)?;
     let java_path = if let Some(path) = java_path.filter(|path| Some(path.as_str()) != previous.java_path.as_deref()) {
         if path.trim().is_empty() { Some(path) }
         else { Some(grants.choose_or_confirm(PathUse::Java, path.trim(), &window, true).await?
@@ -539,6 +541,7 @@ pub async fn update_instance(
             .to_string_lossy().into_owned()) }
     } else { None };
     let _operation = state.operation.lock().await;
+    require_no_pending_restore(&state, &instance_id)?;
     let current = instance(&state.snapshot()?, &instance_id)?;
     if current.java_path != previous.java_path || current.icon_path != previous.icon_path {
         return Err(crate::errors::STORAGE_STATE_CHANGED.into());
@@ -1237,27 +1240,76 @@ fn same_instance(a: &Instance, b: &Instance) -> Result<bool, String> {
         == serde_json::to_value(b).map_err(|e| e.to_string())?)
 }
 
+/// The part of a registration its directory's files depend on. Which side of
+/// a restore or pack update a registration is on is decided by this alone:
+/// the rest (name, notes, launch and play time, settings) may have been
+/// changed by the user since.
+fn file_identity(value: &Instance) -> [&str; 5] {
+    [
+        &value.id,
+        &value.game_directory,
+        &value.version_id,
+        &value.loader,
+        &value.loader_version,
+    ]
+}
+
+/// `current` moved from `from` to `to` field by field: a field still as
+/// `from` has it takes `to`'s value, one changed since keeps its own.
+fn rebase_registration(current: &Instance, from: &Instance, to: &Instance) -> Result<Instance, String> {
+    let from = serde_json::to_value(from).map_err(|e| e.to_string())?;
+    let to = serde_json::to_value(to).map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(current).map_err(|e| e.to_string())?;
+    let (Some(from), Some(to), Some(fields)) = (from.as_object(), to.as_object(), value.as_object_mut()) else {
+        return Err("实例信息无效".into());
+    };
+    for (key, target) in to {
+        if fields.get(key) == from.get(key) {
+            fields.insert(key.clone(), target.clone());
+        }
+    }
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+/// Moves the registered instance from `from` to `to` (see
+/// `rebase_registration`). Its file identity must be one of theirs; any other
+/// belongs to a change this swap does not know.
+fn rebase_registered_instance(state: &LauncherState, from: &Instance, to: &Instance) -> Result<Instance, String> {
+    state.update(|data| {
+        let value = data
+            .instances
+            .iter_mut()
+            .find(|entry| entry.id == from.id)
+            .ok_or("实例已被移除")?;
+        if file_identity(value) != file_identity(from) && file_identity(value) != file_identity(to) {
+            return Err("当前实例信息已改变".into());
+        }
+        *value = rebase_registration(value, from, to)?;
+        Ok(value.clone())
+    })
+}
+
 fn replace_registered_instance(
     state: &LauncherState,
     expected: &Instance,
     replacement: &Instance,
 ) -> Result<(), String> {
-    state.update(|data| {
-        let value = data
-            .instances
-            .iter_mut()
-            .find(|entry| entry.id == expected.id)
-            .ok_or("实例已被移除")?;
-        if !same_instance(value, expected)? {
-            return Err("当前实例信息已改变".into());
-        }
-        *value = replacement.clone();
-        Ok(())
-    })
+    rebase_registered_instance(state, expected, replacement).map(|_| ())
+}
+
+/// Launching or changing an instance while a restore or pack update of it is
+/// unfinished would change what that recovery checks. An unreadable record
+/// counts as unfinished.
+pub(crate) fn require_no_pending_restore(state: &LauncherState, instance_id: &str) -> Result<(), String> {
+    match read_intent(&backup_folder(state, instance_id)?) {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) | Err(_) => Err(crate::errors::RESTORE_PENDING.into()),
+    }
 }
 
 fn restore_target(state: &LauncherState, current: &Instance) -> AppResult<PathBuf> {
-    crate::resources::require_resource_stopped(state, &current.version_id, Some(&current.id))?;
+    // Not `require_resource_stopped`: recovery runs while its record is pending.
+    crate::resources::require_target_stopped(state, &current.version_id, Some(&current.id))?;
     let config = state.snapshot()?.config;
     let directory = crate::minecraft::game_directory(&config, &current.version_id, Some(current))?;
     let target = crate::processes::canonical_game_directory(&directory)?;
@@ -1361,8 +1413,10 @@ fn recover_with_state(
     paths: &RestorePaths,
     current: &Instance,
 ) -> Result<RecoverRestoreResult, String> {
-    let already_before = same_instance(current, &intent.before)?;
-    if !already_before && !same_instance(current, &intent.after)? {
+    // Only what the files depend on says which side the registration is on;
+    // a rename, launch time or play time written since stays the user's.
+    let identity = file_identity(current);
+    if identity != file_identity(&intent.before) && identity != file_identity(&intent.after) {
         return Err("实例已改变，已保留恢复副本".into());
     }
 
@@ -1379,9 +1433,13 @@ fn recover_with_state(
         original.as_ref().map(|(_, backup)| backup.files.as_slice()),
         &selected,
     )?;
-    if !already_before {
-        replace_registered_instance(state, current, &intent.before)?;
-    }
+    // Fields still as the swap wrote them go back; nothing to write when the
+    // registration never left `before`.
+    let instance = if same_instance(&rebase_registration(current, &intent.after, &intent.before)?, current)? {
+        current.clone()
+    } else {
+        rebase_registered_instance(state, &intent.after, &intent.before)?
+    };
     let previous_backup = original
         .map(|(path, archive)| {
             fs::metadata(&path).map(|stat| {
@@ -1400,7 +1458,7 @@ fn recover_with_state(
         let _ = fs::remove_file(pack_manifest_path(folder, intent.token)?);
     }
     Ok(RecoverRestoreResult {
-        instance: intent.before.clone(),
+        instance,
         previous_backup,
         preserved_directory: paths
             .stage
@@ -2808,12 +2866,20 @@ mod backup_recovery_tests {
         state: &LauncherState,
         current: &Instance,
     ) -> (PackStage, RestoreIntent) {
+        let mut after = current.clone();
+        after.name = "pending pack update".into();
+        c10_prepare_intent_with(state, current, after)
+    }
+
+    fn c10_prepare_intent_with(
+        state: &LauncherState,
+        current: &Instance,
+        after: Instance,
+    ) -> (PackStage, RestoreIntent) {
         let mut stage = stage_pack_update(state, current).unwrap();
         let expected = c10_change_stage(stage.path());
         let folder = stage.folder.clone();
         let manifest_sha256 = write_pack_manifest(&folder, stage.token, &expected).unwrap();
-        let mut after = current.clone();
-        after.name = "pending pack update".into();
         let intent = RestoreIntent {
             token: stage.token,
             kind: RestoreKind::PackUpdate,
@@ -3339,5 +3405,222 @@ mod backup_recovery_tests {
         assert!(done.previous_directory.is_none(), "an unchanged old directory is removed");
         assert!(!stale.exists() && !partial.exists(), "the leftovers of an earlier update are gone");
         assert!(other.exists(), "a file that is not one of them stays");
+    }
+
+    /// A change written to the registration after the crash and before the
+    /// recovery: a rename and a launch time, plus play time when given.
+    fn edit_after_crash(state: &LauncherState, played: u64) {
+        state
+            .update(|data| {
+                let value = &mut data.instances[0];
+                value.name = "renamed after the crash".into();
+                value.last_played = Some("2026-11-22T08:00:00Z".into());
+                value.total_play_time += played;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn version_of(value: &Instance) -> [&str; 3] {
+        [&value.version_id, &value.loader, &value.loader_version]
+    }
+
+    /// A restore of an archive from another version, interrupted after the
+    /// archive's files were published. `switched` says whether the archived
+    /// registration was written before the crash.
+    fn backup_intent_after_crash(
+        prefix: &str,
+        switched: bool,
+    ) -> (StagingDirectory, LauncherState, RestorePaths, RestoreIntent, BackupManifest, BackupManifest) {
+        let root = fixture_folder(prefix);
+        let live = root.path().join("game").join("instances").join("test");
+        fs::create_dir_all(live.parent().unwrap()).unwrap();
+        let token = Uuid::new_v4();
+        let paths = RestorePaths::new(&live, token).unwrap();
+        let mut before = backup_manifest("test", &live, place(&paths.previous, b"original files"));
+        before.instance.name = "title before the restore".into();
+        before.instance.notes = "notes before the restore".into();
+        before.instance.total_play_time = 600;
+        before.instance.last_played = Some("2026-11-01T10:00:00Z".into());
+        let mut after = backup_manifest("test", &live, place(&paths.live, b"selected restored files"));
+        after.instance.name = "archived title".into();
+        after.instance.notes = "archived notes".into();
+        after.instance.version_id = "1.19.2".into();
+        after.instance.loader = "forge".into();
+        after.instance.loader_version = "43.3.0".into();
+        after.instance.total_play_time = 120;
+        after.instance.last_played = Some("2026-10-01T10:00:00Z".into());
+        let registered = if switched { &after.instance } else { &before.instance };
+        let state = fixture_state(root.path(), registered);
+        let folder = backup_folder(&state, "test").unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        let (original, selected) = (Uuid::new_v4(), Uuid::new_v4());
+        write_backup_manifest(&folder, original, &before);
+        write_backup_manifest(&folder, selected, &after);
+        let intent = RestoreIntent {
+            token,
+            kind: RestoreKind::Backup,
+            before: before.instance.clone(),
+            after: after.instance.clone(),
+            original: Some(identify_archive(original, &before).unwrap()),
+            selected: identify_archive(selected, &after).unwrap(),
+        };
+        write_intent(&folder, &intent).unwrap();
+        (root, state, paths, intent, before, after)
+    }
+
+    #[test]
+    fn a_rename_and_launch_time_after_a_crash_survive_backup_recovery() {
+        for switched in [false, true] {
+            let label = if switched { "registry switched" } else { "registry not switched" };
+            let (_root, state, paths, intent, before, after) =
+                backup_intent_after_crash("rename-after-crash-backup", switched);
+            edit_after_crash(&state, 0);
+            let folder = backup_folder(&state, "test").unwrap();
+            let current = instance(&state.snapshot().unwrap(), "test").unwrap();
+            let paths = intent_paths(&intent, &current, &paths.live).unwrap();
+            let recovered = recover_with_state(&state, &folder, &intent, &paths, &current)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            let registered = state.snapshot().unwrap().instances[0].clone();
+            assert!(same_instance(&recovered.instance, &registered).unwrap(), "{label}");
+            assert_eq!(registered.name, "renamed after the crash", "{label}: the rename stays");
+            assert_eq!(
+                registered.last_played.as_deref(),
+                Some("2026-11-22T08:00:00Z"),
+                "{label}: the launch time stays"
+            );
+            // What the restore wrote and nobody changed since is undone.
+            assert_eq!(version_of(&registered), version_of(&before.instance), "{label}");
+            assert_eq!(registered.notes, before.instance.notes, "{label}");
+            assert_eq!(registered.total_play_time, before.instance.total_play_time, "{label}");
+            assert_eq!(collect_files(&paths.live).unwrap(), before.files, "{label}: original files live");
+            assert_eq!(collect_files(&paths.stage).unwrap(), after.files, "{label}: restored copy kept");
+            assert!(read_intent(&folder).unwrap().is_none(), "{label}: no intent remains");
+            assert!(pack_update_target(&state, &registered).is_ok(), "{label}: nothing refuses any more");
+        }
+    }
+
+    #[test]
+    fn a_rename_and_launch_time_after_a_crash_survive_pack_update_recovery() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        for layout in ["intentOnly", "registrySwitched"] {
+            let (_fixture, live, registered, state) =
+                c10_setup(&format!("rename-after-crash-pack-{layout}"));
+            let original = collect_files(&live).unwrap();
+            runtime.block_on(async move {
+                tokio::task::spawn_blocking(move || {
+                    // A pack update writes only what its files depend on.
+                    let mut after = registered.clone();
+                    after.version_id = "1.20.4".into();
+                    after.loader = "fabric".into();
+                    after.loader_version = "0.16.9".into();
+                    let (stage, intent) = c10_prepare_intent_with(&state, &registered, after);
+                    let folder = stage.folder.clone();
+                    if layout == "registrySwitched" {
+                        fs::rename(&live, &stage.paths.previous).unwrap();
+                        fs::rename(stage.path(), &live).unwrap();
+                        replace_registered_instance(&state, &registered, &intent.after).unwrap();
+                    }
+                    edit_after_crash(&state, 90);
+                    let current = instance(&state.snapshot().unwrap(), "test").unwrap();
+                    let recovered =
+                        recover_with_state(&state, &folder, &intent, &stage.paths, &current)
+                            .unwrap_or_else(|error| panic!("{layout}: {error}"));
+                    let now = state.snapshot().unwrap().instances[0].clone();
+                    assert!(same_instance(&recovered.instance, &now).unwrap(), "{layout}");
+                    assert_eq!(now.name, "renamed after the crash", "{layout}: the rename stays");
+                    assert_eq!(now.last_played.as_deref(), Some("2026-11-22T08:00:00Z"), "{layout}");
+                    assert_eq!(now.total_play_time, registered.total_play_time + 90, "{layout}: play time stays");
+                    assert_eq!(version_of(&now), version_of(&registered), "{layout}: the old version is back");
+                    assert_eq!(collect_files(&live).unwrap(), original, "{layout}: original files live");
+                    assert!(read_intent(&folder).unwrap().is_none(), "{layout}: no intent remains");
+                    assert!(c10_pack_manifests(&folder).is_empty(), "{layout}: no manifest remains");
+                    assert!(pack_update_target(&state, &now).is_ok(), "{layout}: a new update is allowed");
+                })
+                .await
+                .unwrap()
+            });
+        }
+    }
+
+    #[test]
+    fn recovery_still_refuses_a_registration_for_other_files() {
+        let (_root, state, paths, intent, _before, _after) =
+            backup_intent_after_crash("other-files-after-crash", true);
+        state
+            .update(|data| {
+                data.instances[0].version_id = "1.21.1".into();
+                Ok(())
+            })
+            .unwrap();
+        let folder = backup_folder(&state, "test").unwrap();
+        let current = instance(&state.snapshot().unwrap(), "test").unwrap();
+        let live_files = collect_files(&paths.live).unwrap();
+        let error = recover_with_state(&state, &folder, &intent, &paths, &current)
+            .err()
+            .expect("a version that neither side of the swap has is refused");
+        assert!(error.contains("实例已改变"), "{error}");
+        assert_eq!(collect_files(&paths.live).unwrap(), live_files, "nothing moved");
+        assert!(read_intent(&folder).unwrap().is_some(), "the intent is kept");
+    }
+
+    #[test]
+    fn a_pending_restore_refuses_launch_and_edits_but_not_its_recovery() {
+        let (_fixture, _live, registered, state) = c10_setup("pending-refusal");
+        require_no_pending_restore(&state, "test").expect("nothing is pending yet");
+        let folder = backup_folder(&state, "test").unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        let intent = RestoreIntent {
+            token: Uuid::new_v4(),
+            kind: RestoreKind::PackUpdate,
+            before: registered.clone(),
+            after: registered.clone(),
+            original: None,
+            selected: RestoreIdentity { id: Uuid::new_v4(), manifest_sha256: "pending".into() },
+        };
+        write_intent(&folder, &intent).unwrap();
+        let code = |error: String| crate::errors::expected(error).code;
+        assert_eq!(code(require_no_pending_restore(&state, "test").unwrap_err()), "instance.restorePending");
+        // Every resource writer (install, update, rollback, toggle) checks here.
+        let content =
+            crate::resources::require_resource_stopped(&state, &registered.version_id, Some("test")).unwrap_err();
+        assert_eq!(content.code, "instance.restorePending", "content changes");
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let launch = runtime.block_on(async {
+            let task = state.control.reserve_launch(&registered.version_id, Some("test".into())).unwrap();
+            crate::minecraft::with_launch_preparation(&state, &task, &registered.version_id, Some("test"), |_| async {
+                Err::<(), _>("the launch was prepared".to_owned())
+            })
+            .await
+            .unwrap_err()
+        });
+        assert_eq!(code(launch), "instance.restorePending", "launch");
+        assert!(
+            same_instance(&state.snapshot().unwrap().instances[0], &registered).unwrap(),
+            "no launch time was written"
+        );
+        // Recovery, and the report that it is needed, are not blocked by it.
+        assert!(restore_target(&state, &registered).is_ok(), "recovery can still run");
+        assert_eq!(pack_update_target(&state, &registered).unwrap_err().code, "backup.restoreRecoveryRequired");
+        // An unreadable record still counts as pending.
+        fs::write(folder.join(RESTORE_INTENT), b"not a restore record").unwrap();
+        assert_eq!(code(require_no_pending_restore(&state, "test").unwrap_err()), "instance.restorePending");
+
+        // Edits made through a window run the same check after taking the
+        // lock and before they write.
+        for (source, function, lock, write) in [
+            (include_str!("instances.rs"), "pub async fn update_instance(", "let _operation = state.operation.lock().await;", "state.update(|data| {"),
+            (include_str!("content.rs"), "pub async fn import_world(", "let _guard = state.operation.lock().await;", "tokio::task::spawn_blocking"),
+            (include_str!("content.rs"), "pub async fn import_local_resources(", "let _guard = state.operation.lock().await;", "tokio::task::spawn_blocking"),
+            (include_str!("resources.rs"), "fn recover_resource_update_inner(", "let data = state.snapshot()?;", "resource_transactions::recover_one("),
+        ] {
+            let (_, body) = source.split_once(function).unwrap();
+            let (body, _) = body.split_once("\n}").unwrap();
+            let body = crate::storage::executable_source(body);
+            let lock = body.find(lock).expect(function);
+            let guard = lock + body[lock..].find("require_no_pending_restore(").expect(function);
+            let write = body.find(write).expect(function);
+            assert!(guard < write, "{function}");
+        }
     }
 }

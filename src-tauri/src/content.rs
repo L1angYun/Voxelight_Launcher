@@ -798,6 +798,9 @@ pub async fn import_world(
         return Err("请选择 Java 世界 .zip 文件".into());
     }
     let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
+    if let Some(id) = instance_id.as_deref() {
+        instances::require_no_pending_restore(&state, id)?;
+    }
     let task = state.control.begin("world-import", &version_id, "导入世界")?;
     let shared = state.inner().clone();
     let result =
@@ -896,6 +899,9 @@ pub async fn import_local_resources(
     let _guard = state.operation.lock().await;
     let root = game_root(&state, &version_id, instance_id.as_deref())?;
     let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
+    if let Some(id) = instance_id.as_deref() {
+        instances::require_no_pending_restore(&state, id)?;
+    }
     let directory = safe_join(&root, folder)?;
     crate::resources::resource_transactions::require_no_pending(&directory)?;
     let task = state

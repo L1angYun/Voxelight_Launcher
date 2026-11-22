@@ -1177,7 +1177,22 @@ fn target_running(
     })
 }
 
+/// Every resource writer's guard: the target's game is stopped and no restore
+/// or pack update of the instance is unfinished.
 pub(crate) fn require_resource_stopped(
+    state: &LauncherState,
+    version_id: &str,
+    instance_id: Option<&str>,
+) -> AppResult<()> {
+    require_target_stopped(state, version_id, instance_id)?;
+    if let Some(id) = instance_id {
+        crate::instances::require_no_pending_restore(state, id)?;
+    }
+    Ok(())
+}
+
+/// Only the running-game part of `require_resource_stopped`.
+pub(crate) fn require_target_stopped(
     state: &LauncherState,
     version_id: &str,
     instance_id: Option<&str>,
@@ -2019,6 +2034,9 @@ fn recover_resource_update_inner(
     if target_running(&data, version_id, instance_id, running) {
         return Err(AppError::new(crate::errors::RESOURCE_RECOVERY_RUNNING)
             .with_detail("此目标的游戏仍在运行，请先退出游戏再恢复资源。"));
+    }
+    if let Some(id) = instance_id {
+        crate::instances::require_no_pending_restore(state, id)?;
     }
     resource_transactions::recover_one(&directory, update_id)
 }

@@ -53,6 +53,7 @@
     "instance.running": "This instance is already running. Do not launch it twice.",
     "install.gameRunning": "A game from the same game directory is running. Exit the game before installing a version or loader.",
     "instance.notFound": "The instance no longer exists. Refresh the library.",
+    "instance.restorePending": "This instance has an unfinished backup restore or modpack update. Recover it from the instance's backups before launching or changing it.",
     "backup.notFound": "No matching instance backup was found.",
     "backup.invalid": "The backup manifest is invalid and cannot be used.",
     "backup.path": "The backup path is invalid. Choose another location.",

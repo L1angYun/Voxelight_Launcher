@@ -3093,7 +3093,7 @@ fn append_direct_connect(
     Ok(())
 }
 
-async fn with_launch_preparation<T, F>(
+pub(crate) async fn with_launch_preparation<T, F>(
     state: &LauncherState,
     task_id: &str,
     id: &str,
@@ -3120,6 +3120,11 @@ where
             .transpose()?;
         let directory = game_directory(&snapshot.config, id, instance)?;
         state.games.require_directory_stopped(&directory, instance_id, true)?;
+        // A launch writes the launch time and changes the files that an
+        // unfinished restore or pack update still has to check.
+        if let Some(id) = instance_id {
+            crate::instances::require_no_pending_restore(state, id)?;
+        }
 
         state.control.checkpoint().await?;
         prepare(snapshot).await
