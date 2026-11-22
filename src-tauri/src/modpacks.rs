@@ -23,6 +23,9 @@ use tauri::{AppHandle, State};
 use tokio::io::AsyncWriteExt;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
+#[path = "pack_update.rs"]
+pub(crate) mod pack_update;
+
 const MAX_PACK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ZIP_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -168,14 +171,31 @@ fn client(state: &LauncherState, download: bool) -> Result<reqwest::Client, Stri
         .build()
         .map_err(|_| "无法创建整合包网络客户端".into())
 }
+pub(crate) const PLATFORM_UNREACHABLE: &str = "整合包平台连接失败，请检查网络";
+pub(crate) const NOT_MRPACK: &str = "所选版本不是标准 .mrpack 文件";
+/// Followed by the status and a hint.
+pub(crate) const PLATFORM_REFUSED: &str = "整合包平台请求失败（HTTP ";
+pub(crate) const PLATFORM_INTERRUPTED: &str = "整合包元数据传输失败";
+
 async fn json_response<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<T, String> {
-    let response = request
-        .send()
-        .await
-        .map_err(|_| "整合包平台连接失败，请检查网络")?;
+    let response = request.send().await.map_err(|_| PLATFORM_UNREACHABLE)?;
+    json_body(response).await
+}
+
+/// Like `json_response`, with something the platform no longer has (404 or
+/// 410) as `None`; every other failure is still an error.
+async fn json_response_or_missing<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<Option<T>, String> {
+    let response = request.send().await.map_err(|_| PLATFORM_UNREACHABLE)?;
+    if matches!(response.status().as_u16(), 404 | 410) {
+        return Ok(None);
+    }
+    json_body(response).await.map(Some)
+}
+
+async fn json_body<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, String> {
     if !response.status().is_success() {
         return Err(format!(
-            "整合包平台请求失败（HTTP {}）；CurseForge 请求请检查自己的 API Key 和分发权限",
+            "{PLATFORM_REFUSED}{}）；CurseForge 请求请检查自己的 API Key 和分发权限",
             response.status().as_u16()
         ));
     }
@@ -188,7 +208,7 @@ async fn json_response<T: DeserializeOwned>(request: reqwest::RequestBuilder) ->
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| "整合包元数据传输失败")?;
+        let chunk = chunk.map_err(|_| PLATFORM_INTERRUPTED)?;
         if bytes.len().saturating_add(chunk.len()) > MAX_METADATA {
             return Err("整合包元数据超过限制".into());
         }
@@ -233,7 +253,7 @@ fn hashes(path: &Path) -> Result<(String, String, u64), String> {
 /// Such a path may later resolve to another file through the alias, so the
 /// lock never treats it as a managed download; matching too much only makes
 /// the file an override, which is the safe side.
-fn short_name_shaped(path: &str) -> bool {
+pub(crate) fn short_name_shaped(path: &str) -> bool {
     path.split('/').any(|part| {
         part.split('~')
             .skip(1)
@@ -825,13 +845,11 @@ async fn install_dependencies(
     }
 }
 
-async fn mrpack_into(
-    state: &Arc<LauncherState>,
-    archive: &Path,
-    stage: &Path,
-    optional: bool,
-) -> Result<StagedPack, String> {
-    let index: PackIndex = zip_json(archive, "modrinth.index.json")?;
+/// The files of `index` this client installs, checked: the format and game,
+/// the dependencies, at most 20 000 files, safe paths without duplicates, a
+/// valid client environment, sha1 and sha512 on every installed file and at
+/// most 8 GiB in all. The second value counts optional files left out.
+fn pack_selection(index: &PackIndex, optional: bool) -> Result<(Vec<&PackFile>, usize), String> {
     if index.format_version != 1 || index.game != "minecraft" {
         return Err("不支持此 Modrinth 整合包格式或游戏".into());
     }
@@ -841,13 +859,10 @@ async fn mrpack_into(
     }
     let mut total = 0u64;
     let mut paths = HashSet::new();
-    let mut downloaded = 0;
     let mut skipped = 0;
-    let mut files = Vec::new();
+    let mut selected = Vec::new();
     for file in &index.files {
-        state.control.checkpoint().await?;
         archive_relative(&file.path)?;
-        let target = safe_join(stage, &file.path)?;
         if !paths.insert(file.path.to_lowercase()) {
             return Err("整合包清单包含重复目标路径".into());
         }
@@ -875,10 +890,33 @@ async fn mrpack_into(
                 return Err(format!("文件 {} 缺少有效 {name} 校验", file.path));
             }
         }
+        // As the download would: refused here, so a plan never records a
+        // file no lock can hold.
+        if file.file_size == 0 || file.file_size > MAX_ARCHIVE_BYTES {
+            return Err("单个整合包文件大小无效或超过 2 GiB".into());
+        }
         total = total.checked_add(file.file_size).ok_or("整合包大小溢出")?;
         if total > MAX_PACK_BYTES {
             return Err("整合包下载总大小超过 8 GiB".into());
         }
+        selected.push(file);
+    }
+    Ok((selected, skipped))
+}
+
+async fn mrpack_into(
+    state: &Arc<LauncherState>,
+    archive: &Path,
+    stage: &Path,
+    optional: bool,
+) -> Result<StagedPack, String> {
+    let index: PackIndex = zip_json(archive, "modrinth.index.json")?;
+    let (selected, skipped) = pack_selection(&index, optional)?;
+    let mut downloaded = 0;
+    let mut files = Vec::new();
+    for file in selected {
+        state.control.checkpoint().await?;
+        let target = safe_join(stage, &file.path)?;
         let materialized = fetch_verified(
             state,
             &file.downloads,
@@ -1132,7 +1170,7 @@ async fn curse_into(
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum PackOrigin {
     Modrinth {
@@ -1168,6 +1206,7 @@ fn write_import_lock(
     staged: &StagedPack,
     origin: Option<&PackOrigin>,
     inventory: &[FileRecord],
+    include_optional: bool,
 ) -> Result<(), String> {
     const LOCK: &str = ".launcher-pack.json";
     let mut paths = HashSet::new();
@@ -1207,6 +1246,7 @@ fn write_import_lock(
         "dependencies": staged.index.dependencies,
         "files": files,
         "overrides": overrides,
+        "includeOptional": include_optional,
     });
     if let Some(origin) = origin {
         payload["source"] = serde_json::to_value(origin).map_err(|e| e.to_string())?;
@@ -1281,7 +1321,7 @@ async fn import_inner(
     let (version_id, loader, loader_version) =
         install_dependencies(state, app, &index.dependencies).await?;
     state.control.checkpoint().await?;
-    write_import_lock(stage, &staged, origin.as_ref().filter(|_| modrinth), &inventory)?;
+    write_import_lock(stage, &staged, origin.as_ref().filter(|_| modrinth), &inventory, optional)?;
     let instance = instances::build_instance(
         name.as_deref().unwrap_or(&index.name),
         &version_id,
@@ -1363,19 +1403,34 @@ async fn import_personal_backup(
     })
 }
 
-#[tauri::command]
-pub async fn list_modpack_versions(state: State<'_, Arc<LauncherState>>, project_id: String) -> Result<Vec<ModpackVersion>, String> {
-    identifier(&project_id)?;
-    let api = client(&state, false)?;
-    let project: ApiProject = json_response(api.get(format!("{API}/project/{project_id}"))).await?;
+/// The Modrinth API base; tests point it at a local server.
+fn modrinth_api() -> String {
+    #[cfg(test)]
+    if let Some(endpoints) = crate::resources::test_endpoints() {
+        return endpoints.modrinth_api;
+    }
+    API.to_owned()
+}
+
+/// The versions of a Modrinth modpack project (it must be a modpack).
+async fn fetch_pack_versions(state: &LauncherState, project_id: &str) -> Result<Vec<ApiVersion>, String> {
+    identifier(project_id)?;
+    let api = client(state, false)?;
+    let base = modrinth_api();
+    let project: ApiProject = json_response(api.get(format!("{base}/project/{project_id}"))).await?;
     if project.project_type != "modpack" {
         return Err("所选项目不是整合包".into());
     }
-    let mut versions: Vec<ApiVersion> = json_response(
-        api.get(format!("{API}/project/{}/version", project.id))
+    json_response(
+        api.get(format!("{base}/project/{}/version", project.id))
             .query(&[("include_changelog", "false")]),
     )
-    .await?;
+    .await
+}
+
+#[tauri::command]
+pub async fn list_modpack_versions(state: State<'_, Arc<LauncherState>>, project_id: String) -> Result<Vec<ModpackVersion>, String> {
+    let mut versions = fetch_pack_versions(&state, &project_id).await?;
     versions.sort_by(|a, b| b.date_published.cmp(&a.date_published));
     versions
         .into_iter()
@@ -1523,7 +1578,7 @@ async fn install_modrinth_modpack_body(
         }
         let file = primary(&version)?;
         if !file.filename.to_ascii_lowercase().ends_with(".mrpack") {
-            return Err("所选版本不是标准 .mrpack 文件".into());
+            return Err(NOT_MRPACK.into());
         }
         let directory = checked_absolute(&state.data_dir.join("pack-downloads"))?;
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
@@ -2358,7 +2413,7 @@ mod tests {
                 fs::create_dir(&stage).unwrap();
                 let staged = mrpack_into(&state, &archive, &stage, include_optional).await.unwrap();
                 let inventory = instances::collect_files_controlled(&stage, None).unwrap();
-                write_import_lock(&stage, &staged, origin, &inventory).unwrap();
+                write_import_lock(&stage, &staged, origin, &inventory, include_optional).unwrap();
                 let lock: Value = serde_json::from_slice(&fs::read(stage.join(".launcher-pack.json")).unwrap()).unwrap();
                 assert_eq!(lock["formatVersion"], 2);
                 assert_eq!(lock["name"], "Fixture pack");
@@ -2432,7 +2487,7 @@ mod tests {
             override_paths: HashSet::from(["config/same.toml".to_string()]),
         };
         let inventory = instances::collect_files_controlled(&root, None).unwrap();
-        write_import_lock(&root, &staged, None, &inventory).unwrap();
+        write_import_lock(&root, &staged, None, &inventory, false).unwrap();
         let lock: Value =
             serde_json::from_slice(&fs::read(root.join(".launcher-pack.json")).unwrap()).unwrap();
         cleanup(&root);

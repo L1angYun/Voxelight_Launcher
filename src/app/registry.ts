@@ -84,6 +84,8 @@ export const downloadKindRegistry = createRegistry([
   { id: "clone", labelKey: "tasks.kind.clone" },
   { id: "backup", labelKey: "tasks.kind.backup" },
   { id: "restore", labelKey: "tasks.kind.restore" },
+  { id: "modpack-update", labelKey: "tasks.kind.modpack-update" },
+  { id: "modpack-update-plan", labelKey: "tasks.kind.modpack-update-plan" },
   { id: "export", labelKey: "tasks.kind.export" },
   { id: "world-backup", labelKey: "tasks.kind.world-backup" },
   { id: "world-import", labelKey: "tasks.kind.world-import" },

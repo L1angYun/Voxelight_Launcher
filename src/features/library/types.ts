@@ -97,6 +97,8 @@ export interface BackupRecoveryPaths {
   previousDirectory?: string | null;
   restoredDirectory?: string | null;
   previousBackupId?: string | null;
+  /** Which operation left the pending recovery record; absent old records are backup restores. */
+  kind?: "backup" | "packUpdate";
 }
 export interface InstanceBackupList {
   backups: InstanceBackup[];
@@ -141,4 +143,45 @@ export interface ModpackVersion {
   gameVersions: string[];
   loaders: string[];
   datePublished: string;
+}
+export interface ModpackUpdateCheck {
+  managed: boolean;
+  /** Why it is not managed: no lock file, an old lock, a lock without its source, or a lock that cannot be read. */
+  reason?: "noLock" | "legacyLock" | "noSource" | "invalidLock";
+  current?: { versionId: string; versionNumber: string };
+  /** Newer versions of the same pack, newest first (the existing ModpackVersion type above). */
+  newer: ModpackVersion[];
+  /** The installed version is no longer listed on Modrinth. */
+  currentMissing: boolean;
+  /** Whether the installed version included optional files (from its lock; false when not managed). */
+  includeOptional: boolean;
+}
+export type PackConflictReason = "userModified" | "userDeleted" | "userAdded" | "userModifiedRemovedUpstream";
+export interface PackUpdatePlan {
+  from: { versionId: string; versionNumber: string };
+  to: { versionId: string; versionNumber: string };
+  add: number;
+  replace: number;
+  remove: number;
+  unchanged: number;
+  /** Paths where the user's change and the new version disagree; the default is to keep the user's file. */
+  conflicts: { path: string; reason: PackConflictReason }[];
+  /** Files the new version dropped that the user had disabled or deleted: that choice does not carry over to renamed files. */
+  droppedIntents: string[];
+  /** Files the user changed or deleted that the new version leaves as the installed version had them; kept as the user has them. Sorted paths. */
+  kept: string[];
+  /** Optional files on disk that the plan removes because optional files are not included. Sorted paths. */
+  optionalRemoved: string[];
+  /** Paths left alone on purpose (saves, logs, screenshots, launcher files). */
+  skipped: string[];
+  dependencyChange: { from: Record<string, string>; to: Record<string, string> } | null;
+  downloadBytes: number;
+  includeOptional: boolean;
+  fingerprint: string;
+}
+export interface PackUpdateResult {
+  instance: Instance;
+  previousBackup: InstanceBackup | null;
+  /** The old directory, kept because it changed while the update ran. */
+  previousDirectory?: string | null;
 }

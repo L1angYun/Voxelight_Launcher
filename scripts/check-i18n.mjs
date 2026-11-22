@@ -62,7 +62,7 @@ function flattenNamespaces(locale) {
 
 const backendSource = fs.readFileSync(path.join(root, "src-tauri", "src", "errors.rs"), "utf8");
 const backendCodes = new Set(
-  [...backendSource.matchAll(/["']((?:instance|backup|resource|auth|download|server|config|skin|version|storage|game|internal)\.[A-Za-z][A-Za-z0-9]*)["']/g)]
+  [...backendSource.matchAll(/["']((?:instance|backup|resource|auth|download|server|config|skin|version|storage|game|internal|modpack|install)\.[A-Za-z][A-Za-z0-9]*)["']/g)]
     .map((match) => match[1]),
 );
 for (const code of backendCodes) {

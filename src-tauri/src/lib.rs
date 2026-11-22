@@ -21,6 +21,7 @@ mod models;
 mod mod_metadata;
 mod modpacks;
 mod network;
+mod pack_update_plan;
 mod parts;
 mod path_grants;
 mod platform;
@@ -301,6 +302,9 @@ pub fn run() {
             instances::recover_instance_restore,
             instances::export_instance_zip,
             modpacks::list_modpack_versions,
+            modpacks::pack_update::check_modpack_update,
+            modpacks::pack_update::plan_modpack_update,
+            modpacks::pack_update::apply_modpack_update,
             modpacks::import_modpack,
             modpacks::install_modrinth_modpack,
             modpacks::plan_modrinth_export,

@@ -926,6 +926,10 @@ struct RecoveryPaths {
     restored_directory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_backup_id: Option<String>,
+    /// The operation the pending record belongs to (a backup restore or a
+    /// modpack update), when it could be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<RestoreKind>,
 }
 
 impl RecoveryPaths {
@@ -935,7 +939,13 @@ impl RecoveryPaths {
             previous_directory: None,
             restored_directory: None,
             previous_backup_id: None,
+            kind: None,
         }
+    }
+
+    fn of(mut self, kind: RestoreKind) -> Self {
+        self.kind = Some(kind);
+        self
     }
 
     fn error(self, code: &str, detail: impl Into<String>) -> AppError {
@@ -951,6 +961,9 @@ impl RecoveryPaths {
         if let Some(id) = self.previous_backup_id {
             error = error.with_param("previousBackupId", id);
         }
+        if let Some(kind) = self.kind {
+            error = error.with_param("kind", serde_json::to_value(kind).unwrap_or_default());
+        }
         error
     }
 }
@@ -959,10 +972,24 @@ impl RecoveryPaths {
 #[serde(rename_all = "camelCase")]
 struct RestoreIntent {
     token: Uuid,
+    /// Intents written before pack updates existed have no kind: a backup.
+    #[serde(default)]
+    kind: RestoreKind,
     before: Instance,
     after: Instance,
     original: Option<RestoreIdentity>,
     selected: RestoreIdentity,
+}
+
+/// What an intent's stage is: a backup being restored (`selected` is that
+/// backup) or a modpack update (`selected` is the file list of the stage,
+/// kept beside the intent).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum RestoreKind {
+    #[default]
+    Backup,
+    PackUpdate,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1003,7 +1030,7 @@ impl RestorePaths {
             .is_dir()
             .then(|| self.previous.to_string_lossy().into_owned());
         locations.previous_backup_id = intent.original.as_ref().map(|backup| backup.id.to_string());
-        locations
+        locations.of(intent.kind)
     }
 }
 
@@ -1109,7 +1136,7 @@ pub fn list_instance_backups(
     let live = resolved.as_deref().unwrap_or_else(|_| Path::new(&current.game_directory));
     history.recovery = match read_intent(&folder) {
         Ok(Some(intent)) => Some(intent_paths(&intent, &current, live).map_or_else(
-            |_| RecoveryPaths::current(live),
+            |_| RecoveryPaths::current(live).of(intent.kind),
             |paths| paths.locations(&intent),
         )),
         Err(_) => Some(RecoveryPaths::current(live)),
@@ -1244,10 +1271,12 @@ fn restore_target(state: &LauncherState, current: &Instance) -> AppResult<PathBu
     let overlaps = |a: &Path, b: &Path| contains(a, b) || contains(b, a);
     // Only an independent registered instance can be replaced in place.
     if contains(&target, &configured) || overlaps(&target, &profile) || source.as_deref().is_some_and(|source| contains(&target, source)) {
-        return Err("共享游戏根目录或启动器目录不能原地恢复。请将备份导入为新的独立实例。".into());
+        return Err(SHARED_ROOT_RESTORE.into());
     }
     Ok(directory)
 }
+
+const SHARED_ROOT_RESTORE: &str = "共享游戏根目录或启动器目录不能原地恢复。请将备份导入为新的独立实例。";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1344,11 +1373,11 @@ fn recover_with_state(
         .as_ref()
         .map(|backup| verify_archive(folder, backup, &current.id))
         .transpose()?;
-    let (_, selected) = verify_archive(folder, &intent.selected, &current.id)?;
+    let selected = selected_files(folder, intent, &current.id)?;
     recover_layout(
         paths,
         original.as_ref().map(|(_, backup)| backup.files.as_slice()),
-        &selected.files,
+        &selected,
     )?;
     if !already_before {
         replace_registered_instance(state, current, &intent.before)?;
@@ -1367,6 +1396,9 @@ fn recover_with_state(
         .transpose()
         .map_err(|e| e.to_string())?;
     clear_intent(folder)?;
+    if intent.kind == RestoreKind::PackUpdate {
+        let _ = fs::remove_file(pack_manifest_path(folder, intent.token)?);
+    }
     Ok(RecoverRestoreResult {
         instance: intent.before.clone(),
         previous_backup,
@@ -1375,6 +1407,62 @@ fn recover_with_state(
             .is_dir()
             .then(|| paths.stage.to_string_lossy().into_owned()),
     })
+}
+
+/// The files the intent's stage must hold: the selected backup's inventory,
+/// or the file list a pack update recorded (checked against its hash).
+fn selected_files(folder: &Path, intent: &RestoreIntent, instance_id: &str) -> Result<Vec<FileRecord>, String> {
+    match intent.kind {
+        RestoreKind::Backup => verify_archive(folder, &intent.selected, instance_id).map(|(_, archive)| archive.files),
+        RestoreKind::PackUpdate => read_pack_manifest(folder, intent),
+    }
+}
+
+/// A pack update's stage file list: beside the intent, which stays small
+/// however many files a pack has.
+fn pack_manifest_path(folder: &Path, token: Uuid) -> Result<PathBuf, String> {
+    safe_join(folder, &format!("pack-update-{token}.json"))
+}
+
+const MAX_PACK_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Writes the list without replacing anything and returns its hash.
+fn write_pack_manifest(folder: &Path, token: Uuid, files: &[FileRecord]) -> Result<String, String> {
+    let output = pack_manifest_path(folder, token)?;
+    let temporary = safe_join(folder, &format!(".pack-update-{}.part", Uuid::new_v4()))?;
+    let bytes = serde_json::to_vec(files).map_err(|e| e.to_string())?;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|e| e.to_string())?;
+    let written = file.write_all(&bytes).and_then(|_| file.sync_all());
+    drop(file);
+    let result = written.and_then(|()| rename_owned_directory(&temporary, &output));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|e| format!("无法保存更新文件清单：{e}"))?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn read_pack_manifest(folder: &Path, intent: &RestoreIntent) -> Result<Vec<FileRecord>, String> {
+    let path = pack_manifest_path(folder, intent.token)?;
+    let mut file = fs::File::open(&path).map_err(|e| format!("无法读取更新文件清单：{e}"))?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("更新文件清单路径无效".into());
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(MAX_PACK_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_PACK_MANIFEST_BYTES
+        || format!("{:x}", Sha256::digest(&bytes)) != intent.selected.manifest_sha256
+    {
+        return Err("更新文件清单已改变".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|e| format!("更新文件清单无效：{e}"))
 }
 
 fn clear_intent(folder: &Path) -> Result<(), String> {
@@ -1474,7 +1562,7 @@ fn restore_inner_using(
         Ok(None) => (),
         Ok(Some(pending)) => {
             let locations = intent_paths(&pending, &current, &directory).map_or_else(
-                |_| RecoveryPaths::current(&directory),
+                |_| RecoveryPaths::current(&directory).of(pending.kind),
                 |paths| paths.locations(&pending),
             );
             return Err(locations.error(
@@ -1530,6 +1618,7 @@ fn restore_inner_using(
     sync_checkpoint(state)?;
     let intent = RestoreIntent {
         token,
+        kind: RestoreKind::Backup,
         before: current.clone(),
         after: restored.clone(),
         original,
@@ -1597,6 +1686,181 @@ fn swap_instance_directory_using(
             .locations(intent)
             .error("backup.restoreRecoveryRequired", error)
     })
+}
+
+/// A pack update's copy of an instance: beside the live directory, owned by
+/// this update until its intent takes it over.
+pub(crate) struct PackStage {
+    token: Uuid,
+    paths: RestorePaths,
+    staging: StagingDirectory,
+    folder: PathBuf,
+    original: RestoreIdentity,
+    previous_backup: InstanceBackup,
+    /// The live files as copied (instance scope).
+    pub(crate) files: Vec<FileRecord>,
+}
+
+impl PackStage {
+    pub(crate) fn path(&self) -> &Path {
+        self.staging.path()
+    }
+}
+
+pub(crate) struct PackUpdateDone {
+    pub(crate) instance: Instance,
+    pub(crate) previous_backup: InstanceBackup,
+    /// The old directory, kept when it changed while the update ran.
+    pub(crate) previous_directory: Option<String>,
+}
+
+/// The directory a modpack update may replace: the same rules as a restore
+/// (stopped, not a shared root), and no unfinished restore or update.
+pub(crate) fn pack_update_target(state: &LauncherState, current: &Instance) -> AppResult<PathBuf> {
+    let directory = restore_target(state, current).map_err(|error| {
+        if error.detail.as_deref() == Some(SHARED_ROOT_RESTORE) {
+            crate::errors::expected(crate::modpacks::pack_update::SHARED_ROOT)
+        } else {
+            error
+        }
+    })?;
+    let folder = backup_folder(state, &current.id)?;
+    match read_intent(&folder) {
+        Ok(None) => Ok(directory),
+        Ok(Some(pending)) => {
+            let locations = intent_paths(&pending, current, &directory).map_or_else(
+                |_| RecoveryPaths::current(&directory).of(pending.kind),
+                |paths| paths.locations(&pending),
+            );
+            Err(locations.error("backup.restoreRecoveryRequired", "此实例有未完成的恢复，请先显式恢复"))
+        }
+        Err(error) => Err(RecoveryPaths::current(&directory).error("backup.restoreRecoveryRequired", error)),
+    }
+}
+
+/// An automatic backup of the live directory, then a verified copy of it
+/// (instance scope) beside it, which the update changes.
+pub(crate) fn stage_pack_update(state: &LauncherState, current: &Instance) -> AppResult<PackStage> {
+    let directory = pack_update_target(state, current)?;
+    let folder = backup_folder(state, &current.id)?;
+    // With no intent pending, a file list left by an update whose cleanup
+    // failed belongs to nothing.
+    sweep_pack_manifests(&folder);
+    let token = Uuid::new_v4();
+    let paths = RestorePaths::new(&directory, token)?;
+    if directory_present(&paths.previous)? || directory_present(&paths.stage)? {
+        return Err("更新副本目录已存在".into());
+    }
+    let previous_backup = backup_inner(state, current)?;
+    crate::modpacks::pack_update::at(&directory, "backup");
+    let id = Uuid::parse_str(&previous_backup.id).map_err(|_| "更新前备份标识无效")?;
+    let backed_up = read_backup(Path::new(&previous_backup.path))?;
+    let original = identify_archive(id, &backed_up)?;
+    let files = collect_instance_files_controlled(&directory, Some(state))?;
+    // The copy is of what the backup holds: recovery restores the backup, and
+    // the old directory is removed only while it still matches the copy.
+    if files != backed_up.files {
+        return Err(crate::modpacks::pack_update::PLAN_CHANGED.into());
+    }
+    let staging = StagingDirectory::create(paths.stage.clone())?;
+    copy_into_snapshot(&directory, staging.path(), &files, InventoryScope::Instance, Some(state))?;
+    Ok(PackStage { token, paths, staging, folder, original, previous_backup, files })
+}
+
+/// Checks that the changed copy holds exactly `expected`, records the intent,
+/// swaps the copy in like a restore (a failure rolls back from the intent),
+/// then removes the previous directory: the automatic backup keeps it.
+pub(crate) fn commit_pack_update(
+    state: &LauncherState,
+    stage: PackStage,
+    current: &Instance,
+    after: &Instance,
+    expected: &[FileRecord],
+) -> AppResult<PackUpdateDone> {
+    commit_pack_update_using(state, stage, current, after, expected, rename_owned_directory, replace_registered_instance)
+}
+
+fn commit_pack_update_using(
+    state: &LauncherState,
+    stage: PackStage,
+    current: &Instance,
+    after: &Instance,
+    expected: &[FileRecord],
+    move_dir: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    replace: impl FnOnce(&LauncherState, &Instance, &Instance) -> Result<(), String>,
+) -> AppResult<PackUpdateDone> {
+    let PackStage { token, paths, mut staging, folder, original, previous_backup, files } = stage;
+    let actual = collect_files_controlled(staging.path(), Some(state))?;
+    if !same_files(&actual, expected) {
+        return Err(crate::modpacks::pack_update::STAGE_MISMATCH.into());
+    }
+    // The live directory must still be what was copied and backed up: the
+    // intent describes it by that backup, and a change made meanwhile would
+    // otherwise be parked out of sight.
+    if collect_instance_files_controlled(&paths.live, Some(state))? != files {
+        return Err(crate::modpacks::pack_update::PLAN_CHANGED.into());
+    }
+    let manifest_sha256 = write_pack_manifest(&folder, token, &actual)?;
+    // The last point a cancel stops the update; the swap below runs to the end
+    // or rolls back from the intent.
+    let intent = RestoreIntent {
+        token,
+        kind: RestoreKind::PackUpdate,
+        before: current.clone(),
+        after: after.clone(),
+        original: Some(original),
+        selected: RestoreIdentity { id: token, manifest_sha256 },
+    };
+    let durable = sync_checkpoint(state).and_then(|()| write_intent(&folder, &intent));
+    if let Err(error) = durable {
+        let _ = fs::remove_file(pack_manifest_path(&folder, token)?);
+        return Err(error.into());
+    }
+    staging.preserve(); // durable material now belongs to the intent
+    swap_instance_directory_using(state, &folder, &intent, &paths, current, after, move_dir, replace)?;
+    let _ = fs::remove_file(pack_manifest_path(&folder, token)?);
+    // The old directory goes only while it still is what the copy was made
+    // from (the backup holds that); a change made during the update stays.
+    if directory_present(&paths.previous).unwrap_or(false)
+        && collect_instance_files_controlled(&paths.previous, None).is_ok_and(|old| old == files)
+    {
+        let _ = fs::remove_dir_all(&paths.previous);
+    }
+    let previous_directory = directory_present(&paths.previous)
+        .unwrap_or(true)
+        .then(|| paths.previous.to_string_lossy().into_owned());
+    Ok(PackUpdateDone { instance: after.clone(), previous_backup, previous_directory })
+}
+
+/// The same files, names compared without case.
+fn same_files(a: &[FileRecord], b: &[FileRecord]) -> bool {
+    let keyed = |records: &[FileRecord]| {
+        let mut keys: Vec<_> = records
+            .iter()
+            .map(|record| (record.relative.to_lowercase(), record.size, record.sha256.to_ascii_lowercase()))
+            .collect();
+        keys.sort();
+        keys
+    };
+    keyed(a) == keyed(b)
+}
+
+/// Removes file lists (and their partial writes) of pack updates that have
+/// no intent; called only while no intent is pending.
+fn sweep_pack_manifests(folder: &Path) {
+    let Ok(entries) = fs::read_dir(folder) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let token = name
+            .strip_prefix("pack-update-")
+            .and_then(|rest| rest.strip_suffix(".json"))
+            .or_else(|| name.strip_prefix(".pack-update-").and_then(|rest| rest.strip_suffix(".part")));
+        if token.is_some_and(|token| Uuid::parse_str(token).is_ok())
+            && fs::symlink_metadata(entry.path()).is_ok_and(|stat| stat.is_file())
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[tauri::command]
@@ -2289,6 +2553,7 @@ mod backup_recovery_tests {
         let after = backup_manifest("test", &live, selected);
         let first = RestoreIntent {
             token,
+            kind: RestoreKind::Backup,
             before: before.instance.clone(),
             after: after.instance.clone(),
             original: Some(identify_archive(Uuid::new_v4(), &before).unwrap()),
@@ -2421,6 +2686,7 @@ mod backup_recovery_tests {
 
     fn assert_rolled_back(state: &LauncherState, registered: &Instance, live: &Path, error: &AppError) {
         assert_eq!(error.code, "backup.restoreRolledBack");
+        assert_eq!(error.params.get("kind"), Some(&serde_json::json!("backup")));
         assert_eq!(fs::read(live.join("fixture")).unwrap(), b"current bytes");
         assert_eq!(
             fs::read(live.join(".launcher-temp/run-0f5d2f8e-5d0c-4b8e-9d55-0d1c5a3f4e21/launcher.args")).unwrap(),
@@ -2491,6 +2757,7 @@ mod backup_recovery_tests {
         write_backup_manifest(&folder, selected, &after);
         let intent = RestoreIntent {
             token,
+            kind: RestoreKind::Backup,
             before: before.instance.clone(),
             after: after.instance.clone(),
             original: Some(identify_archive(original, &before).unwrap()),
@@ -2509,5 +2776,568 @@ mod backup_recovery_tests {
         assert_eq!(collect_files(&paths.live).unwrap(), before.files);
         assert_eq!(collect_files(&paths.stage).unwrap(), after.files);
         assert!(read_intent(&folder).unwrap().is_none());
+    }
+
+    fn c10_setup(prefix: &str) -> (StagingDirectory, PathBuf, Instance, LauncherState) {
+        let fixture = fixture_folder(prefix);
+        let live = fixture
+            .path()
+            .join("game")
+            .join("instances")
+            .join("test");
+        fs::create_dir_all(live.join("config")).unwrap();
+        fs::create_dir_all(live.join("mods")).unwrap();
+        fs::write(live.join("config/old.txt"), b"old config").unwrap();
+        fs::write(live.join("mods/a.jar"), b"old jar").unwrap();
+        let registered =
+            backup_manifest("test", &live, collect_files(&live).unwrap()).instance;
+        let state = fixture_state(fixture.path(), &registered);
+        (fixture, live, registered, state)
+    }
+
+    fn c10_change_stage(stage: &Path) -> Vec<FileRecord> {
+        fs::write(stage.join("mods/a.jar"), b"changed jar").unwrap();
+        fs::write(stage.join("mods/new.jar"), b"added mod").unwrap();
+        fs::remove_file(stage.join("config/old.txt")).unwrap();
+        collect_files(stage).unwrap()
+    }
+
+    /// The durable part of `commit_pack_update_using`: a changed stage, its
+    /// file list, and the pack-update intent, with the stage preserved.
+    fn c10_prepare_intent(
+        state: &LauncherState,
+        current: &Instance,
+    ) -> (PackStage, RestoreIntent) {
+        let mut stage = stage_pack_update(state, current).unwrap();
+        let expected = c10_change_stage(stage.path());
+        let folder = stage.folder.clone();
+        let manifest_sha256 = write_pack_manifest(&folder, stage.token, &expected).unwrap();
+        let mut after = current.clone();
+        after.name = "pending pack update".into();
+        let intent = RestoreIntent {
+            token: stage.token,
+            kind: RestoreKind::PackUpdate,
+            before: current.clone(),
+            after,
+            original: Some(RestoreIdentity {
+                id: stage.original.id,
+                manifest_sha256: stage.original.manifest_sha256.clone(),
+            }),
+            selected: RestoreIdentity {
+                id: stage.token,
+                manifest_sha256,
+            },
+        };
+        write_intent(&folder, &intent).unwrap();
+        stage.staging.preserve();
+        (stage, intent)
+    }
+
+    fn c10_pack_manifests(folder: &Path) -> Vec<String> {
+        fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("pack-update-"))
+            .collect()
+    }
+
+    #[test]
+    fn c10_a_pack_update_swaps_in_the_changed_copy_and_keeps_only_the_backup() {
+        let (_fixture, live, registered, state) = c10_setup("c10-swap");
+        let original = collect_files(&live).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap();
+        let (state, after, expected) = runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let stage = stage_pack_update(&state, &registered).unwrap();
+                let expected = c10_change_stage(stage.path());
+                let mut after = registered.clone();
+                after.name = "updated pack title".into();
+                let done =
+                    commit_pack_update(&state, stage, &registered, &after, &expected).unwrap();
+                assert!(same_instance(&done.instance, &after).unwrap());
+                (state, after, expected)
+            })
+            .await
+            .unwrap()
+        });
+        assert_eq!(collect_files(&live).unwrap(), expected, "live inventory");
+        assert!(
+            same_instance(&state.snapshot().unwrap().instances[0], &after).unwrap(),
+            "the updated registration is live"
+        );
+        let folder = backup_folder(&state, "test").unwrap();
+        assert!(read_intent(&folder).unwrap().is_none(), "no intent");
+        assert!(c10_pack_manifests(&folder).is_empty(), "no pack manifest");
+        let mut archives = fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("zip"))
+            .collect::<Vec<_>>();
+        archives.sort();
+        assert_eq!(archives.len(), 1, "one automatic backup");
+        assert_eq!(read_backup(&archives[0]).unwrap().files, original);
+        let siblings = fs::read_dir(live.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            !siblings.iter().any(|name| {
+                name.starts_with(".restore-") || name.starts_with(".before-restore-")
+            }),
+            "recovery staging directories are removed: {siblings:?}"
+        );
+    }
+
+    #[test]
+    fn c10_the_copy_leaves_out_runtime_scratch() {
+        let (_fixture, live, registered, state) = c10_setup("c10-scratch");
+        let scratch = live
+            .join(".launcher-temp")
+            .join(format!("run-{}", Uuid::new_v4()));
+        fs::create_dir_all(&scratch).unwrap();
+        fs::write(scratch.join("launcher.args"), b"runtime only").unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let stage = stage_pack_update(&state, &registered).unwrap();
+                assert!(
+                    !stage.path().join(".launcher-temp").exists(),
+                    "a top-level scratch directory is not copied"
+                );
+                let live_inventory =
+                    collect_instance_files_controlled(&live, Some(&state)).unwrap();
+                assert_eq!(stage.files, live_inventory);
+                assert_eq!(stage.files.len(), 2);
+                assert_eq!(collect_files(stage.path()).unwrap(), stage.files);
+            })
+            .await
+            .unwrap()
+        });
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum PackFailure {
+        ParkLive,
+        PublishStage,
+        Registry,
+    }
+
+    #[test]
+    fn c10_a_failure_at_each_step_of_the_swap_rolls_back_to_the_old_instance() {
+        let cases = [
+            (PackFailure::ParkLive, "park"),
+            (PackFailure::PublishStage, "publish"),
+            (PackFailure::Registry, "registry"),
+        ];
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap();
+        for (failure, label) in cases {
+            let (_fixture, live, registered, state) =
+                c10_setup(&format!("c10-failure-{label}"));
+            let original = collect_files(&live).unwrap();
+            let expected_registration = registered.clone();
+            runtime.block_on(async move {
+                tokio::task::spawn_blocking(move || {
+                    let stage = stage_pack_update(&state, &registered).unwrap();
+                    let stage_path = stage.path().to_owned();
+                    let expected = c10_change_stage(&stage_path);
+                    let mut after = registered.clone();
+                    after.name = "failed pack update".into();
+                    let error = match commit_pack_update_using(
+                        &state,
+                        stage,
+                        &registered,
+                        &after,
+                        &expected,
+                        |from, to| match failure {
+                            PackFailure::ParkLive if from == live.as_path() => {
+                                Err(std::io::Error::other("injected park failure"))
+                            }
+                            PackFailure::PublishStage if from == stage_path.as_path() => {
+                                Err(std::io::Error::other("injected publish failure"))
+                            }
+                            _ => fs::rename(from, to),
+                        },
+                        |state, current, after| match failure {
+                            PackFailure::Registry => Err("injected registry failure".into()),
+                            _ => replace_registered_instance(state, current, after),
+                        },
+                    ) {
+                        Ok(_) => panic!("the injected swap failure is reported"),
+                        Err(error) => error,
+                    };
+                    assert_eq!(error.code, "backup.restoreRolledBack", "{label}: {error:?}");
+                    assert_eq!(error.params.get("kind"), Some(&serde_json::json!("packUpdate")), "{label}: the record is a pack update");
+                    assert_eq!(
+                        collect_files(&live).unwrap(),
+                        original,
+                        "{label}: the original live files are restored"
+                    );
+                    assert!(
+                        same_instance(
+                            &state.snapshot().unwrap().instances[0],
+                            &expected_registration
+                        )
+                        .unwrap(),
+                        "{label}: the original registration is kept"
+                    );
+                    let folder = backup_folder(&state, "test").unwrap();
+                    assert!(
+                        read_intent(&folder).unwrap().is_none(),
+                        "{label}: no intent remains"
+                    );
+                    assert!(
+                        c10_pack_manifests(&folder).is_empty(),
+                        "{label}: no manifest remains"
+                    );
+                    assert_eq!(
+                        collect_files(&stage_path).unwrap(),
+                        expected,
+                        "{label}: the changed copy is preserved"
+                    );
+                    // A later recovery entry point sees nothing to resume.
+                    assert!(read_intent(&folder).unwrap().is_none());
+                })
+                .await
+                .unwrap()
+            });
+        }
+    }
+
+    #[test]
+    fn c10_an_interrupted_pack_update_is_recovered_from_its_intent_twice_safely() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap();
+        for layout in ["intentOnly", "liveParked", "stagePublished", "registrySwitched"] {
+            let (_fixture, live, registered, state) =
+                c10_setup(&format!("c10-interrupted-{layout}"));
+            let original = collect_files(&live).unwrap();
+            runtime.block_on(async move {
+                tokio::task::spawn_blocking(move || {
+                    let (stage, intent) = c10_prepare_intent(&state, &registered);
+                    let stage_path = stage.path().to_owned();
+                    let previous = stage.paths.previous.clone();
+                    let folder = stage.folder.clone();
+                    match layout {
+                        "intentOnly" => {}
+                        "liveParked" => fs::rename(&live, &previous).unwrap(),
+                        "stagePublished" => {
+                            fs::rename(&live, &previous).unwrap();
+                            fs::rename(&stage_path, &live).unwrap();
+                        }
+                        "registrySwitched" => {
+                            fs::rename(&live, &previous).unwrap();
+                            fs::rename(&stage_path, &live).unwrap();
+                            replace_registered_instance(&state, &registered, &intent.after).unwrap();
+                        }
+                        _ => unreachable!("unknown interrupted layout"),
+                    }
+                    let manifest = pack_manifest_path(&folder, intent.token).unwrap();
+                    let manifest_bytes = fs::read(&manifest).unwrap();
+                    let current = instance(&state.snapshot().unwrap(), "test").unwrap();
+                    let recovered =
+                        recover_with_state(&state, &folder, &intent, &stage.paths, &current)
+                            .unwrap_or_else(|error| panic!("{layout}: {error}"));
+                    assert!(same_instance(&recovered.instance, &registered).unwrap());
+                    assert!(
+                        same_instance(&state.snapshot().unwrap().instances[0], &registered)
+                            .unwrap(),
+                        "{layout}: the original registration is restored"
+                    );
+                    assert_eq!(
+                        collect_files(&live).unwrap(),
+                        original,
+                        "{layout}: the original files are live"
+                    );
+                    assert!(
+                        read_intent(&folder).unwrap().is_none(),
+                        "{layout}: no intent remains"
+                    );
+                    assert!(
+                        c10_pack_manifests(&folder).is_empty(),
+                        "{layout}: no manifest remains"
+                    );
+                    // Interrupted again before the intent was cleared: a second
+                    // recovery from the same intent leaves the same result.
+                    write_intent(&folder, &intent).unwrap();
+                    fs::write(&manifest, &manifest_bytes).unwrap();
+                    let current = instance(&state.snapshot().unwrap(), "test").unwrap();
+                    recover_with_state(&state, &folder, &intent, &stage.paths, &current)
+                        .unwrap_or_else(|error| panic!("{layout}, second pass: {error}"));
+                    assert_eq!(collect_files(&live).unwrap(), original, "{layout}: a second pass keeps the original");
+                    assert!(
+                        same_instance(&state.snapshot().unwrap().instances[0], &registered).unwrap(),
+                        "{layout}: a second pass keeps the original registration"
+                    );
+                    assert!(read_intent(&folder).unwrap().is_none(), "{layout}: no intent after the second pass");
+                    assert!(c10_pack_manifests(&folder).is_empty(), "{layout}: no manifest after the second pass");
+                })
+                .await
+                .unwrap()
+            });
+        }
+    }
+
+    #[test]
+    fn c10_a_tampered_file_list_stops_recovery_and_moves_nothing() {
+        let (_fixture, live, registered, state) = c10_setup("c10-tampered");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let (stage, intent) = c10_prepare_intent(&state, &registered);
+                let folder = stage.folder.clone();
+                let manifest = pack_manifest_path(&folder, intent.token).unwrap();
+                let mut bytes = fs::read(&manifest).unwrap();
+                bytes[0] ^= 0x01;
+                fs::write(&manifest, bytes).unwrap();
+                let live_before = collect_files(&live).unwrap();
+                let stage_before = collect_files(stage.path()).unwrap();
+                let current = instance(&state.snapshot().unwrap(), "test").unwrap();
+                let error = match recover_with_state(&state, &folder, &intent, &stage.paths, &current)
+                {
+                    Ok(_) => panic!("a changed file list must stop recovery"),
+                    Err(error) => error,
+                };
+                assert!(error.contains("更新文件清单已改变"), "{error}");
+                assert_eq!(collect_files(&live).unwrap(), live_before);
+                assert_eq!(collect_files(stage.path()).unwrap(), stage_before);
+                assert!(
+                    same_instance(&state.snapshot().unwrap().instances[0], &registered).unwrap()
+                );
+                assert!(
+                    read_intent(&folder).unwrap().is_some(),
+                    "the intent is kept for a later retry"
+                );
+            })
+            .await
+            .unwrap()
+        });
+    }
+
+    #[test]
+    fn c10_an_intent_written_before_pack_updates_reads_as_a_backup_restore() {
+        let folder = fixture_folder("c10-legacy-intent");
+        let live = folder.path().join("game/instances/test");
+        let manifest = backup_manifest("test", &live, vec![]);
+        let intent = RestoreIntent {
+            token: Uuid::new_v4(),
+            kind: RestoreKind::PackUpdate,
+            before: manifest.instance.clone(),
+            after: manifest.instance.clone(),
+            original: Some(RestoreIdentity {
+                id: Uuid::new_v4(),
+                manifest_sha256: "original backup".into(),
+            }),
+            selected: RestoreIdentity {
+                id: Uuid::new_v4(),
+                manifest_sha256: "selected backup".into(),
+            },
+        };
+        let mut value = serde_json::to_value(&intent).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("kind")
+            .expect("the kind was serialized");
+        fs::write(
+            folder.path().join(RESTORE_INTENT),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let read = read_intent(folder.path()).unwrap().unwrap();
+        assert_eq!(read.kind, RestoreKind::Backup);
+        assert_eq!(read.token, intent.token);
+    }
+
+    #[test]
+    fn c10_a_copy_that_differs_from_the_plan_is_not_committed() {
+        let (_fixture, live, registered, state) = c10_setup("c10-mismatch");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let original = collect_files(&live).unwrap();
+                let stage = stage_pack_update(&state, &registered).unwrap();
+                let expected = c10_change_stage(stage.path());
+                let incomplete = expected[..expected.len() - 1].to_vec();
+                let mut after = registered.clone();
+                after.name = "unplanned update".into();
+                let error =
+                    match commit_pack_update(&state, stage, &registered, &after, &incomplete) {
+                        Ok(_) => panic!("a copy that differs from the plan is refused"),
+                        Err(error) => error,
+                    };
+                assert!(
+                    error
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("更新副本与计划不一致")),
+                    "{error:?}"
+                );
+                assert_eq!(collect_files(&live).unwrap(), original);
+                assert!(
+                    same_instance(&state.snapshot().unwrap().instances[0], &registered).unwrap()
+                );
+                let folder = backup_folder(&state, "test").unwrap();
+                assert!(read_intent(&folder).unwrap().is_none());
+                assert!(c10_pack_manifests(&folder).is_empty());
+            })
+            .await
+            .unwrap()
+        });
+    }
+
+    #[test]
+    fn c10_a_change_made_during_the_swap_keeps_the_old_directory() {
+        let (_fixture, live, registered, state) = c10_setup("c10-late");
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let (done, expected) = runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let stage = stage_pack_update(&state, &registered).unwrap();
+                let expected = c10_change_stage(stage.path());
+                let parked = live.clone();
+                let done = commit_pack_update_using(
+                    &state,
+                    stage,
+                    &registered,
+                    &registered,
+                    &expected,
+                    |from, to| {
+                        // Written by something else after the last check.
+                        if from == parked.as_path() {
+                            fs::write(parked.join("config/late.txt"), b"written during the update")?;
+                        }
+                        fs::rename(from, to)
+                    },
+                    replace_registered_instance,
+                )
+                .unwrap();
+                (done, expected)
+            })
+            .await
+            .unwrap()
+        });
+        let kept = PathBuf::from(done.previous_directory.expect("the old directory is kept"));
+        assert_eq!(fs::read(kept.join("config/late.txt")).unwrap(), b"written during the update");
+        assert_eq!(collect_files(&_fixture.path().join("game/instances/test")).unwrap(), expected);
+    }
+
+    #[test]
+    fn c10_a_change_made_before_the_swap_stops_the_update() {
+        let (_fixture, live, registered, state) = c10_setup("c10-before-swap");
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let stage = stage_pack_update(&state, &registered).unwrap();
+                let stage_path = stage.path().to_owned();
+                let expected = c10_change_stage(&stage_path);
+                // Written by something else while the update ran.
+                fs::write(live.join("config/late.txt"), b"written during the update").unwrap();
+                let changed = collect_files(&live).unwrap();
+                let mut after = registered.clone();
+                after.name = "refused pack update".into();
+                let error = match commit_pack_update(&state, stage, &registered, &after, &expected) {
+                    Ok(_) => panic!("a live directory that changed is not swapped"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.code, "modpack.planChanged", "{error:?}");
+                assert_eq!(collect_files(&live).unwrap(), changed, "the live directory is as the user left it");
+                assert!(same_instance(&state.snapshot().unwrap().instances[0], &registered).unwrap());
+                let folder = backup_folder(&state, "test").unwrap();
+                assert!(read_intent(&folder).unwrap().is_none(), "no intent");
+                assert!(c10_pack_manifests(&folder).is_empty(), "no file list");
+                assert!(!stage_path.exists(), "the copy is removed");
+            })
+            .await
+            .unwrap()
+        });
+    }
+
+    #[test]
+    fn c10_a_change_made_during_the_backup_stops_the_update() {
+        let (_fixture, live, registered, state) = c10_setup("c10-during-backup");
+        let changed = live.clone();
+        crate::modpacks::pack_update::hook(&live, "backup", move || {
+            fs::write(changed.join("config/old.txt"), b"edited while the backup was written").unwrap();
+        });
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let error = match stage_pack_update(&state, &registered) {
+                    Ok(_) => panic!("a copy that differs from the backup is not made"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.code, "modpack.planChanged", "{error:?}");
+                assert_eq!(fs::read(live.join("config/old.txt")).unwrap(), b"edited while the backup was written");
+                let siblings: Vec<_> = fs::read_dir(live.parent().unwrap())
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(siblings, ["test"], "no copy is left");
+            })
+            .await
+            .unwrap()
+        });
+    }
+
+    #[test]
+    fn c10_a_name_written_in_another_case_inside_an_existing_folder_is_committed() {
+        let (_fixture, live, registered, state) = c10_setup("c10-case");
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let expected = runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let stage = stage_pack_update(&state, &registered).unwrap();
+                // The new version spells the folder `Config`; the copy's folder is `config`.
+                fs::write(stage.path().join("Config/new.toml"), b"new setting").unwrap();
+                let mut expected = stage.files.clone();
+                expected.push(FileRecord {
+                    relative: "Config/new.toml".into(),
+                    size: b"new setting".len() as u64,
+                    sha256: format!("{:x}", Sha256::digest(b"new setting")),
+                });
+                expected.sort_by(|a, b| a.relative.cmp(&b.relative));
+                commit_pack_update(&state, stage, &registered, &registered, &expected).unwrap();
+                expected
+            })
+            .await
+            .unwrap()
+        });
+        assert_eq!(fs::read(live.join("config/new.toml")).unwrap(), b"new setting");
+        assert_eq!(collect_files(&live).unwrap().len(), expected.len());
+    }
+
+    #[test]
+    fn c10_a_file_list_left_by_an_earlier_update_is_cleared() {
+        let (_fixture, _live, registered, state) = c10_setup("c10-sweep");
+        let folder = backup_folder(&state, "test").unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        let stale = folder.join(format!("pack-update-{}.json", Uuid::new_v4()));
+        let partial = folder.join(format!(".pack-update-{}.part", Uuid::new_v4()));
+        let other = folder.join("pack-update-notes.json");
+        for path in [&stale, &partial, &other] {
+            fs::write(path, b"[]").unwrap();
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let done = runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let stage = stage_pack_update(&state, &registered).unwrap();
+                let expected = collect_files(stage.path()).unwrap();
+                commit_pack_update(&state, stage, &registered, &registered, &expected).unwrap()
+            })
+            .await
+            .unwrap()
+        });
+        assert!(done.previous_directory.is_none(), "an unchanged old directory is removed");
+        assert!(!stale.exists() && !partial.exists(), "the leftovers of an earlier update are gone");
+        assert!(other.exists(), "a file that is not one of them stays");
     }
 }

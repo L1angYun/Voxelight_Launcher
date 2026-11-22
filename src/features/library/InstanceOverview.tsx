@@ -9,6 +9,7 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { useInstanceBackups } from "./useInstanceContent";
+import { ModpackUpdate } from "./ModpackUpdate";
 import { errorText, loaderText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
 
@@ -70,11 +71,18 @@ export function InstanceOverview({
       setNotice("instanceCloned");
       await onChanged();
     });
+  const restoreFailureText = (code: string, params: Record<string, unknown>) => {
+    if (params.kind === "packUpdate") {
+      if (code === "backup.restoreRecoveryRequired") return t("library:modpackUpdate.recoveryRequired");
+      if (code === "backup.restoreRolledBack") return t("library:modpackUpdate.rolledBack");
+    }
+    return errorText(code, t);
+  };
   const reportRestoreFailure = (error: unknown) => {
     const fault = normalizeError(error);
     const path = (key: string) => typeof fault.params[key] === "string" ? fault.params[key] as string : undefined;
     setRestoreFeedback({
-      failed: true, text: errorText(fault.code, t),
+      failed: true, text: restoreFailureText(fault.code, fault.params),
       paths: fault.code === "backup.restoreRecoveryRequired" || fault.code === "backup.restoreRolledBack"
         ? { currentDirectory: path("currentDirectory") ?? instance.gameDirectory,
             previousDirectory: path("previousDirectory"), restoredDirectory: path("restoredDirectory"),
@@ -105,13 +113,15 @@ export function InstanceOverview({
     });
   };
   const recover = () => {
-    if (!recovery || !window.confirm(t("library:backupRecoverConfirm", { name: instance.name }))) return;
+    if (!recovery) return;
+    const packUpdate = recovery.kind === "packUpdate";
+    if (!window.confirm(t(packUpdate ? "library:modpackUpdate.recoverConfirm" : "library:backupRecoverConfirm", { name: instance.name }))) return;
     void run("instance.restore", async () => {
       setRestoreFeedback(null);
       setNotice("");
       try {
         const result = await command<RecoverInstanceRestoreResult>("recover_instance_restore", { instanceId: instance.id });
-        setRestoreFeedback({ text: t("library:backupRecovered"), previousBackup: result.previousBackup,
+        setRestoreFeedback({ text: t(packUpdate ? "library:modpackUpdate.recovered" : "library:backupRecovered"), previousBackup: result.previousBackup,
           preservedDirectory: result.preservedDirectory });
       } catch (error) {
         reportRestoreFailure(error);
@@ -227,10 +237,10 @@ export function InstanceOverview({
           ) : null}
           {recovery ? (
             <div role="status">
-              <p>{t("library:backupInterrupted")}</p>
+              <p>{t(recovery.kind === "packUpdate" ? "library:modpackUpdate.interrupted" : "library:backupInterrupted")}</p>
               {renderRecoveryPaths(recovery)}
               <Button variant="secondary" onClick={recover} disabled={backupsBusy}>
-                {t("library:backupRecover")}
+                {t(recovery.kind === "packUpdate" ? "library:modpackUpdate.recover" : "library:backupRecover")}
               </Button>
             </div>
           ) : null}
@@ -263,6 +273,12 @@ export function InstanceOverview({
             </Button>
           </div>
         </section>
+        <ModpackUpdate
+          instance={instance}
+          onChanged={onChanged}
+          onBackupsChanged={refresh}
+          onRecoveryFault={reportRestoreFailure}
+        />
         <section className="vx-detail-section">
           <h2>{t("library:export")}</h2>
           <div className="vx-action-row">

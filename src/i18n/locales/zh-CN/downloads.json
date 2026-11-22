@@ -20,6 +20,8 @@
       "clone": "复制实例",
       "backup": "实例备份",
       "restore": "还原备份",
+      "modpack-update": "整合包更新",
+      "modpack-update-plan": "整合包更新计划",
       "export": "导出整合包",
       "world-backup": "世界备份",
       "world-import": "导入世界",

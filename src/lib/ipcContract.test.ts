@@ -7,7 +7,7 @@ const project = fileURLToPath(new URL("../../", import.meta.url));
 const backend = readFileSync(`${project}src-tauri/src/lib.rs`, "utf8");
 const handler = backend.match(/tauri::generate_handler!\[([\s\S]*?)\]\s*\)/)?.[1] ?? "";
 const registered = new Set(
-  [...handler.matchAll(/^\s*[a-z_]+::([a-z0-9_]+),?\s*$/gm)].map((match) => match[1]),
+  [...handler.matchAll(/^\s*(?:[a-z_]+::)+([a-z0-9_]+),?\s*$/gm)].map((match) => match[1]),
 );
 
 function sourceFiles(directory: string): string[] {
@@ -64,6 +64,18 @@ describe("Tauri IPC registration contract", () => {
       "read_managed_server_logs",
     ];
     expect(expected.filter((name) => !registered.has(name))).toEqual([]);
+  });
+
+  it("registers the modpack update commands only in the library permission family", () => {
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const families = permissions.split(/\[\[permission\]\]/);
+    for (const command of ["check_modpack_update", "plan_modpack_update", "apply_modpack_update"]) {
+      expect(registered.has(command)).toBe(true);
+      expect(invoked.has(command)).toBe(true);
+      const allowed = families.filter((family) => family.includes(`"${command}"`));
+      expect(allowed).toHaveLength(1);
+      expect(allowed[0]).toContain('identifier = "launcher-library"');
+    }
   });
 
   it("registers the download source verdict only in the settings permission family", () => {

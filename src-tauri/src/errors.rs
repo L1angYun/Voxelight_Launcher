@@ -79,10 +79,22 @@ pub fn expected(detail: impl Into<String>) -> AppError {
     }
     let code = if detail.starts_with("预设 JSON 无效") {
         "config.presetInvalid"
+    } else if detail.starts_with(crate::modpacks::PLATFORM_REFUSED) {
+        "modpack.platformUnavailable"
     } else {
         match detail.as_str() {
             STORAGE_STATE_CHANGED => "storage.stateChanged",
             "instance.exportPreviewChanged" => "instance.exportPreviewChanged",
+            crate::modpacks::pack_update::UNMANAGED => "modpack.unmanaged",
+            crate::modpacks::pack_update::PLAN_CHANGED => "modpack.planChanged",
+            crate::modpacks::pack_update::NOT_NEWER => "modpack.notNewer",
+            crate::modpacks::pack_update::VERSION_MISMATCH => "modpack.versionMismatch",
+            crate::modpacks::pack_update::DEPENDENCY_DRIFT => "modpack.dependencyDrift",
+            crate::modpacks::pack_update::CONFLICT_CHOICE_INVALID => "modpack.conflictChoiceInvalid",
+            crate::modpacks::pack_update::STAGE_MISMATCH | crate::modpacks::pack_update::LOCK_INVALID => "modpack.stageMismatch",
+            crate::modpacks::NOT_MRPACK => "modpack.notMrpack",
+            crate::modpacks::pack_update::SHARED_ROOT => "modpack.sharedRoot",
+            crate::modpacks::PLATFORM_UNREACHABLE | crate::modpacks::PLATFORM_INTERRUPTED => "modpack.platformUnavailable",
             RESOURCE_RECOVERY_REQUIRED => "resource.recoveryRequired",
             INSTALL_GAME_RUNNING => "install.gameRunning",
             crate::auth::CLIENT_MISSING => "auth.clientIdRequired",

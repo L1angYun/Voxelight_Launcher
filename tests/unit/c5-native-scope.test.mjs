@@ -39,7 +39,7 @@ test('H10 every custom command is classified and privileged file access checks a
       .flatMap(([,group])=>[...group.matchAll(/"([a-z0-9_]+)"/g)].map(([,name])=>name));
    const namespaces=[...grouped.matchAll(/^identifier = "(launcher-[a-z-]+)"/gm)].map(([,scope])=>scope);
    assert.ok(namespaces.length>=8 && namespaces.every(scope=>capabilities.includes(scope)));
-   const registered=[...read('src-tauri/src/lib.rs').split('generate_handler![')[1].split('])')[0].matchAll(/\w+::(\w+)/g)].map(([,name])=>name);
+   const registered=[...read('src-tauri/src/lib.rs').split('generate_handler![')[1].split('])')[0].matchAll(/(?:\w+::)+(\w+)/g)].map(([,name])=>name);
    assert.equal(new Set(allowed).size,allowed.length);
    assert.deepEqual([...allowed].sort(),[...registered].sort());
    assert.ok(!capabilities.includes('dialog:allow-open') && !capabilities.includes('dialog:allow-save'));

@@ -20,6 +20,8 @@
       "clone": "Instance copy",
       "backup": "Instance backup",
       "restore": "Backup restoration",
+      "modpack-update": "Modpack update",
+      "modpack-update-plan": "Modpack update plan",
       "export": "Modpack export",
       "world-backup": "World backup",
       "world-import": "World import",
