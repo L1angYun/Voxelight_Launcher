@@ -20,6 +20,8 @@ pub(crate) struct Scripted {
     cut_after: Option<usize>,
     /// Send this many body bytes, then wait until the test releases the connection.
     stall_after: Option<usize>,
+    /// The ETag of a reply that follows the request's `Range`.
+    ranged: Option<String>,
 }
 
 impl Scripted {
@@ -29,6 +31,27 @@ impl Scripted {
     pub(crate) fn partial(whole: &[u8], from: usize, etag: &str) -> Self {
         let range = format!("bytes {from}-{}/{}", whole.len() - 1, whole.len());
         Self { status: 206, headers: vec![("ETag", etag.into()), ("Content-Range", range)], body: whole[from..].to_vec(), ..Self::default() }
+    }
+    /// A reply that follows the request: `Range: bytes=N-` with a start inside
+    /// the body is answered with the rest, anything else with the whole body.
+    pub(crate) fn ranged(whole: &[u8], etag: &str) -> Self {
+        Self { status: 200, headers: vec![("ETag", etag.into())], body: whole.to_vec(), ranged: Some(etag.into()), ..Self::default() }
+    }
+    /// The concrete answer to a request, for a reply that follows its Range.
+    fn for_request(mut self, headers: &HashMap<String, String>) -> Self {
+        let Some(etag) = self.ranged.take() else { return self };
+        let from = headers
+            .get("range")
+            .and_then(|value| value.strip_prefix("bytes="))
+            .and_then(|value| value.strip_suffix('-'))
+            .and_then(|value| value.parse::<usize>().ok());
+        if let Some(from) = from.filter(|from| *from > 0 && *from < self.body.len()) {
+            let length = self.body.len();
+            self.headers = vec![("ETag", etag), ("Content-Range", format!("bytes {from}-{}/{length}", length - 1))];
+            self.body = self.body.split_off(from);
+            self.status = 206;
+        }
+        self
     }
     pub(crate) fn cut(mut self, after: usize) -> Self {
         self.cut_after = Some(after);
@@ -105,6 +128,7 @@ impl RangeServer {
                     if let Some(target) = text.lines().next().and_then(|line| line.split_whitespace().nth(1)) {
                         headers.insert(":path".into(), target.to_owned());
                     }
+                    let reply = reply.for_request(&headers);
                     requests.lock().unwrap().push(headers);
                     let (sent, released) = (sent.clone(), released.clone());
                     writers.push(std::thread::spawn(move || {

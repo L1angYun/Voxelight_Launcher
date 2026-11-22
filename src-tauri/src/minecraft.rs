@@ -1291,7 +1291,12 @@ fn part_store_for(state: &LauncherState, file: &Download) -> Option<crate::parts
         .snapshot()
         .ok()
         .and_then(|snapshot| crate::processes::configured_game_root(Path::new(&snapshot.config.game_directory)).ok());
-    part_root_for(game_root, &state.data_dir, &file.path).map(crate::parts::PartStore::new)
+    let folder = part_root_for(game_root, &state.data_dir, &file.path)?;
+    if folder != state.data_dir.join(".launcher-temp").join("parts") {
+        // Cleaned at startup even after the game directory setting changes.
+        crate::parts::remember(&state.data_dir, &folder);
+    }
+    Some(crate::parts::PartStore::new(folder))
 }
 
 /// The parts folder for `target`: inside the root (the game root first) that

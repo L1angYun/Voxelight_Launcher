@@ -731,10 +731,166 @@ impl From<&str> for DownloadAttemptError {
     }
 }
 
+/// The parts folder for downloads into `directory`: the one of the configured
+/// game root or the launcher data directory that holds it (both are cleaned at
+/// startup), so a part is never inside a staged copy and outlives a failed or
+/// cancelled install. None when the folder is elsewhere: those files download
+/// in one go, as before.
+pub(crate) fn resource_parts(state: &LauncherState, directory: &Path) -> Option<crate::parts::PartStore> {
+    let data = state.snapshot().ok()?;
+    let game_root = crate::processes::configured_game_root(Path::new(&data.config.game_directory)).ok();
+    let root = game_root
+        .into_iter()
+        .chain(std::iter::once(state.data_dir.clone()))
+        .find(|root| root.is_absolute() && crate::processes::directory_tail(directory, root).is_some())?;
+    let folder = root.join(".launcher-temp").join("parts");
+    if root != state.data_dir {
+        // Cleaned at startup even after the game directory setting changes.
+        crate::parts::remember(&state.data_dir, &folder);
+    }
+    Some(crate::parts::PartStore::new(folder))
+}
+
+/// The message for a failed part transfer: the launcher's own wording for an
+/// HTTP status and for what the HTTP library reports in English (a dropped
+/// connection, a broken body); the launcher's own messages stay as they are.
+pub(crate) fn transfer_message(error: String, source: &str) -> String {
+    if let Some(rest) = error.strip_prefix("下载失败（HTTP ") {
+        return format!("{source} 资源下载失败（HTTP {rest}");
+    }
+    if error.is_ascii() {
+        return format!("{source} 资源下载失败，请检查网络和磁盘空间后重试");
+    }
+    error
+}
+
+/// Whether a part transfer failed with an answer no retry changes: a 4xx
+/// status (`crate::parts::classify` words it), except timeouts and rate limits.
+fn refused(error: &str) -> bool {
+    error
+        .strip_prefix("下载失败（HTTP ")
+        .and_then(|rest| rest.strip_suffix('）'))
+        .and_then(|code| code.parse::<u16>().ok())
+        .is_some_and(|code| (400..500).contains(&code) && code != 408 && code != 429)
+}
+
+/// Tries without progress allowed for one resource file; a try that continued
+/// its part is free, up to this many tries in all.
+const RESOURCE_FAILURES: u32 = 3;
+const RESOURCE_TRIES: u32 = 12;
+
+/// Downloads `file` through its resumable part and moves it into `directory`
+/// without replacing anything there. Ok(None): no part could be opened (held
+/// by another download, or an unusable parts folder), and the caller
+/// downloads in one go.
+#[allow(clippy::too_many_arguments)]
+async fn download_resumable(
+    state: &LauncherState,
+    file: &ResourceFile,
+    url: &reqwest::Url,
+    directory: &Path,
+    expected: &str,
+    parts: &crate::parts::Reuse,
+    key: &crate::parts::PartKey,
+    client: &reqwest::Client,
+    progress: Option<&ResourceProgress>,
+) -> Result<Option<PathBuf>, String> {
+    // A part that cannot be opened (held by another download, or a parts
+    // folder that cannot be used) means the one-go download, as before.
+    let open = || parts.store().open(key, file.size).ok().flatten();
+    let Some(part) = open() else { return Ok(None) };
+    let mut slot = Some(part);
+    let control = &state.control;
+    let untrusted = std::sync::atomic::AtomicBool::new(false);
+    let (mut tries, mut failures) = (0, 0);
+    let mut last = String::new();
+    loop {
+        tries += 1;
+        state.control.checkpoint().await?;
+        if slot.is_none() {
+            // A part thrown away for a mismatched range starts again from zero;
+            // if it cannot be had now, the tries so far are the answer.
+            let Some(part) = open() else { return Err(transfer_message(last, "Modrinth")) };
+            slot = Some(part);
+        }
+        let before = slot.as_ref().map(crate::parts::ResumablePart::mark);
+        let mut hash = Sha512::new();
+        let mut seen = 0_u64;
+        let transferred = crate::parts::transfer(
+            client.get(url.clone()),
+            url,
+            &mut slot,
+            file.size,
+            &control,
+            &|response| {
+                cdn_url(response.url().as_str())
+                    .map(|_| ())
+                    .inspect_err(|_| untrusted.store(true, std::sync::atomic::Ordering::SeqCst))
+            },
+            &mut |bytes| {
+                hash.update(bytes);
+                seen += bytes.len() as u64;
+                if let Some(progress) = progress {
+                    progress.emit(state, "resource-download", 0, 1, seen, file.size, &format!("下载 {}", file.filename));
+                }
+            },
+        )
+        .await;
+        let error = match transferred {
+            Ok(()) => {
+                let part = slot.take().ok_or("资源下载分片不可用")?;
+                if format!("{:x}", hash.finalize()) == expected {
+                    reject_links(directory)?;
+                    state.control.checkpoint().await?;
+                    let checked = safe_join(directory, &file.filename)?;
+                    crate::parts::publish_new_off_task(part, &checked)
+                        .await
+                        .map_err(|_| "下载期间出现同名文件或无法移入目标目录，已保留原文件，请重新检查资源目录")?;
+                    // Back to its part if the stage is not committed.
+                    parts.add(key, file.size, &checked);
+                    if let Some(progress) = progress {
+                        progress.emit(state, "resource-download", 1, 1, file.size, file.size, &format!("已校验 {}", file.filename));
+                    }
+                    return Ok(Some(checked));
+                }
+                part.discard();
+                "资源 SHA-512 或大小校验失败，未安装该文件".to_string()
+            }
+            Err(error) => error,
+        };
+        // A cancel ends here; anything else may be tried again.
+        state.control.checkpoint().await?;
+        if error == crate::parts::OVERRUN {
+            // Bytes from an answer longer than the file are not continued.
+            if let Some(part) = slot.take() {
+                part.discard();
+            }
+        }
+        let after = slot.as_ref().map(crate::parts::ResumablePart::mark);
+        if !crate::parts::progressed(before.as_ref(), after.as_ref()) {
+            failures += 1;
+        }
+        // No retry changes these answers, as before C9: they end the download.
+        let settled = refused(&error)
+            || error == crate::parts::SIZE_MISMATCH
+            || error == crate::parts::OVERRUN
+            || untrusted.load(std::sync::atomic::Ordering::SeqCst);
+        if settled || failures >= RESOURCE_FAILURES || tries >= RESOURCE_TRIES {
+            return Err(transfer_message(error, "Modrinth"));
+        }
+        last = error;
+        state
+            .control
+            .during_cancellable_io(tokio::time::sleep(Duration::from_millis(500 * u64::from(failures.max(1)))))
+            .await?;
+    }
+}
+
 async fn download_verified_progress(
     state: &LauncherState,
     file: &ResourceFile,
     directory: &Path,
+    parts: Option<&crate::parts::Reuse>,
     kind: ResourceKind,
     client: reqwest::Client,
     progress: Option<&ResourceProgress>,
@@ -791,6 +947,15 @@ async fn download_verified_progress(
             "已存在不同内容的同名文件 {}。为保留现有内容，请先备份或重命名该文件。",
             file.filename
         ));
+    }
+    // 1 MiB or more: through a part outside the staged copy, so a failed or
+    // cancelled install leaves it for the next one (U0266).
+    let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &expected, file.size)
+        .filter(|_| file.size >= crate::parts::RESUME_MIN);
+    if let (Some(parts), Some(key)) = (parts, key.as_ref()) {
+        if let Some(path) = download_resumable(state, file, &url, directory, &expected, parts, key, &client, progress).await? {
+            return Ok(path);
+        }
     }
     let mut last_error = "下载 Modrinth 资源失败，请重试".to_owned();
     for attempt in 0..3 {
@@ -867,7 +1032,7 @@ async fn download_verified_progress(
                     "下载期间出现同名文件，已保留原文件，请重新检查资源目录".into(),
                 ));
             }
-            part.publish(&checked).map_err(|_| "无法将已校验资源移入目标目录")?;
+            part.publish_new(&checked).map_err(|_| "无法将已校验资源移入目标目录")?;
             if let Some(progress) = progress {
                 progress.emit(
                     state,
@@ -2910,7 +3075,7 @@ mod tests {
             });
             let task = state.control.begin("resource", "example", "Fixture").unwrap();
             let mut download = Box::pin(download_verified_progress(
-                &state, &file, &directory, ResourceKind::Mod, client, None,
+                &state, &file, &directory, None, ResourceKind::Mod, client, None,
             ));
             let cancel = async {
                 tokio::time::timeout(Duration::from_secs(2), requested).await.unwrap().unwrap();
@@ -3046,6 +3211,7 @@ mod tests {
             &state,
             &file,
             &directory,
+            None,
             ResourceKind::Mod,
             client,
             Some(&progress),
@@ -5718,6 +5884,608 @@ mod tests {
         drop(state);
         cleanup_fixture(root);
     }
+
+    // ---- C9: resource parts outside the staged copy ----------------------------
+
+    const C9_MIB: usize = 1024 * 1024;
+
+    /// A jar of more than 2 MiB declaring `mod_id` (stored, so it stays that
+    /// large), so its download goes through a resumable part.
+    fn c9_big_jar(mod_id: &str, version: &str) -> Vec<u8> {
+        use std::io::Write;
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("fabric.mod.json", stored).unwrap();
+        zip.write_all(format!(r#"{{"id":"{mod_id}","version":"{version}"}}"#).as_bytes()).unwrap();
+        zip.start_file("data.bin", stored).unwrap();
+        zip.write_all(&(0..2 * C9_MIB + 7).map(|index| (index * 31 % 251) as u8).collect::<Vec<_>>()).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn c9_only_a_refusing_answer_ends_a_resource_download_at_once() {
+        let failure = |status| match crate::parts::classify(status, None, 0, 10) {
+            crate::parts::Reply::Fail(message) => message,
+            other => panic!("{status}: {other:?}"),
+        };
+        for status in [400, 403, 404, 410] {
+            assert!(refused(&failure(status)), "{status}");
+        }
+        for status in [408, 429, 500, 503] {
+            assert!(!refused(&failure(status)), "{status}");
+        }
+        assert!(!refused(crate::parts::STALLED) && !refused(crate::parts::RANGE_MISMATCH));
+    }
+
+    /// Downloads a Modrinth file of more than 1 MiB from `cdn` into a fresh
+    /// folder with its own parts folder (`parts`), as an install does.
+    fn c9_download(
+        root: &Path,
+        label: &str,
+        bytes: &[u8],
+        cdn: &RangeServer,
+        reuse: Option<&crate::parts::Reuse>,
+    ) -> (Result<PathBuf, String>, PathBuf) {
+        let state = LauncherState::test_fixture(root.join(format!("data-{label}")), Persisted::default(), crate::storage::test_client());
+        let directory = root.join(format!("next-{label}"));
+        let address: std::net::SocketAddr = cdn.address.parse().unwrap();
+        let client = reqwest::Client::builder().no_proxy().resolve("cdn.modrinth.com", address).build().unwrap();
+        let file = ResourceFile {
+            filename: "big.jar".into(),
+            url: c9_url(cdn),
+            primary: true,
+            size: bytes.len() as u64,
+            hashes: FileHashes { sha512: format!("{:x}", Sha512::digest(bytes)) },
+        };
+        let result = c8_runtime().block_on(download_verified_progress(&state, &file, &directory, reuse, ResourceKind::Mod, client, None));
+        (result, directory)
+    }
+
+    fn c9_url(cdn: &RangeServer) -> String {
+        format!("http://cdn.modrinth.com:{}/data/big.jar", port(cdn))
+    }
+
+    fn c9_bytes() -> Vec<u8> {
+        (0..2 * C9_MIB + 7).map(|index| (index * 7 % 251) as u8).collect()
+    }
+
+    #[test]
+    fn c9_a_large_modrinth_file_retries_only_what_a_retry_can_change() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests").join(uuid::Uuid::new_v4().to_string());
+        let bytes = c9_bytes();
+        let store = |label: &str| crate::parts::PartStore::new(root.join(format!("parts-{label}")));
+        let empty = |label: &str| c9_tree(&root.join(format!("parts-{label}"))).is_empty();
+
+        // A 404 ends at once.
+        let cdn = RangeServer::new(vec![Scripted::status(404), Scripted::ranged(&bytes, "\"a\"")]);
+        let (result, _) = c9_download(&root, "404", &bytes, &cdn, Some(&crate::parts::Reuse::new(store("404"))));
+        assert_eq!(result.unwrap_err(), "Modrinth 资源下载失败（HTTP 404）");
+        assert_eq!(cdn.count(), 1);
+
+        // A 5xx is tried three times.
+        let cdn = RangeServer::new(vec![Scripted::status(503), Scripted::status(503), Scripted::status(503), Scripted::ranged(&bytes, "\"b\"")]);
+        let (result, _) = c9_download(&root, "503", &bytes, &cdn, Some(&crate::parts::Reuse::new(store("503"))));
+        assert_eq!(result.unwrap_err(), "Modrinth 资源下载失败（HTTP 503）");
+        assert_eq!(cdn.count(), 3);
+
+        // Tries that continue the part are free: four cuts, then the rest.
+        let cut = 300 * 1024;
+        let mut script = vec![Scripted::ok(&bytes, "\"c\"").cut(cut)];
+        script.extend((0..3).map(|_| Scripted::ranged(&bytes, "\"c\"").cut(cut)));
+        script.push(Scripted::ranged(&bytes, "\"c\""));
+        let cdn = RangeServer::new(script);
+        let (result, directory) = c9_download(&root, "cuts", &bytes, &cdn, Some(&crate::parts::Reuse::new(store("cuts"))));
+        assert_eq!(fs::read(result.unwrap()).unwrap(), bytes);
+        assert_eq!(cdn.count(), 5);
+        assert_eq!(cdn.header(4, "range").as_deref(), Some(format!("bytes={}-", 4 * cut).as_str()));
+        assert_eq!(c9_tree(&directory), ["big.jar"]);
+        assert!(empty("cuts"));
+        // Had the stage failed, the verified file goes back to its part, complete.
+        let reuse = crate::parts::Reuse::new(store("kept"));
+        let cdn = RangeServer::new(vec![Scripted::ok(&bytes, "\"k\"")]);
+        let (result, directory) = c9_download(&root, "kept", &bytes, &cdn, Some(&reuse));
+        assert!(result.is_ok());
+        reuse.restore();
+        assert!(c9_tree(&directory).is_empty(), "{:?}", c9_tree(&directory));
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &format!("{:x}", Sha512::digest(&bytes)), bytes.len() as u64).unwrap();
+        assert!(store("kept").open(&key, bytes.len() as u64).unwrap().unwrap().complete());
+
+        // A declared size that disagrees with the metadata ends at once.
+        let cdn = RangeServer::new(vec![Scripted::ok(&bytes[..bytes.len() - 1], "\"d\""), Scripted::ranged(&bytes, "\"d\"")]);
+        let (result, _) = c9_download(&root, "size", &bytes, &cdn, Some(&crate::parts::Reuse::new(store("size"))));
+        assert_eq!(result.unwrap_err(), crate::parts::SIZE_MISMATCH);
+        assert_eq!(cdn.count(), 1);
+
+        // So does a body longer than the file, and its bytes are not kept.
+        let longer = [bytes.as_slice(), b"extra"].concat();
+        let cdn = RangeServer::new(vec![Scripted::ok(&longer, "\"e\"").without_length(), Scripted::ranged(&bytes, "\"e\"")]);
+        let (result, directory) = c9_download(&root, "overrun", &bytes, &cdn, Some(&crate::parts::Reuse::new(store("overrun"))));
+        assert_eq!(result.unwrap_err(), crate::parts::OVERRUN);
+        assert_eq!(cdn.count(), 1);
+        assert!(empty("overrun"), "{:?}", c9_tree(&root.join("parts-overrun")));
+        assert!(c9_tree(&directory).is_empty());
+
+        // A connection the library reports in English gets the launcher's wording.
+        let gone = RangeServer::new(Vec::new());
+        let (result, _) = c9_download(&root, "gone", &bytes, &gone, Some(&crate::parts::Reuse::new(store("gone"))));
+        let error = result.unwrap_err();
+        assert!(!error.is_ascii() && error.starts_with("Modrinth "), "{error}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn c9_the_parts_folder_of_a_game_root_is_found_from_the_live_folder_and_remembered() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests").join(uuid::Uuid::new_v4().to_string());
+        let game = root.join("game");
+        fs::create_dir_all(game.join("versions/fabric-test/mods")).unwrap();
+        let state = LauncherState::test_fixture(
+            root.join("data"),
+            Persisted {
+                config: crate::models::Config { game_directory: game.to_string_lossy().into_owned(), ..Default::default() },
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        let tail = |path: &Path| path.components().rev().take(3).map(|part| part.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let store = resource_parts(&state, &game.join("versions/fabric-test/mods")).expect("inside the game root");
+        assert_eq!(tail(store.root()), ["parts", ".launcher-temp", "game"]);
+        // Cleaned at startup even when the game root is set elsewhere later.
+        let swept: Vec<_> = crate::parts::startup_stores(&state.data_dir, None).iter().map(|store| store.root().to_path_buf()).collect();
+        assert!(swept.contains(&store.root().to_path_buf()), "{swept:?}");
+        // The data directory's own folder is swept anyway and is not recorded.
+        let inside = resource_parts(&state, &root.join("data").join("mods")).expect("inside the data directory");
+        assert_eq!(inside.root(), root.join("data").join(".launcher-temp").join("parts"));
+        assert_eq!(crate::parts::startup_stores(&state.data_dir, None).len(), 3);
+        let record = fs::read_to_string(root.join("data").join(".launcher-temp").join("part-folders.json")).unwrap();
+        assert_eq!(serde_json::from_str::<Vec<PathBuf>>(&record).unwrap(), [store.root().to_path_buf()]);
+        // Elsewhere: no part, the one-go download.
+        assert!(resource_parts(&state, &root.join("elsewhere").join("mods")).is_none());
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn c9_a_part_that_cannot_be_had_again_ends_the_download_with_its_tries() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests").join(uuid::Uuid::new_v4().to_string());
+        let bytes = c9_bytes();
+        let size = bytes.len() as u64;
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &format!("{:x}", Sha512::digest(&bytes)), size).unwrap();
+        let store = crate::parts::PartStore::new(root.join("parts"));
+        // Bytes of the right length that fail the hash, as often as asked.
+        let wrong: Vec<u8> = bytes.iter().map(|byte| byte ^ 0x5A).collect();
+        let cdn = RangeServer::new((0..4).map(|_| Scripted::ok(&wrong, "\"g\"")).collect());
+        // Once the first try threw its part away, another download takes it.
+        let (taken, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let (taken_tx, taken_rx) = taken;
+        let (release_tx, release_rx) = release;
+        let other = {
+            let (store, key, sent) = (store.clone(), key.clone(), cdn.sent.clone());
+            std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                while sent.load(std::sync::atomic::Ordering::SeqCst) < size as usize && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                while std::time::Instant::now() < deadline {
+                    if let Ok(Some(part)) = store.open(&key, size) {
+                        taken_tx.send(()).unwrap();
+                        let _ = release_rx.recv_timeout(Duration::from_secs(60));
+                        drop(part);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+        let (result, directory) = c9_download(&root, "taken", &bytes, &cdn, Some(&crate::parts::Reuse::new(store.clone())));
+        assert!(taken_rx.recv_timeout(Duration::from_secs(1)).is_ok(), "the other download took the part");
+        release_tx.send(()).unwrap();
+        other.join().unwrap();
+        assert_eq!(result.unwrap_err(), "资源 SHA-512 或大小校验失败，未安装该文件");
+        assert_eq!(cdn.count(), 1, "no fresh round of tries after the part was taken");
+        assert!(c9_tree(&directory).is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn c9_a_resumed_part_that_fails_the_hash_is_thrown_away_and_downloaded_again() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests").join(uuid::Uuid::new_v4().to_string());
+        let bytes = c9_bytes();
+        let store = crate::parts::PartStore::new(root.join("parts"));
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &format!("{:x}", Sha512::digest(&bytes)), bytes.len() as u64).unwrap();
+        let cdn = RangeServer::new(vec![Scripted::ranged(&bytes, "\"w\""), Scripted::ranged(&bytes, "\"w\"")]);
+        // A part from this origin whose first MiB is wrong.
+        let mut part = store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        let origin = crate::parts::origin(&reqwest::Url::parse(&c9_url(&cdn)).unwrap());
+        part.restart(crate::parts::Validator { origin, etag: Some("\"w\"".into()), last_modified: None }).unwrap();
+        part.append(&vec![0xAA; C9_MIB]).unwrap();
+        part.sync().unwrap();
+        drop(part);
+        let (result, directory) = c9_download(&root, "wrong", &bytes, &cdn, Some(&crate::parts::Reuse::new(store.clone())));
+        assert_eq!(fs::read(result.unwrap()).unwrap(), bytes);
+        assert_eq!(cdn.header(0, "range").as_deref(), Some(format!("bytes={C9_MIB}-").as_str()), "the kept bytes were tried");
+        assert_eq!(cdn.header(1, "range"), None, "then the whole file");
+        assert_eq!(c9_tree(&directory), ["big.jar"]);
+        assert!(c9_tree(&root.join("parts")).is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn c9_a_part_that_cannot_be_used_means_the_one_go_download() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/resource-tests").join(uuid::Uuid::new_v4().to_string());
+        let bytes = c9_bytes();
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &format!("{:x}", Sha512::digest(&bytes)), bytes.len() as u64).unwrap();
+        // Held by another download: that part is left alone.
+        let store = crate::parts::PartStore::new(root.join("parts"));
+        let mut held = store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        held.restart(crate::parts::Validator { origin: "http://other.example".into(), etag: None, last_modified: None }).unwrap();
+        held.append(&bytes[..1000]).unwrap();
+        held.sync().unwrap();
+        let cdn = RangeServer::new(vec![Scripted::ok(&bytes, "\"h\"")]);
+        let (result, directory) = c9_download(&root, "held", &bytes, &cdn, Some(&crate::parts::Reuse::new(store.clone())));
+        assert_eq!(fs::read(result.unwrap()).unwrap(), bytes);
+        assert_eq!(cdn.header(0, "range"), None);
+        assert_eq!(c9_tree(&directory), ["big.jar"], "nothing but the file in the folder");
+        drop(held);
+        let kept = store.open(&key, bytes.len() as u64).unwrap().unwrap();
+        assert_eq!(kept.done(), 1000, "the other download's part is left as it was");
+        drop(kept);
+        // A parts folder that cannot be created.
+        fs::write(root.join("blocker"), b"a file where the folder would be").unwrap();
+        let blocked = crate::parts::PartStore::new(root.join("blocker").join("parts"));
+        let cdn = RangeServer::new(vec![Scripted::ok(&bytes, "\"b\"")]);
+        let (result, directory) = c9_download(&root, "blocked", &bytes, &cdn, Some(&crate::parts::Reuse::new(blocked)));
+        assert_eq!(fs::read(result.unwrap()).unwrap(), bytes);
+        assert_eq!(c9_tree(&directory), ["big.jar"]);
+        // Another file already under that name is refused before any download.
+        let directory = root.join("next-taken");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("big.jar"), b"user bytes").unwrap();
+        let cdn = RangeServer::new(vec![Scripted::ok(&bytes, "\"t\"")]);
+        let (result, _) = c9_download(&root, "taken", &bytes, &cdn, Some(&crate::parts::Reuse::new(store)));
+        assert!(result.is_err());
+        assert_eq!(cdn.count(), 0);
+        assert_eq!(fs::read(directory.join("big.jar")).unwrap(), b"user bytes");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn c9_a_curseforge_update_that_fails_after_its_download_keeps_the_verified_file() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let old_bytes = c8_jar("example", "old");
+        fs::write(directory.join("old.jar.disabled"), &old_bytes).unwrap();
+        // The disabled name the update needs is taken by another file.
+        fs::write(directory.join("new.jar.disabled"), b"another file").unwrap();
+        let new_bytes = c9_big_jar("example", "new");
+        let size = new_bytes.len() as u64;
+        let cdn = RangeServer::new(vec![Scripted::ok(&new_bytes, "\"s\"")]);
+        let current = c8_fingerprint_of(curseforge_file(19000, "old.jar", 1, &cdn, &old_bytes), &old_bytes);
+        let new_file = curseforge_file(19001, "new.jar", 2, &cdn, &new_bytes);
+        let api = RangeServer::new(vec![c8_fingerprint_answer(current), curseforge_project(), json(serde_json::json!({"data": new_file}))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let before = c8_snapshot(&directory);
+        let update = || {
+            crate::curseforge::update_one(
+                &state, &directory, "1.21.1", Some("fabric"), Some("fabric"), ResourceKind::Mod, "mod", "old.jar.disabled", 19001,
+            )
+        };
+        let error = c8_expect_error(c8_runtime().block_on(update()), "an update whose disabled name is taken");
+        assert!(error.detail.as_deref().is_some_and(|detail| detail.contains("已存在同名的停用文件")), "{error:?}");
+        assert_eq!(c8_snapshot(&directory), before);
+        assert!(journals(&state).is_empty());
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &format!("{:x}", sha1::Sha1::digest(&new_bytes)), size).unwrap();
+        assert!(
+            crate::parts::PartStore::new(c9_parts(&root)).open(&key, size).unwrap().unwrap().complete(),
+            "the verified file went back to its part"
+        );
+        fs::remove_file(directory.join("new.jar.disabled")).unwrap();
+        let installed = c8_runtime().block_on(update()).unwrap();
+        assert_eq!(installed.file_name, "new.jar.disabled");
+        assert_eq!(fs::read(directory.join("new.jar.disabled")).unwrap(), new_bytes);
+        assert_eq!(cdn.count(), 1, "the file was downloaded once");
+        assert!(c9_tree(&c9_parts(&root)).is_empty(), "{:?}", c9_tree(&c9_parts(&root)));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_a_cancel_after_the_downloads_hands_them_back_to_their_parts() {
+        let (root, state) = resource_fixture();
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("kept.jar"), b"live file").unwrap();
+        let bytes = c9_bytes();
+        let size = bytes.len() as u64;
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha512, &format!("{:x}", Sha512::digest(&bytes)), size).unwrap();
+        let reuse = crate::parts::Reuse::new(crate::parts::PartStore::new(c9_parts(&root)));
+        let task = state.control.begin("resource", "fixture", "Fixture").unwrap();
+        let (reused, shared, verified, part_key, cancelled) = (&reuse, &state, &bytes, &key, &task);
+        // The downloads are in place, then the install is cancelled at the
+        // check before the journal.
+        let result = c8_runtime().block_on(resource_transactions::stage_commit(
+            &state,
+            &directory,
+            "Fixture",
+            Vec::new(),
+            None,
+            Some(&reuse),
+            |next, _| async move {
+                let file = next.join("big.jar");
+                fs::write(&file, verified).map_err(|e| e.to_string())?;
+                reused.add(part_key, size, &file);
+                shared.control.cancel(cancelled);
+                Ok(())
+            },
+        ));
+        assert_eq!(result.unwrap_err(), CANCELLED);
+        state.control.finish(&task, Some(CANCELLED));
+        assert_eq!(c9_tree(&directory), ["kept.jar"], "the live folder is unchanged");
+        assert!(journals(&state).is_empty());
+        let history = directory.parent().unwrap().join(".launcher-resource-history");
+        assert!(c9_tree(&history).is_empty(), "{:?}", c9_tree(&history));
+        let mut part = crate::parts::PartStore::new(c9_parts(&root)).open(&key, size).unwrap().unwrap();
+        assert!(part.complete(), "the verified file is a complete part");
+        let mut kept = Vec::new();
+        part.hash_prefix(|chunk| kept.extend_from_slice(chunk)).unwrap();
+        assert_eq!(kept, bytes);
+        drop(part);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_a_curseforge_update_downloads_in_one_go_when_the_parts_folder_cannot_be_used() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let old_bytes = c8_jar("example", "old");
+        fs::write(directory.join("old.jar"), &old_bytes).unwrap();
+        // A file where the parts folder would be.
+        fs::write(root.join(".launcher-temp"), b"not a folder").unwrap();
+        let new_bytes = c9_big_jar("example", "new");
+        let cdn = RangeServer::new(vec![Scripted::ok(&new_bytes, "\"f\"")]);
+        let current = c8_fingerprint_of(curseforge_file(21000, "old.jar", 1, &cdn, &old_bytes), &old_bytes);
+        let new_file = curseforge_file(21001, "new.jar", 2, &cdn, &new_bytes);
+        let api = RangeServer::new(vec![c8_fingerprint_answer(current), curseforge_project(), json(serde_json::json!({"data": new_file}))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let installed = c8_runtime()
+            .block_on(crate::curseforge::update_one(
+                &state, &directory, "1.21.1", Some("fabric"), Some("fabric"), ResourceKind::Mod, "mod", "old.jar", 21001,
+            ))
+            .unwrap();
+        assert_eq!(installed.file_name, "new.jar");
+        assert_eq!(fs::read(directory.join("new.jar")).unwrap(), new_bytes);
+        assert!(!directory.join("old.jar").exists());
+        assert_eq!((cdn.count(), cdn.header(0, "range")), (1, None));
+        assert_eq!(fs::read(root.join(".launcher-temp")).unwrap(), b"not a folder");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_a_resumed_curseforge_part_that_fails_the_hash_is_thrown_away() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let old_bytes = c8_jar("example", "old");
+        fs::write(directory.join("old.jar"), &old_bytes).unwrap();
+        let new_bytes = c9_big_jar("example", "new");
+        let size = new_bytes.len() as u64;
+        let cdn = RangeServer::new(vec![Scripted::ranged(&new_bytes, "\"x\""), Scripted::ranged(&new_bytes, "\"x\"")]);
+        let current = c8_fingerprint_of(curseforge_file(18000, "old.jar", 1, &cdn, &old_bytes), &old_bytes);
+        let new_file = curseforge_file(18001, "new.jar", 2, &cdn, &new_bytes);
+        let api = RangeServer::new(vec![c8_fingerprint_answer(current), curseforge_project(), json(serde_json::json!({"data": new_file}))]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let key = crate::parts::PartKey::new(crate::parts::Algo::Sha1, &format!("{:x}", sha1::Sha1::digest(&new_bytes)), size).unwrap();
+        let store = crate::parts::PartStore::new(c9_parts(&root));
+        let mut part = store.open(&key, size).unwrap().unwrap();
+        let origin = crate::parts::origin(&reqwest::Url::parse(new_file["downloadUrl"].as_str().unwrap()).unwrap());
+        part.restart(crate::parts::Validator { origin, etag: Some("\"x\"".into()), last_modified: None }).unwrap();
+        part.append(&vec![0x55; C9_MIB]).unwrap();
+        part.sync().unwrap();
+        drop(part);
+        let before = c8_snapshot(&directory);
+        let update = || {
+            crate::curseforge::update_one(
+                &state, &directory, "1.21.1", Some("fabric"), Some("fabric"), ResourceKind::Mod, "mod", "old.jar", 18001,
+            )
+        };
+        let error = c8_expect_error(c8_runtime().block_on(update()), "a resumed part with wrong bytes");
+        assert!(error.detail.as_deref().is_some_and(|detail| detail.contains("SHA-1")), "{error:?}");
+        assert_eq!(cdn.header(0, "range").as_deref(), Some(format!("bytes={C9_MIB}-").as_str()));
+        assert_eq!(c8_snapshot(&directory), before);
+        assert!(journals(&state).is_empty());
+        assert!(c9_tree(&c9_parts(&root)).is_empty(), "the bad part is gone: {:?}", c9_tree(&c9_parts(&root)));
+        let installed = c8_runtime().block_on(update()).unwrap();
+        assert_eq!(cdn.header(1, "range"), None, "the next update downloads the whole file");
+        assert_eq!(fs::read(directory.join(&installed.file_name)).unwrap(), new_bytes);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    /// The launcher's parts folder for this fixture's game root.
+    fn c9_parts(root: &Path) -> PathBuf {
+        root.join(".launcher-temp").join("parts")
+    }
+
+    /// How many bytes the part for `key` (`<algo>-<hex>-<size>`) recorded.
+    fn c9_recorded(root: &Path, key: &str) -> u64 {
+        let text = fs::read_to_string(c9_parts(root).join(format!("{key}.json"))).expect("the part keeps its record");
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()["done"].as_u64().unwrap()
+    }
+
+    /// Every file under `path`, relative, with `/` separators.
+    fn c9_tree(path: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut pending = vec![path.to_path_buf()];
+        while let Some(folder) = pending.pop() {
+            for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    pending.push(entry_path);
+                } else {
+                    found.push(entry_path.strip_prefix(path).unwrap().to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// Runs `work` and cancels `task` once the CDN has sent `bytes` bytes.
+    fn c9_cancel_after<T>(state: &LauncherState, task: &str, cdn: &RangeServer, bytes: usize, work: impl std::future::Future<Output = T>) -> T {
+        c8_runtime().block_on(async {
+            let cancel = async {
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                while cdn.sent.load(std::sync::atomic::Ordering::SeqCst) < bytes && std::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                // Let the launcher read what was sent before the cancel.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                state.control.cancel(task);
+            };
+            futures_util::future::join(work, cancel).await.0
+        })
+    }
+
+    #[test]
+    fn c9_a_cancelled_modrinth_install_keeps_its_part_outside_the_stage_and_the_next_install_resumes() {
+        let (root, state) = resource_fixture();
+        let bytes: Vec<u8> = (0..2 * C9_MIB + 7).map(|index| (index * 13 % 251) as u8).collect();
+        let key = format!("sha512-{:x}-{}", sha2::Sha512::digest(&bytes), bytes.len());
+        // The first answer stops after 1 MiB; the second follows the request's Range.
+        let cdn = RangeServer::new(vec![Scripted::ok(&bytes, "\"r1\"").stall(C9_MIB), Scripted::ranged(&bytes, "\"r1\"")]);
+        let version = modrinth_version("resumed", 1, &cdn, &bytes);
+        let api = RangeServer::new(vec![
+            modrinth_project(),
+            json(version.clone()),
+            modrinth_project(),
+            json(version),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = modrinth_request(Some("resumed"));
+        let history = mods(&state).parent().unwrap().join(".launcher-resource-history");
+
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = c9_cancel_after(&state, &task, &cdn, C9_MIB, run_resource_request(&state, None, &task, request.clone()))
+            .err()
+            .expect("the install was cancelled");
+        assert_eq!(error.code, "download.cancelled", "{error:?}");
+        assert!(!mods(&state).join("resumed.jar").exists());
+        assert!(journals(&state).is_empty());
+        assert!(c9_tree(&history).is_empty(), "no staged copy is left: {:?}", c9_tree(&history));
+        let done = c9_recorded(&root, &key);
+        assert!(done > 0 && done <= C9_MIB as u64, "{done}");
+
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "resumed.jar");
+        assert_eq!(fs::read(mods(&state).join("resumed.jar")).unwrap(), bytes);
+        assert_eq!(cdn.header(1, "range").as_deref(), Some(format!("bytes={done}-").as_str()), "the second install resumes");
+        assert_eq!(cdn.header(1, "if-range").as_deref(), Some("\"r1\""), "only if the file is unchanged");
+        assert_eq!(
+            cdn.sent.load(std::sync::atomic::Ordering::SeqCst),
+            C9_MIB + bytes.len() - done as usize,
+            "only the missing bytes are sent again"
+        );
+        let journals = journals(&state);
+        assert_eq!(journals.len(), 1);
+        assert!(!journals[0].contains(".part") && !journals[0].contains(".json"), "{}", journals[0]);
+        assert!(c9_tree(&c9_parts(&root)).is_empty(), "the published part leaves nothing behind: {:?}", c9_tree(&c9_parts(&root)));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_a_cancelled_curseforge_update_keeps_its_part_and_the_next_update_resumes() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let old_bytes = c8_jar("example", "old");
+        let copy_bytes = c8_jar("example", "2");
+        fs::write(directory.join("old.jar"), &old_bytes).unwrap();
+        fs::write(directory.join("example-2.jar"), &copy_bytes).unwrap();
+        let new_bytes = c9_big_jar("example", "new");
+        let key = format!("sha1-{:x}-{}", sha1::Sha1::digest(&new_bytes), new_bytes.len());
+        let cdn = RangeServer::new(vec![Scripted::ok(&new_bytes, "\"c1\"").stall(C9_MIB), Scripted::ranged(&new_bytes, "\"c1\"")]);
+        let current = c8_fingerprint_of(curseforge_file(17000, "old.jar", 1, &cdn, &old_bytes), &old_bytes);
+        let new_file = curseforge_file(17001, "new.jar", 2, &cdn, &new_bytes);
+        // The second update is answered from the 5-minute answer cache.
+        let api = RangeServer::new(vec![
+            c8_fingerprint_answer(current),
+            curseforge_project(),
+            json(serde_json::json!({"data": new_file})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let before = c8_snapshot(&directory);
+        let update = || {
+            crate::curseforge::update_one(
+                &state, &directory, "1.21.1", Some("fabric"), Some("fabric"), ResourceKind::Mod, "mod", "old.jar", 17001,
+            )
+        };
+
+        let task = state.control.begin("resource-update", "old.jar", "更新资源及必需前置").unwrap();
+        let error = c8_expect_error(c9_cancel_after(&state, &task, &cdn, C9_MIB, update()), "a cancelled update");
+        state.control.finish(&task, Some(CANCELLED));
+        assert_eq!(error.code, "download.cancelled", "{error:?}");
+        assert_eq!(c8_snapshot(&directory), before, "the folder is unchanged");
+        assert!(journals(&state).is_empty());
+        let done = c9_recorded(&root, &key);
+        assert!(done > 0 && done <= C9_MIB as u64, "{done}");
+
+        let task = state.control.begin("resource-update", "old.jar", "更新资源及必需前置").unwrap();
+        let installed = c8_runtime().block_on(update()).unwrap();
+        state.control.finish(&task, None);
+        assert_eq!(installed.file_name, "new.jar");
+        assert_eq!(cdn.header(1, "range").as_deref(), Some(format!("bytes={done}-").as_str()), "the second update resumes");
+        assert_eq!(cdn.header(1, "if-range").as_deref(), Some("\"c1\""), "only if the file is unchanged");
+        assert_eq!(cdn.sent.load(std::sync::atomic::Ordering::SeqCst), C9_MIB + new_bytes.len() - done as usize);
+        // The resumed file still goes through the duplicate rules: the other copy is set aside.
+        let names: Vec<_> = c8_snapshot(&directory).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["new.jar"]);
+        assert_eq!(fs::read(directory.join("new.jar")).unwrap(), new_bytes);
+        assert!(installed.warning.as_deref().is_some_and(|warning| warning.contains("example-2.jar")), "{:?}", installed.warning);
+        assert_eq!(journals(&state).len(), 1);
+        assert!(c9_tree(&c9_parts(&root)).is_empty(), "{:?}", c9_tree(&c9_parts(&root)));
+        let rolled_back = resource_transactions::rollback(&directory, installed.update_id.as_deref().unwrap()).unwrap();
+        assert_eq!(rolled_back.status, "rolledBack");
+        assert_eq!(c8_snapshot(&directory), before, "rollback restores both old files");
+        drop(state);
+        cleanup_fixture(root);
+    }
+}
+
+#[cfg(test)]
+mod c9_wiring {
+    /// A staged resource file is moved in without replacing anything, and the
+    /// part comes from outside the staged copy.
+    #[test]
+    fn c9_resource_parts_live_outside_the_stage_and_publish_without_replacing() {
+        let resources = crate::storage::executable_source(include_str!("resources.rs"));
+        let curseforge = crate::storage::executable_source(include_str!("curseforge.rs"));
+        let transactions = crate::storage::executable_source(include_str!("resource_transactions.rs"));
+        let body = |source: &str, marker: &str| -> String {
+            let text = source.split_once(marker).unwrap_or_else(|| panic!("{marker}")).1.split_once("\n}").unwrap().0;
+            text.chars().filter(|c| !c.is_whitespace()).collect()
+        };
+        let modrinth = body(&resources, "async fn download_verified_progress(");
+        assert!(!modrinth.contains("part.publish(&"), "a Modrinth file never replaces what is in the stage");
+        assert!(modrinth.contains("download_resumable(state,file,&url,directory,&expected,parts,key,&client,progress)"));
+        assert!(body(&resources, "async fn download_resumable(").contains("crate::parts::publish_new_off_task("));
+        let install = body(&transactions, "pub(super) async fn install(");
+        assert!(install.contains("resource_parts(state,directory)"), "the parts folder is found from the live folder, not next/");
+        let download = body(&curseforge, "async fn download(");
+        assert!(download.contains("if!download_part(state,&client,&url,file,&expected,reuse,&temporary).await?{"));
+        let part = body(&curseforge, "async fn download_part(");
+        assert!(part.contains("crate::parts::publish_new_off_task(part,temporary)"), "the part never replaces a file");
+        let replace = body(&curseforge, "async fn replace_with_file(");
+        assert!(replace.contains("crate::resources::resource_parts(state,directory)"), "found from the live folder, not next/");
+    }
 }
 
 #[cfg(test)]
@@ -5748,7 +6516,7 @@ mod c8_wiring {
         assert!(update.trim_end().ends_with("Ok(replace_with_file(state, directory, kind, &project, &file, Some(file_name), enabled).await?)"));
         let replace = body(&curseforge, "async fn replace_with_file(");
         assert!(replace.find("require_no_pending(directory)").unwrap() < replace.find("stage_commit(").unwrap());
-        assert!(replace.contains("download(state, project, file, &next, kind, duplicates)"), "writes only into the staged copy");
+        assert!(replace.contains("download(state, project, file, &next, kind, duplicates, reuse)"), "writes only into the staged copy");
         assert!(replace.contains("if enabled { Duplicates::SetAside(&aside) } else { Duplicates::Keep }"), "a disabled update leaves enabled copies alone");
     }
 

@@ -900,7 +900,10 @@ pub(super) async fn install(
     }
     let dependency_count = plan.len().saturating_sub(1);
     let projects = plan.iter().map(|a| a.node.version.project_id.clone()).collect();
-    let (id, changed) = stage_commit(state, directory, name, projects, progress, |next, removed| async move {
+    // Parts live beside the game folder, not in next/: they outlive a failed stage.
+    let parts = super::resource_parts(state, directory).map(crate::parts::Reuse::new);
+    let reuse = parts.as_ref();
+    let (id, changed) = stage_commit(state, directory, name, projects, progress, reuse, |next, removed| async move {
         let mut changed = 0;
         for action in &plan {
             state.control.checkpoint().await?;
@@ -927,14 +930,14 @@ pub(super) async fn install(
                 fs::rename(&raw, alternate).map_err(|e| e.to_string())?;
             }
             let installed =
-                download_verified_progress(state, file, &next, kind, client(state, true)?, progress).await?;
+                download_verified_progress(state, file, &next, reuse, kind, client(state, true)?, progress).await?;
             if action.destination != file.filename {
                 let target = safe_join(&next, &action.destination)?;
                 if target.exists() {
                     let alternate = safe_join(&removed, &format!("{}-disabled", uuid::Uuid::new_v4()))?;
                     fs::rename(&target, alternate).map_err(|e| e.to_string())?;
                 }
-                fs::rename(installed, target).map_err(|e| e.to_string())?;
+                rename_staged(&installed, &target, reuse)?;
             }
             changed += 1;
         }
@@ -964,12 +967,23 @@ pub(super) async fn install(
 /// commits it in two no-replace renames. Returns the transaction id and what
 /// `apply` returned. Until the journal exists nothing can find or recover the
 /// copy, so a failure or cancel before then removes it.
+/// Renames a verified download inside the stage; the stage's list of
+/// verified downloads follows it.
+fn rename_staged(from: &Path, to: &Path, reuse: Option<&crate::parts::Reuse>) -> Result<(), String> {
+    fs::rename(from, to).map_err(|e| e.to_string())?;
+    if let Some(reuse) = reuse {
+        reuse.moved(from, to);
+    }
+    Ok(())
+}
+
 pub(crate) async fn stage_commit<T, F, Fut>(
     state: &Arc<LauncherState>,
     directory: &Path,
     name: &str,
     projects: Vec<String>,
     progress: Option<&ResourceProgress>,
+    reuse: Option<&crate::parts::Reuse>,
     apply: F,
 ) -> Result<(String, T), String>
 where
@@ -1009,15 +1023,23 @@ where
     .map_err(|e| e.to_string())??;
     let removed = safe_join(&transaction, "staged-replaced")?;
     fs::create_dir_all(&removed).map_err(|e| e.to_string())?;
-    let output = apply(next.clone(), removed.clone()).await?;
-    state.control.checkpoint().await?;
-    let after = inventory(&next)?;
-    // Apply only moves copied files into staged-replaced/, never deletes them.
-    // A stage missing any of them was changed from outside (for example swept
-    // by another launcher during a long pause) and must not be committed.
-    if !stage_kept_every_file(&before, &after, &inventory(&removed)?) {
-        return Err("资源暂存副本在安装期间被外部改动，原目录未改变".into());
+    let staged = async {
+        let output = apply(next.clone(), removed.clone()).await?;
+        state.control.checkpoint().await?;
+        let after = inventory(&next)?;
+        // Apply only moves copied files into staged-replaced/, never deletes them.
+        // A stage missing any of them was changed from outside (for example swept
+        // by another launcher during a long pause) and must not be committed.
+        if !stage_kept_every_file(&before, &after, &inventory(&removed)?) {
+            return Err("资源暂存副本在安装期间被外部改动，原目录未改变".to_string());
+        }
+        Ok((output, after))
     }
+    .await;
+    // Until the journal is saved the stage is thrown away on failure; verified
+    // downloads in it go back to their parts first.
+    let restore = || if let Some(reuse) = reuse { reuse.restore() };
+    let (output, after) = staged.inspect_err(|_| restore())?;
     let mut journal = Journal {
         id: id.clone(),
         name: name.into(),
@@ -1030,7 +1052,7 @@ where
         after,
     };
     let path = journal_path(&root, &id)?;
-    save_journal(&path, &journal)?;
+    save_journal(&path, &journal).inspect_err(|_| restore())?;
     owned.preserve();
     if let Some(progress) = progress {
         progress.stage(state, "resource-commit", "提交已校验资源及必需前置");
@@ -1363,6 +1385,35 @@ mod tests {
     }
 
     #[test]
+    fn c9_a_renamed_download_stays_listed_for_its_part() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/resource-tests")
+            .join(uuid::Uuid::new_v4().to_string());
+        let next = root.join("next");
+        fs::create_dir_all(&next).unwrap();
+        let bytes = b"a verified download".to_vec();
+        let key = crate::parts::PartKey::new(
+            crate::parts::Algo::Sha1,
+            &format!("{:x}", <sha1::Sha1 as sha1::Digest>::digest(&bytes)),
+            bytes.len() as u64,
+        )
+        .unwrap();
+        let store = crate::parts::PartStore::new(root.join("parts"));
+        let reuse = crate::parts::Reuse::new(store.clone());
+        let installed = next.join("mod.jar");
+        let target = next.join("mod.jar.disabled");
+        fs::write(&installed, &bytes).unwrap();
+        reuse.add(&key, bytes.len() as u64, &installed);
+        rename_staged(&installed, &target, Some(&reuse)).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        // A stage thrown away after the rename still hands the file back.
+        reuse.restore();
+        assert!(!target.exists());
+        assert!(store.open(&key, bytes.len() as u64).unwrap().unwrap().complete());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn c1_staging_is_kept_once_the_journal_is_saved() {
         let source = crate::storage::executable_source(include_str!("resource_transactions.rs"));
         let (_, install) = source.split_once("pub(super) async fn install(").unwrap();
@@ -1373,7 +1424,9 @@ mod tests {
         let swept = body.find("sweep_unjournaled(&root,").unwrap();
         let created = body.find("StagingDirectory::create(transaction.clone())").unwrap();
         let checked = body.find("if !stage_kept_every_file(&before, &after, &inventory(&removed)?)").unwrap();
-        let saved = body.find("save_journal(&path, &journal)?;").unwrap();
+        let saved = body.find("save_journal(&path, &journal).inspect_err(|_| restore())?;").unwrap();
+        // Verified downloads go back to their parts if the stage is thrown away.
+        assert!(body.find("staged.inspect_err(|_| restore())?").unwrap() < saved);
         let preserved = body.find("owned.preserve();").unwrap();
         let commit = body.find("commit_using(").unwrap();
         assert!(swept < created && created < checked && checked < saved);

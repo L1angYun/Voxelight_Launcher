@@ -593,3 +593,181 @@ fn a_part_published_off_the_task_keeps_the_cross_volume_path() {
     assert_eq!(fs::read(&target).unwrap(), b"0123456789");
     assert_eq!(root.names(), Vec::<String>::new(), "nothing is left in the part folder");
 }
+
+#[test]
+fn publishing_new_moves_a_verified_part_and_leaves_only_the_target() {
+    let root = Root::new();
+    let store = root.store();
+    let target = root.path().join("file.bin");
+    for force in [false, true] {
+        let mut part = store.open(&key(), SIZE).unwrap().unwrap();
+        part.restart(validator("https://a.example", None)).unwrap();
+        part.append(b"0123456789").unwrap();
+        part.sync().unwrap();
+        FORCE_CROSS_VOLUME.with(|cell| cell.set(force));
+        let published = part.publish_new(&target);
+        FORCE_CROSS_VOLUME.with(|cell| cell.set(false));
+        published.unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"0123456789", "force={force}");
+        assert!(root.names().is_empty(), "force={force}: {:?}", root.names());
+        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(siblings.len(), 2, "force={force}: only the target and the parts folder: {siblings:?}");
+        fs::remove_file(&target).unwrap();
+    }
+}
+
+#[test]
+fn publishing_new_never_replaces_an_existing_target_and_keeps_the_part() {
+    let root = Root::new();
+    let store = root.store();
+    let target = root.path().join("file.bin");
+    fs::write(&target, b"user bytes").unwrap();
+    for force in [false, true] {
+        let mut part = store.open(&key(), SIZE).unwrap().unwrap();
+        part.restart(validator("https://a.example", None)).unwrap();
+        part.append(b"0123456789").unwrap();
+        part.sync().unwrap();
+        FORCE_CROSS_VOLUME.with(|cell| cell.set(force));
+        let published = part.publish_new(&target);
+        FORCE_CROSS_VOLUME.with(|cell| cell.set(false));
+        assert!(published.is_err(), "force={force}");
+        assert_eq!(fs::read(&target).unwrap(), b"user bytes", "force={force}");
+        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(siblings.len(), 2, "force={force}: only the target and the parts folder: {siblings:?}");
+        let part = store.open(&key(), SIZE).unwrap().expect("the part stays usable");
+        assert_eq!(part.done(), SIZE, "force={force}: the verified bytes were kept");
+        assert!(part.complete());
+    }
+}
+
+#[test]
+fn publishing_new_off_the_task_keeps_the_cross_volume_path_and_refuses_an_existing_target() {
+    let root = Root::new();
+    let target = root.path().join("published.bin");
+    let mut part = root.store().open(&key(), SIZE).unwrap().unwrap();
+    part.restart(validator("https://a.example", None)).unwrap();
+    part.append(b"0123456789").unwrap();
+    part.sync().unwrap();
+    FORCE_CROSS_VOLUME.with(|cell| cell.set(true));
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(publish_new_off_task(part, &target));
+    FORCE_CROSS_VOLUME.with(|cell| cell.set(false));
+    result.unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"0123456789");
+    assert!(root.names().is_empty(), "nothing is left in the part folder");
+
+    let mut part = root.store().open(&key(), SIZE).unwrap().unwrap();
+    part.restart(validator("https://a.example", None)).unwrap();
+    part.append(b"0123456789").unwrap();
+    part.sync().unwrap();
+    fs::write(&target, b"user bytes").unwrap();
+    FORCE_CROSS_VOLUME.with(|cell| cell.set(true));
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(publish_new_off_task(part, &target));
+    FORCE_CROSS_VOLUME.with(|cell| cell.set(false));
+    assert!(result.is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"user bytes");
+    let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    assert_eq!(siblings.len(), 2, "only the target and the parts folder: {siblings:?}");
+    let part = root.store().open(&key(), SIZE).unwrap().expect("the part stays usable");
+    assert_eq!(part.done(), SIZE, "the verified bytes were kept");
+}
+
+#[test]
+fn ranged_replies_follow_the_request_and_count_the_body_bytes_sent() {
+    use range_server::{RangeServer, Scripted};
+    let whole: Vec<u8> = (0..32u8).collect();
+    let server = RangeServer::new(vec![Scripted::ranged(&whole, "\"v\""), Scripted::ranged(&whole, "\"v\"")]);
+    let url = format!("http://{}/file", server.address);
+    let client = crate::storage::test_client();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let fetch = |range: Option<&str>| {
+        let client = client.clone();
+        let url = url.clone();
+        runtime.block_on(async move {
+            let mut request = client.get(&url);
+            if let Some(range) = range {
+                request = request.header(reqwest::header::RANGE, range);
+            }
+            let response = request.send().await.unwrap();
+            let status = response.status().as_u16();
+            let etag = response.headers().get(reqwest::header::ETAG).map(|value| value.to_str().unwrap().to_owned());
+            let content_range = response.headers().get(reqwest::header::CONTENT_RANGE).map(|value| value.to_str().unwrap().to_owned());
+            (status, etag, content_range, response.bytes().await.unwrap().to_vec())
+        })
+    };
+    let (status, etag, content_range, body) = fetch(None);
+    assert_eq!((status, etag.as_deref(), content_range.as_deref()), (200, Some("\"v\""), None));
+    assert_eq!(body, whole);
+    let (status, etag, content_range, body) = fetch(Some("bytes=3-"));
+    assert_eq!((status, etag.as_deref(), content_range.as_deref()), (206, Some("\"v\""), Some("bytes 3-31/32")));
+    assert_eq!(body, whole[3..]);
+    assert_eq!(server.header(0, "range"), None);
+    assert_eq!(server.header(1, "range").as_deref(), Some("bytes=3-"));
+    let sent = server.sent.clone();
+    drop(server);
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), whole.len() + whole[3..].len());
+}
+
+#[test]
+fn part_folders_of_an_earlier_game_root_are_still_swept_at_startup() {
+    let root = Root::new();
+    let data = root.path().join("data");
+    let old = root.path().join("old-game").join(".launcher-temp").join("parts");
+    let current = root.path().join("game");
+    fs::create_dir_all(&old).unwrap();
+    fs::create_dir_all(current.join(".launcher-temp").join("parts")).unwrap();
+    remember(&data, &old);
+    remember(&data, &old);
+    assert_eq!(remembered(&data), [old.clone()], "a repeated folder is stored once");
+    let roots: Vec<_> = startup_stores(&data, Some(&current)).iter().map(|store| store.root().to_path_buf()).collect();
+    assert_eq!(
+        roots,
+        [
+            data.join(".launcher-temp").join("parts"),
+            data.join("pack-cache").join(".parts"),
+            current.join(".launcher-temp").join("parts"),
+            old.clone(),
+        ],
+        "remembered once, after the configured folders"
+    );
+    // The current game root is not listed twice when it was remembered too.
+    remember(&data, &current.join(".launcher-temp").join("parts"));
+    assert_eq!(startup_stores(&data, Some(&current)).len(), 4);
+    // The sweep reaches the earlier root: an old part there goes.
+    let expired = PartKey::new(Algo::Sha1, &"d".repeat(40), 100).unwrap();
+    fs::write(expired.file(&old, "part"), vec![0u8; 100]).unwrap();
+    touch(&expired.file(&old, "part"), KEEP + Duration::from_secs(60));
+    sweep_on_startup(startup_stores(&data, Some(&current)));
+    assert!(!expired.file(&old, "part").exists(), "the expired part in the earlier root is removed");
+    // A folder that is gone while its game folder is still there is dropped;
+    // one whose game folder cannot be reached (an unplugged drive) is kept.
+    let gone = root.path().join("gone-game").join(".launcher-temp").join("parts");
+    fs::create_dir_all(&gone).unwrap();
+    remember(&data, &gone);
+    fs::remove_dir_all(&gone).unwrap();
+    let unreachable = root.path().join("offline-drive").join(".launcher-temp").join("parts");
+    remember(&data, &unreachable);
+    // The next record looks at both again.
+    let later = root.path().join("later-game");
+    fs::create_dir_all(&later).unwrap();
+    remember(&data, &later);
+    let listed = remembered(&data);
+    assert!(!listed.contains(&gone) && listed.contains(&unreachable), "{listed:?}");
+    // A bounded list: the oldest folders are forgotten first.
+    for index in 0..REMEMBERED_MAX + 3 {
+        let folder = root.path().join(format!("game-{index}"));
+        fs::create_dir_all(&folder).unwrap();
+        remember(&data, &folder);
+    }
+    let kept = remembered(&data);
+    assert_eq!(kept.len(), REMEMBERED_MAX);
+    assert_eq!(kept.last().unwrap(), &root.path().join(format!("game-{}", REMEMBERED_MAX + 2)));
+    assert!(!kept.contains(&old));
+    // A damaged or relative list is ignored rather than trusted.
+    fs::write(remembered_file(&data), br#"["relative/parts", 7]"#).unwrap();
+    assert!(remembered(&data).is_empty());
+    fs::write(remembered_file(&data), br#"["relative/parts"]"#).unwrap();
+    assert!(remembered(&data).is_empty());
+    let leftovers: Vec<_> = fs::read_dir(data.join(".launcher-temp")).unwrap().flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(leftovers, [REMEMBERED], "no temporary file is left");
+}

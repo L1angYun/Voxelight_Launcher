@@ -30,6 +30,10 @@ const RECORD_GAP: Duration = Duration::from_secs(1);
 const PREFIX_CHUNK: u64 = 8 * 1024 * 1024;
 const EXTENSIONS: [&str; 4] = ["part", "json", "json.tmp", "lock"];
 pub(crate) const RANGE_MISMATCH: &str = "续传响应的范围与请求不符";
+/// The answer declares another size than the metadata: no retry changes that.
+pub(crate) const SIZE_MISMATCH: &str = "下载大小与元数据不一致";
+/// More bytes arrived than the metadata promised.
+pub(crate) const OVERRUN: &str = "下载文件超出预期大小";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Algo {
@@ -261,6 +265,67 @@ impl PartStore {
         release_lock(lock, &lock_path);
         true
     }
+
+    /// Takes back a verified `file` of `size` bytes that a download moved out
+    /// of its part, as a complete part: the next download only checks it.
+    /// Best effort: false when the part is in use or the file cannot be moved
+    /// here (it then goes with the stage it was in).
+    pub(crate) fn adopt(&self, key: &PartKey, size: u64, file: &Path) -> bool {
+        if fs::symlink_metadata(file).map_or(true, |stat| !stat.is_file() || stat.len() != size) {
+            return false;
+        }
+        let Ok(Some(mut part)) = self.open(key, size) else { return false };
+        drop(part.part.take());
+        // The verified file replaces whatever the part held.
+        if fs::rename(file, key.file(&self.root, "part")).is_err() {
+            return false;
+        }
+        part.done = size;
+        part.validator = Validator::default();
+        part.record().is_ok()
+    }
+}
+
+/// Verified downloads moved from their parts into a stage. If the stage is
+/// not committed they go back to their parts, complete, so the next install
+/// does not download them again.
+pub(crate) struct Reuse {
+    store: PartStore,
+    moved: std::sync::Mutex<Vec<(PartKey, u64, PathBuf)>>,
+}
+
+impl Reuse {
+    pub(crate) fn new(store: PartStore) -> Self {
+        Self { store, moved: Default::default() }
+    }
+
+    pub(crate) fn store(&self) -> &PartStore {
+        &self.store
+    }
+
+    fn list(&self) -> std::sync::MutexGuard<'_, Vec<(PartKey, u64, PathBuf)>> {
+        self.moved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A verified part became `file`.
+    pub(crate) fn add(&self, key: &PartKey, size: u64, file: &Path) {
+        self.list().push((key.clone(), size, file.to_path_buf()));
+    }
+
+    /// A listed file was renamed in the stage.
+    pub(crate) fn moved(&self, from: &Path, to: &Path) {
+        for (_, _, file) in self.list().iter_mut().filter(|(_, _, file)| file == from) {
+            *file = to.to_path_buf();
+        }
+    }
+
+    /// The stage will not be committed: every listed file still there goes
+    /// back to its part.
+    pub(crate) fn restore(&self) {
+        for (key, size, file) in std::mem::take(&mut *self.list()) {
+            self.store.adopt(&key, size, &file);
+        }
+    }
 }
 
 /// Lock files are opened without FILE_SHARE_DELETE, so the name cannot be
@@ -313,13 +378,68 @@ pub(crate) fn sweep(stores: &[PartStore], now: SystemTime, keep: Duration, cap: 
 }
 
 /// The part folders this launcher writes: the data directory's, the modpack
-/// cache's and the configured game root's (canonical, as downloads use it).
+/// cache's, the configured game root's (canonical, as downloads use it) and
+/// those of game roots that received parts before the setting changed.
 pub(crate) fn startup_stores(data_dir: &Path, game_root: Option<&Path>) -> Vec<PartStore> {
     let mut roots = vec![data_dir.join(".launcher-temp").join("parts"), data_dir.join("pack-cache").join(".parts")];
     if let Some(game) = game_root {
         roots.push(game.join(".launcher-temp").join("parts"));
     }
+    for remembered in remembered(data_dir) {
+        if !roots.contains(&remembered) {
+            roots.push(remembered);
+        }
+    }
     roots.into_iter().map(PartStore::new).collect()
+}
+
+/// Part folders outside the data directory that received parts, newest last.
+const REMEMBERED: &str = "part-folders.json";
+const REMEMBERED_MAX: usize = 64;
+
+fn remembered_file(data_dir: &Path) -> PathBuf {
+    data_dir.join(".launcher-temp").join(REMEMBERED)
+}
+
+/// The remembered part folders: absolute paths only, a bounded list.
+fn remembered(data_dir: &Path) -> Vec<PathBuf> {
+    let Ok(file) = fs::File::open(remembered_file(data_dir)) else { return Vec::new() };
+    let mut text = String::new();
+    if file.take(64 * 1024).read_to_string(&mut text).is_err() {
+        return Vec::new();
+    }
+    serde_json::from_str::<Vec<PathBuf>>(&text)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| path.is_absolute())
+        .take(REMEMBERED_MAX)
+        .collect()
+}
+
+/// Remembers a part folder outside the data directory, so startup cleanup
+/// still reaches it after the game directory setting changes. Best effort:
+/// a lost write only delays that folder's cleanup.
+pub(crate) fn remember(data_dir: &Path, folder: &Path) {
+    let mut folders = remembered(data_dir);
+    if folders.iter().any(|known| known == folder) {
+        return;
+    }
+    // A folder that is gone while its game folder is still there needs no
+    // cleanup. One whose game folder cannot be reached (an unplugged drive, an
+    // offline share) is kept until the bound pushes it out.
+    folders.retain(|known| known.exists() || !known.parent().and_then(Path::parent).is_some_and(Path::exists));
+    folders.push(folder.to_path_buf());
+    let skip = folders.len().saturating_sub(REMEMBERED_MAX);
+    let folders: Vec<_> = folders.into_iter().skip(skip).collect();
+    let path = remembered_file(data_dir);
+    let Some(parent) = path.parent() else { return };
+    let temporary = parent.join(format!("{REMEMBERED}.{}.tmp", uuid::Uuid::new_v4()));
+    let written = fs::create_dir_all(parent)
+        .and_then(|()| fs::write(&temporary, serde_json::to_vec(&folders).map_err(io::Error::other)?))
+        .and_then(|()| fs::rename(&temporary, &path));
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
 }
 
 /// Startup cleanup (spec: keep 7 days, 4 GiB in total).
@@ -464,7 +584,7 @@ impl ResumablePart {
     /// Appends received bytes; the record is rewritten every few MiB.
     pub(crate) fn append(&mut self, bytes: &[u8]) -> io::Result<()> {
         if self.done + bytes.len() as u64 > self.size {
-            return Err(io::Error::other("下载文件超出预期大小"));
+            return Err(io::Error::other(OVERRUN));
         }
         self.file().write_all(bytes)?;
         self.done += bytes.len() as u64;
@@ -525,6 +645,47 @@ impl ResumablePart {
         Ok(())
     }
 
+    /// Moves the verified part to a vacant `target`, never replacing a file
+    /// that appeared there (staged resource files must not be overwritten). A
+    /// failed publish leaves the target and the part as they were. On Windows
+    /// the no-replace move copies a file across volumes by itself; where a
+    /// rename cannot cross volumes, the bytes are copied next to the target
+    /// first and moved from there.
+    pub(crate) fn publish_new(mut self, target: &Path) -> io::Result<()> {
+        drop(self.part.take());
+        let part = self.key.file(&self.root, "part");
+        let moved = if force_cross_volume() {
+            Err(io::Error::from_raw_os_error(CROSS_VOLUME))
+        } else {
+            crate::instances::publish_archive_file(&part, target)
+        };
+        match moved {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(CROSS_VOLUME) => {
+                // A mount point between the parts and the target.
+                let parent = target.parent().ok_or_else(|| io::Error::other("下载路径缺少父目录"))?;
+                let temporary = parent.join(format!(".launcher-{}.part", uuid::Uuid::new_v4()));
+                let destination = fs::OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+                let copied = (|| {
+                    let mut source = fs::File::open(&part)?;
+                    let mut destination = destination;
+                    io::copy(&mut source, &mut destination)?;
+                    destination.sync_all()?;
+                    drop(destination);
+                    crate::instances::publish_archive_file(&temporary, target)
+                })();
+                if copied.is_err() {
+                    let _ = fs::remove_file(&temporary);
+                }
+                copied?;
+                let _ = fs::remove_file(&part);
+            }
+            Err(error) => return Err(error),
+        }
+        self.finish();
+        Ok(())
+    }
+
     /// Removes the part and its record: it can never become the file.
     pub(crate) fn discard(mut self) {
         drop(self.part.take());
@@ -554,6 +715,21 @@ pub(crate) async fn publish_off_task(part: ResumablePart, target: &Path) -> io::
         #[cfg(test)]
         FORCE_CROSS_VOLUME.with(|cell| cell.set(forced));
         part.publish_replace(&target)
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+/// Publishes a verified part to a vacant target on the blocking pool, for the
+/// same reason as `publish_off_task`.
+pub(crate) async fn publish_new_off_task(part: ResumablePart, target: &Path) -> io::Result<()> {
+    let target = target.to_path_buf();
+    #[cfg(test)]
+    let forced = force_cross_volume();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        FORCE_CROSS_VOLUME.with(|cell| cell.set(forced));
+        part.publish_new(&target)
     })
     .await
     .map_err(io::Error::other)?
@@ -656,7 +832,7 @@ pub(crate) async fn transfer<H: Hooks>(
         Reply::Restart => {
             check(&response)?;
             if response.content_length().is_some_and(|length| length != size) {
-                return Err("下载大小与元数据不一致".into());
+                return Err(SIZE_MISMATCH.into());
             }
             part.restart(Validator::of(requested, response.headers())).map_err(io)?;
         }

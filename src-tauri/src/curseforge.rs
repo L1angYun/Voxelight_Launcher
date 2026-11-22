@@ -858,6 +858,7 @@ async fn download(
     directory: &Path,
     kind: ResourceKind,
     duplicates: Duplicates<'_>,
+    reuse: Option<&crate::parts::Reuse>,
 ) -> Result<PathBuf, String> {
     validate_id(&file.file_name)?;
     if !kind.accepts(&file.file_name) {
@@ -935,59 +936,61 @@ async fn download(
         &format!(".curseforge-{}.part", uuid::Uuid::new_v4()),
     )?;
     let result = async {
-        // Downloads run inside a task: a cancel drops a stalled connection at once.
-        let response = state
-            .control
-            .during_cancellable_io(client.get(url).send())
-            .await?
-            .map_err(|_| "CurseForge 下载连接失败")?;
-        if !response.status().is_success() {
-            return Err(format!(
-                "CurseForge 资源下载失败（HTTP {}）",
-                response.status().as_u16()
-            ));
-        }
-        download_url(response.url().as_str())?;
-        if response
-            .content_length()
-            .is_some_and(|size| size != file.file_length)
-        {
-            return Err("下载大小与 CurseForge 声明不一致".into());
-        }
-        let mut output = tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .await
-            .map_err(|_| "无法创建临时资源文件")?;
-        let mut sha1 = Sha1::new();
-        let mut md5 = md5::Context::new();
-        let mut count = 0u64;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = state.control.during_cancellable_io(stream.next()).await? {
-            state.control.checkpoint().await?;
-            let chunk = chunk.map_err(|_| "CurseForge 文件传输中断")?;
-            state.control.throttle(chunk.len()).await?;
-            count = count.saturating_add(chunk.len() as u64);
-            if count > file.file_length {
-                return Err("下载内容超过声明大小".into());
+        if !download_part(state, &client, &url, file, &expected, reuse, &temporary).await? {
+            // Downloads run inside a task: a cancel drops a stalled connection at once.
+            let response = state
+                .control
+                .during_cancellable_io(client.get(url).send())
+                .await?
+                .map_err(|_| "CurseForge 下载连接失败")?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "CurseForge 资源下载失败（HTTP {}）",
+                    response.status().as_u16()
+                ));
             }
-            sha1.update(&chunk);
-            md5.consume(&chunk);
-            output
-                .write_all(&chunk)
+            download_url(response.url().as_str())?;
+            if response
+                .content_length()
+                .is_some_and(|size| size != file.file_length)
+            {
+                return Err("下载大小与 CurseForge 声明不一致".into());
+            }
+            let mut output = tokio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
                 .await
-                .map_err(|_| "资源写入失败，请检查磁盘空间")?;
-        }
-        output.sync_all().await.map_err(|_| "无法保存资源文件")?;
-        drop(output);
-        let values = (
-            format!("{:x}", sha1.finalize()),
-            format!("{:x}", md5.compute()),
-            count,
-        );
-        if !matches(&values, file.file_length, &expected) {
-            return Err("CurseForge SHA-1 / MD5 或大小校验失败，文件未安装".into());
+                .map_err(|_| "无法创建临时资源文件")?;
+            let mut sha1 = Sha1::new();
+            let mut md5 = md5::Context::new();
+            let mut count = 0u64;
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = state.control.during_cancellable_io(stream.next()).await? {
+                state.control.checkpoint().await?;
+                let chunk = chunk.map_err(|_| "CurseForge 文件传输中断")?;
+                state.control.throttle(chunk.len()).await?;
+                count = count.saturating_add(chunk.len() as u64);
+                if count > file.file_length {
+                    return Err("下载内容超过声明大小".into());
+                }
+                sha1.update(&chunk);
+                md5.consume(&chunk);
+                output
+                    .write_all(&chunk)
+                    .await
+                    .map_err(|_| "资源写入失败，请检查磁盘空间")?;
+            }
+            output.sync_all().await.map_err(|_| "无法保存资源文件")?;
+            drop(output);
+            let values = (
+                format!("{:x}", sha1.finalize()),
+                format!("{:x}", md5.compute()),
+                count,
+            );
+            if !matches(&values, file.file_length, &expected) {
+                return Err("CurseForge SHA-1 / MD5 或大小校验失败，文件未安装".into());
+            }
         }
         state.control.checkpoint().await?;
         crate::instances::checked_absolute(directory)?;
@@ -1006,13 +1009,97 @@ async fn download(
         // H08: publish without replacing a file that appeared meanwhile.
         crate::instances::publish_archive_file(&temporary, &target)
             .map_err(|_| "无法提交已校验资源：目标文件已存在或无法写入，现有文件未覆盖")?;
+        if let Some(reuse) = reuse {
+            reuse.moved(&temporary, &target);
+        }
         Ok(target)
     }
     .await;
     if result.is_err() {
+        // A verified file goes back to its part before the leftovers go.
+        if let Some(reuse) = reuse {
+            reuse.restore();
+        }
         let _ = tokio::fs::remove_file(&temporary).await;
     }
     result
+}
+
+/// Brings `file` into `temporary` through its resumable part (1 MiB or more,
+/// with a SHA-1). The part lives beside the game folder, outside any staged
+/// copy, so a failed or cancelled install leaves it for the next one. False
+/// when there is no part (a small file, no SHA-1, a folder elsewhere, a part
+/// held by another download, or an unusable parts folder): the caller
+/// downloads in one go.
+async fn download_part(
+    state: &LauncherState,
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    file: &CfFile,
+    expected: &[(u32, String)],
+    reuse: Option<&crate::parts::Reuse>,
+    temporary: &Path,
+) -> Result<bool, String> {
+    let key = expected
+        .iter()
+        .find(|(algo, _)| *algo == 1)
+        .and_then(|(_, hex)| crate::parts::PartKey::new(crate::parts::Algo::Sha1, hex, file.file_length))
+        .filter(|_| file.file_length >= crate::parts::RESUME_MIN);
+    let (Some(key), Some(reuse)) = (key, reuse) else { return Ok(false) };
+    // Held by another download, or a parts folder that cannot be used.
+    let Some(part) = reuse.store().open(&key, file.file_length).ok().flatten() else {
+        return Ok(false);
+    };
+    let mut slot = Some(part);
+    let mut sha1 = Sha1::new();
+    let mut md5 = md5::Context::new();
+    let control = &state.control;
+    let transferred = crate::parts::transfer(
+        client.get(url.clone()),
+        url,
+        &mut slot,
+        file.file_length,
+        &control,
+        &|response| download_url(response.url().as_str()).map(|_| ()),
+        &mut |bytes| {
+            sha1.update(bytes);
+            md5.consume(bytes);
+        },
+    )
+    .await;
+    if let Err(error) = transferred {
+        if error == crate::parts::OVERRUN {
+            // Bytes from an answer longer than the file are not continued.
+            if let Some(part) = slot.take() {
+                part.discard();
+            }
+        }
+        return Err(crate::resources::transfer_message(error, "CurseForge"));
+    }
+    let part = slot.take().ok_or("资源下载分片不可用")?;
+    let values = (format!("{:x}", sha1.finalize()), format!("{:x}", md5.compute()), file.file_length);
+    if !matches(&values, file.file_length, expected) {
+        part.discard();
+        return Err("CurseForge SHA-1 / MD5 或大小校验失败，文件未安装".into());
+    }
+    crate::parts::publish_new_off_task(part, temporary)
+        .await
+        .map_err(|_| "无法移入已校验的资源文件，原目录未改变")?;
+    // Back to its part if the install does not complete.
+    reuse.add(&key, file.file_length, temporary);
+    Ok(true)
+}
+
+/// Moves a downloaded file to its `.disabled` name in the stage without
+/// replacing anything there; the stage's list of verified downloads follows.
+fn publish_disabled(downloaded: &Path, next: &Path, file_name: &str, reuse: Option<&crate::parts::Reuse>) -> Result<PathBuf, String> {
+    let disabled = safe_join(next, &format!("{file_name}.disabled"))?;
+    crate::instances::publish_archive_file(downloaded, &disabled)
+        .map_err(|_| "已存在同名的停用文件，原目录未改变".to_string())?;
+    if let Some(reuse) = reuse {
+        reuse.moved(downloaded, &disabled);
+    }
+    Ok(disabled)
 }
 
 /// What a download does about other enabled copies of the same mod.
@@ -1197,7 +1284,8 @@ pub(crate) async fn create_with_pinned_file(
             require_resource_stopped(state, &version_id, Some(&instance.id))?;
             let target = resource_target(state, &version_id, Some(&instance.id), kind)?;
             crate::resources::resource_transactions::require_no_pending(&target.directory)?;
-            let path = download(state, &project, &file, &target.directory, kind, Duplicates::Refuse).await?;
+            let reuse = crate::resources::resource_parts(state, &target.directory).map(crate::parts::Reuse::new);
+            let path = download(state, &project, &file, &target.directory, kind, Duplicates::Refuse, reuse.as_ref()).await?;
             progress.stage(state, "complete", "实例及资源安装完成");
             Ok(ResourceInstall {
                 name: project.name, file_name: file.file_name, path: path.to_string_lossy().into_owned(),
@@ -1347,12 +1435,16 @@ async fn replace_with_file(
     crate::resources::resource_transactions::require_no_pending(directory)?;
     let installed_name = if enabled { file.file_name.clone() } else { format!("{}.disabled", file.file_name) };
     let projects = vec![format!("cf:{}", project.id)];
+    // Parts live beside the game folder, not in next/: they outlive a failed stage.
+    let parts = crate::resources::resource_parts(state, directory).map(crate::parts::Reuse::new);
+    let reuse = parts.as_ref();
     let (id, replaced) = crate::resources::resource_transactions::stage_commit(
         state,
         directory,
         &project.name,
         projects,
         None,
+        reuse,
         |next, aside| async move {
             if let Some(current) = current {
                 let from = safe_join(&next, current)?;
@@ -1365,11 +1457,9 @@ async fn replace_with_file(
                 return Err(format!("已存在同名文件 {}，停用的副本未更新，原目录未改变", file.file_name));
             }
             let duplicates = if enabled { Duplicates::SetAside(&aside) } else { Duplicates::Keep };
-            let downloaded = download(state, project, file, &next, kind, duplicates).await?;
+            let downloaded = download(state, project, file, &next, kind, duplicates, reuse).await?;
             if !enabled {
-                let disabled = safe_join(&next, &format!("{}.disabled", file.file_name))?;
-                crate::instances::publish_archive_file(&downloaded, &disabled)
-                    .map_err(|_| "已存在同名的停用文件，原目录未改变".to_string())?;
+                publish_disabled(&downloaded, &next, &file.file_name, reuse)?;
             }
             let mut replaced: Vec<String> = fs::read_dir(&aside)
                 .map_err(|e| e.to_string())?
@@ -1692,6 +1782,117 @@ pub(crate) async fn update_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn c9_folder() -> crate::instances::StagingDirectory {
+        crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/cf-duplicate-tests").join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap()
+    }
+
+    /// A jar of more than 1 MiB declaring `mod_id`.
+    fn c9_jar(mod_id: &str, version: &str) -> Vec<u8> {
+        use std::io::Write;
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("fabric.mod.json", stored).unwrap();
+        zip.write_all(format!(r#"{{"id":"{mod_id}","version":"{version}"}}"#).as_bytes()).unwrap();
+        zip.start_file("data.bin", stored).unwrap();
+        zip.write_all(&(0..1_200_000).map(|index| (index * 29 % 251) as u8).collect::<Vec<_>>()).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn c9_key(bytes: &[u8]) -> crate::parts::PartKey {
+        crate::parts::PartKey::new(crate::parts::Algo::Sha1, &format!("{:x}", Sha1::digest(bytes)), bytes.len() as u64).unwrap()
+    }
+
+    #[test]
+    fn c9_a_disabled_update_keeps_its_verified_download_listed() {
+        let folder = c9_folder();
+        let next = folder.path().join("next");
+        fs::create_dir(&next).unwrap();
+        let bytes = c9_jar("example", "new");
+        let store = crate::parts::PartStore::new(folder.path().join("parts"));
+        for taken in [false, true] {
+            let reuse = crate::parts::Reuse::new(store.clone());
+            let downloaded = next.join("new.jar");
+            fs::write(&downloaded, &bytes).unwrap();
+            reuse.add(&c9_key(&bytes), bytes.len() as u64, &downloaded);
+            if taken {
+                fs::write(next.join("new.jar.disabled"), b"another file").unwrap();
+                assert!(publish_disabled(&downloaded, &next, "new.jar", Some(&reuse)).is_err());
+                assert_eq!(fs::read(next.join("new.jar.disabled")).unwrap(), b"another file");
+            } else {
+                assert_eq!(publish_disabled(&downloaded, &next, "new.jar", Some(&reuse)).unwrap(), next.join("new.jar.disabled"));
+            }
+            // Wherever the file is now, a stage that is thrown away hands it back.
+            reuse.restore();
+            assert!(!downloaded.exists() && (taken || !next.join("new.jar.disabled").exists()), "taken={taken}");
+            let part = store.open(&c9_key(&bytes), bytes.len() as u64).unwrap().unwrap();
+            assert!(part.complete(), "taken={taken}");
+            part.discard();
+            let _ = fs::remove_file(next.join("new.jar.disabled"));
+        }
+    }
+
+    #[test]
+    fn c9_a_download_refused_after_its_part_hands_the_verified_file_back() {
+        let folder = c9_folder();
+        let state = LauncherState::test_fixture(folder.path().join("data"), crate::models::Persisted::default(), crate::storage::test_client());
+        state
+            .update(|persisted| {
+                persisted.config.proxy_mode = "none".into();
+                Ok(())
+            })
+            .unwrap();
+        let bytes = c9_jar("example", "new");
+        let cdn = crate::parts::range_server::RangeServer::new(vec![crate::parts::range_server::Scripted::ok(&bytes, "\"r\"")]);
+        crate::resources::TEST_ENDPOINTS.with(|endpoints| {
+            *endpoints.borrow_mut() = Some(crate::resources::TestEndpoints {
+                modrinth_api: String::new(),
+                curseforge_api: String::new(),
+                cdn: cdn.address.parse().unwrap(),
+                prepared_version: None,
+            })
+        });
+        let port = cdn.address.rsplit(':').next().unwrap();
+        let file: CfFile = serde_json::from_value(serde_json::json!({
+            "id": 20001, "modId": 456, "gameId": 432, "isAvailable": true, "fileName": "new.jar",
+            "fileLength": bytes.len(), "downloadUrl": format!("http://edge.forgecdn.net:{port}/files/new.jar"),
+            "hashes": [{"algo": 1, "value": format!("{:x}", Sha1::digest(&bytes))}, {"algo": 2, "value": format!("{:x}", md5::compute(&bytes))}],
+            "gameVersions": ["1.21.1", "Fabric"], "dependencies": [], "fileDate": "2026-01-02T00:00:00Z"
+        }))
+        .unwrap();
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": true
+        }))
+        .unwrap();
+        // A new instance already holding an enabled copy of the mod: the
+        // download is refused after its part was checked.
+        let mods = folder.path().join("mods");
+        fs::create_dir(&mods).unwrap();
+        fs::write(mods.join("other.jar"), c9_jar("example", "other")).unwrap();
+        let store = crate::parts::PartStore::new(folder.path().join("parts"));
+        let reuse = crate::parts::Reuse::new(store.clone());
+        let result = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(download(
+            &state,
+            &project,
+            &file,
+            &mods,
+            ResourceKind::Mod,
+            Duplicates::Refuse,
+            Some(&reuse),
+        ));
+        crate::resources::TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
+        let error = result.unwrap_err();
+        assert!(error.contains("other.jar"), "{error}");
+        let names: Vec<_> = fs::read_dir(&mods).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["other.jar"], "nothing is left in the folder");
+        assert_eq!(cdn.count(), 1);
+        let part = store.open(&c9_key(&bytes), bytes.len() as u64).unwrap().unwrap();
+        assert!(part.complete(), "the verified bytes went back to their part");
+    }
 
     #[test]
     fn c6_a_second_enabled_copy_of_the_same_mod_is_refused() {
