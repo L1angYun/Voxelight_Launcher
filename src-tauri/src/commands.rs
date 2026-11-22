@@ -285,6 +285,7 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
     })?;
     // Game-setting saves own operation; publish rate only from durable state.
     state.control.set_limit(saved.download_limit_kib);
+    state.control.set_concurrency(saved.download_concurrency);
     Ok(saved)
 }
 
@@ -1137,13 +1138,16 @@ mod scoped_settings_save_tests {
         fs::create_dir(&file).unwrap(); // A non-file fails the current-state check before writing or renaming.
         let mut draft = state.snapshot().unwrap().config;
         draft.download_limit_kib = 1024;
+        draft.download_concurrency = 3;
         assert!(save_config_inner(&state, draft.clone()).is_err());
         assert_eq!(state.snapshot().unwrap().config.download_limit_kib, 128);
         assert_eq!(state.control.limit_for_test(), 128);
+        assert_eq!(state.control.connections().limit(), 8, "the connection limit follows only a saved setting");
         fs::remove_dir(&file).unwrap();
         save_config_inner(&state, draft).unwrap();
         let saved: Persisted = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
         assert_eq!(saved.config.download_limit_kib, 1024);
         assert_eq!(state.control.limit_for_test(), 1024);
+        assert_eq!(state.control.connections().limit(), 3, "a saved concurrency limits the connections at once");
     }
 }

@@ -937,6 +937,7 @@ async fn download(
     )?;
     let result = async {
         if !download_part(state, &client, &url, file, &expected, reuse, &temporary).await? {
+            let _connection = state.control.connection().await?;
             // Downloads run inside a task: a cancel drops a stalled connection at once.
             let response = state
                 .control

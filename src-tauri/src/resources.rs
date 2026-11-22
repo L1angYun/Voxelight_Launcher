@@ -815,25 +815,26 @@ async fn download_resumable(
         }
         let before = slot.as_ref().map(crate::parts::ResumablePart::mark);
         let mut hash = Sha512::new();
-        let mut seen = 0_u64;
+        // Progress follows the bytes in place (segments land out of order),
+        // not the in-order hash.
+        let report = |done: u64| {
+            if let Some(progress) = progress {
+                progress.emit(state, "resource-download", 0, 1, done, file.size, &format!("下载 {}", file.filename));
+            }
+        };
+        let reporting = crate::parts::Reporting { hooks: &control, report: &report };
         let transferred = crate::parts::transfer(
             client.get(url.clone()),
             url,
             &mut slot,
             file.size,
-            &control,
+            &reporting,
             &|response| {
                 cdn_url(response.url().as_str())
                     .map(|_| ())
                     .inspect_err(|_| untrusted.store(true, std::sync::atomic::Ordering::SeqCst))
             },
-            &mut |bytes| {
-                hash.update(bytes);
-                seen += bytes.len() as u64;
-                if let Some(progress) = progress {
-                    progress.emit(state, "resource-download", 0, 1, seen, file.size, &format!("下载 {}", file.filename));
-                }
-            },
+            &mut |bytes| hash.update(bytes),
         )
         .await;
         let error = match transferred {
@@ -967,6 +968,7 @@ async fn download_verified_progress(
         let result: Result<PathBuf, DownloadAttemptError> = async {
             let mut part = crate::download_io::DownloadPart::create(temp)
                 .map_err(|_| "无法创建资源临时文件")?;
+            let _connection = state.control.connection().await?;
             let response = state.control.during_cancellable_io(client.get(url.clone()).send())
                 .await?
                 .map_err(|_| DownloadAttemptError::Retry("下载 Modrinth 资源失败，请重试".into()))?;

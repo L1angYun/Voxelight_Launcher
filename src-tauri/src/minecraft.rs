@@ -1176,6 +1176,14 @@ impl crate::parts::Hooks for DownloadPolicy<'_> {
             Self::Uncapped => crate::parts::STALL,
         }
     }
+    /// A task's downloads share its connections; a preview (no task) is
+    /// left out, so it never waits behind an install.
+    fn connections(&self) -> Option<&crate::downloads::Connections> {
+        match self {
+            Self::Foreground(control) => Some(crate::downloads::DownloadControl::connections(control)),
+            Self::Preview(_) | Self::Uncapped => None,
+        }
+    }
 }
 
 async fn download_once(
@@ -1193,6 +1201,7 @@ async fn download_once(
         .map_err(|e| e.to_string())?;
     // A file transfer fails when it stalls, not when it takes long.
     let request = client.get(request_url).timeout(crate::parts::TRANSFER_TIMEOUT);
+    let _connection = crate::parts::connection(&policy).await?;
     let response = crate::parts::within_stall(&policy, request.send())
         .await?
         // reqwest errors print the request URL; keep it (and any signed query) out of logs.
@@ -6192,6 +6201,58 @@ mod tests {
         assert!(server.header(1, ":path").unwrap().starts_with(OFFICIAL_PATH), "official kept its turn");
         assert_eq!(server.header(0, "range"), None);
         assert_eq!(server.header(1, "range").as_deref(), Some("bytes=1048576-"));
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+    }
+
+
+    #[test]
+    fn c11_a_large_game_file_is_fetched_in_parallel_ranges_on_the_task_connections() {
+        let bytes = u0266_bytes(32 * MIB);
+        let fixture = U0266::new("segments", &bytes);
+        let server = RangeServer::repeating(vec![Scripted::ranged(&bytes, "\"v1\"").accepting_ranges()]);
+        let control = crate::downloads::DownloadControl::default();
+        control.set_concurrency(4);
+        assert!(block_on(fixture.run(&server, DownloadPolicy::Foreground(&control))).unwrap());
+        assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
+        assert_eq!(server.count(), 4, "the first request and three segments");
+        assert_eq!(control.connections().peak(), 4);
+        assert_eq!(control.connections().in_use(), 0);
+        assert_eq!(fixture.target_entries(), ["client.jar"], "no part beside the target");
+        assert!(fixture.parts().is_empty(), "{:?}", fixture.parts());
+    }
+
+    #[test]
+    fn c11_a_preview_or_a_download_without_a_task_is_never_split() {
+        let bytes = u0266_bytes(32 * MIB);
+        for (label, preview) in [("preview", true), ("no task", false)] {
+            let fixture = U0266::new(&format!("unsplit-{label}"), &bytes);
+            let server = RangeServer::repeating(vec![Scripted::ranged(&bytes, "\"v1\"").accepting_ranges()]);
+            let control = crate::downloads::DownloadControl::default();
+            let policy = if preview { DownloadPolicy::Preview(&control) } else { DownloadPolicy::Uncapped };
+            assert!(block_on(fixture.run(&server, policy)).unwrap(), "{label}");
+            assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes, "{label}");
+            assert_eq!(server.count(), 1, "{label}: one stream");
+            assert_eq!(control.connections().peak(), 0, "{label}: no task connection was taken");
+        }
+    }
+
+    #[test]
+    fn c11_a_small_game_file_waits_for_a_task_connection() {
+        // Below the part threshold the one-go download takes a permit too.
+        let bytes = u0266_bytes(64 * 1024);
+        let fixture = U0266::new("one-go-permit", &bytes);
+        let server = RangeServer::repeating(vec![Scripted::ok(&bytes, "\"v1\"")]);
+        let control = crate::downloads::DownloadControl::default();
+        control.set_concurrency(1);
+        let held = control.connections().try_acquire_spare().unwrap();
+        block_on(async {
+            let download = fixture.run(&server, DownloadPolicy::Foreground(&control));
+            tokio::pin!(download);
+            assert!(tokio::time::timeout(Duration::from_millis(300), &mut download).await.is_err(), "it waits for the held connection");
+            assert_eq!(server.count(), 0, "nothing was sent while waiting");
+            drop(held);
+            assert!(download.await.unwrap());
+        });
         assert_eq!(fs::read(&fixture.file.path).unwrap(), bytes);
     }
 

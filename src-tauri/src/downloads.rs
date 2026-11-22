@@ -21,6 +21,9 @@ use std::{
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::watch;
 
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+
 pub(crate) const CANCELLED: &str = "任务已取消，已校验文件保留供下次复用";
 pub(crate) const RETRY_UNSUPPORTED: &str = "请回到对应资源、整合包或备份页面重新执行；已校验文件会复用";
 pub(crate) const ALREADY_RETRIED: &str = "此任务已经重试过，请在新的任务上操作";
@@ -227,6 +230,145 @@ impl Default for Scheduler {
 
 type SnapshotEmitter = dyn Fn(DownloadSnapshot) + Send + Sync;
 
+/// The download concurrency bounds: at least one transfer, never more than 16.
+const CONNECTIONS_MIN: usize = 1;
+const CONNECTIONS_MAX: usize = 16;
+
+fn clamp_connections(limit: usize) -> usize {
+    limit.clamp(CONNECTIONS_MIN, CONNECTIONS_MAX)
+}
+
+struct ConnectionsState {
+    limit: usize,
+    in_use: usize,
+    waiting: usize,
+}
+
+/// How many file transfers may be in flight at once: the download
+/// concurrency setting. A transfer holds a permit from its first request to
+/// the end of its body.
+pub(crate) struct Connections {
+    state: Mutex<ConnectionsState>,
+    notify: tokio::sync::Notify,
+    #[cfg(test)]
+    peak: AtomicUsize,
+}
+
+/// One transfer in flight; dropping it frees the connection.
+pub(crate) struct ConnectionPermit<'a> {
+    connections: &'a Connections,
+}
+
+/// Counts one waiter while it waits; cancelling the wait drops this guard too.
+struct Waiting<'a> {
+    connections: &'a Connections,
+}
+
+impl<'a> Waiting<'a> {
+    fn new(connections: &'a Connections) -> Self {
+        connections.lock().waiting += 1;
+        Self { connections }
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        let mut state = self.connections.lock();
+        state.waiting = state.waiting.saturating_sub(1);
+    }
+}
+
+impl Connections {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            state: Mutex::new(ConnectionsState {
+                limit: clamp_connections(limit),
+                in_use: 0,
+                waiting: 0,
+            }),
+            notify: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            peak: AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn set_limit(&self, limit: usize) {
+        self.lock().limit = clamp_connections(limit);
+        self.notify.notify_waiters();
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.lock().limit
+    }
+
+    pub(crate) fn in_use(&self) -> usize {
+        self.lock().in_use
+    }
+
+    /// Takes a permit if one is free; a spare must also leave waiting
+    /// transfers their turn.
+    fn take(&self, spare: bool) -> Option<ConnectionPermit<'_>> {
+        {
+            let mut state = self.lock();
+            if state.in_use >= state.limit || (spare && state.waiting > 0) {
+                return None;
+            }
+            state.in_use += 1;
+            #[cfg(test)]
+            self.peak.fetch_max(state.in_use, Ordering::Relaxed);
+        }
+        Some(ConnectionPermit { connections: self })
+    }
+
+    /// Waits for a free connection.
+    pub(crate) async fn acquire(&self) -> ConnectionPermit<'_> {
+        // Counted as waiting for the whole wait, so no spare slips in between.
+        let waiting = Waiting::new(self);
+        loop {
+            // Register before checking so a permit freed in between wakes us.
+            let notified = self.notify.notified();
+            pin_mut!(notified);
+            notified.as_mut().enable();
+            if let Some(permit) = self.take(false) {
+                drop(waiting);
+                return permit;
+            }
+            notified.await;
+        }
+    }
+
+    /// A spare connection for an extra segment: None when all are in use or
+    /// any transfer is waiting for one (a waiting file goes first).
+    pub(crate) fn try_acquire_spare(&self) -> Option<ConnectionPermit<'_>> {
+        self.take(true)
+    }
+
+    /// The most permits held at once since the last reset (tests only).
+    #[cfg(test)]
+    pub(crate) fn peak(&self) -> usize {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_peak(&self) {
+        self.peak.store(0, Ordering::Relaxed);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ConnectionsState> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
+}
+
+impl Drop for ConnectionPermit<'_> {
+    fn drop(&mut self) {
+        {
+            let mut state = self.connections.lock();
+            state.in_use = state.in_use.saturating_sub(1);
+        }
+        self.connections.notify.notify_waiters();
+    }
+}
+
 pub struct DownloadControl {
     scheduler: Mutex<Scheduler>,
     emitter: Mutex<Option<Arc<SnapshotEmitter>>>,
@@ -235,6 +377,7 @@ pub struct DownloadControl {
     journal: Option<PathBuf>,
     /// Milliseconds without data before a transfer fails; 0 is the default.
     stall_ms: AtomicU64,
+    connections: Connections,
 }
 
 impl Default for DownloadControl {
@@ -246,6 +389,7 @@ impl Default for DownloadControl {
             next_slot: Mutex::new(Instant::now()),
             journal: None,
             stall_ms: AtomicU64::new(0),
+            connections: Connections::new(8),
         }
     }
 }
@@ -851,6 +995,22 @@ impl DownloadControl {
         self.limit_kib.store(kib, Ordering::Relaxed);
     }
 
+    pub(crate) fn connections(&self) -> &Connections {
+        &self.connections
+    }
+
+    pub fn set_concurrency(&self, limit: usize) {
+        self.connections.set_limit(limit);
+    }
+
+    /// Waits for a connection while the active task can still be cancelled.
+    pub(crate) async fn connection(&self) -> Result<ConnectionPermit<'_>, String> {
+        let permit = self.during_cancellable_io(self.connections.acquire()).await?;
+        // A pause that began while waiting holds the request back.
+        self.checkpoint().await?;
+        Ok(permit)
+    }
+
     #[cfg(test)]
     pub(crate) fn limit_for_test(&self) -> u64 {
         self.limit_kib.load(Ordering::Relaxed)
@@ -1022,6 +1182,7 @@ pub async fn retry_download_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::FutureExt;
     use std::sync::{atomic::AtomicBool, mpsc};
 
     #[test]
@@ -1567,5 +1728,206 @@ mod tests {
             let round: RetryEnvelope = serde_json::from_str(&stored).unwrap();
             assert_eq!(round.request, request);
         }
+    }
+
+    #[test]
+    fn connections_limit_two_lets_a_third_wait_for_a_permit() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let connections = Connections::new(2);
+            let first = connections.acquire().await;
+            let second = connections.acquire().await;
+            assert_eq!((connections.limit(), connections.in_use()), (2, 2));
+            let third = connections.acquire();
+            tokio::pin!(third);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut third).await.is_err(),
+                "a third transfer must wait at the limit"
+            );
+            drop(first);
+            let third = tokio::time::timeout(Duration::from_secs(1), &mut third)
+                .await
+                .expect("dropping a permit must let the waiter in");
+            assert_eq!(connections.in_use(), 2);
+            drop(third);
+            drop(second);
+            assert_eq!(connections.in_use(), 0);
+        });
+    }
+
+    #[test]
+    fn spare_connections_yield_to_a_waiting_transfer() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let connections = Connections::new(1);
+            let held = connections.acquire().await;
+            assert!(connections.try_acquire_spare().is_none(), "none at the limit");
+            let mut waiting = Box::pin(connections.acquire());
+            assert!(
+                waiting.as_mut().now_or_never().is_none(),
+                "the acquire registers as waiting"
+            );
+            // The limit now has room, but the waiting transfer must go first.
+            connections.set_limit(2);
+            assert!(
+                connections.try_acquire_spare().is_none(),
+                "a waiting transfer goes first even below the limit"
+            );
+            drop(waiting);
+            assert!(
+                connections.try_acquire_spare().is_some(),
+                "below the limit a spare is free"
+            );
+            assert_eq!(connections.in_use(), 1);
+            drop(held);
+            assert_eq!(connections.in_use(), 0);
+        });
+    }
+
+    #[test]
+    fn lowering_the_limit_waits_until_use_drops_below_it() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let connections = Connections::new(3);
+            let first = connections.acquire().await;
+            let second = connections.acquire().await;
+            let third = connections.acquire().await;
+            connections.set_limit(1);
+            assert_eq!((connections.limit(), connections.in_use()), (1, 3));
+            let next = connections.acquire();
+            tokio::pin!(next);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut next).await.is_err(),
+                "three permits in use are above the lowered limit"
+            );
+            drop(first);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), &mut next).await.is_err(),
+                "two permits still fill the lowered limit"
+            );
+            drop(second);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), &mut next).await.is_err(),
+                "the last permit still fills the lowered limit"
+            );
+            drop(third);
+            let next = tokio::time::timeout(Duration::from_secs(1), &mut next)
+                .await
+                .expect("in use below the lowered limit lets the waiter in");
+            assert_eq!(connections.in_use(), 1);
+            drop(next);
+        });
+    }
+
+    #[test]
+    fn cancelling_a_wait_removes_it_from_the_waiting_count() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let connections = Connections::new(1);
+            let held = connections.acquire().await;
+            let mut cancelled = Box::pin(connections.acquire());
+            assert!(cancelled.as_mut().now_or_never().is_none());
+            connections.set_limit(2);
+            assert!(
+                connections.try_acquire_spare().is_none(),
+                "the wait still reserves its turn"
+            );
+            drop(cancelled);
+            assert!(
+                connections.try_acquire_spare().is_some(),
+                "a cancelled wait no longer blocks a spare"
+            );
+            drop(held);
+            assert_eq!(connections.in_use(), 0);
+        });
+    }
+
+    #[test]
+    fn peak_tracks_the_high_water_mark_and_limits_are_clamped() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let connections = Connections::new(0);
+            assert_eq!(connections.limit(), 1, "a limit of zero clamps to one");
+            connections.set_limit(99);
+            assert_eq!(connections.limit(), 16, "a limit above sixteen clamps to sixteen");
+            connections.set_limit(0);
+            assert_eq!(connections.limit(), 1);
+            connections.set_limit(16);
+            connections.reset_peak();
+            assert_eq!(connections.peak(), 0);
+
+            let mut permits = Vec::new();
+            for _ in 0..3 {
+                permits.push(connections.acquire().await);
+            }
+            assert_eq!(connections.peak(), 3);
+            drop(permits.pop());
+            permits.push(connections.acquire().await);
+            assert_eq!(connections.peak(), 3, "the peak stays the high-water mark");
+            assert_eq!(connections.in_use(), 3);
+            drop(permits);
+            assert_eq!(connections.in_use(), 0);
+        });
+    }
+
+    #[test]
+    fn connection_futures_and_permits_are_send() {
+        fn assert_send<T: Send>(value: T) -> T {
+            value
+        }
+        let connections = Connections::new(1);
+        let _future = assert_send(connections.acquire());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let permit = assert_send(connections.acquire().await);
+            drop(permit);
+        });
+    }
+
+    #[test]
+    fn connection_waits_are_cancelled_with_the_active_task() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let control = DownloadControl::default();
+            assert_eq!(control.connections().limit(), 8, "the default concurrency");
+            control.set_concurrency(1);
+            let task = control.begin("install", "fixture", "Fixture").unwrap();
+            let held = control.connections().acquire().await;
+            let waiting = control.connection();
+            tokio::pin!(waiting);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut waiting).await.is_err(),
+                "the connection waits while its only slot is held"
+            );
+            control.cancel(&task);
+            match waiting.await {
+                Err(error) => assert_eq!(error, CANCELLED),
+                Ok(_) => panic!("a cancelled task must not get a connection"),
+            }
+            assert_eq!(control.connections().in_use(), 1);
+            drop(held);
+            assert_eq!(control.connections().in_use(), 0);
+            control.finish(&task, Some(CANCELLED));
+            assert_eq!(control.list()[0].status, "cancelled");
+        });
+    }
+
+    #[test]
+    fn a_connection_freed_during_a_pause_waits_for_the_resume() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let control = DownloadControl::default();
+            control.set_concurrency(1);
+            let task = control.begin("install", "fixture", "Fixture").unwrap();
+            let held = control.connections().acquire().await;
+            let waiting = control.connection();
+            tokio::pin!(waiting);
+            assert!(tokio::time::timeout(Duration::from_millis(50), &mut waiting).await.is_err());
+            control.set_paused(&task, true);
+            drop(held);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), &mut waiting).await.is_err(),
+                "a paused task sends nothing, even with a connection"
+            );
+            control.set_paused(&task, false);
+            let permit = tokio::time::timeout(Duration::from_secs(1), &mut waiting)
+                .await
+                .expect("the resume lets it go on")
+                .unwrap();
+            drop(permit);
+            control.finish(&task, None);
+        });
     }
 }

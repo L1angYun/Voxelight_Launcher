@@ -509,6 +509,9 @@ impl crate::parts::Hooks for &crate::downloads::DownloadControl {
     fn stall_limit(&self) -> std::time::Duration {
         crate::downloads::DownloadControl::stall_limit(self)
     }
+    fn connections(&self) -> Option<&crate::downloads::Connections> {
+        Some(crate::downloads::DownloadControl::connections(self))
+    }
 }
 
 /// Where a response came from after redirects; tests pass a local server.
@@ -551,6 +554,7 @@ async fn fetch_whole(
 ) -> Result<(String, String, u64), String> {
     use crate::parts::within_stall;
     let request = network.get(url.clone()).timeout(crate::parts::TRANSFER_TIMEOUT);
+    let _connection = crate::parts::connection(&control).await?;
     let response = within_stall(&control, request.send()).await?.map_err(|_| "整合包文件下载失败")?;
     if !response.status().is_success() {
         return Err(format!("整合包文件下载失败（HTTP {}）", response.status().as_u16()));

@@ -771,3 +771,674 @@ fn part_folders_of_an_earlier_game_root_are_still_swept_at_startup() {
         .map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(leftovers, [REMEMBERED], "no temporary file is left");
 }
+
+// ---- C11: segmented parallel transfers ----------------------------------
+
+const MIB: usize = 1024 * 1024;
+
+/// Hooks with a connection limit; with `cancel_after`, every checkpoint
+/// fails once that many bytes went through.
+struct Limited {
+    connections: crate::downloads::Connections,
+    cancel_after: Option<u64>,
+    passed: std::sync::atomic::AtomicU64,
+}
+
+impl Limited {
+    fn new(limit: usize) -> Self {
+        Self { connections: crate::downloads::Connections::new(limit), cancel_after: None, passed: Default::default() }
+    }
+}
+
+impl Hooks for Limited {
+    async fn cancellable<F: std::future::Future>(&self, future: F) -> Result<F::Output, String> {
+        Ok(future.await)
+    }
+    async fn checkpoint(&self) -> Result<(), String> {
+        match self.cancel_after {
+            Some(after) if self.passed.load(Ordering::SeqCst) >= after => Err("cancelled".into()),
+            _ => Ok(()),
+        }
+    }
+    async fn throttle(&self, bytes: usize) -> Result<(), String> {
+        self.passed.fetch_add(bytes as u64, Ordering::SeqCst);
+        Ok(())
+    }
+    fn stall_limit(&self) -> Duration {
+        STALL
+    }
+    fn connections(&self) -> Option<&crate::downloads::Connections> {
+        Some(&self.connections)
+    }
+}
+
+fn big(size: usize) -> Vec<u8> {
+    (0..size).map(|index| (index.wrapping_mul(31) % 251) as u8).collect()
+}
+
+fn sha1_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha1::digest(bytes))
+}
+
+/// One transfer of `whole` from `server` into `slot`; returns its result and
+/// the SHA-1 of what the hash callback saw.
+fn segmented_once(server: &range_server::RangeServer, slot: &mut Option<ResumablePart>, size: u64, hooks: &Limited) -> (Result<(), String>, String) {
+    let url = reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap();
+    let client = crate::storage::test_client();
+    let mut hasher = Sha1::new();
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(transfer(
+        client.get(url.clone()),
+        &url,
+        slot,
+        size,
+        hooks,
+        &|_| Ok(()),
+        &mut |bytes| hasher.update(bytes),
+    ));
+    (result, format!("{:x}", hasher.finalize()))
+}
+
+fn big_key(whole: &[u8]) -> PartKey {
+    PartKey::new(Algo::Sha1, &sha1_hex(whole), whole.len() as u64).unwrap()
+}
+
+/// The closed `bytes=a-b` ranges the server was asked for, sorted.
+fn closed_ranges(server: &range_server::RangeServer) -> Vec<(u64, u64)> {
+    let mut ranges: Vec<(u64, u64)> = (0..server.count())
+        .filter_map(|request| server.range(request))
+        .filter_map(|range| {
+            let (from, to) = range.strip_prefix("bytes=")?.split_once('-')?;
+            Some((from.parse().ok()?, to.parse::<u64>().ok()? + 1))
+        })
+        .collect();
+    ranges.sort();
+    ranges
+}
+
+#[test]
+fn ranges_merge_and_gaps_are_what_is_left() {
+    let mut ranges = Vec::new();
+    for (from, to) in [(10, 20), (30, 40), (20, 25), (0, 5), (35, 50), (5, 5)] {
+        insert_range(&mut ranges, from, to);
+    }
+    assert_eq!(ranges, [(0, 5), (10, 25), (30, 50)]);
+    assert_eq!(gaps(&ranges, 60), [(5, 10), (25, 30), (50, 60)]);
+    assert_eq!(gaps(&[], 60), [(0, 60)]);
+    assert_eq!(gaps(&[(0, 60)], 60), []);
+    // Pieces of about an equal share, each within one gap; a remainder
+    // under the floor stays with the piece before it.
+    let spans = |pieces: Vec<Piece>| pieces.iter().map(|piece| (piece.start, piece.end)).collect::<Vec<_>>();
+    assert_eq!(spans(plan_pieces(&[(0, 100)], 4, 10)), [(0, 25), (25, 50), (50, 75), (75, 100)]);
+    assert_eq!(spans(plan_pieces(&[(0, 30), (50, 100)], 2, 20)), [(0, 30), (50, 100)]);
+    assert_eq!(spans(plan_pieces(&[(0, 30), (50, 100)], 2, 5)), [(0, 30), (50, 90), (90, 100)]);
+    assert_eq!(spans(plan_pieces(&[(0, 3)], 4, 10)), [(0, 3)], "a small gap stays one piece");
+    assert!(plan_pieces(&[(0, 100)], 4, 10).iter().all(|piece| piece.state == PieceState::Free));
+    // A segment's answer is the same version: the same strong tag, or no other date.
+    let tag = |etag: Option<&str>, date: Option<&str>| Validator { origin: "o".into(), etag: etag.map(str::to_owned), last_modified: date.map(str::to_owned) };
+    assert!(same_version(&tag(Some("\"a\""), None), &tag(Some("\"a\""), Some("d"))));
+    assert!(!same_version(&tag(Some("\"a\""), None), &tag(Some("\"b\""), None)), "another tag");
+    assert!(!same_version(&tag(Some("\"a\""), None), &tag(None, None)), "no tag at all");
+    assert!(same_version(&tag(None, Some("d")), &tag(None, None)), "a 206 need not repeat the date");
+    assert!(!same_version(&tag(None, Some("d")), &tag(Some("\"x\""), None)), "a strong tag where the first answer had none");
+    assert!(!same_version(&tag(None, Some("d")), &tag(None, Some("e"))), "another date");
+    assert!(!same_version(&tag(None, None), &tag(None, None)), "nothing to compare");
+    // A segment continues only on a 206 for exactly its bytes.
+    assert_eq!(classify_range(206, Some("bytes 10-19/100"), 10, 19, 100), Reply::Continue);
+    assert_eq!(classify_range(206, Some("bytes 0-99/100"), 0, 99, 100), Reply::Continue);
+    for (status, range) in [(206, Some("bytes 10-20/100")), (206, Some("bytes 10-19/101")), (206, None), (416, None)] {
+        assert_eq!(classify_range(status, range, 10, 19, 100), Reply::Discard(RANGE_MISMATCH.into()), "{status} {range:?}");
+    }
+    assert_eq!(classify_range(200, None, 10, 19, 100), Reply::Restart);
+    assert_eq!(classify_range(503, None, 10, 19, 100), Reply::Fail("下载失败（HTTP 503）".into()));
+}
+
+#[test]
+fn a_part_with_a_gap_is_recorded_as_separate_ranges_and_reopened() {
+    let root = Root::new();
+    let store = root.store();
+    let size = 100;
+    let key = PartKey::new(Algo::Sha1, &"a".repeat(40), size).unwrap();
+    {
+        let mut part = store.open(&key, size).unwrap().unwrap();
+        part.restart(validator("https://a.example", Some("\"v\""))).unwrap();
+        part.write_test(0, &[1; 10]).unwrap();
+        part.write_test(40, &[2; 20]).unwrap();
+        part.sync().unwrap();
+    }
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(key.file(&store.root, "json")).unwrap()).unwrap();
+    assert_eq!(record["version"], 2);
+    assert_eq!(record["received"], serde_json::json!([[0, 10], [40, 60]]));
+    let part = store.open(&key, size).unwrap().unwrap();
+    assert_eq!(part.received(), [(0, 10), (40, 60)]);
+    assert_eq!(part.done(), 30);
+    assert_eq!(part.resume_for("https://a.example").map(|(start, _)| start), Some(10), "the first missing byte");
+    assert_eq!(part.missing(), [(10, 40), (60, 100)]);
+    drop(part);
+    // Bytes past the last recorded range were never confirmed.
+    fs::OpenOptions::new().append(true).open(key.file(&store.root, "part")).unwrap().write_all(&[9; 5]).unwrap();
+    let part = store.open(&key, size).unwrap().unwrap();
+    assert_eq!(fs::metadata(key.file(&store.root, "part")).unwrap().len(), 60);
+    drop(part);
+    // A part from the start stays a version-1 record.
+    {
+        let mut part = store.open(&key, size).unwrap().unwrap();
+        part.write_test(10, &[3; 30]).unwrap();
+        part.write_test(60, &[4; 40]).unwrap();
+        part.sync().unwrap();
+    }
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(key.file(&store.root, "json")).unwrap()).unwrap();
+    assert_eq!((record["version"].clone(), record["done"].clone()), (serde_json::json!(1), serde_json::json!(100)));
+    assert!(store.open(&key, size).unwrap().unwrap().complete());
+}
+
+#[test]
+fn a_record_of_ranges_that_do_not_add_up_starts_the_part_again() {
+    let root = Root::new();
+    let store = root.store();
+    let size = 200;
+    let key = PartKey::new(Algo::Sha1, &"b".repeat(40), size).unwrap();
+    drop(store.open(&key, size).unwrap().unwrap());
+    let origin = serde_json::json!({"origin": "https://a.example", "etag": "\"v\"", "lastModified": null});
+    let many: Vec<[u64; 2]> = (0..65u64).map(|n| [2 * n, 2 * n + 1]).collect();
+    for (label, received, length) in [
+        ("overlapping", serde_json::json!([[0, 30], [20, 40]]), 200),
+        ("unsorted", serde_json::json!([[40, 50], [0, 10]]), 200),
+        ("touching", serde_json::json!([[0, 10], [10, 20]]), 200),
+        ("empty range", serde_json::json!([[10, 10]]), 200),
+        ("past the size", serde_json::json!([[190, 220]]), 230),
+        ("past the file", serde_json::json!([[0, 10], [85, 90]]), 80),
+        ("no range", serde_json::json!([]), 200),
+        ("more than the limit", serde_json::json!(many), 200),
+    ] {
+        let record = serde_json::json!({"version": 2, "size": size, "received": received, "validator": origin});
+        fs::write(key.file(&store.root, "json"), serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(key.file(&store.root, "part"), vec![7u8; length]).unwrap();
+        let part = store.open(&key, size).unwrap().unwrap();
+        assert_eq!(part.done(), 0, "{label}");
+        drop(part);
+    }
+    // The same ranges within the limits are kept.
+    let record = serde_json::json!({"version": 2, "size": size, "received": [[0, 10], [40, 60]], "validator": origin});
+    fs::write(key.file(&store.root, "json"), serde_json::to_vec(&record).unwrap()).unwrap();
+    fs::write(key.file(&store.root, "part"), vec![7u8; 200]).unwrap();
+    assert_eq!(store.open(&key, size).unwrap().unwrap().done(), 30);
+}
+
+#[test]
+fn a_large_file_is_fetched_in_parallel_ranges_within_the_connection_limit() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    for (limit, expected) in [
+        (4usize, vec![(8 * MIB as u64, 16 * MIB as u64), (16 * MIB as u64, 24 * MIB as u64), (24 * MIB as u64, 32 * MIB as u64)]),
+        (2, vec![(16 * MIB as u64, 32 * MIB as u64)]),
+    ] {
+        let root = Root::new();
+        let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges()]);
+        let hooks = Limited::new(limit);
+        let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+        let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+        result.unwrap();
+        assert_eq!(seen, sha1_hex(&whole), "limit {limit}: the hash saw every byte in order");
+        assert!(slot.as_ref().unwrap().complete());
+        assert_eq!(server.range(0), None, "limit {limit}: the first request asks for the whole file");
+        assert_eq!(closed_ranges(&server), expected, "limit {limit}");
+        assert_eq!(server.count(), expected.len() + 1, "limit {limit}: nothing was asked for twice");
+        for request in 1..server.count() {
+            assert_eq!(server.header(request, "if-range").as_deref(), Some("\"v\""), "limit {limit}: a segment asks for the same version");
+            let range = server.range(request).unwrap();
+            let (from, to) = range.strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+            let length = to.parse::<usize>().unwrap() + 1 - from.parse::<usize>().unwrap();
+            assert_eq!(server.sent_by(request), length, "limit {limit}: a segment sends exactly its range");
+        }
+        assert_eq!(hooks.connections.peak(), limit, "limit {limit}: every connection, never more");
+        assert_eq!(hooks.connections.in_use(), 0, "limit {limit}: every permit was given back");
+        // The finished part publishes as the file.
+        let target = root.path().join("file.bin");
+        slot.take().unwrap().publish_replace(&target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), whole);
+    }
+}
+
+#[test]
+fn a_file_is_not_split_without_a_spare_connection_its_size_or_a_server_that_takes_ranges() {
+    use range_server::{RangeServer, Scripted};
+    let large = big(32 * MIB);
+    let small = big(SEGMENT_MIN as usize - 1);
+    // (label, body, the server says it takes ranges, permits held elsewhere)
+    for (label, whole, accepting, held) in [
+        ("no spare connection", &large, true, 3usize),
+        ("smaller than the threshold", &small, true, 0),
+        ("no Accept-Ranges", &large, false, 0),
+    ] {
+        let root = Root::new();
+        let reply = Scripted::ranged(whole, "\"v\"");
+        let server = RangeServer::repeating(vec![if accepting { reply.accepting_ranges() } else { reply }]);
+        let hooks = Limited::new(4);
+        let held: Vec<_> = (0..held).map(|_| hooks.connections.try_acquire_spare().unwrap()).collect();
+        let mut slot = root.store().open(&big_key(whole), whole.len() as u64).unwrap();
+        let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+        result.unwrap();
+        assert_eq!(seen, sha1_hex(whole), "{label}");
+        assert_eq!(server.count(), 1, "{label}: one stream");
+        drop(held);
+    }
+}
+
+#[test]
+fn a_server_that_refuses_a_segment_gets_the_rest_in_one_stream() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    // The first answer stops after the first piece; the segments get the
+    // whole file instead of their ranges; later answers follow the Range.
+    let refused = Scripted::ok(&whole, "\"v\"");
+    let server = RangeServer::repeating(vec![
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges().cut(8 * MIB),
+        refused.clone(),
+        refused.clone(),
+        refused,
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges(),
+    ]);
+    let hooks = Limited::new(4);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole), "one attempt finishes the file");
+    assert_eq!(server.count(), 5, "the first answer, three refused segments and one more stream");
+    assert_eq!(server.range(4).as_deref(), Some("bytes=8388608-"), "the rest in one stream from the first missing byte");
+    assert!(slot.as_ref().unwrap().whole_only, "this download is not split again");
+}
+
+#[test]
+fn a_refusal_after_the_first_response_stopped_is_finished_in_one_more_stream() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    // The first answer takes its piece at once; the segments are refused
+    // only after it has stopped; the rest then follows the Range.
+    let late = Scripted::ok(&whole, "\"v\"").delayed(Duration::from_millis(400));
+    let server = RangeServer::repeating(vec![
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges(),
+        late.clone(),
+        late.clone(),
+        late,
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges(),
+    ]);
+    let hooks = Limited::new(4);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole), "one attempt finishes the file");
+    assert_eq!(server.count(), 5);
+    assert_eq!(server.range(4).as_deref(), Some("bytes=8388608-"), "the rest in one stream from the first missing byte");
+    assert_eq!(server.header(4, "if-range").as_deref(), Some("\"v\""));
+    assert!(slot.as_ref().unwrap().whole_only, "this download is not split again");
+}
+
+#[test]
+fn a_segment_that_breaks_off_is_finished_after_the_segments() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    // Every segment answers late and closes after 1 MiB of its 8 MiB; by
+    // then the first answer has stopped at its piece (its neighbours were
+    // taken), so what is missing comes in one more stream.
+    let broken = Scripted::ranged(&whole, "\"v\"").accepting_ranges().delayed(Duration::from_millis(300)).cut(MIB);
+    let server = RangeServer::repeating(vec![
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges(),
+        broken.clone(),
+        broken.clone(),
+        broken,
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges(),
+    ]);
+    let hooks = Limited::new(4);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole));
+    assert_eq!(server.count(), 5);
+    assert_eq!(server.range(4).as_deref(), Some("bytes=9437184-"), "one stream from the first byte a segment left missing");
+    assert!(!slot.as_ref().unwrap().whole_only, "a break is not a refusal");
+}
+
+#[test]
+fn a_segment_that_fails_with_a_server_error_is_not_a_refusal() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let failing = Scripted::status(503).delayed(Duration::from_millis(300));
+    let server = RangeServer::repeating(vec![
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges(),
+        failing.clone(),
+        failing.clone(),
+        failing,
+        Scripted::ranged(&whole, "\"v\"").accepting_ranges(),
+    ]);
+    let hooks = Limited::new(4);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole));
+    assert_eq!(server.range(4).as_deref(), Some("bytes=8388608-"), "what the segments missed came in one more stream");
+    assert!(!slot.as_ref().unwrap().whole_only, "a 503 says nothing about ranges: the next download may split");
+}
+
+#[test]
+fn a_segment_from_an_untrusted_answer_fails_the_transfer() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges()]);
+    let hooks = Limited::new(4);
+    let url = reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap();
+    let client = crate::storage::test_client();
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    // The caller's check refuses every segment's answer (as it would refuse a
+    // redirect to an untrusted host); the first answer passes it.
+    let check = |response: &reqwest::Response| if response.status() == 206 { Err("untrusted answer".to_owned()) } else { Ok(()) };
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(transfer(client.get(url.clone()), &url, &mut slot, whole.len() as u64, &hooks, &check, &mut |_| {}));
+    assert_eq!(result.unwrap_err(), "untrusted answer", "a single stream would fail the same way");
+    assert_eq!(hooks.connections.in_use(), 0);
+}
+
+#[test]
+fn a_resumed_answer_that_ends_where_kept_bytes_begin_is_still_hashed_in_full() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(4 * MIB);
+    let root = Root::new();
+    let key = big_key(&whole);
+    let server_whole = whole.clone();
+    // Kept: [0, 1 MiB) and [3 MiB, 4 MiB). The 206 for the rest ends cleanly
+    // after the missing middle.
+    let partial = Scripted::partial(&server_whole, MIB, "\"v\"").with_body(whole[MIB..3 * MIB].to_vec()).without_length();
+    let server = RangeServer::new(vec![partial]);
+    let mut slot = root.store().open(&key, whole.len() as u64).unwrap();
+    {
+        let part = slot.as_mut().unwrap();
+        part.restart(validator(&format!("http://{}", server.address), Some("\"v\""))).unwrap();
+        part.write_test(0, &whole[..MIB]).unwrap();
+        part.write_test(3 * MIB as u64, &whole[3 * MIB..]).unwrap();
+    }
+    let url = reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap();
+    let client = crate::storage::test_client();
+    let mut hasher = Sha1::new();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(transfer(client.get(url.clone()), &url, &mut slot, whole.len() as u64, &Plain, &|_| Ok(()), &mut |bytes| hasher.update(bytes)))
+        .unwrap();
+    assert_eq!(server.range(0).as_deref(), Some("bytes=1048576-"));
+    assert_eq!(format!("{:x}", hasher.finalize()), sha1_hex(&whole), "the kept tail is hashed too");
+    assert!(slot.as_ref().unwrap().complete());
+}
+
+#[test]
+fn a_small_gap_is_left_to_the_first_response_not_a_segment() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges()]);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    // Missing: [8, 16), [20, 21) and [24, 32) MiB.
+    {
+        let part = slot.as_mut().unwrap();
+        part.restart(validator(&format!("http://{}", server.address), Some("\"v\""))).unwrap();
+        for (from, to) in [(0, 8), (16, 20), (21, 24)] {
+            part.write_test((from * MIB) as u64, &whole[from * MIB..to * MIB]).unwrap();
+        }
+    }
+    let hooks = Limited::new(4);
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole));
+    assert_eq!(server.range(0).as_deref(), Some("bytes=8388608-"));
+    assert_eq!(closed_ranges(&server), [(24 * MIB as u64, 32 * MIB as u64)], "no segment for the 1 MiB gap");
+}
+
+#[test]
+fn a_download_marked_whole_only_is_not_split_again() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges()]);
+    let hooks = Limited::new(4);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    slot.as_mut().unwrap().whole_only = true;
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole));
+    assert_eq!(server.count(), 1, "a server that refused a segment gets one stream");
+}
+
+#[test]
+fn a_file_without_a_validator_is_not_split_and_the_threshold_itself_is() {
+    use range_server::{RangeServer, Scripted};
+    let root = Root::new();
+    // No ETag and no date: segments could not ask for the same version.
+    let whole = big(32 * MIB);
+    let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges().with_headers(Vec::new())]);
+    let hooks = Limited::new(4);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole));
+    assert_eq!(server.count(), 1, "no validator: one stream");
+    // Exactly SEGMENT_MIN is split.
+    let whole = big(SEGMENT_MIN as usize);
+    let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges()]);
+    let hooks = Limited::new(4);
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole));
+    assert_eq!(server.count(), 4, "16 MiB in four pieces of 4 MiB");
+}
+
+#[test]
+fn a_long_segmented_download_records_its_ranges_while_it_runs() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let store = root.store();
+    let key = big_key(&whole);
+    // About 2.5 s per 8 MiB piece: long enough for records to fall due.
+    let slow = Scripted::ranged(&whole, "\"v\"").accepting_ranges().paced(64 * 1024, Duration::from_millis(20));
+    let server = RangeServer::repeating(vec![slow]);
+    let hooks = Limited::new(4);
+    let sidecar = key.file(store.root(), "json");
+    let watching = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let watcher = {
+        let (sidecar, watching) = (sidecar.clone(), watching.clone());
+        std::thread::spawn(move || {
+            while watching.load(Ordering::SeqCst) {
+                if let Some(record) = read_ranges(&sidecar).filter(|record| record.version == 2 && record.received.len() > 1) {
+                    return Some(record.received);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            None
+        })
+    };
+    let mut slot = store.open(&key, whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    watching.store(false, Ordering::SeqCst);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole));
+    let recorded = watcher.join().unwrap().expect("separate ranges were recorded while the segments ran");
+    assert!(recorded.iter().all(|&[from, to]| from < to && to <= whole.len() as u64), "{recorded:?}");
+}
+
+#[test]
+fn a_dropped_segmented_download_keeps_its_ranges() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let store = root.store();
+    let key = big_key(&whole);
+    let slow = Scripted::ranged(&whole, "\"v\"").accepting_ranges().paced(64 * 1024, Duration::from_millis(5));
+    let server = RangeServer::repeating(vec![slow]);
+    let hooks = Limited::new(4);
+    let url = reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap();
+    let client = crate::storage::test_client();
+    let mut slot = store.open(&key, whole.len() as u64).unwrap();
+    // A sibling failure drops the whole transfer future, segments included.
+    let outcome = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(600),
+            transfer(client.get(url.clone()), &url, &mut slot, whole.len() as u64, &hooks, &|_| Ok(()), &mut |_| {}),
+        )
+        .await
+    });
+    assert!(outcome.is_err(), "the transfer was dropped before it finished");
+    assert_eq!(hooks.connections.in_use(), 0, "every permit was given back");
+    drop(slot);
+    let reopened = store.open(&key, whole.len() as u64).unwrap().unwrap();
+    assert!(reopened.received().len() > 1, "the ranges of every segment were kept: {:?}", reopened.received());
+}
+
+#[test]
+fn a_cancelled_segmented_download_keeps_its_ranges_and_fetches_only_what_is_missing() {
+    use range_server::{RangeServer, Scripted};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let store = root.store();
+    let key = big_key(&whole);
+    // One server for both runs: a resume goes back to the same origin.
+    let slow = Scripted::ranged(&whole, "\"v\"").accepting_ranges().paced(64 * 1024, Duration::from_millis(2));
+    let server = RangeServer::repeating(vec![slow]);
+    let mut hooks = Limited::new(4);
+    hooks.cancel_after = Some(12 * MIB as u64);
+    let mut slot = store.open(&key, whole.len() as u64).unwrap();
+    let (result, _) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    assert_eq!(result.unwrap_err(), "cancelled");
+    assert_eq!(hooks.connections.in_use(), 0);
+    drop(slot);
+    let reopened = store.open(&key, whole.len() as u64).unwrap().unwrap();
+    let kept = reopened.received().to_vec();
+    assert!(kept.len() >= 2, "the bytes of the segments were kept: {kept:?}");
+    let starts = [0, 8, 16, 24].map(|start| start * MIB as u64);
+    assert!(kept.iter().all(|&(from, to)| starts.contains(&from) && to > from), "each kept range starts at a piece: {kept:?}");
+    let missing = reopened.missing();
+    drop(reopened);
+    let earlier = server.count();
+    let hooks = Limited::new(4);
+    let mut slot = store.open(&key, whole.len() as u64).unwrap();
+    let (result, seen) = segmented_once(&server, &mut slot, whole.len() as u64, &hooks);
+    result.unwrap();
+    assert_eq!(seen, sha1_hex(&whole), "the finished part is hashed in order");
+    assert_eq!(server.range(earlier), Some(format!("bytes={}-", missing[0].0)), "the first request starts at the first missing byte");
+    assert_eq!(server.header(earlier, "if-range").as_deref(), Some("\"v\""));
+    let later: Vec<(u64, u64)> = (earlier + 1..server.count())
+        .filter_map(|request| server.range(request))
+        .filter_map(|range| {
+            let (from, to) = range.strip_prefix("bytes=")?.split_once('-')?;
+            Some((from.parse().ok()?, to.parse::<u64>().ok()? + 1))
+        })
+        .collect();
+    assert!(!later.is_empty(), "the rest was fetched in segments too");
+    for (from, to) in later {
+        assert!(missing.iter().any(|&(gap_from, gap_to)| from >= gap_from && to <= gap_to), "{from}-{to} lies in a missing range {missing:?}");
+    }
+    let target = root.path().join("file.bin");
+    slot.take().unwrap().publish_replace(&target).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), whole);
+}
+
+#[test]
+fn transfers_together_never_hold_more_connections_than_the_limit() {
+    use range_server::{RangeServer, Scripted};
+    let first = big(32 * MIB);
+    let mut second = big(32 * MIB);
+    second.reverse();
+    let root = Root::new();
+    let hooks = Limited::new(3);
+    let servers = [&first, &second].map(|whole| RangeServer::repeating(vec![Scripted::ranged(whole, "\"v\"").accepting_ranges().paced(256 * 1024, Duration::from_millis(1))]));
+    let mut slots = [&first, &second].map(|whole| root.store().open(&big_key(whole), whole.len() as u64).unwrap());
+    let client = crate::storage::test_client();
+    let urls = servers.each_ref().map(|server| reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap());
+    let [slot_a, slot_b] = &mut slots;
+    let results = tokio::runtime::Runtime::new().unwrap().block_on(futures_util::future::join(
+        transfer(client.get(urls[0].clone()), &urls[0], slot_a, first.len() as u64, &hooks, &|_| Ok(()), &mut |_| {}),
+        transfer(client.get(urls[1].clone()), &urls[1], slot_b, second.len() as u64, &hooks, &|_| Ok(()), &mut |_| {}),
+    ));
+    results.0.unwrap();
+    results.1.unwrap();
+    assert!(hooks.connections.peak() <= 3, "peak {}", hooks.connections.peak());
+    assert_eq!(servers[0].count() + servers[1].count(), 3, "two first requests and one spare segment");
+}
+
+#[test]
+fn progress_follows_the_bytes_in_place_not_the_in_order_hash() {
+    use range_server::{RangeServer, Scripted};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges()]);
+    let limited = Limited::new(4);
+    let hashed = AtomicU64::new(0);
+    let ahead = AtomicBool::new(false);
+    let last = std::sync::Mutex::new(0u64);
+    let report = |done: u64| {
+        let mut previous = last.lock().unwrap();
+        assert!(done >= *previous, "progress never goes back: {done} after {previous}");
+        *previous = done;
+        if done > hashed.load(Ordering::SeqCst) + 4 * MIB as u64 {
+            ahead.store(true, Ordering::SeqCst);
+        }
+    };
+    let reporting = Reporting { hooks: &limited, report: &report };
+    let url = reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap();
+    let client = crate::storage::test_client();
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(transfer(client.get(url.clone()), &url, &mut slot, whole.len() as u64, &reporting, &|_| Ok(()), &mut |bytes| {
+            hashed.fetch_add(bytes.len() as u64, Ordering::SeqCst);
+        }))
+        .unwrap();
+    assert!(ahead.load(Ordering::SeqCst), "segments are reported as they land, before the hash reads them");
+    assert_eq!(*last.lock().unwrap(), whole.len() as u64);
+    assert_eq!(hashed.load(Ordering::SeqCst), whole.len() as u64);
+}
+
+#[test]
+fn a_task_download_is_split_on_the_task_connections() {
+    use range_server::{RangeServer, Scripted};
+    // The hooks the modpack, Modrinth and CurseForge downloads pass.
+    let whole = big(32 * MIB);
+    let root = Root::new();
+    let server = RangeServer::repeating(vec![Scripted::ranged(&whole, "\"v\"").accepting_ranges()]);
+    let control = crate::downloads::DownloadControl::default();
+    control.set_concurrency(3);
+    let url = reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap();
+    let client = crate::storage::test_client();
+    let mut slot = root.store().open(&big_key(&whole), whole.len() as u64).unwrap();
+    let mut hasher = Sha1::new();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(transfer(client.get(url.clone()), &url, &mut slot, whole.len() as u64, &&control, &|_| Ok(()), &mut |bytes| hasher.update(bytes)))
+        .unwrap();
+    assert_eq!(format!("{:x}", hasher.finalize()), sha1_hex(&whole));
+    assert_eq!(server.count(), 3, "the first request and two segments");
+    assert_eq!(control.connections().peak(), 3);
+    assert_eq!(control.connections().in_use(), 0);
+}
+
+#[test]
+fn every_one_go_file_request_waits_for_a_connection_first() {
+    for (name, text, function, permit, send) in [
+        ("minecraft.rs", include_str!("minecraft.rs"), "async fn download_once(", "crate::parts::connection(&policy).await?", "request.send()"),
+        ("modpacks.rs", include_str!("modpacks.rs"), "async fn fetch_whole(", "crate::parts::connection(&control).await?", "request.send()"),
+        ("resources.rs", include_str!("resources.rs"), "async fn download_verified_progress(", "state.control.connection().await?", "client.get(url.clone()).send()"),
+        ("curseforge.rs", include_str!("curseforge.rs"), "async fn download(", "state.control.connection().await?", "during_cancellable_io(client.get(url).send())"),
+    ] {
+        let source = crate::storage::executable_source(text);
+        let body = source.split_once(function).unwrap_or_else(|| panic!("{name}: {function}")).1;
+        let body = body.split_once("
+}").map_or(body, |(body, _)| body);
+        let waits = body.find(permit).unwrap_or_else(|| panic!("{name}: no connection before the request"));
+        let sends = body.find(send).unwrap_or_else(|| panic!("{name}: {send}"));
+        assert!(waits < sends, "{name}: the connection is taken before the request");
+    }
+}

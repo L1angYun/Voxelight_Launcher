@@ -520,6 +520,7 @@ impl LauncherState {
             data.config.download_limit_kib,
         )
         .map_err(unavailable)?;
+        control.set_concurrency(data.config.download_concurrency);
         let mut state = Self::new(data_dir, data, revision, client, mirror_client, control, profile_lock);
         state.active.get_mut().map_err(unavailable)?.retained_fields = retained_fields;
         if needs_write {
@@ -1256,6 +1257,18 @@ mod tests {
         let saved: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(saved["config"]["theme"], "dark");
         assert_eq!(saved["writeGeneration"], 8);
+    }
+
+    #[test]
+    fn the_saved_download_concurrency_limits_connections_from_startup() {
+        let (root, _, _) = bom_state_fixture();
+        let primary = root.path().join("primary");
+        let mut value = serde_json::to_value(Persisted::default()).unwrap();
+        value["config"]["downloadConcurrency"] = Value::from(3);
+        fs::write(primary.join(STATE_FILE), serde_json::to_vec(&value).unwrap()).unwrap();
+        let state = LauncherState::load_from(primary).unwrap();
+        assert_eq!(state.snapshot().unwrap().config.download_concurrency, 3);
+        assert_eq!(state.control.connections().limit(), 3);
     }
 
     #[test]

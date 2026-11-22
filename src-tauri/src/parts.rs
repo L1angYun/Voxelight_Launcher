@@ -1,8 +1,9 @@
-//! Resumable download parts (U0266, step one: one stream per file).
+//! Resumable download parts (U0266): one stream per file, and for a large
+//! file several Range requests at once.
 //!
 //! A part is named by the file's expected hash and size, so a later attempt
 //! (after a failure, a cancel or a restart of the launcher) continues where the
-//! last one stopped. A sidecar records how many bytes are in place and the
+//! last one stopped. A sidecar records which bytes are in place and the
 //! origin and validator they came from; a resume is asked for only from the
 //! same origin with `If-Range`, and anything unexpected starts again from zero.
 //! The whole part is always hashed before publication, so a part is only ever
@@ -10,8 +11,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -29,6 +31,16 @@ const RECORD_GAP: Duration = Duration::from_secs(1);
 /// Kept bytes are hashed in pieces of this size, with an await between them.
 const PREFIX_CHUNK: u64 = 8 * 1024 * 1024;
 const EXTENSIONS: [&str; 4] = ["part", "json", "json.tmp", "lock"];
+/// Files at least this large are fetched as several ranges at once.
+pub(crate) const SEGMENT_MIN: u64 = 16 * 1024 * 1024;
+/// Requests per file at most, the first one included.
+pub(crate) const SEGMENTS: usize = 4;
+/// A segment is never smaller than this.
+const SEGMENT_FLOOR: u64 = 4 * 1024 * 1024;
+/// A sidecar records at most this many separate ranges.
+const RANGES_MAX: usize = 64;
+/// The file was received in several ranges and some are still missing.
+pub(crate) const SEGMENTS_UNFINISHED: &str = "分段下载未完成";
 pub(crate) const RANGE_MISMATCH: &str = "续传响应的范围与请求不符";
 /// The answer declares another size than the metadata: no retry changes that.
 pub(crate) const SIZE_MISMATCH: &str = "下载大小与元数据不一致";
@@ -114,6 +126,7 @@ pub(crate) fn origin(url: &reqwest::Url) -> String {
     url.origin().ascii_serialization()
 }
 
+/// The record of a part received from the start: `done` bytes in place.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Sidecar {
@@ -121,6 +134,108 @@ struct Sidecar {
     size: u64,
     done: u64,
     validator: Validator,
+}
+
+/// The record of a part received in separate ranges (version 2), written
+/// only when a range is missing before another one: a part from the start
+/// keeps version 1.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SidecarRanges {
+    version: u32,
+    size: u64,
+    received: Vec<[u64; 2]>,
+    validator: Validator,
+}
+
+/// Sorted, separate, non-empty ranges within `size` and the file length, or
+/// None.
+fn checked_ranges(received: &[[u64; 2]], size: u64, length: u64) -> Option<Vec<(u64, u64)>> {
+    if received.is_empty() || received.len() > RANGES_MAX {
+        return None;
+    }
+    let mut ranges: Vec<(u64, u64)> = Vec::with_capacity(received.len());
+    for &[start, end] in received {
+        if start >= end || end > size || end > length || ranges.last().is_some_and(|&(_, last)| start <= last) {
+            return None;
+        }
+        ranges.push((start, end));
+    }
+    Some(ranges)
+}
+
+/// Adds `[start, end)` to sorted, separate ranges, merging what touches it.
+fn insert_range(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
+    if start >= end {
+        return;
+    }
+    let (mut start, mut end) = (start, end);
+    let mut kept = Vec::with_capacity(ranges.len() + 1);
+    for &(from, to) in ranges.iter() {
+        if to < start || from > end {
+            kept.push((from, to));
+        } else {
+            start = start.min(from);
+            end = end.max(to);
+        }
+    }
+    let at = kept.partition_point(|&(from, _)| from < start);
+    kept.insert(at, (start, end));
+    *ranges = kept;
+}
+
+/// The bytes of `[0, size)` not covered by `ranges`.
+fn gaps(ranges: &[(u64, u64)], size: u64) -> Vec<(u64, u64)> {
+    let mut gaps = Vec::new();
+    let mut at = 0;
+    for &(from, to) in ranges {
+        if from > at {
+            gaps.push((at, from));
+        }
+        at = at.max(to);
+    }
+    if at < size {
+        gaps.push((at, size));
+    }
+    gaps
+}
+
+/// Writes all of `bytes` at `offset`, whatever the file position.
+fn write_at(file: &fs::File, mut offset: u64, mut bytes: &[u8]) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        while !bytes.is_empty() {
+            let written = file.seek_write(bytes, offset)?;
+            if written == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            bytes = &bytes[written..];
+            offset += written as u64;
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        let _ = &mut bytes;
+        let _ = &mut offset;
+        file.write_all_at(bytes, offset)
+    }
+}
+
+/// Reads up to `buffer.len()` bytes at `offset`, whatever the file position.
+fn read_at(file: &fs::File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        file.seek_read(buffer, offset)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_at(buffer, offset)
+    }
 }
 
 /// What a response to a part request means for the part.
@@ -144,6 +259,18 @@ pub(crate) fn classify(status: u16, content_range: Option<&str>, offset: u64, si
     match status {
         200 => Reply::Restart,
         206 if offset > 0 && exact => Reply::Continue,
+        206 | 416 => Reply::Discard(RANGE_MISMATCH.into()),
+        status => Reply::Fail(format!("下载失败（HTTP {status}）")),
+    }
+}
+
+/// Classifies a response to a request for `from..=to` of a `size`-byte file:
+/// only a 206 for exactly those bytes continues.
+pub(crate) fn classify_range(status: u16, content_range: Option<&str>, from: u64, to: u64, size: u64) -> Reply {
+    let exact = size > 0 && to < size && content_range == Some(format!("bytes {from}-{to}/{size}").as_str());
+    match status {
+        200 => Reply::Restart,
+        206 if exact => Reply::Continue,
         206 | 416 => Reply::Discard(RANGE_MISMATCH.into()),
         status => Reply::Fail(format!("下载失败（HTTP {status}）")),
     }
@@ -177,35 +304,46 @@ impl PartStore {
             Err(fs::TryLockError::WouldBlock) => return Ok(None),
             Err(fs::TryLockError::Error(error)) => return Err(error),
         }
-        let mut part = fs::OpenOptions::new()
+        let part = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(key.file(&self.root, "part"))?;
         let length = part.metadata()?.len();
-        let (done, validator) = match read_sidecar(&key.file(&self.root, "json")) {
+        let sidecar = key.file(&self.root, "json");
+        let (received, validator) = match read_sidecar(&sidecar) {
             Some(record) if record.version == 1 && record.size == size && record.done <= size && record.done <= length => {
-                (record.done, record.validator)
+                (if record.done > 0 { vec![(0, record.done)] } else { Vec::new() }, record.validator)
             }
-            _ => (0, Validator::default()),
+            Some(_) => (Vec::new(), Validator::default()),
+            None => match read_ranges(&sidecar) {
+                Some(record) if record.version == 2 && record.size == size => {
+                    match checked_ranges(&record.received, size, length) {
+                        Some(ranges) => (ranges, record.validator),
+                        None => (Vec::new(), Validator::default()),
+                    }
+                }
+                _ => (Vec::new(), Validator::default()),
+            },
         };
-        // Bytes past the record were never confirmed.
-        if length != done {
-            part.set_len(done)?;
+        // Bytes past the last recorded range were never confirmed.
+        let end = received.last().map_or(0, |&(_, end)| end);
+        if length != end {
+            part.set_len(end)?;
         }
-        part.seek(SeekFrom::Start(done))?;
         Ok(Some(ResumablePart {
             root: self.root.clone(),
             key: key.clone(),
             size,
             lock: Some(lock),
             part: Some(part),
-            done,
+            received,
             validator,
             unrecorded: 0,
             last_record: Instant::now(),
             restarts: 0,
+            whole_only: false,
             finished: false,
         }))
     }
@@ -280,7 +418,7 @@ impl PartStore {
         if fs::rename(file, key.file(&self.root, "part")).is_err() {
             return false;
         }
-        part.done = size;
+        part.received = vec![(0, size)];
         part.validator = Validator::default();
         part.record().is_ok()
     }
@@ -464,13 +602,21 @@ fn ordinary_tree(path: &Path) -> bool {
 }
 
 fn read_sidecar(path: &Path) -> Option<Sidecar> {
+    serde_json::from_str(&read_record(path)?).ok()
+}
+
+fn read_ranges(path: &Path) -> Option<SidecarRanges> {
+    serde_json::from_str(&read_record(path)?).ok()
+}
+
+fn read_record(path: &Path) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
     if file.metadata().ok()?.len() > SIDECAR_MAX {
         return None;
     }
     let mut text = String::new();
     file.read_to_string(&mut text).ok()?;
-    serde_json::from_str(&text).ok()
+    Some(text)
 }
 
 /// A part this download holds until it is published, discarded or dropped.
@@ -481,12 +627,15 @@ pub(crate) struct ResumablePart {
     size: u64,
     lock: Option<fs::File>,
     part: Option<fs::File>,
-    done: u64,
+    /// Sorted, separate ranges in place.
+    received: Vec<(u64, u64)>,
     validator: Validator,
     unrecorded: u64,
     last_record: Instant,
     /// Times kept bytes were thrown away for a whole-file response.
     restarts: u32,
+    /// The server refused a segment: this download is not split again.
+    whole_only: bool,
     finished: bool,
 }
 
@@ -499,72 +648,92 @@ impl ResumablePart {
 
     /// What an attempt is judged by.
     pub(crate) fn mark(&self) -> Mark {
-        Mark { restarts: self.restarts, done: self.done, origin: self.validator.origin.clone() }
+        Mark { restarts: self.restarts, done: self.done(), origin: self.validator.origin.clone() }
     }
 
     /// Whether the kept bytes came from another origin than `origin`.
     pub(crate) fn holds_bytes_from_another(&self, origin: &str) -> bool {
-        self.done > 0 && self.validator.origin != origin
+        self.done() > 0 && self.validator.origin != origin
     }
 
-    /// Bytes already in place.
+    /// Bytes already in place, wherever they are.
     pub(crate) fn done(&self) -> u64 {
-        self.done
+        self.received.iter().map(|(from, to)| to - from).sum()
+    }
+
+    /// Bytes in place from the start of the file without a gap.
+    fn prefix(&self) -> u64 {
+        match self.received.first() {
+            Some(&(0, end)) => end,
+            _ => 0,
+        }
     }
 
     /// Whether every byte is in place (only the check is left).
     pub(crate) fn complete(&self) -> bool {
-        self.done == self.size
+        self.received == [(0, self.size)]
     }
 
-    /// The Range start and `If-Range` value for a request to `origin`, or None
-    /// to ask for the whole file (nothing kept, another origin, no validator).
+    /// The bytes still missing.
+    fn missing(&self) -> Vec<(u64, u64)> {
+        gaps(&self.received, self.size)
+    }
+
+    /// The Range start (the first missing byte) and `If-Range` value for a
+    /// request to `origin`, or None to ask for the whole file (nothing kept,
+    /// another origin, no validator).
     pub(crate) fn resume_for(&self, origin: &str) -> Option<(u64, String)> {
-        if self.done == 0 || self.done >= self.size || self.validator.origin != origin {
+        if self.received.is_empty() || self.complete() || self.validator.origin != origin {
             return None;
         }
-        self.validator.if_range().map(|value| (self.done, value.to_owned()))
+        let start = self.missing().first().map_or(self.size, |&(start, _)| start);
+        self.validator.if_range().map(|value| (start, value.to_owned()))
     }
 
-    fn file(&mut self) -> &mut fs::File {
-        self.part.as_mut().expect("the part stays open until it is published or discarded")
+    fn file(&self) -> &fs::File {
+        self.part.as_ref().expect("the part stays open until it is published or discarded")
     }
 
     /// Starts the part again from zero for a whole-file response.
     pub(crate) fn restart(&mut self, validator: Validator) -> io::Result<()> {
         // Bytes from another origin could never be continued from this one, so
         // starting over loses nothing (as with an empty part).
-        if self.done > 0 && self.validator.origin == validator.origin {
+        if self.done() > 0 && self.validator.origin == validator.origin {
             self.restarts += 1;
         }
         self.file().set_len(0)?;
-        self.file().seek(SeekFrom::Start(0))?;
-        self.done = 0;
+        self.received.clear();
         self.validator = validator;
         self.record()
     }
 
     /// Feeds up to `max` kept bytes from `from` to `hash` and returns how
-    /// many it read (0 once every kept byte was read); the write position is
-    /// left at the end of the kept bytes. Callers await between pieces, so a
-    /// long prefix never holds up cancel or the task's other downloads.
+    /// many it read (0 once every byte kept from the start was read).
+    /// Callers await between pieces, so a long prefix never holds up cancel
+    /// or the task's other downloads.
     pub(crate) fn hash_prefix_chunk(&mut self, from: u64, max: u64, hash: &mut dyn FnMut(&[u8])) -> io::Result<u64> {
-        let done = self.done;
+        let to = self.prefix();
+        self.hash_chunk(from, to, max, hash)
+    }
+
+    /// Feeds up to `max` bytes of `[from, to)` to `hash` and returns how many
+    /// it read.
+    fn hash_chunk(&self, from: u64, to: u64, max: u64, hash: &mut dyn FnMut(&[u8])) -> io::Result<u64> {
         let file = self.file();
-        file.seek(SeekFrom::Start(from))?;
-        let total = max.min(done.saturating_sub(from));
+        let total = max.min(to.saturating_sub(from));
         let mut remaining = total;
+        let mut at = from;
         let mut buffer = vec![0u8; 128 * 1024];
         while remaining > 0 {
             let want = buffer.len().min(usize::try_from(remaining).unwrap_or(usize::MAX));
-            let read = file.read(&mut buffer[..want])?;
+            let read = read_at(file, &mut buffer[..want], at)?;
             if read == 0 {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "下载分片比记录短"));
             }
             hash(&buffer[..read]);
             remaining -= read as u64;
+            at += read as u64;
         }
-        file.seek(SeekFrom::Start(done))?;
         Ok(total)
     }
 
@@ -581,13 +750,20 @@ impl ResumablePart {
         }
     }
 
-    /// Appends received bytes; the record is rewritten every few MiB.
+    /// Appends received bytes after those kept from the start.
     pub(crate) fn append(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if self.done + bytes.len() as u64 > self.size {
+        let at = self.prefix();
+        self.write(at, bytes)
+    }
+
+    /// Writes received bytes at `offset`; the record is rewritten every few MiB.
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        let end = offset + bytes.len() as u64;
+        if end > self.size {
             return Err(io::Error::other(OVERRUN));
         }
-        self.file().write_all(bytes)?;
-        self.done += bytes.len() as u64;
+        write_at(self.file(), offset, bytes)?;
+        insert_range(&mut self.received, offset, end);
         self.unrecorded += bytes.len() as u64;
         Ok(())
     }
@@ -604,12 +780,49 @@ impl ResumablePart {
         self.record()
     }
 
+    /// The ranges in place (tests).
+    #[cfg(test)]
+    pub(crate) fn received(&self) -> &[(u64, u64)] {
+        &self.received
+    }
+
+    /// Writes bytes at an offset (tests: a part left with a gap).
+    #[cfg(test)]
+    pub(crate) fn write_test(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        self.write(offset, bytes)
+    }
+
     fn record(&mut self) -> io::Result<()> {
+        let ranges = self.received.clone();
+        self.record_ranges(&ranges)
+    }
+
+    /// Records `ranges` (bytes known to be on disk): version 1 for bytes from
+    /// the start, version 2 for separate ranges. Past the range limit only
+    /// the bytes from the start are recorded.
+    fn record_ranges(&mut self, ranges: &[(u64, u64)]) -> io::Result<()> {
         self.unrecorded = 0;
         self.last_record = Instant::now();
-        let record = Sidecar { version: 1, size: self.size, done: self.done, validator: self.validator.clone() };
+        let bytes = match ranges {
+            [] => serde_json::to_vec(&Sidecar { version: 1, size: self.size, done: 0, validator: self.validator.clone() }),
+            [(0, done)] => serde_json::to_vec(&Sidecar { version: 1, size: self.size, done: *done, validator: self.validator.clone() }),
+            ranges if ranges.len() <= RANGES_MAX => serde_json::to_vec(&SidecarRanges {
+                version: 2,
+                size: self.size,
+                received: ranges.iter().map(|&(from, to)| [from, to]).collect(),
+                validator: self.validator.clone(),
+            }),
+            ranges => {
+                let done = match ranges.first() {
+                    Some(&(0, end)) => end,
+                    _ => 0,
+                };
+                serde_json::to_vec(&Sidecar { version: 1, size: self.size, done, validator: self.validator.clone() })
+            }
+        }
+        .map_err(io::Error::other)?;
         let temporary = self.key.file(&self.root, "json.tmp");
-        fs::write(&temporary, serde_json::to_vec(&record).map_err(io::Error::other)?)?;
+        fs::write(&temporary, bytes)?;
         fs::rename(&temporary, self.key.file(&self.root, "json"))
     }
 
@@ -780,6 +993,53 @@ pub(crate) trait Hooks {
     fn checkpoint(&self) -> impl std::future::Future<Output = Result<(), String>>;
     fn throttle(&self, bytes: usize) -> impl std::future::Future<Output = Result<(), String>>;
     fn stall_limit(&self) -> Duration;
+    /// The connections a transfer takes its permits from; None: unlimited,
+    /// and never segmented.
+    fn connections(&self) -> Option<&crate::downloads::Connections> {
+        None
+    }
+    /// The bytes in place after each write, wherever they landed: progress
+    /// that does not wait for the in-order hash.
+    fn received(&self, _done: u64) {}
+}
+
+/// `hooks`, reporting the bytes in place to `report`.
+pub(crate) struct Reporting<'a, H> {
+    pub(crate) hooks: &'a H,
+    pub(crate) report: &'a (dyn Fn(u64) + Sync),
+}
+
+impl<H: Hooks + Sync> Hooks for Reporting<'_, H> {
+    async fn cancellable<F: std::future::Future>(&self, future: F) -> Result<F::Output, String> {
+        self.hooks.cancellable(future).await
+    }
+    async fn checkpoint(&self) -> Result<(), String> {
+        self.hooks.checkpoint().await
+    }
+    async fn throttle(&self, bytes: usize) -> Result<(), String> {
+        self.hooks.throttle(bytes).await
+    }
+    fn stall_limit(&self) -> Duration {
+        self.hooks.stall_limit()
+    }
+    fn connections(&self) -> Option<&crate::downloads::Connections> {
+        self.hooks.connections()
+    }
+    fn received(&self, done: u64) {
+        (self.report)(done);
+    }
+}
+
+/// A permit for one request in flight, waited for cancellably; None when the
+/// caller has no connection limit.
+pub(crate) async fn connection<H: Hooks>(hooks: &H) -> Result<Option<crate::downloads::ConnectionPermit<'_>>, String> {
+    let permit = match hooks.connections() {
+        Some(connections) => Some(hooks.cancellable(connections.acquire()).await?),
+        None => None,
+    };
+    // A pause that began while waiting holds the request back.
+    hooks.checkpoint().await?;
+    Ok(permit)
 }
 
 /// `future`, cancellable, failing when nothing arrives for the stall limit.
@@ -792,8 +1052,10 @@ pub(crate) async fn within_stall<H: Hooks, F: std::future::Future>(hooks: &H, fu
 
 /// One attempt to bring the part in `slot` to `size` bytes from `requested`.
 /// Asks for the rest with `Range` and `If-Range` when the part came from the
-/// same origin, appends a 206 for exactly that range, starts again on a 200,
-/// and discards the part on any other range answer. `hash` sees every byte of
+/// same origin, writes a 206 for exactly that range, starts again on a 200,
+/// and discards the part on any other range answer. A file of `SEGMENT_MIN`
+/// or more whose server takes ranges is fetched in up to `SEGMENTS` ranges at
+/// once, the extra ones only on spare connections. `hash` sees every byte of
 /// the finished part in order. The caller checks the hash and publishes.
 pub(crate) async fn transfer<H: Hooks>(
     request: reqwest::RequestBuilder,
@@ -808,16 +1070,20 @@ pub(crate) async fn transfer<H: Hooks>(
     let part = slot.as_mut().ok_or("下载分片不可用")?;
     if part.complete() {
         // Everything arrived last time; only the check is left.
-        return hash_kept(part, hooks, hash).await;
+        return hash_kept(part, 0, size, hooks, hash).await;
     }
     let resume = part.resume_for(&origin(requested));
     let offset = resume.as_ref().map_or(0, |(offset, _)| *offset);
-    let mut request = request.timeout(TRANSFER_TIMEOUT);
+    let base = request.timeout(TRANSFER_TIMEOUT);
+    // Segments are the same request with another Range.
+    let extra = base.try_clone();
+    let mut request = base;
     if let Some((offset, validator)) = &resume {
         request = request
             .header(reqwest::header::RANGE, format!("bytes={offset}-"))
             .header(reqwest::header::IF_RANGE, validator.as_str());
     }
+    let main = connection(hooks).await?;
     let response = within_stall(hooks, request.send())
         .await?
         // reqwest errors print the request URL; keep it (and any signed query) out of logs.
@@ -827,14 +1093,21 @@ pub(crate) async fn transfer<H: Hooks>(
         .get(reqwest::header::CONTENT_RANGE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    match classify(response.status().as_u16(), content_range.as_deref(), offset, size) {
-        Reply::Continue => {}
+    let status = response.status().as_u16();
+    let reply = match &resume {
+        // A gap at the start (bytes kept further on): `bytes=0-` was sent.
+        Some(_) if offset == 0 => classify_range(status, content_range.as_deref(), 0, size - 1, size),
+        _ => classify(status, content_range.as_deref(), offset, size),
+    };
+    let offset = match reply {
+        Reply::Continue => offset,
         Reply::Restart => {
             check(&response)?;
             if response.content_length().is_some_and(|length| length != size) {
                 return Err(SIZE_MISMATCH.into());
             }
             part.restart(Validator::of(requested, response.headers())).map_err(io)?;
+            0
         }
         Reply::Discard(message) => {
             if let Some(part) = slot.take() {
@@ -843,31 +1116,464 @@ pub(crate) async fn transfer<H: Hooks>(
             return Err(message);
         }
         Reply::Fail(message) => return Err(message),
-    }
+    };
     let part = slot.as_mut().ok_or("下载分片不可用")?;
-    if part.done() > 0 {
+    if offset > 0 || part.done() > 0 {
         check(&response)?;
-        if response.content_length().is_some_and(|length| length != size - part.done()) {
+        if response.content_length().is_some_and(|length| length != size - offset) {
             return Err("续传响应的长度与请求不符".into());
         }
-        hash_kept(part, hooks, &mut *hash).await?;
     }
+    hooks.received(part.done());
+    let accepts = status == 206
+        || response
+            .headers()
+            .get(reqwest::header::ACCEPT_RANGES)
+            .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"bytes"));
+    let helpers = match (hooks.connections(), part.validator.if_range().is_some(), extra) {
+        (Some(connections), true, Some(extra)) if size >= SEGMENT_MIN && accepts && !part.whole_only => {
+            let missing: u64 = part.missing().iter().map(|(from, to)| to - from).sum();
+            let wanted = usize::try_from(missing / SEGMENT_FLOOR).unwrap_or(usize::MAX).saturating_sub(1).min(SEGMENTS - 1);
+            let permits: Vec<_> = std::iter::from_fn(|| connections.try_acquire_spare()).take(wanted).collect();
+            (!permits.is_empty()).then(|| (permits, extra, part.validator.clone()))
+        }
+        _ => None,
+    };
+    if let Some((permits, extra, validator)) = helpers {
+        let segmenting = Segmenting { permits, main, extra, validator, requested, check };
+        return segmented(part, response, offset, segmenting, hooks, hash).await;
+    }
+    hash_kept(part, 0, offset, hooks, &mut *hash).await?;
+    let mut at = offset;
     let mut chunks = response.bytes_stream();
     while let Some(chunk) = within_stall(hooks, futures_util::StreamExt::next(&mut chunks)).await? {
         hooks.checkpoint().await?;
         let chunk = chunk.map_err(|error| error.without_url().to_string())?;
-        part.append(&chunk).map_err(io)?;
+        part.write(at, &chunk).map_err(io)?;
+        at += chunk.len() as u64;
+        hooks.received(part.done());
         hash(&chunk);
         if part.record_due() {
             durable(part, false).await.map_err(io)?;
         }
         hooks.throttle(chunk.len()).await?;
     }
+    drop(main);
     durable(part, true).await.map_err(io)?;
     if !part.complete() {
         return Err("下载在预期大小之前结束".into());
     }
+    // The answer may end where bytes kept from before begin: they are
+    // hashed from the part, so the hash still covers every byte in order.
+    hash_kept(part, at, size, hooks, &mut *hash).await
+}
+
+/// What the extra segments of a transfer are made from.
+struct Segmenting<'a, 'c> {
+    permits: Vec<crate::downloads::ConnectionPermit<'c>>,
+    /// The first request's permit, for what is fetched after the segments.
+    main: Option<crate::downloads::ConnectionPermit<'c>>,
+    extra: reqwest::RequestBuilder,
+    /// The version the first response belongs to.
+    validator: Validator,
+    requested: &'a reqwest::Url,
+    check: &'a (dyn Fn(&reqwest::Response) -> Result<(), String> + Sync),
+}
+
+/// A missing range and who is fetching it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Piece {
+    start: u64,
+    end: u64,
+    state: PieceState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PieceState {
+    Free,
+    Taken,
+    Done,
+}
+
+/// Splits the missing ranges into pieces of about an equal share for
+/// `workers`, each within one gap; a remainder smaller than `floor` stays
+/// with the piece before it.
+fn plan_pieces(missing: &[(u64, u64)], workers: usize, floor: u64) -> Vec<Piece> {
+    let total: u64 = missing.iter().map(|(from, to)| to - from).sum();
+    let share = total.div_ceil(workers.max(1) as u64).max(1);
+    let mut pieces = Vec::new();
+    for &(from, to) in missing {
+        let mut start = from;
+        while start < to {
+            let mut end = (start + share).min(to);
+            if to - end < floor {
+                end = to;
+            }
+            pieces.push(Piece { start, end, state: PieceState::Free });
+            start = end;
+        }
+    }
+    pieces
+}
+
+/// Whether a segment's answer belongs to the version `stored` describes:
+/// the same strong tag, or (for a date) no other date.
+fn same_version(stored: &Validator, answered: &Validator) -> bool {
+    match &stored.etag {
+        Some(tag) => answered.etag.as_deref() == Some(tag.as_str()),
+        // A 206 need not repeat the date, but a strong tag where the
+        // first answer had none is another version.
+        None => {
+            stored.last_modified.is_some()
+                && answered.etag.is_none()
+                && (answered.last_modified.is_none() || answered.last_modified == stored.last_modified)
+        }
+    }
+}
+
+/// The part, the pieces, and whether the server refused a segment.
+struct Shared<'p> {
+    part: std::sync::Mutex<&'p mut ResumablePart>,
+    pieces: std::sync::Mutex<Vec<Piece>>,
+    refused: AtomicBool,
+    recording: AtomicBool,
+    /// A segment's answer failed the caller's check (an untrusted host): the
+    /// transfer fails as a single stream would.
+    untrusted: std::sync::Mutex<Option<String>>,
+}
+
+impl<'p> Shared<'p> {
+    fn part(&self) -> std::sync::MutexGuard<'_, &'p mut ResumablePart> {
+        self.part.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn pieces(&self) -> std::sync::MutexGuard<'_, Vec<Piece>> {
+        self.pieces.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The first free piece of at least the segment floor, now taken;
+    /// smaller ones are left to the first response and what follows it.
+    fn take_free(&self) -> Option<(u64, u64)> {
+        let mut pieces = self.pieces();
+        let piece = pieces.iter_mut().find(|piece| piece.state == PieceState::Free && piece.end - piece.start >= SEGMENT_FLOOR)?;
+        piece.state = PieceState::Taken;
+        Some((piece.start, piece.end))
+    }
+
+    /// The piece starting at `start` stopped at `reached`: what is left of it
+    /// is free again.
+    fn release(&self, start: u64, reached: u64) {
+        let mut pieces = self.pieces();
+        if let Some(piece) = pieces.iter_mut().find(|piece| piece.start == start) {
+            if reached >= piece.end {
+                piece.state = PieceState::Done;
+            } else {
+                piece.start = reached.max(piece.start);
+                piece.state = PieceState::Free;
+            }
+        }
+    }
+
+    /// Writes received bytes and reports the bytes in place.
+    fn write<H: Hooks>(&self, at: u64, bytes: &[u8], hooks: &H) -> io::Result<()> {
+        let done = {
+            let mut part = self.part();
+            part.write(at, bytes)?;
+            part.done()
+        };
+        hooks.received(done);
+        Ok(())
+    }
+
+    /// Records the ranges in place when due, one worker at a time: the
+    /// ranges are taken before the flush, so only flushed bytes are recorded.
+    async fn record_if_due(&self) -> io::Result<()> {
+        let (file, ranges) = {
+            let part = self.part();
+            if !part.record_due() || self.recording.swap(true, Ordering::SeqCst) {
+                return Ok(());
+            }
+            (part.file().try_clone(), part.received.clone())
+        };
+        let flushed = match file {
+            Ok(file) => tokio::task::spawn_blocking(move || file.sync_data()).await.map_err(io::Error::other).and_then(|result| result),
+            Err(error) => Err(error),
+        };
+        let recorded = flushed.and_then(|()| self.part().record_ranges(&ranges));
+        self.recording.store(false, Ordering::SeqCst);
+        recorded
+    }
+}
+
+/// The rest of a transfer in several ranges: the first response carries the
+/// first piece and runs on into the next free ones; each extra permit
+/// fetches free pieces with a closed `Range` and `If-Range`. A segment the
+/// server does not answer exactly is given up without touching the part.
+/// What is still missing afterwards comes in one stream on the first
+/// connection. Nothing is hashed until every byte is in place (segments land
+/// out of order and a piece may be written twice): then the whole part is
+/// hashed in order from disk, so the hash covers exactly what is published.
+async fn segmented<H: Hooks>(
+    part: &mut ResumablePart,
+    response: reqwest::Response,
+    offset: u64,
+    segmenting: Segmenting<'_, '_>,
+    hooks: &H,
+    hash: &mut (dyn FnMut(&[u8]) + Send),
+) -> Result<(), String> {
+    let io = |error: io::Error| error.to_string();
+    let size = part.size;
+    let Segmenting { permits, main, extra, validator, requested, check } = segmenting;
+    let mut pieces = plan_pieces(&part.missing(), permits.len() + 1, SEGMENT_FLOOR);
+    if let Some(first) = pieces.first_mut() {
+        first.state = PieceState::Taken;
+    }
+    // Writing far past the end makes Windows fill the gap with zeros inside
+    // that write: do it once, off the task, before the segments start. The
+    // byte lies in a missing range, so a segment overwrites it.
+    let last = pieces.iter().map(|piece| piece.start).max().unwrap_or(0);
+    if part.file().metadata().map_err(io)?.len() < last {
+        let file = part.file().try_clone().map_err(io)?;
+        tokio::task::spawn_blocking(move || write_at(&file, last - 1, &[0]))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(io)?;
+    }
+    let shared = Shared {
+        part: std::sync::Mutex::new(part),
+        pieces: std::sync::Mutex::new(pieces),
+        refused: AtomicBool::new(false),
+        recording: AtomicBool::new(false),
+        untrusted: std::sync::Mutex::new(None),
+    };
+    let fetcher = Fetcher { shared: &shared, extra: &extra, validator: &validator, requested, check, size };
+    let helpers = permits.into_iter().map(|permit| fetcher.helper(permit, hooks));
+    let (first, _) = futures_util::future::join(fetcher.first(response, offset, hooks), futures_util::future::join_all(helpers)).await;
+    let refused = shared.refused.load(Ordering::SeqCst);
+    let untrusted = shared.untrusted.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let part = shared.part.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    part.whole_only |= refused;
+    // A cancel ends every segment and the transfer. Otherwise what is still
+    // missing (a refused or broken segment, or a first response that broke
+    // off) comes in one more stream; the first response's own failure no
+    // longer matters once that has run.
+    let _ = first;
+    let mut failure = hooks.checkpoint().await.err().or(untrusted);
+    if failure.is_none() && !part.complete() {
+        failure = continue_rest(part, &extra, &validator, requested, check, hooks).await.err();
+        if let Err(cancelled) = hooks.checkpoint().await {
+            failure = Some(cancelled);
+        }
+    }
+    drop(main);
+    durable(part, true).await.map_err(io)?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    if !part.complete() {
+        return Err(SEGMENTS_UNFINISHED.into());
+    }
+    hash_kept(part, 0, size, hooks, hash).await
+}
+
+/// One stream from the first missing byte to the end (after the segments),
+/// as a single-stream transfer would continue; a whole-file answer starts
+/// the part again. Nothing is hashed here.
+async fn continue_rest<H: Hooks>(
+    part: &mut ResumablePart,
+    extra: &reqwest::RequestBuilder,
+    validator: &Validator,
+    requested: &reqwest::Url,
+    check: &(dyn Fn(&reqwest::Response) -> Result<(), String> + Sync),
+    hooks: &H,
+) -> Result<(), String> {
+    let io = |error: io::Error| error.to_string();
+    let size = part.size;
+    let Some(&(from, _)) = part.missing().first() else { return Ok(()) };
+    hooks.checkpoint().await?;
+    let request = extra
+        .try_clone()
+        .ok_or("下载请求无法复制")?
+        .header(reqwest::header::RANGE, format!("bytes={from}-"))
+        .header(reqwest::header::IF_RANGE, validator.if_range().unwrap_or_default());
+    let response = within_stall(hooks, request.send()).await?.map_err(|error| error.without_url().to_string())?;
+    let content_range = response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|value| value.to_str().ok()).map(str::to_owned);
+    let mut at = match classify_range(response.status().as_u16(), content_range.as_deref(), from, size - 1, size) {
+        Reply::Continue => {
+            check(&response)?;
+            if response.content_length().is_some_and(|length| length != size - from) {
+                return Err("续传响应的长度与请求不符".into());
+            }
+            from
+        }
+        Reply::Restart => {
+            check(&response)?;
+            if response.content_length().is_some_and(|length| length != size) {
+                return Err(SIZE_MISMATCH.into());
+            }
+            part.restart(Validator::of(requested, response.headers())).map_err(io)?;
+            0
+        }
+        Reply::Discard(message) => {
+            // The server disagrees about the bytes kept: they are thrown away.
+            part.restart(Validator::default()).map_err(io)?;
+            return Err(message);
+        }
+        Reply::Fail(message) => return Err(message),
+    };
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = within_stall(hooks, futures_util::StreamExt::next(&mut chunks)).await? {
+        hooks.checkpoint().await?;
+        let chunk = chunk.map_err(|error| error.without_url().to_string())?;
+        part.write(at, &chunk).map_err(io)?;
+        at += chunk.len() as u64;
+        hooks.received(part.done());
+        if part.record_due() {
+            durable(part, false).await.map_err(io)?;
+        }
+        hooks.throttle(chunk.len()).await?;
+    }
     Ok(())
+}
+
+/// Fetches the pieces of one segmented transfer.
+struct Fetcher<'s, 'p, 'a> {
+    shared: &'s Shared<'p>,
+    extra: &'a reqwest::RequestBuilder,
+    validator: &'a Validator,
+    requested: &'a reqwest::Url,
+    check: &'a (dyn Fn(&reqwest::Response) -> Result<(), String> + Sync),
+    size: u64,
+}
+
+impl Fetcher<'_, '_, '_> {
+    /// The first response, from `offset`: its piece, then each next piece
+    /// while nobody has it. It never writes past the piece it holds.
+    async fn first<H: Hooks>(&self, response: reqwest::Response, offset: u64, hooks: &H) -> Result<(), String> {
+        let io = |error: io::Error| error.to_string();
+        let mut piece = offset;
+        let mut end = self.shared.pieces().first().map_or(self.size, |piece| piece.end);
+        let mut at = offset;
+        let mut rest = None;
+        let mut chunks = response.bytes_stream();
+        let result = async {
+            loop {
+                if at >= end {
+                    // Run on into the next piece if nobody has it (bytes
+                    // before it are already in place and arrive again).
+                    let mut pieces = self.shared.pieces();
+                    if let Some(done) = pieces.iter_mut().find(|candidate| candidate.start == piece) {
+                        done.state = PieceState::Done;
+                    }
+                    match pieces.iter_mut().find(|candidate| candidate.start >= at && candidate.state != PieceState::Done) {
+                        Some(next) if next.state == PieceState::Free => {
+                            next.state = PieceState::Taken;
+                            piece = next.start;
+                            end = next.end;
+                        }
+                        _ => return Ok(()),
+                    }
+                }
+                let chunk = match rest.take() {
+                    Some(chunk) => chunk,
+                    None => {
+                        let Some(chunk) = within_stall(hooks, futures_util::StreamExt::next(&mut chunks)).await? else {
+                            return Err("下载在预期大小之前结束".to_owned());
+                        };
+                        hooks.checkpoint().await?;
+                        chunk.map_err(|error| error.without_url().to_string())?
+                    }
+                };
+                // Up to the end of this piece; the rest waits for the next one.
+                let room = usize::try_from(end - at).unwrap_or(usize::MAX);
+                let chunk = if chunk.len() > room {
+                    rest = Some(chunk.slice(room..));
+                    chunk.slice(..room)
+                } else {
+                    chunk
+                };
+                self.shared.write(at, &chunk, hooks).map_err(io)?;
+                at += chunk.len() as u64;
+                self.shared.record_if_due().await.map_err(io)?;
+                hooks.throttle(chunk.len()).await?;
+            }
+        }
+        .await;
+        if result.is_err() {
+            self.shared.release(piece, at);
+        }
+        result
+    }
+
+    /// An extra segment: free pieces, one after another, on its own permit.
+    /// Every failure is local: the piece is free again and the segment ends.
+    async fn helper<H: Hooks>(&self, permit: crate::downloads::ConnectionPermit<'_>, hooks: &H) {
+        while let Some((from, to)) = self.shared.take_free() {
+            if self.fetch(from, to, hooks).await < to {
+                break;
+            }
+        }
+        drop(permit);
+    }
+
+    /// Fetches `[from, to)` (a taken piece) with a closed Range; returns how
+    /// far it got. A failure only ends this piece (a cancel is reported by
+    /// the transfer's own checkpoint).
+    async fn fetch<H: Hooks>(&self, from: u64, to: u64, hooks: &H) -> u64 {
+        let mut at = from;
+        let _ = self.fetch_into(from, to, &mut at, hooks).await;
+        self.shared.release(from, at);
+        at
+    }
+
+    /// Only an exact 206 from the same version is written; any other answer
+    /// marks the server as refusing ranges.
+    async fn fetch_into<H: Hooks>(&self, from: u64, to: u64, at: &mut u64, hooks: &H) -> Result<(), String> {
+        let refuse = |message: &str| -> Result<(), String> {
+            self.shared.refused.store(true, Ordering::SeqCst);
+            Err(message.to_owned())
+        };
+        let request = self
+            .extra
+            .try_clone()
+            .ok_or("下载请求无法复制")?
+            .header(reqwest::header::RANGE, format!("bytes={from}-{}", to - 1))
+            .header(reqwest::header::IF_RANGE, self.validator.if_range().unwrap_or_default());
+        hooks.checkpoint().await?;
+        let response = within_stall(hooks, request.send()).await?.map_err(|error| error.without_url().to_string())?;
+        let content_range = response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|value| value.to_str().ok()).map(str::to_owned);
+        match classify_range(response.status().as_u16(), content_range.as_deref(), from, to - 1, self.size) {
+            Reply::Continue => {}
+            // A failed request (a 5xx, a 429) says nothing about ranges.
+            Reply::Fail(message) => return Err(message),
+            Reply::Restart | Reply::Discard(_) => return refuse(RANGE_MISMATCH),
+        }
+        if response.content_length().is_some_and(|length| length != to - from) {
+            return refuse(RANGE_MISMATCH);
+        }
+        if let Err(error) = (self.check)(&response) {
+            self.shared.untrusted.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert(error.clone());
+            return Err(error);
+        }
+        // Another version answers If-Range with the whole file; a validator
+        // that differs anyway is refused too.
+        if !same_version(self.validator, &Validator::of(self.requested, response.headers())) {
+            return refuse(RANGE_MISMATCH);
+        }
+        let mut chunks = response.bytes_stream();
+        while let Some(chunk) = within_stall(hooks, futures_util::StreamExt::next(&mut chunks)).await? {
+            hooks.checkpoint().await?;
+            let chunk = chunk.map_err(|error| error.without_url().to_string())?;
+            if *at + chunk.len() as u64 > to {
+                return refuse(OVERRUN);
+            }
+            self.shared.write(*at, &chunk, hooks).map_err(|error| error.to_string())?;
+            *at += chunk.len() as u64;
+            self.shared.record_if_due().await.map_err(|error| error.to_string())?;
+            hooks.throttle(chunk.len()).await?;
+        }
+        Ok(())
+    }
 }
 
 /// Flushes the part on a blocking thread (the clone shares the open file, so
@@ -907,19 +1613,20 @@ pub(crate) fn wrote(before: Option<&Mark>, after: Option<&Mark>) -> bool {
     after.is_some_and(|after| after.done > 0 && before != Some(after))
 }
 
-/// Hashes the kept bytes a piece at a time, letting cancel, pause and the
-/// other downloads of the task run in between.
-async fn hash_kept<H: Hooks>(part: &mut ResumablePart, hooks: &H, hash: &mut (dyn FnMut(&[u8]) + Send)) -> Result<(), String> {
-    let mut from = 0;
-    loop {
-        let read = part.hash_prefix_chunk(from, PREFIX_CHUNK, hash).map_err(|error| error.to_string())?;
+/// Hashes the kept bytes of `[from, to)` a piece at a time, letting cancel,
+/// pause and the other downloads of the task run in between.
+async fn hash_kept<H: Hooks>(part: &mut ResumablePart, from: u64, to: u64, hooks: &H, hash: &mut (dyn FnMut(&[u8]) + Send)) -> Result<(), String> {
+    let mut from = from;
+    while from < to {
+        let read = part.hash_chunk(from, to, PREFIX_CHUNK, hash).map_err(|error| error.to_string())?;
         if read == 0 {
-            return Ok(());
+            return Err("下载分片比记录短".into());
         }
         from += read;
         hooks.checkpoint().await?;
         tokio::task::yield_now().await;
     }
+    Ok(())
 }
 
 #[cfg(test)]
