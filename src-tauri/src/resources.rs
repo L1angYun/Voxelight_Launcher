@@ -6347,7 +6347,7 @@ mod tests {
                 let entry_path = entry.path();
                 if entry_path.is_dir() {
                     pending.push(entry_path);
-                } else {
+                } else if !crate::parts::scanner_copy(&entry.file_name().to_string_lossy()) {
                     found.push(entry_path.strip_prefix(path).unwrap().to_string_lossy().replace('\\', "/"));
                 }
             }

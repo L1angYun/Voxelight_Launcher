@@ -20,7 +20,7 @@ impl Root {
     }
     fn names(&self) -> Vec<String> {
         let mut names: Vec<_> = fs::read_dir(self.path().join("parts"))
-            .map(|entries| entries.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect())
+            .map(|entries| entries.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| !scanner_copy(name)).collect())
             .unwrap_or_default();
         names.sort();
         names
@@ -178,7 +178,7 @@ fn publishing_replaces_the_target_and_works_across_volumes() {
         published.unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"0123456789", "force={force}");
         assert!(root.names().is_empty(), "force={force}: {:?}", root.names());
-        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).filter(|name| !scanner_copy(&name.to_string_lossy())).collect();
         assert_eq!(siblings.len(), 2, "only the target and the parts folder: {siblings:?}");
         fs::write(&target, b"stale").unwrap();
     }
@@ -219,7 +219,7 @@ fn the_part_store_refuses_a_linked_root() {
     let _ = fs::remove_dir(&link);
     assert!(result.is_err());
     assert_eq!(fs::read(&behind).unwrap(), b"keep", "nothing was removed through the junction");
-    assert_eq!(fs::read_dir(real.join("parts")).unwrap().count(), 1, "nothing was created through the junction");
+    assert_eq!(fs::read_dir(real.join("parts")).unwrap().flatten().filter(|entry| !scanner_copy(&entry.file_name().to_string_lossy())).count(), 1, "nothing was created through the junction");
 }
 
 #[test]
@@ -610,7 +610,7 @@ fn publishing_new_moves_a_verified_part_and_leaves_only_the_target() {
         published.unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"0123456789", "force={force}");
         assert!(root.names().is_empty(), "force={force}: {:?}", root.names());
-        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).filter(|name| !scanner_copy(&name.to_string_lossy())).collect();
         assert_eq!(siblings.len(), 2, "force={force}: only the target and the parts folder: {siblings:?}");
         fs::remove_file(&target).unwrap();
     }
@@ -632,7 +632,7 @@ fn publishing_new_never_replaces_an_existing_target_and_keeps_the_part() {
         FORCE_CROSS_VOLUME.with(|cell| cell.set(false));
         assert!(published.is_err(), "force={force}");
         assert_eq!(fs::read(&target).unwrap(), b"user bytes", "force={force}");
-        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).filter(|name| !scanner_copy(&name.to_string_lossy())).collect();
         assert_eq!(siblings.len(), 2, "force={force}: only the target and the parts folder: {siblings:?}");
         let part = store.open(&key(), SIZE).unwrap().expect("the part stays usable");
         assert_eq!(part.done(), SIZE, "force={force}: the verified bytes were kept");
@@ -665,7 +665,7 @@ fn publishing_new_off_the_task_keeps_the_cross_volume_path_and_refuses_an_existi
     FORCE_CROSS_VOLUME.with(|cell| cell.set(false));
     assert!(result.is_err());
     assert_eq!(fs::read(&target).unwrap(), b"user bytes");
-    let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).collect();
+    let siblings: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|entry| entry.file_name()).filter(|name| !scanner_copy(&name.to_string_lossy())).collect();
     assert_eq!(siblings.len(), 2, "only the target and the parts folder: {siblings:?}");
     let part = root.store().open(&key(), SIZE).unwrap().expect("the part stays usable");
     assert_eq!(part.done(), SIZE, "the verified bytes were kept");
@@ -768,7 +768,7 @@ fn part_folders_of_an_earlier_game_root_are_still_swept_at_startup() {
     fs::write(remembered_file(&data), br#"["relative/parts"]"#).unwrap();
     assert!(remembered(&data).is_empty());
     let leftovers: Vec<_> = fs::read_dir(data.join(".launcher-temp")).unwrap().flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+        .map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| !scanner_copy(name)).collect();
     assert_eq!(leftovers, [REMEMBERED], "no temporary file is left");
 }
 
@@ -1440,5 +1440,17 @@ fn every_one_go_file_request_waits_for_a_connection_first() {
         let waits = body.find(permit).unwrap_or_else(|| panic!("{name}: no connection before the request"));
         let sends = body.find(send).unwrap_or_else(|| panic!("{name}: {send}"));
         assert!(waits < sends, "{name}: the connection is taken before the request");
+    }
+}
+
+#[test]
+fn a_scanner_backup_copy_is_told_apart_from_the_launcher_files() {
+    // Copies seen next to files a test binary wrote, while Kaspersky ran.
+    assert!(scanner_copy("SHA1-87ACEC17CD9DCD20A716CC2CF67417B71C8A7016-10.JSON.tmp"));
+    assert!(scanner_copy(".CURSEFORGE-A6A47CFB-6A10-4E48-A0E7-1F408C2803FB.PART.tmp"));
+    // Every name the launcher writes has lower-case letters.
+    for ours in ["sha1-87acec17cd9dcd20a716cc2cf67417b71c8a7016-10.json.tmp", ".curseforge-a6a47cfb-6a10-4e48-a0e7-1f408c2803fb.part",
+        "jar-0f1e2d3c.tmp", "big.jar", "file.bin", "part-folders.json.4c2a.tmp", "1234.tmp"] {
+        assert!(!scanner_copy(ours), "{ours}");
     }
 }

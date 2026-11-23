@@ -1629,6 +1629,18 @@ async fn hash_kept<H: Hooks>(part: &mut ResumablePart, from: u64, to: u64, hooks
     Ok(())
 }
 
+/// Some antivirus products (Kaspersky's System Watcher, for one) back up a file
+/// that a program they do not trust changes, as `<NAME IN CAPITALS>.tmp` next
+/// to it, and remove the copy later. A freshly built test binary is such a
+/// program, so folder checks in tests leave these copies out. Every name the
+/// launcher itself writes has lower-case letters.
+#[cfg(test)]
+pub(crate) fn scanner_copy(name: &str) -> bool {
+    name.strip_suffix(".tmp").is_some_and(|stem| {
+        stem.chars().any(|c| c.is_ascii_uppercase()) && !stem.chars().any(|c| c.is_ascii_lowercase())
+    })
+}
+
 #[cfg(test)]
 #[path = "parts-tests.rs"]
 mod tests;

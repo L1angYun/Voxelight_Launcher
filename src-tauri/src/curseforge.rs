@@ -2055,7 +2055,8 @@ mod tests {
         crate::resources::TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
         let error = result.unwrap_err();
         assert!(error.contains("other.jar"), "{error}");
-        let names: Vec<_> = fs::read_dir(&mods).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+        let names: Vec<_> = fs::read_dir(&mods).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| !crate::parts::scanner_copy(name)).collect();
         assert_eq!(names, ["other.jar"], "nothing is left in the folder");
         assert_eq!(cdn.count(), 1);
         let part = store.open(&c9_key(&bytes), bytes.len() as u64).unwrap().unwrap();
