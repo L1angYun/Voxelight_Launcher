@@ -11,10 +11,9 @@ export function MultiplayerPage() {
   const { t, i18n } = useTranslation();
   const model = useMultiplayer();
   const { tab, setTab, error, notice } = model;
+  const errorKey = error ? [`multiplayer:errors.${error.code}`, `shell:errors.${error.code}`].find((key) => i18n.exists(key)) : undefined;
   const errorText = error
-    ? i18n.exists(`multiplayer:errors.${error.code}`)
-      ? t(`multiplayer:errors.${error.code}`, error.params)
-      : t("common:errors.internalUnexpected")
+    ? errorKey ? t(errorKey, error.params) : t("common:errors.internalUnexpected")
     : "";
 
   return (

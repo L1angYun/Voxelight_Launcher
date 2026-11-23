@@ -246,3 +246,34 @@ test("settings save the complete object and creation does not auto-start", async
   expect(recorded.some((call) => call.name === "set_managed_server_eula")).toBe(false);
   expect(recorded.some((call) => call.name === "start_managed_server")).toBe(false);
 });
+
+test("a server JAR is imported from its dialog, which fits the smallest window", async ({ page }) => {
+  await page.setViewportSize({ width: 1050, height: 720 });
+  await installLauncherFixture(page);
+  await openMultiplayer(page);
+  await page.getByRole("tab", { name: "服务端管理", exact: true }).click();
+  const toolbar = page.locator(".vx-multiplayer-toolbar");
+  await expect(toolbar.getByRole("button", { name: "导入服务端", exact: true })).toBeVisible();
+  expect(await toolbar.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await toolbar.getByRole("button", { name: "导入服务端", exact: true }).click();
+  const dialog = page.locator("dialog.vx-import-dialog[open]");
+  await expect(dialog).toContainText("启动器无法校验导入的服务端程序");
+  // A folder shows the most: its JAR choice as well as the name and version.
+  await dialog.getByRole("button", { name: "服务端文件夹", exact: true }).click();
+  await dialog.getByRole("button", { name: "选择文件夹…", exact: true }).click();
+  await expect(dialog).toContainText("识别为：Paper 1.21.1");
+  await expect(dialog.getByRole("combobox", { name: "要运行的服务端 JAR", exact: true })).toContainText("paper.jar");
+  await expect(dialog.getByRole("textbox", { name: "服务器名称", exact: true })).toHaveValue("Paper 1.21.1");
+  await expect(dialog.getByRole("combobox", { name: "Minecraft 版本", exact: true })).toContainText("1.21.1");
+  const box = (await dialog.boundingBox())!;
+  expect(box.y >= 0 && box.y + box.height <= 720).toBe(true);
+  // The Import button stays in view; the form scrolls above it.
+  const action = dialog.getByRole("button", { name: "导入", exact: true });
+  const button = (await action.boundingBox())!;
+  expect(button.y + button.height <= box.y + box.height).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await action.click();
+  await expect(page.locator("dialog.vx-import-dialog[open]")).toHaveCount(0);
+  await expect(page.locator(".vx-managed-list [aria-current='true']")).toContainText("Paper · 1.21.1");
+  await expect(page.locator(".vx-managed-overview header p")).toContainText("Paper · 1.21.1");
+});

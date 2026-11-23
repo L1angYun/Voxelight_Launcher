@@ -3,7 +3,8 @@ import { command } from "./launcher";
 export type LauncherPathUse =
   | "gameDirectory" | "java" | "instanceIcon" | "skin" | "background"
   | "presetRead" | "presetWrite" | "localResources" | "worldRead" | "worldWrite"
-  | "packRead" | "packWrite" | "instanceArchive" | "diagnostics";
+  | "packRead" | "packWrite" | "instanceArchive" | "diagnostics"
+  | "serverJar" | "serverFolder";
 
 export function pickLauncherPaths(purpose: LauncherPathUse, suggestedName?: string) {
   return command<string[] | null>("choose_launcher_path", { purpose, suggestedName });

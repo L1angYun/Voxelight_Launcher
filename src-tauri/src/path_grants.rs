@@ -10,12 +10,13 @@ use tokio::sync::oneshot;
 pub enum PathUse {
     GameDirectory, Java, InstanceIcon, Skin, Background, PresetRead, PresetWrite,
     LocalResources, WorldRead, WorldWrite, PackRead, PackWrite, InstanceArchive, Diagnostics,
+    ServerJar, ServerFolder,
 }
 
 impl PathUse {
     fn extensions(self) -> &'static [&'static str] {
         match self {
-            Self::GameDirectory => &[],
+            Self::GameDirectory | Self::ServerFolder => &[],
             #[cfg(windows)] Self::Java => &["exe"],
             #[cfg(not(windows))] Self::Java => &[],
             Self::InstanceIcon => &["png", "jpg", "jpeg", "webp", "ico"],
@@ -27,6 +28,7 @@ impl PathUse {
             Self::PackRead => &["mrpack", "zip"],
             Self::PackWrite => &["mrpack"],
             Self::Diagnostics => &["txt"],
+            Self::ServerJar => &["jar"],
         }
     }
 
@@ -54,6 +56,8 @@ impl PathUse {
             Self::PackWrite => "导出共享整合包 / Export shared modpack",
             Self::InstanceArchive => "导出个人实例备份 / Export personal instance backup",
             Self::Diagnostics => "导出诊断报告 / Export diagnostic report",
+            Self::ServerJar => "选择服务端 JAR / Choose server JAR",
+            Self::ServerFolder => "选择服务端文件夹 / Choose server folder",
         }
     }
 
@@ -73,7 +77,8 @@ impl PathUse {
             return Ok(parent.canonicalize().map_err(|e| e.to_string())?.join(name));
         }
         let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
-        if !metadata.is_file() {
+        // A server folder is the one choice that is a directory.
+        if if self == Self::ServerFolder { !metadata.is_dir() } else { !metadata.is_file() } {
             return Err("所选路径类型与操作不匹配".into());
         }
         path.canonicalize().map_err(|e| e.to_string())
@@ -119,6 +124,32 @@ impl PathGrants {
             if current != path { return Err(AppError::new("storage.pathAuthorizationRequired")); }
             Ok(current)
         }).collect()
+    }
+
+    /// The chosen path, without using the choice up: an inspection before the
+    /// action that consumes it. Looking renews the choice for another LIFE, so
+    /// time spent filling in the rest of a form does not expire it.
+    fn peek_at(&self, purpose: PathUse, value: &str, window: &str, now: Instant) -> AppResult<PathBuf> {
+        let mut grants = self.0.lock().map_err(|_| AppError::new("storage.pathAuthorizationRequired"))?;
+        let (key, expiry) = grants.iter_mut().find(|((use_, path, label), expiry)| *use_ == purpose && label == window
+            && **expiry > now && crate::storage::display_profile_path(path) == value)
+            .ok_or_else(|| AppError::new("storage.pathAuthorizationRequired"))?;
+        *expiry = now + LIFE;
+        let path = key.1.clone();
+        drop(grants);
+        let current = purpose.resolve(Path::new(value))?;
+        if current != path { return Err(AppError::new("storage.pathAuthorizationRequired")); }
+        Ok(current)
+    }
+
+    pub(crate) fn peek(&self, purpose: PathUse, value: &str, window: &WebviewWindow) -> AppResult<PathBuf> {
+        self.peek_at(purpose, value, window.label(), Instant::now())
+    }
+
+    /// Gives back a choice that an action used up but did not complete, so the
+    /// user can try again without choosing it again.
+    pub(crate) fn restore(&self, purpose: PathUse, path: PathBuf, window: &WebviewWindow) {
+        let _ = self.insert_all(purpose, &[path], window.label(), Instant::now());
     }
 
     pub(crate) fn consume(&self, purpose: PathUse, value: &str, window: &WebviewWindow) -> AppResult<PathBuf> {
@@ -199,7 +230,7 @@ pub async fn choose_launcher_path(
     } else {
         let receive = move |path: Option<FilePath>| { let _ = tx.send(path.map(|path| vec![path])); };
         if purpose.writes() { dialog.save_file(receive); }
-        else if purpose == PathUse::GameDirectory { dialog.pick_folder(receive); }
+        else if matches!(purpose, PathUse::GameDirectory | PathUse::ServerFolder) { dialog.pick_folder(receive); }
         else { dialog.pick_file(receive); }
     }
     let Some(paths) = rx.await.map_err(|_| AppError::new("storage.pathAuthorizationRequired"))? else { return Ok(None); };
@@ -214,6 +245,45 @@ pub async fn choose_launcher_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v2_server_jar_and_folder_grants_take_only_their_kind_and_peeking_keeps_them() {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/core-tests").join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let jar = root.path().join("paper.jar");
+        let zip = root.path().join("paper.zip");
+        let folder = root.path().join("server");
+        fs::write(&jar, b"jar").unwrap();
+        fs::write(&zip, b"zip").unwrap();
+        fs::create_dir(&folder).unwrap();
+        assert!(PathUse::ServerJar.resolve(&jar).is_ok());
+        assert!(PathUse::ServerJar.resolve(&zip).is_err());
+        assert!(PathUse::ServerJar.resolve(&folder).is_err());
+        let chosen = PathUse::ServerFolder.resolve(&folder).unwrap();
+        assert!(PathUse::ServerFolder.resolve(&jar).is_err());
+        assert!(PathUse::ServerFolder.resolve(&root.path().join("missing")).is_err());
+
+        let table = PathGrants::default();
+        let now = Instant::now();
+        let display = crate::storage::display_profile_path(&chosen);
+        table.insert_all(PathUse::ServerFolder, &[chosen.clone()], "main", now).unwrap();
+        // An inspection looks without using the choice up.
+        assert_eq!(table.peek_at(PathUse::ServerFolder, &display, "main", now).unwrap(), chosen);
+        assert_eq!(table.peek_at(PathUse::ServerFolder, &display, "main", now).unwrap(), chosen);
+        assert!(table.peek_at(PathUse::ServerJar, &display, "main", now).is_err());
+        assert!(table.peek_at(PathUse::ServerFolder, &display, "other", now).is_err());
+        assert!(table.peek_at(PathUse::ServerFolder, &display, "main", now + LIFE).is_err());
+        // The import uses it, once.
+        assert_eq!(table.consume_all(PathUse::ServerFolder, &[&display], "main", now).unwrap(), vec![chosen.clone()]);
+        assert!(table.peek_at(PathUse::ServerFolder, &display, "main", now).is_err());
+        // Looking renews it, so a slow form does not lose the choice.
+        let renewed = PathGrants::default();
+        renewed.insert_all(PathUse::ServerFolder, &[chosen.clone()], "main", now).unwrap();
+        let later = now + LIFE - Duration::from_secs(1);
+        renewed.peek_at(PathUse::ServerFolder, &display, "main", later).unwrap();
+        assert_eq!(renewed.consume_all(PathUse::ServerFolder, &[&display], "main", now + LIFE + Duration::from_secs(1)).unwrap(), vec![chosen]);
+    }
 
     #[test]
     fn c5_native_grants_scope_each_file_to_intent_and_window_and_consume_once() {

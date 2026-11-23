@@ -328,6 +328,8 @@ pub fn run() {
             server_manager::stop_managed_server,
             server_manager::send_managed_server_command,
             server_manager::read_managed_server_logs,
+            server_manager::import::inspect_server_import,
+            server_manager::import::import_managed_server,
             minecraft::install_java,
             content::get_default_skin,
             content::list_worlds,

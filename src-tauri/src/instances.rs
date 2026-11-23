@@ -22,6 +22,10 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 const MAX_TREE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_TREE_FILES: usize = 100_000;
 const MAX_TREE_DEPTH: usize = 64;
+/// A copy whose source changed while it was copied, or whose copy does not
+/// match what was read; the server import names these for its own users.
+pub(crate) const COPY_CHANGED: &str = "复制期间实例文件发生变化，请关闭游戏后重试。原实例未改变。";
+pub(crate) const COPY_MISMATCH: &str = "实例副本校验失败，原实例未改变";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct FileRecord {
@@ -366,7 +370,7 @@ pub(crate) fn copy_snapshot(
     copy_snapshot_controlled(source, destination, files, None)
 }
 
-fn copy_snapshot_controlled(
+pub(crate) fn copy_snapshot_controlled(
     source: &Path,
     destination: &Path,
     files: &[FileRecord],
@@ -401,12 +405,12 @@ fn copy_into_snapshot(
         if fs::metadata(&to).map_err(|e| e.to_string())?.len() != record.size
             || sha256(&to)? != record.sha256
         {
-            return Err("实例副本校验失败，原实例未改变".into());
+            return Err(COPY_MISMATCH.into());
         }
     }
     // A running game changing a world/configuration causes a safe failure.
     if collect_files_in_scope(source, scope, control)? != files {
-        return Err("复制期间实例文件发生变化，请关闭游戏后重试。原实例未改变。".into());
+        return Err(COPY_CHANGED.into());
     }
     Ok(())
 }

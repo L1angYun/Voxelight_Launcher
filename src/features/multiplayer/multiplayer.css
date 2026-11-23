@@ -4,6 +4,15 @@
 .vx-multiplayer-error { color: var(--danger); }
 .vx-multiplayer-notice { color: var(--success); }
 .vx-multiplayer-inline-notice { margin: 0 0 16px; padding: 10px 14px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--text-primary); font-size: var(--text-sm); }
+/* Import dialog: the form scrolls between the fixed title and the Import button. */
+.vx-import-dialog[open] { display: flex; flex-direction: column; }
+/* Room inside the scrolling body for the fields' focus rings. */
+.vx-import-dialog .vx-dialog__body { min-height: 0; padding: 0 var(--space-2) var(--space-2); margin-inline: calc(var(--space-2) * -1); margin-bottom: calc(var(--space-2) * -1); }
+.vx-import-dialog .vx-form-stack { gap: var(--space-4); }
+.vx-import-dialog .vx-multiplayer-inline-notice { margin: 0; }
+.vx-import-summary { display: grid; gap: var(--space-1); }
+.vx-import-summary p { margin: 0; }
+.vx-import-summary .vx-path { color: var(--text-secondary); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .vx-multiplayer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .vx-multiplayer-toolbar { min-height: 58px; padding: 10px 12px 10px 22px; }
 .vx-multiplayer-toolbar > label { display: flex; align-items: center; gap: 12px; color: var(--text-secondary); font-size: var(--text-sm); white-space: nowrap; }

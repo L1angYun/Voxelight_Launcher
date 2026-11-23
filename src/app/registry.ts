@@ -93,6 +93,7 @@ export const downloadKindRegistry = createRegistry([
   { id: "resource-check", labelKey: "tasks.kind.resource-check" },
   { id: "resource-update", labelKey: "tasks.kind.resource-update" },
   { id: "server-install", labelKey: "tasks.kind.server-install" },
+  { id: "server-import", labelKey: "tasks.kind.server-import" },
   { id: "server-start", labelKey: "tasks.kind.server-start" },
   { id: "default-skin", labelKey: "tasks.kind.default-skin" },
   { id: "unknown", labelKey: "tasks.kind.unknown" },

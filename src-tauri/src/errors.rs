@@ -78,6 +78,11 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             .with_param("id", id.lines().next().unwrap_or_default())
             .with_detail(detail);
     }
+    if let Some(key) = detail.strip_prefix(crate::server_manager::import::IMPORT_PROPERTIES) {
+        return AppError::new("server.importProperties")
+            .with_param("key", key)
+            .with_detail(detail);
+    }
     if let Some(files) = detail.strip_prefix(crate::modpacks::MANUAL_DOWNLOAD) {
         return AppError::new("modpack.manualDownload")
             .with_param("files", files)
@@ -107,6 +112,19 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             RESOURCE_RECOVERY_REQUIRED => "resource.recoveryRequired",
             RESTORE_PENDING => "instance.restorePending",
             INSTALL_GAME_RUNNING => "install.gameRunning",
+            crate::server_manager::import::IMPORT_INSTALLER => "server.importInstaller",
+            crate::server_manager::import::IMPORT_ARGS_FILE => "server.importArgsFile",
+            crate::server_manager::import::IMPORT_NO_JAR => "server.importNoJar",
+            crate::server_manager::import::IMPORT_NOT_JAR => "server.importNotJar",
+            crate::server_manager::import::IMPORT_OWN_DATA => "server.importOwnData",
+            crate::server_manager::import::IMPORT_LINKS => "server.importLinks",
+            crate::server_manager::import::IMPORT_TOO_LARGE => "server.importTooLarge",
+            crate::server_manager::import::IMPORT_CHANGED => "server.importChanged",
+            crate::server_manager::IMPORTED_JAR_MISSING => "server.importedJarMissing",
+            crate::server_manager::IMPORTED_RECORD_INVALID => "server.importedRecordInvalid",
+            crate::server_manager::import::IMPORT_NEEDS_FOLDER => "server.importNeedsFolder",
+            crate::server_manager::import::IMPORT_PROPERTIES_TEXT => "server.importPropertiesText",
+            crate::server_manager::import::IMPORT_JAR_NAME => "server.importJarName",
             crate::auth::CLIENT_MISSING => "auth.clientIdRequired",
             crate::auth::CLIENT_REJECTED => "auth.clientRejected",
             crate::auth::APP_NOT_APPROVED => "auth.appNotApproved",
@@ -366,6 +384,33 @@ mod tests {
         for missing in [crate::modpacks::MANIFEST_FILE_MISSING, crate::modpacks::MANIFEST_PROJECT_MISSING] {
             assert_eq!(expected(missing).code, "modpack.manifestMissing");
         }
+    }
+
+    #[test]
+    fn v2_server_import_refusals_have_their_own_codes() {
+        use crate::server_manager::import::*;
+        for (detail, code) in [
+            (IMPORT_INSTALLER, "server.importInstaller"),
+            (IMPORT_ARGS_FILE, "server.importArgsFile"),
+            (IMPORT_NO_JAR, "server.importNoJar"),
+            (IMPORT_NOT_JAR, "server.importNotJar"),
+            (IMPORT_OWN_DATA, "server.importOwnData"),
+            (IMPORT_LINKS, "server.importLinks"),
+            (IMPORT_TOO_LARGE, "server.importTooLarge"),
+            (IMPORT_CHANGED, "server.importChanged"),
+            (crate::server_manager::IMPORTED_JAR_MISSING, "server.importedJarMissing"),
+            (crate::server_manager::IMPORTED_RECORD_INVALID, "server.importedRecordInvalid"),
+            (IMPORT_NEEDS_FOLDER, "server.importNeedsFolder"),
+            (IMPORT_PROPERTIES_TEXT, "server.importPropertiesText"),
+            (IMPORT_JAR_NAME, "server.importJarName"),
+        ] {
+            assert_eq!(expected(detail).code, code);
+        }
+        let detail = format!("{IMPORT_PROPERTIES}view-distance");
+        let error = expected(detail.clone());
+        assert_eq!(error.code, "server.importProperties");
+        assert_eq!(error.params["key"], "view-distance", "the page names the key");
+        assert_eq!(error.detail.as_deref(), Some(detail.as_str()));
     }
 
     #[test]

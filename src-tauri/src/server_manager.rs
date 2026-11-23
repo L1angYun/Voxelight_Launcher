@@ -1,4 +1,5 @@
-//! Independently installed vanilla servers. This registry never controls arbitrary PIDs or the game registry.
+//! Independently installed vanilla servers, and imported third-party server
+//! software. This registry never controls arbitrary PIDs or the game registry.
 use crate::{
     errors::{expected, AppResult},
     minecraft,
@@ -26,6 +27,19 @@ use tokio::{
 
 const EULA_URL: &str = "https://www.minecraft.net/en-us/eula";
 const LOG_LIMIT: u64 = 5 * 1024 * 1024;
+
+#[path = "server_import.rs"]
+pub(crate) mod import;
+
+/// Where a server came from: downloaded from Mojang by the launcher, or
+/// imported by the user. Older records have no source and are vanilla.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ServerSource {
+    #[default]
+    Vanilla,
+    Imported,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -83,6 +97,14 @@ struct ServerDefinition {
     java_major: Option<u32>,
     #[serde(default)]
     install_error: Option<String>,
+    #[serde(default)]
+    source: ServerSource,
+    /// The imported JAR to run, a file name in the server folder.
+    #[serde(default)]
+    jar: Option<String>,
+    /// The detected server software, for display only.
+    #[serde(default)]
+    software: Option<String>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +123,9 @@ pub struct ManagedServerInfo {
     pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
+    pub source: ServerSource,
+    pub software: Option<String>,
+    pub jar: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -711,6 +736,43 @@ fn server_proxy_args(config: &crate::models::Config) -> Result<Vec<String>, Stri
         .map_err(|error| error.code().to_owned())
 }
 
+/// A JAR file name the launcher can keep and pass to Java as it is. After
+/// `-jar`, Java still reads `@name` as an arguments file, and a leading dash
+/// would read as an option, so neither is ever run.
+fn runnable_jar(name: &str) -> bool {
+    name.len() > 4
+        && !name.starts_with(['@', '-'])
+        && name.to_ascii_lowercase().ends_with(".jar")
+        && validate_id(name).is_ok()
+}
+
+pub(crate) const IMPORTED_JAR_MISSING: &str = "找不到导入的服务端 JAR，请重新导入此服务端";
+pub(crate) const IMPORTED_RECORD_INVALID: &str = "导入的服务端记录无效，请重新导入";
+
+/// The JAR a server runs: the downloaded vanilla server.jar, or the imported one.
+fn server_jar(definition: &ServerDefinition) -> Result<&str, String> {
+    match definition.source {
+        ServerSource::Vanilla => Ok("server.jar"),
+        ServerSource::Imported => definition
+            .jar
+            .as_deref()
+            .filter(|jar| runnable_jar(jar))
+            .ok_or_else(|| IMPORTED_RECORD_INVALID.into()),
+    }
+}
+
+/// Java arguments after the launcher's own properties. Only a JAR is ever run,
+/// never a script or an arguments file from the server folder.
+fn launch_args(definition: &ServerDefinition, settings: &ServerSettings) -> Result<Vec<String>, String> {
+    Ok(vec![
+        "-Xms512M".into(),
+        format!("-Xmx{}M", settings.max_memory_mb),
+        "-jar".into(),
+        server_jar(definition)?.into(),
+        "nogui".into(),
+    ])
+}
+
 fn require_eula(definition: &ServerDefinition, dir: &Path) -> Result<(), String> {
     if !definition.eula_accepted || !eula_file_accepted(dir) {
         Err("请先阅读 Minecraft EULA 并在界面勾选同意，才能启动服务端".into())
@@ -735,6 +797,12 @@ fn server_info(
         }
     };
     let process = registry.process(&definition.id)?;
+    let installed = match definition.source {
+        ServerSource::Vanilla => definition.jar_sha1.is_some() && safe_join(&dir, "server.jar")?.is_file(),
+        ServerSource::Imported => server_jar(&definition)
+            .and_then(|jar| safe_join(&dir, jar))
+            .is_ok_and(|path| path.is_file()),
+    };
     let status = process
         .as_ref()
         .and_then(|entry| entry.status.lock().ok().map(|status| status.clone()))
@@ -754,7 +822,7 @@ fn server_info(
         settings,
         eula_accepted: definition.eula_accepted && eula_file_accepted(&dir),
         eula_url: EULA_URL.into(),
-        installed: definition.jar_sha1.is_some() && safe_join(&dir, "server.jar")?.is_file(),
+        installed,
         java_major: definition.java_major,
         status,
         pid: process
@@ -765,6 +833,9 @@ fn server_info(
             .as_ref()
             .and_then(|entry| entry.exit_code.lock().ok().and_then(|code| *code)),
         error,
+        source: definition.source,
+        software: definition.software,
+        jar: definition.jar,
     })
 }
 async fn install_jar(
@@ -874,6 +945,9 @@ pub async fn create_managed_server(
         jar_sha1: None,
         java_major: None,
         install_error: None,
+        source: ServerSource::Vanilla,
+        jar: None,
+        software: None,
     };
     save_definition(&dir, &definition)?;
     atomic_write(
@@ -966,6 +1040,10 @@ async fn start_managed_server_inner(
     let mut definition = load_definition(&dir)?;
     require_eula(&definition, &dir)?;
     let settings = settings_from_properties(&properties(&dir)?, &definition.settings)?;
+    let launch = launch_args(&definition, &settings)?;
+    if definition.source == ServerSource::Imported && !safe_join(&dir, server_jar(&definition)?)?.is_file() {
+        return Err(IMPORTED_JAR_MISSING.into());
+    }
     if registry
         .processes
         .lock()
@@ -995,7 +1073,17 @@ async fn start_managed_server_inner(
         &definition.name,
     )?;
     let prepared = async {
-        let metadata = install_jar(&state, &app, &mut definition, &dir).await?;
+        let metadata = match definition.source {
+            ServerSource::Vanilla => install_jar(&state, &app, &mut definition, &dir).await?,
+            // An imported server keeps its own JAR; the version's metadata
+            // only chooses Java, as for a vanilla server.
+            ServerSource::Imported => {
+                let metadata = minecraft::official_metadata(&state, &definition.version_id, &safe_join(&dir, "metadata")?).await?;
+                definition.java_major = Some(metadata["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32);
+                save_definition(&dir, &definition)?;
+                metadata
+            }
+        };
         let config = state.snapshot()?.config;
         let runtime = minecraft::select_or_install_java(&state, &app, &config, &metadata).await?;
         Ok::<_, String>(runtime)
@@ -1009,13 +1097,7 @@ async fn start_managed_server_inner(
     let mut command = Command::new(crate::storage::to_process_path(Path::new(&runtime.path))?);
     command.arg(format!("-Djava.io.tmpdir={}", crate::storage::process_path_text(&temp)?));
     command.args(&proxy_args);
-    command.current_dir(crate::storage::to_process_path(&dir)?).args([
-        "-Xms512M",
-        &format!("-Xmx{}M", settings.max_memory_mb),
-        "-jar",
-        "server.jar",
-        "nogui",
-    ]);
+    command.current_dir(crate::storage::to_process_path(&dir)?).args(&launch);
     registry
         .inner()
         .spawn_owned(server_id, dir, command, Some(app))
@@ -1166,7 +1248,45 @@ mod tests {
             jar_sha1: None,
             java_major: None,
             install_error: None,
+            source: ServerSource::Vanilla,
+            jar: None,
+            software: None,
         }
+    }
+
+    #[test]
+    fn v2_an_imported_server_runs_its_own_jar_and_never_the_vanilla_install() {
+        let settings = ServerSettings::default();
+        let mut value = definition();
+        assert_eq!(launch_args(&value, &settings).unwrap(), ["-Xms512M", "-Xmx2048M", "-jar", "server.jar", "nogui"]);
+        value.source = ServerSource::Imported;
+        value.jar = Some("paper-1.21.4-123.jar".into());
+        assert_eq!(launch_args(&value, &settings).unwrap(), ["-Xms512M", "-Xmx2048M", "-jar", "paper-1.21.4-123.jar", "nogui"]);
+        for jar in [None, Some("../paper.jar"), Some("plugins/paper.jar"), Some("paper.zip"), Some("con.jar"), Some("@paper.jar"), Some("-paper.jar")] {
+            value.jar = jar.map(Into::into);
+            assert!(launch_args(&value, &settings).is_err(), "{jar:?}");
+        }
+        // The imported branch reads only the version's metadata, to choose Java.
+        let source = crate::storage::executable_source(include_str!("server_manager.rs"));
+        let start = source.split_once("async fn start_managed_server_inner(").unwrap().1.split_once("
+}").unwrap().0;
+        // The whole imported arm, up to the end of the match.
+        let imported = start.split_once("ServerSource::Imported =>").expect("an imported branch").1;
+        let imported = imported.split_once("\n        };").expect("the end of the match").0;
+        assert!(imported.contains("minecraft::official_metadata("), "{imported}");
+        assert!(!imported.contains("install_jar("), "{imported}");
+        assert!(start.split_once("ServerSource::Vanilla =>").unwrap().1.split_once(',').unwrap().0.contains("install_jar("));
+        assert!(start.contains("launch_args(&definition, &settings)?"));
+    }
+
+    #[test]
+    fn v2_older_server_records_read_as_vanilla() {
+        let mut record = serde_json::to_value(definition()).unwrap();
+        for key in ["source", "jar", "software"] {
+            record.as_object_mut().unwrap().remove(key);
+        }
+        let read: ServerDefinition = serde_json::from_value(record).unwrap();
+        assert_eq!((read.source, read.jar, read.software), (ServerSource::Vanilla, None, None));
     }
     fn fixture_directory() -> PathBuf {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

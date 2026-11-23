@@ -79,6 +79,32 @@ export interface ManagedServer {
   exitCode: number | null;
   error: string | null;
   javaMajor: number | null;
+  source: "vanilla" | "imported";
+  software: string | null;
+  jar: string | null;
+}
+
+export type ServerImportKind = "jar" | "folder";
+
+export interface ServerImportInspection {
+  kind: ServerImportKind;
+  software: string | null;
+  minecraftVersion: string | null;
+  jars: string[];
+  /** What each JAR says about itself, in the order of `jars`. */
+  details: { jar: string; software: string | null; minecraftVersion: string | null }[];
+  defaultJar: string | null;
+  totalBytes: number;
+  fileCount: number;
+  unsupported: "installer" | "argsFile" | "noJar" | "needsFolder" | null;
+}
+
+export interface ManagedServerImportRequest {
+  kind: ServerImportKind;
+  path: string;
+  name: string;
+  versionId: string;
+  jar: string;
 }
 
 export interface ServerLog {
@@ -352,6 +378,21 @@ export function useMultiplayer() {
     "serverCreated",
   ), [managedRun]);
 
+  const inspectImport = useCallback((kind: ServerImportKind, path: string) => perform(
+    "inspect-import",
+    () => command<ServerImportInspection>("inspect_server_import", { kind, path }),
+  ), [perform]);
+
+  const importManaged = useCallback((request: ManagedServerImportRequest) => managedRun(
+    "import-managed",
+    async () => {
+      const result = await command<ManagedServer>("import_managed_server", { request });
+      setSelectedManagedId(result.id);
+      return result;
+    },
+    "serverImported",
+  ), [managedRun]);
+
   const updateManaged = useCallback((settings: ServerSettings) => managedRun(
     "update-managed",
     () => command("update_managed_server", { serverId: selectedManagedId, settings }),
@@ -416,6 +457,8 @@ export function useMultiplayer() {
     joinBookmark: (bookmark: ServerEntry) => hasBookmark(bookmark) && acceptsEnvironment()
       ? launchMultiplayer(environment.versionId, bookmark.address) : undefined,
     createManaged,
+    inspectImport,
+    importManaged,
     updateManaged,
     setEula,
     startManaged,

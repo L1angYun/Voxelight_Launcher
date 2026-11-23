@@ -150,6 +150,8 @@ commands.allow = [
   "stop_managed_server",
   "send_managed_server_command",
   "read_managed_server_logs",
+  "inspect_server_import",
+  "import_managed_server",
 ]
 
 [[permission]]

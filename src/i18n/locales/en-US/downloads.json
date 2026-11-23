@@ -29,6 +29,7 @@
       "resource-check": "Content update check",
       "resource-update": "Content update",
       "server-install": "Server installation",
+      "server-import": "Server import",
       "server-start": "Server preparation",
       "default-skin": "Character preview"
     },

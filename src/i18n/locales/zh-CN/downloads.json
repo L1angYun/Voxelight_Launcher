@@ -29,6 +29,7 @@
       "resource-check": "检查内容更新",
       "resource-update": "内容更新",
       "server-install": "服务端安装",
+      "server-import": "服务端导入",
       "server-start": "准备服务端",
       "default-skin": "角色预览"
     },

@@ -253,6 +253,20 @@ export async function installLauncherFixture(
     let previewSequence = 0;
     const resourceReservations = new Map<string, Record<string, unknown>>();
     let nextResourceId = 0;
+    let importedManagedSequence = 0;
+    const importedManagedServers: Record<string, unknown>[] = [];
+    const managedSettings = {
+      port: 25565,
+      maxPlayers: 20,
+      onlineMode: true,
+      whitelist: false,
+      motd: "Synthetic server",
+      difficulty: "normal",
+      gamemode: "survival",
+      viewDistance: 10,
+      maxMemoryMb: 2048,
+      bindAddress: "",
+    };
     const launchReservations = new Map<string, { versionId: string; instanceId?: string }>();
     const cancelLaunches = new Map<string, () => void>();
     let taskRevision = 0, nextLaunchId = 0;
@@ -362,6 +376,7 @@ export async function installLauncherFixture(
               worldRead: "C:\\SyntheticFixture\\fixture-world.zip", worldWrite: "C:\\SyntheticFixture\\fixture-world.zip",
               packRead: "C:\\SyntheticFixture\\fixture-pack.zip", packWrite: "C:\\SyntheticFixture\\fixture-pack.mrpack",
               instanceArchive: "C:\\SyntheticFixture\\backup.zip", diagnostics: "C:\\SyntheticFixture\\diagnostic.txt",
+              serverJar: "C:\\SyntheticFixture\\paper.jar", serverFolder: "C:\\SyntheticFixture\\server-folder",
             };
             const path = files[String(args?.purpose)];
             if (!path) throw new Error("Fixture received an unknown native path purpose");
@@ -586,36 +601,82 @@ export async function installLauncherFixture(
               hideAddress: false,
               snapshot: "stress-server-0",
             }];
-          if (name === "list_managed_servers")
-            return [
-              {
-                id: "fixture-server",
-                name: options.stress ? "Community Survival & Creative Building Server — Europe West With A Very Long But Valid Name" : "合成测试服务端",
-                versionId: "1.21.1",
-                createdAt: "2026-01-01T00:00:00Z",
-                directory: "C:\\SyntheticFixture\\server",
-                settings: {
-                  port: 25565,
-                  maxPlayers: 20,
-                  onlineMode: true,
-                  whitelist: false,
-                  motd: "Synthetic server",
-                  difficulty: "normal",
-                  gamemode: "survival",
-                  viewDistance: 10,
-                  maxMemoryMb: 2048,
-                  bindAddress: "",
-                },
-                eulaAccepted: false,
-                eulaUrl: "https://aka.ms/MinecraftEULA",
-                installed: true,
-                status: "stopped",
-                pid: null,
-                exitCode: null,
-                error: null,
-                javaMajor: 21,
-              },
-            ];
+          if (name === "inspect_server_import") {
+            const kind = args?.kind === "folder" ? "folder" : "jar";
+            const path = String(args?.path ?? "");
+            const fileName = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "server.jar";
+            if (kind === "jar") return {
+              kind,
+              software: "Paper",
+              minecraftVersion: "1.21.1",
+              jars: [fileName],
+              details: [{ jar: fileName, software: "Paper", minecraftVersion: "1.21.1" }],
+              defaultJar: fileName,
+              totalBytes: 8388608,
+              fileCount: 1,
+              unsupported: null,
+            };
+            return {
+              kind,
+              software: "Paper",
+              minecraftVersion: "1.21.1",
+              jars: ["paper.jar", "paper-original.jar"],
+              details: [
+                { jar: "paper.jar", software: "Paper", minecraftVersion: "1.21.1" },
+                { jar: "paper-original.jar", software: "Paper", minecraftVersion: "1.21.1" },
+              ],
+              defaultJar: "paper.jar",
+              totalBytes: 16777216,
+              fileCount: 3,
+              unsupported: null,
+            };
+          }
+          if (name === "import_managed_server") {
+            const request = (args?.request ?? {}) as Record<string, unknown>;
+            const imported = {
+              id: `fixture-imported-server-${++importedManagedSequence}`,
+              name: String(request.name ?? "Imported fixture server"),
+              versionId: String(request.versionId ?? "1.21.1"),
+              createdAt: "2026-01-01T00:00:00Z",
+              directory: `C:\\SyntheticFixture\\servers\\fixture-imported-server-${importedManagedSequence}`,
+              settings: { ...managedSettings },
+              eulaAccepted: false,
+              eulaUrl: "https://aka.ms/MinecraftEULA",
+              installed: true,
+              status: "stopped",
+              pid: null,
+              exitCode: null,
+              error: null,
+              javaMajor: 21,
+              source: "imported",
+              software: "Paper",
+              jar: String(request.jar ?? "paper.jar"),
+            };
+            importedManagedServers.unshift(imported);
+            return structuredClone(imported);
+          }
+          if (name === "list_managed_servers") {
+            const vanilla = {
+              id: "fixture-server",
+              name: options.stress ? "Community Survival & Creative Building Server — Europe West With A Very Long But Valid Name" : "合成测试服务端",
+              versionId: "1.21.1",
+              createdAt: "2026-01-01T00:00:00Z",
+              directory: "C:\\SyntheticFixture\\server",
+              settings: { ...managedSettings },
+              eulaAccepted: false,
+              eulaUrl: "https://aka.ms/MinecraftEULA",
+              installed: true,
+              status: "stopped",
+              pid: null,
+              exitCode: null,
+              error: null,
+              javaMajor: 21,
+              source: "vanilla",
+              software: null,
+              jar: null,
+            };
+            return structuredClone([...importedManagedServers, vanilla]);
+          }
           if (name === "check_resource_updates") return { updates: [], curseforgeSkipped: false };
           if (name === "diagnose_instance") return { kind: "empty", logPath: null, excerpt: "" };
           if (name === "get_system_appearance") return {

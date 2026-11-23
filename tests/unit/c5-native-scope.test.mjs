@@ -49,4 +49,9 @@ test('H10 every custom command is classified and privileged file access checks a
       assert.ok(new RegExp(`grants\\s*\\.\\s*consume\\(\\s*PathUse::${purpose}\\s*,`).test(source?.slice(0,1100) ?? ''), `${command} must consume native ${purpose} authority before work`);
    }
    assert.match(read('src-tauri/src/commands.rs'),/authorize_changed_config_paths/);
+   // Server import: the inspection peeks at the chosen path, the import uses it up.
+   const serverImport=read('src-tauri/src/server_import.rs');
+   assert.match(serverImport.split('fn inspect_server_import(')[1].slice(0,700),/grants\.peek\(kind\.purpose\(\),/);
+   assert.match(serverImport.split('fn import_managed_server(')[1].slice(0,900),/grants\.consume\(request\.kind\.purpose\(\),/);
+   assert.match(serverImport,/Self::Jar => PathUse::ServerJar,\s*Self::Folder => PathUse::ServerFolder,/);
 });

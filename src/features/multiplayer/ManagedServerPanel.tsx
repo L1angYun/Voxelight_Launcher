@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "../../components/ui/ExternalLink";
-import { Play, Plus, RefreshCw, Square } from "lucide-react";
+import { Play, Plus, RefreshCw, Square, Upload } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { EmptyState } from "../../components/ui/Feedback";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { formatDate } from "../../i18n/format";
-import { defaultServerSettings, type ServerSettings, type useMultiplayer } from "./useMultiplayer";
+import { ImportServerDialog } from "./ImportServerDialog";
+import { defaultServerSettings, type ManagedServer, type ServerSettings, type useMultiplayer } from "./useMultiplayer";
 
 export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMultiplayer> }) {
   const { t, i18n } = useTranslation();
@@ -29,6 +30,7 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
     report,
   } = model;
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [name, setName] = useState(t("multiplayer:defaultServerName"));
   const [versionId, setVersionId] = useState(manifest?.latestRelease ?? "");
   const [settings, setSettings] = useState<ServerSettings>({ ...defaultServerSettings });
@@ -39,6 +41,8 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
   const [autoScroll, setAutoScroll] = useState(true);
   const logEnd = useRef<HTMLDivElement>(null);
   const alive = Boolean(current?.pid);
+  // An imported server whose JAR is gone cannot start; there is nothing to install.
+  const jarMissing = current?.source === "imported" && !current.installed;
   const versions = manifest?.versions.map((version) => version.id) ?? [];
 
   useEffect(() => {
@@ -62,6 +66,11 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
     if (result !== undefined) clear();
   }
 
+  const importedLabel = (server: ManagedServer) => server.software ?? t("multiplayer:importedServer");
+  const listedVersion = (server: ManagedServer) => server.source === "imported"
+    ? `${importedLabel(server)} · ${server.versionId}`
+    : server.versionId;
+
   return (
     <div className="vx-managed-servers">
       <div className="vx-multiplayer-toolbar">
@@ -69,6 +78,7 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
         <div className="vx-action-row">
           <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={Boolean(busy)} onClick={() => void refreshManaged()}>{t("multiplayer:refresh")}</Button>
           {managedServers.length > 0 || creating ? <Button variant="primary" icon={<Plus size={15} />} disabled={Boolean(busy)} onClick={() => setCreating((value) => !value)}>{t("multiplayer:createServer")}</Button> : null}
+          <Button variant="secondary" icon={<Upload size={15} />} disabled={Boolean(busy)} onClick={() => setImporting(true)}>{t("multiplayer:importServer")}</Button>
         </div>
       </div>
       <LoadingStatus active={Boolean(busy)}>{t("multiplayer:managedBusy")}</LoadingStatus>
@@ -106,7 +116,7 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
           {managedServers.length ? managedServers.map((server) => (
             <button type="button" key={server.id} aria-current={selectedManagedId === server.id || undefined} onClick={() => setSelectedManagedId(server.id)}>
               <strong>{server.name}</strong>
-              <span>{server.versionId} · :{server.settings.port}</span>
+              <span>{listedVersion(server)} · :{server.settings.port}</span>
               <small>{t(`multiplayer:managedStatus.${server.status}`, { defaultValue: t("multiplayer:managedStatus.unknown") })}</small>
             </button>
           )) : <p>{t("multiplayer:noManaged")}</p>}
@@ -118,12 +128,13 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
               <header>
                 <div>
                   <h2>{current.name}</h2>
-                  <p>Vanilla {current.versionId} · Java {current.javaMajor ?? t("multiplayer:javaAuto")}{current.pid ? ` · PID ${current.pid}` : ""}</p>
+                  <p>{current.source === "imported" ? `${importedLabel(current)} · ${current.versionId}` : `Vanilla ${current.versionId}`} · Java {current.javaMajor ?? t("multiplayer:javaAuto")}{current.pid ? ` · PID ${current.pid}` : ""}</p>
                 </div>
                 <strong>{t(`multiplayer:managedStatus.${current.status}`, { defaultValue: t("multiplayer:managedStatus.unknown") })}</strong>
               </header>
               <p className="vx-managed-directory">{current.directory}</p>
               {current.error ? <p className="vx-managed-error" role="alert">{t("multiplayer:errors.processFailed")}</p> : null}
+              {jarMissing ? <p className="vx-managed-error" role="alert">{t("multiplayer:errors.server.importedJarMissing")}</p> : null}
               <label className="vx-managed-checkbox">
                 <input
                   type="checkbox"
@@ -135,8 +146,8 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
                 <span>{t("multiplayer:eula.consent")} <ExternalLink url={current.eulaUrl}>Minecraft EULA</ExternalLink></span>
               </label>
               <div className="vx-action-row">
-                <Button variant="primary" icon={<Play size={14} />} disabled={Boolean(busy) || alive || !current.eulaAccepted} onClick={() => void startManaged()}>
-                  {current.installed ? t("multiplayer:startServer") : t("multiplayer:installAndStart")}
+                <Button variant="primary" icon={<Play size={14} />} disabled={Boolean(busy) || alive || !current.eulaAccepted || jarMissing} onClick={() => void startManaged()}>
+                  {current.installed || current.source === "imported" ? t("multiplayer:startServer") : t("multiplayer:installAndStart")}
                 </Button>
                 <Button variant="secondary" icon={<Square size={14} />} disabled={Boolean(busy) || !alive || current.status === "stopping"} onClick={() => void stopManaged(false)}>{t("multiplayer:saveAndStop")}</Button>
                 <Button variant="ghost" disabled={Boolean(busy) || !alive} onClick={() => void stopManaged(true)}>{t("multiplayer:forceStop")}</Button>
@@ -200,10 +211,16 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
           <EmptyState
             title={t("multiplayer:emptyManaged.title")}
             description={t("multiplayer:emptyManaged.description")}
-            action={!creating ? <Button variant="primary" onClick={() => setCreating(true)}>{t("multiplayer:createServer")}</Button> : undefined}
+            action={!creating ? (
+              <div className="vx-action-row">
+                <Button variant="primary" onClick={() => setCreating(true)}>{t("multiplayer:createServer")}</Button>
+                <Button variant="secondary" icon={<Upload size={15} />} disabled={Boolean(busy)} onClick={() => setImporting(true)}>{t("multiplayer:importServer")}</Button>
+              </div>
+            ) : undefined}
           />
         )}
       </div>
+      <ImportServerDialog open={importing} onOpenChange={setImporting} model={model} />
     </div>
   );
 }
