@@ -20,8 +20,8 @@ The corresponding license texts are distributed with the application in
   options, installation and finish flow. License texts remain installed as
   resources; no separate license acceptance is implied.
 - Added native, keyboard-accessible shortcut options and localized page copy.
-- Replaced the stock welcome/finish composition with two native custom pages: task copy on the left, original optical voxel artwork on the right, and an explicit launch checkbox on completion.
-- Added independently generated voxel terrarium/aperture artwork. No reference-brand or third-party installer artwork is used. Native file-copy progress and error handling remain intact.
+- Replaced the stock welcome/finish composition with two native custom pages: task copy on the left, the launcher's own world on the right, and an explicit launch checkbox on completion.
+- The pages use the launcher's light-theme colors and accent, and the app icon. The artwork is a frame of the launcher's Massif world scene (the world canvas alone, rendered by the app upright), kept as `assets/source/massif-dark.png`; `scripts/generate-installer-assets.py` makes the bitmaps from it and the icons from `src-tauri/icons/icon.ico`. No reference-brand or third-party installer artwork is used. Native file-copy progress and error handling remain intact.
 - Preserved Tauri's template substitutions, WebView2 bootstrap, current-user
   registration, `/S`, `/D=...`, `/NS`, `/P`, `/UPDATE`, upgrade/reinstall and
   explicit-opt-in data deletion paths.

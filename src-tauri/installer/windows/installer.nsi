@@ -20,8 +20,8 @@ ManifestDPIAwareness PerMonitorV2
 {{/if}}
 
 !include MUI2.nsh
-!define MUI_BGCOLOR "F5F3EE"
-!define MUI_TEXTCOLOR "292C2E"
+!define MUI_BGCOLOR "F3F1EB"
+!define MUI_TEXTCOLOR "242522"
 !define MUI_HEADERIMAGE_RIGHT
 !include FileFunc.nsh
 !include x64.nsh

@@ -1,3 +1,5 @@
+; Colors are the launcher's light-theme tokens: --bg-base F3F1EB, --text-primary
+; 242522, --text-secondary 63635D, and the default accent's light indicator 538900.
 !define VOXELIGHT_ART "${__FILEDIR__}\assets\scene.bmp"
 !define VOXELIGHT_FONT_REGULAR "${__FILEDIR__}\assets\MiSans-Regular.ttf"
 !define VOXELIGHT_FONT_SEMIBOLD "${__FILEDIR__}\assets\MiSans-Semibold.ttf"
@@ -111,7 +113,7 @@ Function PageWelcome
   nsDialogs::Create 1044
   Pop $R4
   ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
-  SetCtlColors $R4 292C2E F5F3EE
+  SetCtlColors $R4 242522 F3F1EB
 
   ${NSD_CreateBitmap} 198u 0 117u 193u ""
   Pop $VoxelightImage
@@ -120,31 +122,31 @@ Function PageWelcome
   ${NSD_CreateLabel} 22u 16u 160u 16u "Voxelight"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightSemiboldFont 1
-  SetCtlColors $R1 292C2E F5F3EE
+  SetCtlColors $R1 242522 F3F1EB
 
   ${NSD_CreateLabel} 22u 37u 24u 2u ""
   Pop $R1
-  SetCtlColors $R1 "" A9BD63
+  SetCtlColors $R1 "" 538900
 
   ${NSD_CreateLabel} 22u 48u 164u 52u "$(welcomeTitle)"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightDisplayFont 1
-  SetCtlColors $R1 292C2E F5F3EE
+  SetCtlColors $R1 242522 F3F1EB
 
   ${NSD_CreateLabel} 22u 108u 162u 36u "$(welcomeDescription)"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightBodyFont 1
-  SetCtlColors $R1 5F6468 F5F3EE
+  SetCtlColors $R1 63635D F3F1EB
 
   ${NSD_CreateLabel} 22u 153u 164u 22u "$(currentUserNotice)"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightSmallFont 1
-  SetCtlColors $R1 5F6468 F5F3EE
+  SetCtlColors $R1 63635D F3F1EB
 
   ${NSD_CreateLabel} 22u 179u 164u 10u "$(installerSteps)"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightSmallFont 1
-  SetCtlColors $R1 5F6468 F5F3EE
+  SetCtlColors $R1 63635D F3F1EB
 
   Call muiPageLoadFullWindow
   ${NSD_SetFocus} $mui.Button.Next
@@ -162,7 +164,7 @@ Function PageFinish
   nsDialogs::Create 1044
   Pop $R4
   ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
-  SetCtlColors $R4 292C2E F5F3EE
+  SetCtlColors $R4 242522 F3F1EB
 
   ${NSD_CreateBitmap} 198u 0 117u 193u ""
   Pop $VoxelightImage
@@ -171,31 +173,31 @@ Function PageFinish
   ${NSD_CreateLabel} 22u 16u 160u 16u "Voxelight"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightSemiboldFont 1
-  SetCtlColors $R1 292C2E F5F3EE
+  SetCtlColors $R1 242522 F3F1EB
 
   ${NSD_CreateLabel} 22u 37u 24u 2u ""
   Pop $R1
-  SetCtlColors $R1 "" A9BD63
+  SetCtlColors $R1 "" 538900
 
   ${NSD_CreateLabel} 22u 48u 164u 44u "$(finishTitle)"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightDisplayFont 1
-  SetCtlColors $R1 292C2E F5F3EE
+  SetCtlColors $R1 242522 F3F1EB
 
   ${NSD_CreateLabel} 22u 101u 162u 32u "$(finishDescription)"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightBodyFont 1
-  SetCtlColors $R1 5F6468 F5F3EE
+  SetCtlColors $R1 63635D F3F1EB
 
   ${NSD_CreateCheckBox} 22u 140u 164u 18u "$(launchNow)"
   Pop $VoxelightRun
   SendMessage $VoxelightRun ${WM_SETFONT} $VoxelightBodyFont 1
-  SetCtlColors $VoxelightRun 292C2E F5F3EE
+  SetCtlColors $VoxelightRun 242522 F3F1EB
 
   ${NSD_CreateLabel} 22u 169u 164u 22u "$(dataRetention)"
   Pop $R1
   SendMessage $R1 ${WM_SETFONT} $VoxelightSmallFont 1
-  SetCtlColors $R1 5F6468 F5F3EE
+  SetCtlColors $R1 63635D F3F1EB
 
   GetDlgItem $R1 $HWNDPARENT 1
   SendMessage $R1 ${WM_SETTEXT} 0 "STR:$(^CloseBtn)"
@@ -225,27 +227,27 @@ Function PageOptions
 
   nsDialogs::Create 1018
   Pop $R4
-  SetCtlColors $R4 292C2E F5F3EE
+  SetCtlColors $R4 242522 F3F1EB
   ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
   !insertmacro MUI_HEADER_TEXT "$(optionsTitle)" "$(optionsDescription)"
 
   ${NSD_CreateLabel} 0 4u 100% 30u "$(dataRetention)"
   Pop $R1
-  SetCtlColors $R1 5F6468 F5F3EE
+  SetCtlColors $R1 63635D F3F1EB
 
   ${NSD_CreateCheckBox} 0 52u 100% 18u "$(desktopShortcut)"
   Pop $DesktopShortcutCheckboxHandle
-  SetCtlColors $DesktopShortcutCheckboxHandle 292C2E F5F3EE
+  SetCtlColors $DesktopShortcutCheckboxHandle 242522 F3F1EB
   SendMessage $DesktopShortcutCheckboxHandle ${BM_SETCHECK} $DesktopShortcutChecked 0
 
   ${NSD_CreateCheckBox} 0 79u 100% 18u "$(startMenuShortcut)"
   Pop $StartMenuShortcutCheckboxHandle
-  SetCtlColors $StartMenuShortcutCheckboxHandle 292C2E F5F3EE
+  SetCtlColors $StartMenuShortcutCheckboxHandle 242522 F3F1EB
   SendMessage $StartMenuShortcutCheckboxHandle ${BM_SETCHECK} $StartMenuShortcutChecked 0
 
   ${NSD_CreateLabel} 0 124u 100% 28u "$(currentUserNotice)"
   Pop $R2
-  SetCtlColors $R2 5F6468 F5F3EE
+  SetCtlColors $R2 63635D F3F1EB
 
   Call VoxelightApplyDialogFonts
   ${NSD_SetFocus} $DesktopShortcutCheckboxHandle

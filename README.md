@@ -55,7 +55,8 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Interface | Keyboard shortcuts, settings search and a first-run tour | 🚧 |
 | Interface | Custom home background (the setting exists but the image is not shown yet) | 🚧 |
 | Updates | Update checks on GitHub or Gitee, and updates from inside the launcher | ✅ |
-| Installer | Installer pages in the same design language as the launcher | 🚧 |
+| Installer | Installer pages with the launcher's icon, colors, typeface and world scene | ✅ |
+| Installer | A dark installer theme to match the launcher's default theme | 🚧 |
 | Assistant | Built-in assistant using your own AI API key, also available over MCP | 🚧 |
 
 ## Accounts and service keys

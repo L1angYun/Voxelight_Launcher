@@ -82,6 +82,7 @@ REQUIRED = ROOT_FILES | {f"src-tauri/{name}" for name in TAURI_FILES} | {
     "src-tauri/installer/windows/assets/header.bmp",
     "src-tauri/installer/windows/assets/sidebar.bmp",
     "src-tauri/installer/windows/assets/scene.bmp",
+    "src-tauri/installer/windows/assets/source/massif-dark.png",
     "src-tauri/installer/windows/assets/installer.ico",
     "src-tauri/installer/windows/assets/uninstaller.ico",
     "licenses/dependency-inventory.json",
