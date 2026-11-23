@@ -45,8 +45,7 @@ export function ProjectDetailsDrawer({
   const shown = view.project;
   const projectKey = `${view.source}:${shown.project_id}`;
   const hasPinnedInstall = shown.project_type !== "modpack";
-  const localPackOnly = view.source === "curseforge" && shown.project_type === "modpack";
-  const installLabel = t(localPackOnly ? "discover:importCurseforgeZip" : "discover:install");
+  const installLabel = t("discover:install");
   const external = shown.external_url || (view.source === "curseforge"
     ? `https://www.curseforge.com/projects/${shown.project_id}`
     : `https://modrinth.com/${shown.project_type}/${shown.slug}`);
@@ -57,7 +56,7 @@ export function ProjectDetailsDrawer({
       title={shown.title}
       closeLabel={t("common:actions.close")}
       className="vx-project-details"
-      footer={<><ExternalLink url={external} variant="ghost">{t("discover:external")}</ExternalLink><Button variant="primary" icon={<Download size={15} />} aria-label={`${installLabel} · ${localPackOnly ? shown.title : view.targetName}`} onClick={onInstall}>{installLabel}</Button></>}
+      footer={<><ExternalLink url={external} variant="ghost">{t("discover:external")}</ExternalLink><Button variant="primary" icon={<Download size={15} />} aria-label={`${installLabel} · ${view.targetName}`} onClick={onInstall}>{installLabel}</Button></>}
     >
       <div className="vx-project-details__target"><ArrowDownToLine size={16} aria-hidden="true" /><span>{t("discover:target")}</span><strong>{view.targetName}</strong></div>
       <LoadingStatus active={view.loading}>{t("common:status.loading")}</LoadingStatus>

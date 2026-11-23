@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { command, type Instance } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
+import { ExternalLink } from "../../components/ui/ExternalLink";
 import { Select } from "../../components/ui/Select";
 import type { ModpackUpdateCheck, PackConflictReason, PackUpdatePlan, PackUpdateResult } from "./types";
 import { errorText, sizeText } from "./utils";
@@ -59,7 +60,8 @@ export function ModpackUpdate({
       setIncludeOptional(result.includeOptional);
     } catch (fault) {
       setCheck(null);
-      setError(errorText(normalizeError(fault).code, t));
+      const failure = normalizeError(fault);
+      setError(errorText(failure.code, t, failure.params));
     } finally {
       setBusy(false);
     }
@@ -70,7 +72,7 @@ export function ModpackUpdate({
       if (failure.code === "backup.restoreRecoveryRequired") return t("library:modpackUpdate.recoveryRequired");
       if (failure.code === "backup.restoreRolledBack") return t("library:modpackUpdate.rolledBack");
     }
-    return errorText(failure.code, t);
+    return errorText(failure.code, t, failure.params);
   };
 
   const loadPlan = async (versionId: string, optional: boolean, again: boolean) => {
@@ -92,14 +94,19 @@ export function ModpackUpdate({
     } catch (fault) {
       setPlan(null);
       setRegenerated(false);
-      setError(errorText(normalizeError(fault).code, t));
+      const failure = normalizeError(fault);
+      setError(errorText(failure.code, t, failure.params));
     } finally {
       setBusy(false);
     }
   };
 
+  const manual = plan?.manual ?? [];
+  const manualBlocksApply = manual.some((entry) => entry.conflict === false
+    || (entry.conflict && choices[entry.path] === true));
+
   const applyUpdate = () => {
-    if (!plan || busy || !window.confirm(t("library:modpackUpdate.plan.confirm"))) return;
+    if (!plan || busy || manualBlocksApply || !window.confirm(t("library:modpackUpdate.plan.confirm"))) return;
     const approved = plan;
     void (async () => {
       setBusy(true);
@@ -243,6 +250,20 @@ export function ModpackUpdate({
                   })}
                 </p>
                 <p>{t("library:modpackUpdate.plan.downloadSize", { size: sizeText(plan.downloadBytes, i18n.language) })}</p>
+                {manual.length ? (
+                  <div className="vx-inline-notice" role="status">
+                    <p>{t("library:modpackUpdate.plan.manual")}</p>
+                    <ul>
+                      {manual.map((entry) => (
+                        <li className="vx-path" key={entry.path}>
+                          <span>{entry.target}</span>{" "}
+                          <ExternalLink url={entry.projectUrl}>{t("library:manualDownload")}</ExternalLink>
+                          {entry.conflict ? <>{" "}<span>{t("library:modpackUpdate.plan.manualIfChosen")}</span></> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 {dependencyChange ? (
                   <div>
                     <p>{t("library:modpackUpdate.plan.dependencyChange")}</p>
@@ -317,7 +338,7 @@ export function ModpackUpdate({
                     </ul>
                   </div>
                 ) : null}
-                <Button variant="primary" disabled={busy} onClick={applyUpdate}>
+                <Button variant="primary" disabled={busy || manualBlocksApply} onClick={applyUpdate}>
                   {t("library:modpackUpdate.plan.apply")}
                 </Button>
               </div>

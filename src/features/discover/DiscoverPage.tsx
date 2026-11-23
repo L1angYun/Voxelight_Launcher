@@ -47,7 +47,6 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
   const lastModpack = useRef<typeof modpack>(undefined);
   if (createOpen) lastModpack.current = modpack;
   const displayedModpack = createOpen ? modpack : lastModpack.current;
-  const localPackOnly = source === "curseforge" && resourceType === "modpack";
   const targetName = selectedInstance?.name || (selectedVersionId ? t("library:versionDirectory") + " · " + selectedVersionId : t("discover:versionDirectory"));
 
   async function installedWithOverture(versionId: string, instanceId?: string) {
@@ -112,7 +111,7 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
           {error ? <p className="vx-discover-feedback vx-discover-feedback--error" role="alert">{errorText(error, t)}</p> : null}
           {!loading && !error && resources.length === 0 ? <EmptyState title={t("discover:noResults")} description={t("discover:noResultsDescription")} /> : null}
           <SectionPanel selectionKey={resultKey} className="vx-project-grid" aria-busy={loading} inert={loading || stale}>
-            {resources.map((project) => <ProjectCard key={source + "-" + project.project_id} project={project} targetName={targetName} selected={selectedProject?.project_id === project.project_id} localPackOnly={localPackOnly} onOpen={() => void loadProject(project)} onInstall={() => void installProject(project)} />)}
+            {resources.map((project) => <ProjectCard key={source + "-" + project.project_id} project={project} targetName={targetName} selected={selectedProject?.project_id === project.project_id} onOpen={() => void loadProject(project)} onInstall={() => void installProject(project)} />)}
           </SectionPanel>
         </section>
       </div>
@@ -120,8 +119,8 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
       <InstallTargetDialog flow={targetFlow} onClose={closeTarget} onInstall={installInto} onCreate={createAndInstall} onCancel={cancelInstall}
         onCreateInstance={() => setCreating(true)} onDownloads={onDownloads} />
       <CreateInstanceDialog
-        project={displayedModpack?.source === "modrinth" ? displayedModpack.project : undefined}
-        curseforgePack={displayedModpack?.source === "curseforge" ? displayedModpack.project : undefined}
+        project={displayedModpack?.project}
+        source={displayedModpack?.source}
         open={createOpen} onOpenChange={(open) => { if (!open) { closeModpack(); setCreating(false); } }}
         onInstalled={installedWithOverture} />
     </PageShell>

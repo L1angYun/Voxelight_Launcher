@@ -73,7 +73,6 @@
     "instanceInstalled": "Instance installed.",
     "resourceInstalledNew": "Resource installed into the new instance."
   },
-  "importCurseforgeZip": "Import local ZIP",
-  "curseforgeZipHint": "Download the modpack ZIP from CurseForge first, then choose the file here to import it.",
+  "importCurseforgeZip": "Import a CurseForge ZIP instead",
   "curseforgeZipRequired": "Choose a CurseForge modpack ZIP file."
 }

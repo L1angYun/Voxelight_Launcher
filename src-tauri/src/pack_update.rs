@@ -1,4 +1,5 @@
-//! Updating a managed Modrinth modpack in place (U1153 b–d). The installed
+//! Updating a managed Modrinth or CurseForge modpack in place (U1153 b–d,
+//! U1152). The installed
 //! version's lock is the baseline; the plan compares it with the disk and the
 //! new version (`pack_update_plan`), and the apply builds a changed copy of
 //! the instance and swaps it in the way a backup restore does, with an
@@ -10,7 +11,7 @@ use crate::pack_update_plan::{self as planner, Action, DiskPath, OnDisk, Plan, P
 const LOCK: &str = ".launcher-pack.json";
 const MAX_LOCK_BYTES: u64 = 16 * 1024 * 1024;
 
-pub(crate) const UNMANAGED: &str = "此实例不是由启动器在线安装的 Modrinth 整合包，无法更新";
+pub(crate) const UNMANAGED: &str = "此实例不是由启动器在线安装的整合包，无法更新";
 pub(crate) const PLAN_CHANGED: &str = "查看更新计划后实例文件发生了变化，请重新查看计划";
 pub(crate) const NOT_NEWER: &str = "所选版本不比当前版本新，整合包更新不会降级";
 pub(crate) const VERSION_MISMATCH: &str = "所选版本不属于这个整合包";
@@ -19,6 +20,10 @@ pub(crate) const CONFLICT_CHOICE_INVALID: &str = "冲突选择包含计划之外
 pub(crate) const STAGE_MISMATCH: &str = "更新副本与计划不一致，原实例未改变";
 pub(crate) const SHARED_ROOT: &str = "共享游戏根目录或启动器目录中的实例不能原地更新整合包";
 pub(crate) const LOCK_INVALID: &str = "新版本的文件记录无法写成有效的锁文件，原实例未改变";
+pub(crate) const MANUAL_DOWNLOAD_REQUIRED: &str = "更新需要的部分文件不允许启动器下载，请先手动放入，原实例未改变";
+/// The new version's pack ZIP itself may not be downloaded by the launcher; a
+/// hand-downloaded ZIP is no update, so the plan refuses instead of listing it.
+pub(crate) const PACK_NOT_DOWNLOADABLE: &str = "CurseForge 不允许启动器下载这个整合包版本，无法在线更新到它，原实例未改变";
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() + Send>;
@@ -73,16 +78,26 @@ struct PackLock {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LockFile {
     path: String,
     sha1: String,
-    sha512: String,
+    /// Every Modrinth file has one; a CurseForge file may.
+    #[serde(default)]
+    sha512: Option<String>,
     size: u64,
+    /// A CurseForge file's project and file.
+    #[serde(default)]
+    project_id: Option<u64>,
+    #[serde(default)]
+    file_id: Option<u64>,
 }
 
-/// A lock that names its Modrinth project and version, checked like any
-/// other input from disk.
+/// A lock that names its project and version on Modrinth or CurseForge,
+/// checked like any other input from disk.
 struct ManagedPack {
+    origin: PackOrigin,
+    /// The origin's ids as text (CurseForge ids in decimal).
     project_id: String,
     version_id: String,
     version_number: String,
@@ -124,10 +139,15 @@ fn read_lock(directory: &Path) -> Management {
         _ => return Management::Unmanaged("invalidLock"),
     }
     let Some(source) = lock.source.clone() else { return Management::Unmanaged("noSource") };
-    let Ok(PackOrigin::Modrinth { project_id, version_id, version_number }) = serde_json::from_value::<PackOrigin>(source) else {
+    // A platform this launcher does not update is no source; a known one that
+    // does not read is a broken lock.
+    if !matches!(source.get("kind").and_then(Value::as_str), Some("modrinth" | "curseforge")) {
         return Management::Unmanaged("noSource");
+    }
+    let Ok(origin) = serde_json::from_value::<PackOrigin>(source) else {
+        return Management::Unmanaged("invalidLock");
     };
-    match managed(lock, project_id, version_id, version_number, &bytes) {
+    match managed(lock, origin, &bytes) {
         Ok(pack) => Management::Managed(Box::new(pack)),
         Err(_) => Management::Unmanaged("invalidLock"),
     }
@@ -135,9 +155,19 @@ fn read_lock(directory: &Path) -> Management {
 
 /// Every value from the lock is checked before it is used: ids, paths,
 /// hashes, sizes and counts.
-fn managed(lock: PackLock, project_id: String, version_id: String, version_number: String, bytes: &[u8]) -> Result<ManagedPack, String> {
-    identifier(&project_id)?;
-    identifier(&version_id)?;
+fn managed(lock: PackLock, origin: PackOrigin, bytes: &[u8]) -> Result<ManagedPack, String> {
+    let (project_id, version_id, version_number) = match &origin {
+        PackOrigin::Modrinth { project_id, version_id, version_number } => {
+            identifier(project_id)?;
+            identifier(version_id)?;
+            (project_id.clone(), version_id.clone(), version_number.clone())
+        }
+        PackOrigin::Curseforge { project_id, file_id, version_number } => {
+            curseforge_id(*project_id)?;
+            curseforge_id(*file_id)?;
+            (project_id.to_string(), file_id.to_string(), version_number.clone())
+        }
+    };
     if version_number.len() > 256 {
         return Err("整合包版本号过长".into());
     }
@@ -148,10 +178,26 @@ fn managed(lock: PackLock, project_id: String, version_id: String, version_numbe
     let mut baseline = BTreeMap::new();
     for file in lock.files {
         archive_relative(&file.path)?;
-        if !valid_hash(&file.sha1, 40) || !valid_hash(&file.sha512, 128) || file.size == 0 || file.size > MAX_ARCHIVE_BYTES {
-            return Err("整合包锁文件的文件记录无效".into());
+        let invalid = || "整合包锁文件的文件记录无效".to_string();
+        if !valid_hash(&file.sha1, 40) || file.size == 0 || file.size > MAX_ARCHIVE_BYTES {
+            return Err(invalid());
         }
-        let provided = Provided::Download { sha1: file.sha1.to_ascii_lowercase(), sha512: file.sha512.to_ascii_lowercase(), size: file.size };
+        if file.sha512.as_deref().is_some_and(|sha512| !valid_hash(sha512, 128)) {
+            return Err(invalid());
+        }
+        let sha1 = file.sha1.to_ascii_lowercase();
+        let provided = match &origin {
+            PackOrigin::Modrinth { .. } => {
+                let sha512 = file.sha512.as_deref().ok_or_else(invalid)?.to_ascii_lowercase();
+                Provided::Download { sha1, sha512, size: file.size }
+            }
+            // CurseForge describes a file by SHA-1 and size (and its ids).
+            PackOrigin::Curseforge { .. } => {
+                file.project_id.map(curseforge_id).ok_or_else(invalid)??;
+                file.file_id.map(curseforge_id).ok_or_else(invalid)??;
+                Provided::Sha1Download { sha1, size: file.size }
+            }
+        };
         if baseline.insert(file.path.to_lowercase(), (file.path, provided)).is_some() {
             return Err("整合包锁文件路径重复".into());
         }
@@ -167,6 +213,7 @@ fn managed(lock: PackLock, project_id: String, version_id: String, version_numbe
         }
     }
     Ok(ManagedPack {
+        origin,
         project_id,
         version_id,
         version_number,
@@ -175,6 +222,14 @@ fn managed(lock: PackLock, project_id: String, version_id: String, version_numbe
         baseline,
         sha256: format!("{:x}", Sha256::digest(bytes)),
     })
+}
+
+/// A CurseForge project or file id: 1..=u32::MAX, as the API uses.
+fn curseforge_id(id: u64) -> Result<u64, String> {
+    if id == 0 || id > u64::from(u32::MAX) {
+        return Err("CurseForge 标识超出范围".into());
+    }
+    Ok(id)
 }
 
 fn instance_directory(state: &LauncherState, instance: &Instance) -> Result<PathBuf, String> {
@@ -262,8 +317,13 @@ async fn check(state: &LauncherState, instance_id: &str) -> Result<ModpackUpdate
         }
         Management::Managed(pack) => pack,
     };
-    let versions = fetch_pack_versions(state, &pack.project_id).await?;
-    let (newer, current_missing) = newer_versions(&pack.version_id, &pack.project_id, versions)?;
+    let (newer, current_missing) = match &pack.origin {
+        PackOrigin::Modrinth { .. } => {
+            let versions = fetch_pack_versions(state, &pack.project_id).await?;
+            newer_versions(&pack.version_id, &pack.project_id, versions)?
+        }
+        PackOrigin::Curseforge { project_id, file_id, .. } => curseforge_pack_versions(state, *project_id, Some(*file_id)).await?,
+    };
     Ok(ModpackUpdateCheck {
         managed: true,
         reason: None,
@@ -279,8 +339,26 @@ async fn check(state: &LauncherState, instance_id: &str) -> Result<ModpackUpdate
 /// Where a file of the new version comes from.
 enum Source {
     Download(PackFile),
+    /// A file of a CurseForge manifest; no url when the launcher may not
+    /// download it (the author disallows third-party distribution).
+    Curseforge { project_id: u64, file_id: u64, url: Option<String>, sha1: String, size: u64, page: String },
     /// An entry of the archive (the last override layer that has the path).
     Override { entry: String },
+}
+
+/// What the new version provides, from its platform.
+struct Upstream {
+    archive: PathBuf,
+    removed: RemoveOnDrop,
+    archive_sha512: String,
+    to: PackVersionRef,
+    origin: PackOrigin,
+    name: String,
+    dependencies: BTreeMap<String, String>,
+    /// Lowercase paths the new version provides as optional files left out.
+    optional_paths: HashSet<String>,
+    files: BTreeMap<String, (String, Provided)>,
+    sources: BTreeMap<String, Source>,
 }
 
 /// Everything a plan was made from, so the apply can redo it and compare.
@@ -289,8 +367,12 @@ struct Prepared {
     instance: Instance,
     archive: PathBuf,
     _archive_removed: RemoveOnDrop,
-    version: ApiVersion,
-    index: PackIndex,
+    /// The new version.
+    to: PackVersionRef,
+    origin: PackOrigin,
+    name: String,
+    dependencies: BTreeMap<String, String>,
+    optional_paths: HashSet<String>,
     upstream: BTreeMap<String, (String, Provided)>,
     sources: BTreeMap<String, Source>,
     /// What the plan saw on disk; the copy must still hold it.
@@ -333,7 +415,21 @@ pub struct PackUpdatePlan {
     pub dependency_change: Option<DependencyChange>,
     pub download_bytes: u64,
     pub include_optional: bool,
+    /// Files the new version needs that the launcher may not download.
+    pub manual: Vec<ManualDownload>,
     pub fingerprint: String,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualDownload {
+    /// The plan path (a conflict's choice key).
+    pub path: String,
+    /// Where to put the downloaded file: `<path>.disabled` keeps a disabled mod disabled.
+    pub target: String,
+    pub project_url: String,
+    /// The new version of a conflict: needed only if it is chosen.
+    pub conflict: bool,
 }
 
 impl Prepared {
@@ -344,19 +440,38 @@ impl Prepared {
         if self.include_optional {
             return Vec::new();
         }
-        let optional: HashSet<String> = self
-            .index
-            .files
-            .iter()
-            .filter(|file| file.env.as_ref().and_then(|env| env.get("client")).is_some_and(|value| value == "optional"))
-            .map(|file| file.path.to_lowercase())
-            .collect();
         self.plan
             .steps
             .iter()
-            .filter(|step| step.action == Action::Remove && optional.contains(&step.path.to_lowercase()))
+            .filter(|step| step.action == Action::Remove && self.optional_paths.contains(&step.path.to_lowercase()))
             .map(|step| step.path.clone())
             .collect()
+    }
+
+    /// The project page of a step's file when the launcher may not download it.
+    /// A removal never has one: the planner removes only paths the new version
+    /// does not provide, and every source is a path it provides.
+    fn manual_page(&self, step: &Step) -> Option<&str> {
+        match self.sources.get(&step.path.to_lowercase()) {
+            Some(Source::Curseforge { url: None, page, .. }) => Some(page),
+            _ => None,
+        }
+    }
+
+    /// Every file the plan (or a conflict's new version) needs that the
+    /// launcher may not download.
+    fn manual(&self) -> Vec<ManualDownload> {
+        let entry = |step: &Step, conflict: bool| {
+            self.manual_page(step).map(|page| ManualDownload {
+                path: step.path.clone(),
+                target: step_name(step),
+                project_url: page.to_owned(),
+                conflict,
+            })
+        };
+        let planned = self.plan.steps.iter().filter_map(|step| entry(step, false));
+        let chosen = self.plan.conflicts.iter().filter_map(|conflict| entry(&conflict.upstream, true));
+        planned.chain(chosen).collect()
     }
 
     fn summary(&self) -> PackUpdatePlan {
@@ -367,13 +482,13 @@ impl Prepared {
             .iter()
             .filter(|step| step.action != Action::Remove)
             .filter_map(|step| match self.upstream.get(&step.path.to_lowercase()) {
-                Some((_, Provided::Download { size, .. })) => Some(*size),
+                Some((_, Provided::Download { size, .. } | Provided::Sha1Download { size, .. })) => Some(*size),
                 _ => None,
             })
             .sum();
         PackUpdatePlan {
             from: PackVersionRef { version_id: self.pack.version_id.clone(), version_number: self.pack.version_number.clone() },
-            to: PackVersionRef { version_id: self.version.id.clone(), version_number: self.version.version_number.clone() },
+            to: self.to.clone(),
             add: count(Action::Add),
             replace: count(Action::Replace),
             remove: count(Action::Remove),
@@ -383,10 +498,11 @@ impl Prepared {
             conflicts: self.plan.conflicts.iter().map(|conflict| PlanConflict { path: conflict.path.clone(), reason: conflict.reason }).collect(),
             dropped_intents: self.plan.dropped_intents.clone(),
             skipped: self.plan.skipped.clone(),
-            dependency_change: (self.pack.dependencies != self.index.dependencies)
-                .then(|| DependencyChange { from: self.pack.dependencies.clone(), to: self.index.dependencies.clone() }),
+            dependency_change: (self.pack.dependencies != self.dependencies)
+                .then(|| DependencyChange { from: self.pack.dependencies.clone(), to: self.dependencies.clone() }),
             download_bytes,
             include_optional: self.include_optional,
+            manual: self.manual(),
             fingerprint: self.fingerprint.clone(),
         }
     }
@@ -424,12 +540,24 @@ fn upstream_view(archive: &Path, index: &PackIndex, optional: bool) -> Result<(B
         upstream.insert(key.clone(), (file.path.clone(), provided));
         sources.insert(key, Source::Download(file.clone()));
     }
+    override_layers(archive, &["overrides/".to_owned(), "client-overrides/".to_owned()], &mut upstream, &mut sources)?;
+    Ok((upstream, sources))
+}
+
+/// The archive's override layers in order (a later layer wins a path), over
+/// what the version's downloads provide.
+fn override_layers(
+    archive: &Path,
+    prefixes: &[String],
+    upstream: &mut BTreeMap<String, (String, Provided)>,
+    sources: &mut BTreeMap<String, Source>,
+) -> Result<(), String> {
     let mut zip = ZipArchive::new(fs::File::open(archive).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    for prefix in ["overrides/", "client-overrides/"] {
+    for prefix in prefixes {
         for n in 0..zip.len() {
             let mut entry = zip.by_index(n).map_err(|e| e.to_string())?;
             let name = entry.name().map_err(|e| e.to_string())?.into_owned();
-            let Some(relative) = name.strip_prefix(prefix).map(|relative| relative.trim_end_matches('/')) else { continue };
+            let Some(relative) = name.strip_prefix(prefix.as_str()).map(|relative| relative.trim_end_matches('/')) else { continue };
             if relative.is_empty() || entry.is_dir() {
                 continue;
             }
@@ -445,7 +573,7 @@ fn upstream_view(archive: &Path, index: &PackIndex, optional: bool) -> Result<(B
             sources.insert(key, Source::Override { entry: name });
         }
     }
-    Ok((upstream, sources))
+    Ok(())
 }
 
 struct HashWriter<'a>(&'a mut Sha256);
@@ -530,6 +658,45 @@ async fn prepare(state: &Arc<LauncherState>, instance_id: &str, new_version_id: 
         Management::Unmanaged(_) => return Err(UNMANAGED.into()),
     };
     require_dependencies_match(state, &instance, &pack.dependencies)?;
+    let include_optional = include_optional.unwrap_or(pack.include_optional);
+    let upstream = match &pack.origin {
+        PackOrigin::Modrinth { .. } => modrinth_upstream(state, &pack, new_version_id, include_optional).await?,
+        PackOrigin::Curseforge { project_id, file_id, .. } => {
+            curseforge_upstream(state, *project_id, *file_id, new_version_id, include_optional).await?
+        }
+    };
+    let blocking = (state.clone(), directory.clone(), pack.baseline.clone(), upstream.files.clone());
+    let disk = tokio::task::spawn_blocking(move || {
+        let (state, directory, baseline, files) = blocking;
+        disk_view(&state, &directory, &baseline, &files)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let plan = planner::plan(&planner::PlanInput { baseline: &pack.baseline, upstream: &upstream.files, disk: &disk });
+    let Upstream { archive, removed, archive_sha512, to, origin, name, dependencies, optional_paths, files, sources } = upstream;
+    let mut prepared = Prepared {
+        pack,
+        instance,
+        archive,
+        _archive_removed: removed,
+        to,
+        origin,
+        name,
+        dependencies,
+        optional_paths,
+        upstream: files,
+        sources,
+        disk,
+        plan,
+        include_optional,
+        fingerprint: String::new(),
+    };
+    prepared.fingerprint = fingerprint(&prepared, &prepared.disk, &archive_sha512)?;
+    Ok(prepared)
+}
+
+/// The new version from Modrinth: its index and override layers.
+async fn modrinth_upstream(state: &Arc<LauncherState>, pack: &ManagedPack, new_version_id: &str, include_optional: bool) -> Result<Upstream, String> {
     let api = client(state, false)?;
     let base = modrinth_api();
     let version: ApiVersion = json_response(api.get(format!("{base}/version/{new_version_id}"))).await?;
@@ -564,35 +731,134 @@ async fn prepare(state: &Arc<LauncherState>, instance_id: &str, new_version_id: 
     let archive = safe_join(&downloads, &format!("{}.mrpack", uuid::Uuid::new_v4()))?;
     let removed = RemoveOnDrop(archive.clone());
     let received = fetch_verified(state, &[file.url.clone()], &archive, file.size, &file.hashes).await?;
-    let include_optional = include_optional.unwrap_or(pack.include_optional);
-    let blocking = (state.clone(), archive.clone(), directory.clone(), pack.baseline.clone());
-    let (index, upstream, sources, disk) = tokio::task::spawn_blocking(move || {
-        let (state, archive, directory, baseline) = blocking;
+    let blocking = (state.clone(), archive.clone());
+    let (index, files, sources) = tokio::task::spawn_blocking(move || {
+        let (state, archive) = blocking;
         inspect_zip_limits_controlled(&archive, MAX_ARCHIVE_BYTES, MAX_PACK_BYTES, MAX_ARCHIVE_BYTES, Some(&state))?;
         let index: PackIndex = zip_json(&archive, "modrinth.index.json")?;
-        let (upstream, sources) = upstream_view(&archive, &index, include_optional)?;
-        let disk = disk_view(&state, &directory, &baseline, &upstream)?;
-        Ok::<_, String>((index, upstream, sources, disk))
+        let (files, sources) = upstream_view(&archive, &index, include_optional)?;
+        Ok::<_, String>((index, files, sources))
     })
     .await
     .map_err(|error| error.to_string())??;
-    let plan = planner::plan(&planner::PlanInput { baseline: &pack.baseline, upstream: &upstream, disk: &disk });
-    let mut prepared = Prepared {
-        pack,
-        instance,
+    let optional_paths = index
+        .files
+        .iter()
+        .filter(|file| file.env.as_ref().and_then(|env| env.get("client")).is_some_and(|value| value == "optional"))
+        .map(|file| file.path.to_lowercase())
+        .collect();
+    Ok(Upstream {
         archive,
-        _archive_removed: removed,
-        version,
-        index,
-        upstream,
+        removed,
+        archive_sha512: received.sha512,
+        to: PackVersionRef { version_id: version.id.clone(), version_number: version.version_number.clone() },
+        origin: PackOrigin::Modrinth {
+            project_id: pack.project_id.clone(),
+            version_id: version.id.clone(),
+            version_number: version.version_number.clone(),
+        },
+        name: index.name,
+        dependencies: index.dependencies,
+        optional_paths,
+        files,
         sources,
-        disk,
-        plan,
-        include_optional,
-        fingerprint: String::new(),
+    })
+}
+
+/// The new version from CurseForge: a release file of the same modpack,
+/// newer than the installed one (any release when CurseForge no longer has
+/// the installed file), its manifest resolved through the API, and its
+/// override layer. Every request belongs to the task.
+async fn curseforge_upstream(
+    state: &Arc<LauncherState>,
+    project_id: u64,
+    installed: u64,
+    new_version_id: &str,
+    include_optional: bool,
+) -> Result<Upstream, String> {
+    let new = new_version_id.parse::<u64>().ok().filter(|id| curseforge_id(*id).is_ok()).ok_or(VERSION_MISMATCH)?;
+    if new == installed {
+        return Err(NOT_NEWER.into());
+    }
+    let session = crate::curseforge::CfSession::new(state, None)?;
+    let (_, file, url) = curseforge_pack_file(state, &session, project_id, new).await.map_err(|error| {
+        if error.starts_with(MANUAL_DOWNLOAD) {
+            PACK_NOT_DOWNLOADABLE.to_owned()
+        } else {
+            error
+        }
+    })?;
+    let current = match crate::curseforge::in_task(state, crate::curseforge::pack_file(&session, project_id, installed)).await {
+        Ok(current) => Some(current),
+        Err(error) if error == crate::curseforge::NOT_FOUND => None,
+        Err(error) => return Err(cf_platform(error)),
     };
-    prepared.fingerprint = fingerprint(&prepared, &prepared.disk, &received.sha512)?;
-    Ok(prepared)
+    if current.as_ref().is_some_and(|current| !crate::curseforge::pack_newer(&file, current)) {
+        return Err(NOT_NEWER.into());
+    }
+    let sha1 = file.sha1.clone().ok_or(VERSION_MISMATCH)?;
+    let downloads = checked_absolute(&state.data_dir.join("pack-downloads"))?;
+    fs::create_dir_all(&downloads).map_err(|e| e.to_string())?;
+    sweep_pack_downloads(&downloads, std::time::Duration::from_secs(24 * 60 * 60));
+    let archive = safe_join(&downloads, &format!("{}.zip", uuid::Uuid::new_v4()))?;
+    let removed = RemoveOnDrop(archive.clone());
+    let received = fetch_verified(state, &[url], &archive, file.size, &BTreeMap::from([("sha1".to_owned(), sha1)])).await?;
+    let blocking = (state.clone(), archive.clone());
+    let manifest = tokio::task::spawn_blocking(move || {
+        let (state, archive) = blocking;
+        inspect_zip_limits_controlled(&archive, MAX_ARCHIVE_BYTES, MAX_PACK_BYTES, MAX_ARCHIVE_BYTES, Some(&state))?;
+        let manifest: CurseManifest = zip_json(&archive, "manifest.json")?;
+        if manifest.manifest_type != "minecraftModpack" || manifest.manifest_version != 1 {
+            return Err("不支持此 CurseForge 清单格式".to_owned());
+        }
+        Ok(manifest)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let dependencies = curse_dependencies(&manifest.minecraft)?;
+    // On this task: the API calls and their test endpoints belong to it.
+    let (resolved, optional_paths) = resolve_manifest(state, &session, &manifest, include_optional).await?;
+    let mut files = BTreeMap::new();
+    let mut sources = BTreeMap::new();
+    for entry in resolved {
+        let key = entry.path.to_lowercase();
+        files.insert(key.clone(), (entry.path.clone(), Provided::Sha1Download { sha1: entry.sha1.clone(), size: entry.size }));
+        sources.insert(
+            key,
+            Source::Curseforge {
+                project_id: entry.project_id,
+                file_id: entry.file_id,
+                url: entry.download,
+                sha1: entry.sha1,
+                size: entry.size,
+                page: entry.page,
+            },
+        );
+    }
+    let prefix = manifest.overrides.trim_end_matches('/').to_owned();
+    let layer = (archive.clone(), prefix, files, sources);
+    let (files, sources) = tokio::task::spawn_blocking(move || {
+        let (archive, prefix, mut files, mut sources) = layer;
+        if !prefix.is_empty() {
+            archive_relative(&prefix)?;
+            override_layers(&archive, &[format!("{prefix}/")], &mut files, &mut sources)?;
+        }
+        Ok::<_, String>((files, sources))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(Upstream {
+        archive,
+        removed,
+        archive_sha512: received.sha512,
+        to: PackVersionRef { version_id: new.to_string(), version_number: file.label.clone() },
+        origin: PackOrigin::Curseforge { project_id, file_id: new, version_number: file.label },
+        name: manifest.name,
+        dependencies,
+        optional_paths,
+        files,
+        sources,
+    })
 }
 
 #[tauri::command]
@@ -662,6 +928,15 @@ pub struct PackUpdateResult {
     pub previous_backup: instances::InstanceBackup,
     /// The old directory, kept when it changed while the update ran.
     pub previous_directory: Option<String>,
+}
+
+/// No step writes a file the launcher may not download: the user puts it in
+/// place first, and the next plan finds it unchanged.
+fn require_downloadable(prepared: &Prepared, steps: &[Step]) -> Result<(), String> {
+    if steps.iter().any(|step| prepared.manual_page(step).is_some()) {
+        return Err(MANUAL_DOWNLOAD_REQUIRED.into());
+    }
+    Ok(())
 }
 
 /// The steps to take: the plan's, plus the new version for each conflict the
@@ -737,23 +1012,20 @@ fn write_update_lock(
         }
         match provided {
             Provided::Download { sha1, sha512, size } => files.push(json!({"path": path, "sha1": sha1, "sha512": sha512, "size": size})),
+            Provided::Sha1Download { sha1, size } => {
+                let Some(Source::Curseforge { project_id, file_id, .. }) = prepared.sources.get(key) else {
+                    return Err(LOCK_INVALID.into());
+                };
+                files.push(json!({"path": path, "sha1": sha1, "size": size, "projectId": project_id, "fileId": file_id}));
+            }
             Provided::Override { sha256, size } => overrides.push(FileRecord { relative: path.clone(), size: *size, sha256: sha256.clone() }),
         }
     }
-    let origin_ids = (
-        prepared.pack.project_id.clone(),
-        prepared.version.id.clone(),
-        prepared.version.version_number.clone(),
-    );
-    let origin = PackOrigin::Modrinth {
-        project_id: origin_ids.0.clone(),
-        version_id: origin_ids.1.clone(),
-        version_number: origin_ids.2.clone(),
-    };
+    let origin = prepared.origin.clone();
     let payload = json!({
         "formatVersion": 2,
-        "name": prepared.index.name,
-        "dependencies": prepared.index.dependencies,
+        "name": prepared.name,
+        "dependencies": prepared.dependencies,
         "files": files,
         "overrides": overrides,
         "source": origin,
@@ -764,7 +1036,7 @@ fn write_update_lock(
     // instance unmanaged after a successful update.
     let reread = serde_json::from_slice::<PackLock>(&bytes).map_err(|_| LOCK_INVALID)?;
     if bytes.len() as u64 > MAX_LOCK_BYTES
-        || managed(reread, origin_ids.0, origin_ids.1, origin_ids.2, &bytes).is_err()
+        || managed(reread, origin, &bytes).is_err()
     {
         return Err(LOCK_INVALID.into());
     }
@@ -817,7 +1089,8 @@ async fn apply_inner(
         return Err(PLAN_CHANGED.into());
     }
     let steps = chosen_steps(&prepared.plan, choices)?;
-    let dependency_change = prepared.pack.dependencies != prepared.index.dependencies;
+    require_downloadable(&prepared, &steps)?;
+    let dependency_change = prepared.pack.dependencies != prepared.dependencies;
     if dependency_change {
         // The new loader or version is installed into the configured root.
         crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
@@ -851,6 +1124,12 @@ async fn apply_inner(
                 let received = fetch_verified(state, &file.downloads, &target, file.file_size, &file.hashes).await?;
                 FileRecord { relative: name.clone(), size: received.size, sha256: received.sha256 }
             }
+            Some(Source::Curseforge { url: Some(url), sha1, size, .. }) => {
+                let expected = BTreeMap::from([("sha1".to_owned(), sha1.clone())]);
+                let received = fetch_verified(state, std::slice::from_ref(url), &target, *size, &expected).await?;
+                FileRecord { relative: name.clone(), size: received.size, sha256: received.sha256 }
+            }
+            Some(Source::Curseforge { url: None, .. }) => return Err(MANUAL_DOWNLOAD_REQUIRED.into()),
             Some(Source::Override { entry }) => {
                 let Some((_, Provided::Override { sha256, size })) = prepared.upstream.get(&key) else {
                     return Err(STAGE_MISMATCH.into());
@@ -871,7 +1150,7 @@ async fn apply_inner(
     let mut after = current.clone();
     if dependency_change {
         let app = app.ok_or("安装新加载器需要启动器窗口")?;
-        let (version_id, loader, loader_version) = install_dependencies(state, app, &prepared.index.dependencies).await?;
+        let (version_id, loader, loader_version) = install_dependencies(state, app, &prepared.dependencies).await?;
         after.version_id = version_id;
         after.loader = loader;
         after.loader_version = loader_version;

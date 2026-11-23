@@ -81,6 +81,7 @@ commands.allow = [
   "recover_instance_restore",
   "export_instance_zip",
   "list_modpack_versions",
+  "list_curseforge_modpack_versions",
   "check_modpack_update",
   "plan_modpack_update",
   "apply_modpack_update",
@@ -127,6 +128,7 @@ commands.allow = [
   "rollback_resource_update",
   "recover_resource_update",
   "install_modrinth_modpack",
+  "install_curseforge_modpack",
   "search_curseforge",
   "install_curseforge_resource",
 ]

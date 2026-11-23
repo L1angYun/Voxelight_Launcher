@@ -2,8 +2,8 @@ import type { TFunction } from "i18next";
 import type { Instance } from "../../lib/launcher";
 import { formatBytes } from "../../i18n/format";
 
-export function errorText(code: string, t: TFunction): string {
-  return t(`shell:errors.${code}`, { defaultValue: t("common:errors.internalUnexpected") });
+export function errorText(code: string, t: TFunction, params?: Record<string, unknown>): string {
+  return t(`shell:errors.${code}`, { ...params, defaultValue: t("common:errors.internalUnexpected") });
 }
 
 export function noticeText(code: string, t: TFunction, params?: Record<string, unknown>): string {

@@ -368,7 +368,7 @@ async fn api_post<T: DeserializeOwned>(
 /// drops them at once, with their pacing and retry waits. Only for code that
 /// runs inside that task (installs, updates, the update check): searches and
 /// project details are not tasks and must not stop with someone else's.
-async fn in_task<T>(
+pub(crate) async fn in_task<T>(
     state: &LauncherState,
     requests: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
@@ -376,7 +376,13 @@ async fn in_task<T>(
 }
 
 /// The answer to a 404: a project or file CurseForge no longer has.
-const NOT_FOUND: &str = "CurseForge 项目或文件不存在";
+pub(crate) const NOT_FOUND: &str = "CurseForge 项目或文件不存在";
+pub(crate) const CF_UNREACHABLE: &str = "CurseForge 连接失败，请检查网络后重试";
+pub(crate) const CF_READ_FAILED: &str = "读取 CurseForge 数据失败";
+pub(crate) const CF_REFUSED: &str = "CurseForge 拒绝访问，请检查你自己的 API Key、账号权限或该资源的第三方分发授权";
+pub(crate) const CF_RATE_LIMITED: &str = "CurseForge 请求过于频繁，请稍后重试";
+/// Followed by the status and a closing parenthesis.
+pub(crate) const CF_HTTP_FAILED: &str = "CurseForge 请求失败（HTTP ";
 
 /// One attempt's outcome: the body of a success, a retryable failure (with any
 /// Retry-After value), or a final failure.
@@ -424,7 +430,7 @@ async fn send_json<T: DeserializeOwned>(
         }
         let outcome = match request.send().await {
             Ok(response) => read_answer(response).await,
-            Err(_) => Attempt::Retry(None, "CurseForge 连接失败，请检查网络后重试".into()),
+            Err(_) => Attempt::Retry(None, CF_UNREACHABLE.into()),
         };
         match outcome {
             Attempt::Done(bytes) => break bytes,
@@ -455,7 +461,7 @@ async fn read_answer(response: reqwest::Response) -> Attempt {
     match status {
         401 | 403 => {
             return Attempt::Fail(
-                "CurseForge 拒绝访问，请检查你自己的 API Key、账号权限或该资源的第三方分发授权".into(),
+                CF_REFUSED.into(),
             )
         }
         404 => return Attempt::Fail(NOT_FOUND.into()),
@@ -466,14 +472,14 @@ async fn read_answer(response: reqwest::Response) -> Attempt {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
             let error = if status == 429 {
-                "CurseForge 请求过于频繁，请稍后重试".to_string()
+                CF_RATE_LIMITED.to_string()
             } else {
-                format!("CurseForge 请求失败（HTTP {status}）")
+                format!("{CF_HTTP_FAILED}{status}）")
             };
             return Attempt::Retry(retry_after, error);
         }
         _ if !response.status().is_success() => {
-            return Attempt::Fail(format!("CurseForge 请求失败（HTTP {status}）"))
+            return Attempt::Fail(format!("{CF_HTTP_FAILED}{status}）"))
         }
         _ => {}
     }
@@ -484,7 +490,7 @@ async fn read_answer(response: reqwest::Response) -> Attempt {
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let Ok(chunk) = chunk else {
-            return Attempt::Retry(None, "读取 CurseForge 数据失败".into());
+            return Attempt::Retry(None, CF_READ_FAILED.into());
         };
         if bytes.len().saturating_add(chunk.len()) > MAX_METADATA {
             return Attempt::Fail("CurseForge 元数据超过限制".into());
@@ -1613,6 +1619,167 @@ async fn projects(state: &LauncherState, client: &reqwest::Client, key: &str, id
         }
     }
     Ok(found)
+}
+
+/// A CurseForge API client with the user's key (explicit, else saved, else built in).
+pub(crate) struct CfSession {
+    client: reqwest::Client,
+    key: String,
+}
+
+impl CfSession {
+    /// No key: the same error text `service_key` returns (it maps to
+    /// `auth.serviceKeyMissing`).
+    pub(crate) fn new(state: &LauncherState, explicit: Option<&str>) -> Result<Self, String> {
+        let key = crate::curseforge_key::effective_cf_key(&state.data_dir, explicit)?
+            .ok_or_else(|| "请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。".to_string())?;
+        Ok(Self { client: api_client(state)?, key })
+    }
+}
+
+/// What a modpack lock and its update pipeline need from a CurseForge project.
+pub(crate) struct PackProject {
+    pub(crate) id: u64,
+    pub(crate) class_id: Option<u64>,
+    pub(crate) name: String,
+    /// `project_page()`: an https curseforge.com page.
+    pub(crate) page: String,
+    /// `allow_mod_distribution != Some(false)`.
+    pub(crate) distributable: bool,
+}
+
+impl PackProject {
+    fn from_project(project: Project) -> Self {
+        Self {
+            id: project.id,
+            class_id: project.class_id,
+            page: project_page(&project),
+            name: project.name,
+            distributable: project.allow_mod_distribution != Some(false),
+        }
+    }
+}
+
+/// What a modpack lock and its update pipeline need from a CurseForge file.
+pub(crate) struct PackFile {
+    pub(crate) id: u64,
+    pub(crate) project_id: u64,
+    pub(crate) file_name: String,
+    /// `version_label()`: display name, else file name.
+    pub(crate) label: String,
+    pub(crate) file_date: String,
+    pub(crate) size: u64,
+    /// The algo-1 hash when it is 40 hex digits, lowercased.
+    pub(crate) sha1: Option<String>,
+    pub(crate) game_versions: Vec<String>,
+    pub(crate) available: bool,
+    /// `release_type == 1 && is_available && !is_server_pack`.
+    pub(crate) release: bool,
+    /// `download_url` when non-empty and accepted by `download_url()` (the
+    /// forgecdn hosts).
+    pub(crate) url: Option<String>,
+    raw: CfFile,
+}
+
+impl PackFile {
+    fn from_file(file: CfFile) -> Self {
+        let sha1 = file.hashes.iter().find_map(|hash| {
+            (hash.algo == 1 && hash.value.len() == 40 && hash.value.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| hash.value.to_ascii_lowercase())
+        });
+        let url = file
+            .download_url
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .filter(|value| download_url(value).is_ok())
+            .map(str::to_owned);
+        Self {
+            id: file.id,
+            project_id: file.mod_id,
+            file_name: file.file_name.clone(),
+            label: version_label(&file),
+            file_date: file.file_date.clone(),
+            size: file.file_length,
+            sha1,
+            game_versions: file.game_versions.clone(),
+            available: file.is_available,
+            release: file.release_type == 1 && file.is_available && !file.is_server_pack,
+            url,
+            raw: file,
+        }
+    }
+}
+
+/// `newer(&a.raw, &b.raw)`.
+pub(crate) fn pack_newer(a: &PackFile, b: &PackFile) -> bool {
+    newer(&a.raw, &b.raw)
+}
+
+/// GET `mods/{id}`: the id must match and the game must be Minecraft (432).
+pub(crate) async fn pack_project(session: &CfSession, id: u64) -> Result<PackProject, String> {
+    let answer: Response<Project> = api(&session.client, &session.key, &format!("mods/{id}"), &[]).await?;
+    if answer.data.id != id || answer.data.game_id != 432 {
+        return Err("CurseForge 项目身份或游戏不一致".into());
+    }
+    Ok(PackProject::from_project(answer.data))
+}
+
+/// GET `mods/{project}/files/{file}`: id and modId must match.
+pub(crate) async fn pack_file(session: &CfSession, project: u64, file: u64) -> Result<PackFile, String> {
+    let answer: Response<CfFile> = api(&session.client, &session.key, &format!("mods/{project}/files/{file}"), &[]).await?;
+    if answer.data.id != file || answer.data.mod_id != project {
+        return Err("CurseForge 文件不属于所选项目".into());
+    }
+    Ok(PackFile::from_file(answer.data))
+}
+
+/// `files_page(.., "", None, offset)`: one page (50) of a project's files,
+/// newest first.
+pub(crate) async fn pack_files_page(session: &CfSession, project: u64, offset: usize) -> Result<Vec<PackFile>, String> {
+    let files = files_page(&session.client, &session.key, project, "", None, offset).await?;
+    Ok(files.into_iter().map(PackFile::from_file).collect())
+}
+
+/// POST `mods/files` `{"fileIds": [...]}` 100 ids per request (a checkpoint
+/// and `in_task` around each, like `projects`), then `projects(...)` for their
+/// modIds. Files or projects CurseForge does not return are left out.
+pub(crate) async fn manifest_files(
+    state: &LauncherState,
+    session: &CfSession,
+    file_ids: &[u64],
+) -> Result<(HashMap<u64, PackFile>, HashMap<u64, PackProject>), String> {
+    let mut ids = file_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut files = HashMap::new();
+    for chunk in ids.chunks(100) {
+        state.control.checkpoint().await?;
+        let answer: Response<Vec<CfFile>> = match in_task(
+            state,
+            api_post(&session.client, &session.key, "mods/files", &serde_json::json!({ "fileIds": chunk })),
+        )
+        .await
+        {
+            Ok(answer) => answer,
+            Err(error) if error == NOT_FOUND => continue,
+            Err(error) => return Err(error),
+        };
+        for file in answer.data {
+            if chunk.contains(&file.id) {
+                files.insert(file.id, PackFile::from_file(file));
+            }
+        }
+    }
+    let project_ids: Vec<u64> = files.values().map(|file| file.project_id).collect();
+    let projects = projects(state, &session.client, &session.key, &project_ids).await?;
+    Ok((
+        files,
+        projects
+            .into_iter()
+            .filter(|(_, project)| project.game_id == 432)
+            .map(|(id, project)| (id, PackProject::from_project(project)))
+            .collect(),
+    ))
 }
 
 /// Whether `candidate` is newer than `current`: by file time (parsed when

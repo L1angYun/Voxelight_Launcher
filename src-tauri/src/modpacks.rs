@@ -279,6 +279,7 @@ fn sweep_pack_downloads(directory: &Path, min_age: std::time::Duration) {
         // A downloaded archive, or the copy stage_copy was making when the launcher stopped.
         let Some(id) = name.to_str().and_then(|name| {
             name.strip_suffix(".mrpack")
+                .or_else(|| name.strip_suffix(".zip"))
                 .or_else(|| name.strip_prefix(".pack-stage-").and_then(|rest| rest.strip_suffix(".part")))
         }) else {
             continue;
@@ -337,7 +338,15 @@ impl VerifiedPackFile {
     }
 
     fn lock_entry(self, path: String) -> LockedPackFile {
-        LockedPackFile { path, sha1: self.sha1, sha512: self.sha512, size: self.size, sha256: self.sha256 }
+        LockedPackFile {
+            path,
+            sha1: self.sha1,
+            sha512: self.sha512,
+            size: self.size,
+            project_id: None,
+            file_id: None,
+            sha256: self.sha256,
+        }
     }
 }
 
@@ -995,54 +1004,78 @@ struct CurseEntry {
 fn default_true() -> bool {
     true
 }
-#[derive(Deserialize)]
-struct CfResponse<T> {
-    data: T,
+/// A detail prefix: an install needs files the launcher may not download.
+/// Followed by the list.
+pub(crate) const MANUAL_DOWNLOAD: &str = "以下文件的作者不允许第三方应用下载，已停止，没有做任何改动。请在各自页面手动下载：";
+/// A CurseForge file that is not a release (maps to `modpack.versionMismatch`).
+pub(crate) const NOT_RELEASE: &str = "所选 CurseForge 整合包文件不是正式版";
+/// A manifest entry CurseForge does not return (the file, or its project).
+pub(crate) const MANIFEST_FILE_MISSING: &str = "CurseForge 清单引用的文件不存在";
+pub(crate) const MANIFEST_PROJECT_MISSING: &str = "CurseForge 清单引用的项目不存在";
+
+/// A manifest entry resolved through the API.
+struct CurseResolved {
+    project_id: u64,
+    file_id: u64,
+    /// `<mods|resourcepacks|shaderpacks>/<fileName>` by the project's class
+    /// (6, 12, 6552; others refused).
+    path: String,
+    /// Lowercase 40-hex SHA-1.
+    sha1: String,
+    size: u64,
+    /// None: the launcher may not download it (project not distributable, or
+    /// no CDN url).
+    download: Option<String>,
+    name: String,
+    page: String,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CfFile {
-    id: u64,
-    mod_id: u64,
-    file_name: String,
-    file_length: u64,
-    download_url: Option<String>,
-    hashes: Vec<CfHash>,
-    #[serde(default)]
-    game_versions: Vec<String>,
-    #[serde(default = "default_true")]
-    is_available: bool,
-}
-#[derive(Deserialize)]
-struct CfHash {
-    value: String,
-    algo: u32,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CfProject {
-    class_id: Option<u64>,
-}
-async fn curse_into(
-    state: &Arc<LauncherState>,
-    archive: &Path,
-    stage: &Path,
-    key: Option<String>,
-    optional: bool,
-) -> Result<StagedPack, String> {
-    let manifest: CurseManifest = zip_json(archive, "manifest.json")?;
-    if manifest.manifest_type != "minecraftModpack" || manifest.manifest_version != 1 {
-        return Err("不支持此 CurseForge 清单格式".into());
+
+fn curse_folder(class_id: Option<u64>) -> Result<&'static str, String> {
+    match class_id {
+        Some(6) => Ok("mods"),
+        Some(12) => Ok("resourcepacks"),
+        Some(6552) => Ok("shaderpacks"),
+        _ => Err("CurseForge 清单包含不支持的文件类别".into()),
     }
-    let key = crate::curseforge_key::effective_cf_key(&state.data_dir, key.as_deref())?
-        .ok_or("CurseForge 导入需要你自己申请的 API Key，请先在设置中保存。不会使用其它启动器的 Key。")?;
-    if manifest.files.len() > 20_000 {
-        return Err("CurseForge 整合包文件数量超过限制".into());
+}
+
+/// A CurseForge client failure in a modpack flow as the modpack platform's
+/// (codes the UI explains: check the network, your own key), a 404 included.
+/// `curseforge_pack_file` maps the selected file's 404 to the version mismatch
+/// itself. Other texts pass through.
+fn cf_platform(error: String) -> String {
+    use crate::curseforge::{CF_HTTP_FAILED, CF_RATE_LIMITED, CF_READ_FAILED, CF_REFUSED, CF_UNREACHABLE, NOT_FOUND};
+    let refused = |status: &str| format!("{PLATFORM_REFUSED}{status}）；CurseForge 请求请检查自己的 API Key 和分发权限");
+    match error.as_str() {
+        CF_UNREACHABLE | CF_READ_FAILED => PLATFORM_UNREACHABLE.to_owned(),
+        CF_REFUSED => refused("401/403"),
+        CF_RATE_LIMITED => refused("429"),
+        NOT_FOUND => refused("404"),
+        other => match other.strip_prefix(CF_HTTP_FAILED).and_then(|rest| rest.strip_suffix('）')) {
+            Some(status) => refused(status),
+            None => error,
+        },
     }
-    let key = crate::curseforge_key::sensitive_cf_header(&key)?;
-    let api = client(&state, false)?;
-    let mut deps = BTreeMap::from([("minecraft".into(), manifest.minecraft.version.clone())]);
-    let loaders = manifest.minecraft.mod_loaders;
+}
+
+/// A file that passes `curseforge_pack_file`'s file checks, so the version list
+/// and the update check never offer one it refuses for its own form. Whether
+/// the launcher may download it is left to the install (which then lists the
+/// page to download it from) and the plan (`PACK_NOT_DOWNLOADABLE`): such a
+/// version still exists and is worth showing.
+fn installable(file: &crate::curseforge::PackFile) -> bool {
+    file.release
+        && file.file_name.to_ascii_lowercase().ends_with(".zip")
+        && file.sha1.is_some()
+        && (1..=MAX_ARCHIVE_BYTES).contains(&file.size)
+        && file.label.len() <= 256
+}
+
+/// The dependencies of a CurseForge manifest (the loader mapping `curse_into`
+/// always used).
+fn curse_dependencies(minecraft: &CurseMinecraft) -> Result<BTreeMap<String, String>, String> {
+    let mut deps = BTreeMap::from([("minecraft".into(), minecraft.version.clone())]);
+    let loaders = &minecraft.mod_loaders;
     if loaders.len() > 1 {
         return Err("CurseForge 整合包包含多个加载器，请手动选择并转换格式".into());
     }
@@ -1062,91 +1095,141 @@ async fn curse_into(
         deps.insert(key.into(), version.into());
     }
     dependencies(&deps)?;
-    let mut total = 0u64;
-    let mut downloaded = 0;
-    let mut skipped = 0;
+    Ok(deps)
+}
+
+/// Resolves every manifest entry with ONE `manifest_files` call (all entries,
+/// so optional ones are known too). Returns the selected entries (required,
+/// plus optional ones when `optional`), in manifest order, and the lowercase
+/// paths of optional entries left out (only those that resolved).
+async fn resolve_manifest(
+    state: &LauncherState,
+    session: &crate::curseforge::CfSession,
+    manifest: &CurseManifest,
+    optional: bool,
+) -> Result<(Vec<CurseResolved>, HashSet<String>), String> {
+    if manifest.files.len() > 20_000 {
+        return Err("CurseForge 整合包文件数量超过限制".into());
+    }
+    let ids: Vec<u64> = manifest.files.iter().map(|item| item.file_id).collect();
+    let (files, projects) = crate::curseforge::manifest_files(state, session, &ids).await.map_err(cf_platform)?;
+    let mut selected = Vec::new();
+    let mut excluded = HashSet::new();
     let mut seen = HashSet::new();
-    let mut files = Vec::new();
-    for item in manifest.files {
-        state.control.checkpoint().await?;
+    let mut total = 0u64;
+    for item in &manifest.files {
+        let file = files.get(&item.file_id);
         if !item.required && !optional {
-            skipped += 1;
+            if let Some(file) = file {
+                if file.id == item.file_id && file.project_id == item.project_id {
+                    if let Some(project) = projects.get(&file.project_id) {
+                        if let Ok(folder) = curse_folder(project.class_id) {
+                            if validate_id(&file.file_name).is_ok() {
+                                excluded.insert(format!("{folder}/{}", file.file_name).to_lowercase());
+                            }
+                        }
+                    }
+                }
+            }
             continue;
         }
-        let file: CfResponse<CfFile> = json_response(
-            api.get(format!(
-                "https://api.curseforge.com/v1/mods/{}/files/{}",
-                item.project_id, item.file_id
-            ))
-            .header("x-api-key", key.clone()),
-        )
-        .await?;
-        if file.data.id != item.file_id
-            || file.data.mod_id != item.project_id
-            || !file.data.is_available
-        {
+        let file = file.ok_or(MANIFEST_FILE_MISSING)?;
+        if file.id != item.file_id || file.project_id != item.project_id || !file.available {
             return Err("CurseForge 文件身份或可用状态校验失败".into());
         }
-        if !file.data.game_versions.is_empty()
-            && !file
-                .data
-                .game_versions
-                .contains(&manifest.minecraft.version)
-        {
+        if !file.game_versions.is_empty() && !file.game_versions.contains(&manifest.minecraft.version) {
             return Err(format!(
                 "CurseForge 文件 {} 与 Minecraft 版本不兼容",
-                file.data.file_name
+                file.file_name
             ));
         }
-        let Some(url) = file.data.download_url else {
-            return Err(format!("项目 {} 文件 {} 禁止第三方分发或无公开下载地址。请在 https://www.curseforge.com/minecraft/search?search={} 手动取得授权文件后再导入；未创建成功实例。",item.project_id,item.file_id,item.project_id));
-        };
-        let project: CfResponse<CfProject> = json_response(
-            api.get(format!(
-                "https://api.curseforge.com/v1/mods/{}",
-                item.project_id
-            ))
-            .header("x-api-key", key.clone()),
-        )
-        .await?;
-        let folder = match project.data.class_id {
-            Some(6) => "mods",
-            Some(12) => "resourcepacks",
-            Some(6552) => "shaderpacks",
-            _ => return Err("CurseForge 清单包含不支持的文件类别".into()),
-        };
-        validate_id(&file.data.file_name)?;
-        let relative = format!("{folder}/{}", file.data.file_name);
-        if !seen.insert(relative.to_lowercase()) {
+        let project = projects
+            .get(&file.project_id)
+            .ok_or(MANIFEST_PROJECT_MISSING)?;
+        let folder = curse_folder(project.class_id)?;
+        validate_id(&file.file_name)?;
+        let path = format!("{folder}/{}", file.file_name);
+        if !seen.insert(path.to_lowercase()) {
             return Err("CurseForge 清单文件名冲突".into());
         }
-        let hash = file
-            .data
-            .hashes
-            .into_iter()
-            .find(|h| h.algo == 1)
-            .ok_or("CurseForge 文件没有 SHA-1，无法校验")?;
-        let expected = BTreeMap::from([("sha1".into(), hash.value)]);
-        total = total
-            .checked_add(file.data.file_length)
-            .ok_or("整合包大小溢出")?;
+        let sha1 = file.sha1.clone().ok_or("CurseForge 文件没有 SHA-1，无法校验")?;
+        if file.size == 0 || file.size > MAX_ARCHIVE_BYTES {
+            return Err("单个整合包文件大小无效或超过 2 GiB".into());
+        }
+        total = total.checked_add(file.size).ok_or("整合包大小溢出")?;
         if total > MAX_PACK_BYTES {
             return Err("整合包总大小超过 8 GiB".into());
         }
-        let target = safe_join(stage, &relative)?;
-        let materialized = fetch_verified(
-            state,
-            &[url],
-            &target,
-            file.data.file_length,
-            &expected,
-        )
-        .await?;
+        selected.push(CurseResolved {
+            project_id: item.project_id,
+            file_id: item.file_id,
+            path,
+            sha1,
+            size: file.size,
+            download: file.url.clone().filter(|_| project.distributable),
+            name: project.name.clone(),
+            page: project.page.clone(),
+        });
+    }
+    Ok((selected, excluded))
+}
+
+/// `MANUAL_DOWNLOAD` followed by "「name」 → path（page）" entries joined with "；".
+fn manual_download_error(files: &[&CurseResolved]) -> String {
+    format!(
+        "{MANUAL_DOWNLOAD}{}",
+        files
+            .iter()
+            .map(|file| format!("「{}」 → {}（{}）", file.name, file.path, file.page))
+            .collect::<Vec<_>>()
+            .join("；")
+    )
+}
+
+async fn curse_into(
+    state: &Arc<LauncherState>,
+    archive: &Path,
+    stage: &Path,
+    key: Option<String>,
+    optional: bool,
+) -> Result<StagedPack, String> {
+    let manifest: CurseManifest = zip_json(archive, "manifest.json")?;
+    if manifest.manifest_type != "minecraftModpack" || manifest.manifest_version != 1 {
+        return Err("不支持此 CurseForge 清单格式".into());
+    }
+    let session = crate::curseforge::CfSession::new(state, key.as_deref())?;
+    let deps = curse_dependencies(&manifest.minecraft)?;
+    let skipped = manifest
+        .files
+        .iter()
+        .filter(|item| !item.required && !optional)
+        .count();
+    let (resolved, _optional_paths) = resolve_manifest(state, &session, &manifest, optional).await?;
+    let restricted: Vec<&CurseResolved> = resolved
+        .iter()
+        .filter(|file| file.download.is_none())
+        .collect();
+    // Nothing is downloaded when any selected file may not be.
+    if !restricted.is_empty() {
+        return Err(manual_download_error(&restricted));
+    }
+    let mut downloaded = 0;
+    let mut files = Vec::new();
+    for resolved in resolved {
+        state.control.checkpoint().await?;
+        let url = resolved
+            .download
+            .ok_or("CurseForge 文件没有可用的下载地址")?;
+        let target = safe_join(stage, &resolved.path)?;
+        let expected = BTreeMap::from([("sha1".into(), resolved.sha1.clone())]);
+        let materialized = fetch_verified(state, &[url], &target, resolved.size, &expected).await?;
         if materialized.downloaded {
             downloaded += 1;
         }
-        // Alongside CurseForge's expected SHA-1, record SHA-512 computed during verification.
-        files.push(materialized.lock_entry(relative));
+        let mut entry = materialized.lock_entry(resolved.path);
+        entry.project_id = Some(resolved.project_id);
+        entry.file_id = Some(resolved.file_id);
+        files.push(entry);
     }
     let prefix = manifest.overrides.trim_end_matches('/');
     safe_join(stage, prefix)?;
@@ -1174,7 +1257,57 @@ async fn curse_into(
     })
 }
 
-#[derive(Serialize, Deserialize)]
+/// The project and release file a CurseForge modpack install uses, and the URL
+/// of its pack ZIP.
+async fn curseforge_pack_file(
+    state: &LauncherState,
+    session: &crate::curseforge::CfSession,
+    project_id: u64,
+    file_id: u64,
+) -> Result<(crate::curseforge::PackProject, crate::curseforge::PackFile, String), String> {
+    let project = crate::curseforge::in_task(state, crate::curseforge::pack_project(session, project_id)).await.map_err(cf_platform)?;
+    if project.class_id != Some(4471) {
+        return Err("所选项目不是整合包".into());
+    }
+    let file = crate::curseforge::in_task(state, crate::curseforge::pack_file(session, project_id, file_id))
+        .await
+        .map_err(|error| match error.as_str() {
+            crate::curseforge::NOT_FOUND => pack_update::VERSION_MISMATCH.to_owned(),
+            _ => cf_platform(error),
+        })?;
+    if !file.release {
+        return Err(NOT_RELEASE.into());
+    }
+    if !file.file_name.to_ascii_lowercase().ends_with(".zip") {
+        return Err("所选 CurseForge 整合包文件不是 .zip 文件".into());
+    }
+    let sha1 = file
+        .sha1
+        .clone()
+        .ok_or("CurseForge 文件没有 SHA-1，无法校验")?;
+    if file.size == 0 || file.size > MAX_ARCHIVE_BYTES {
+        return Err("单个整合包文件大小无效或超过 2 GiB".into());
+    }
+    if file.label.len() > 256 {
+        return Err("整合包版本名称过长".into());
+    }
+    let pack = CurseResolved {
+        project_id,
+        file_id,
+        path: file.file_name.clone(),
+        sha1,
+        size: file.size,
+        download: file.url.clone().filter(|_| project.distributable),
+        name: project.name.clone(),
+        page: project.page.clone(),
+    };
+    let Some(url) = pack.download.clone() else {
+        return Err(manual_download_error(&[&pack]));
+    };
+    Ok((project, file, url))
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum PackOrigin {
     Modrinth {
@@ -1182,6 +1315,22 @@ enum PackOrigin {
         version_id: String,
         version_number: String,
     },
+    Curseforge {
+        project_id: u64,
+        file_id: u64,
+        version_number: String,
+    },
+}
+
+impl PackOrigin {
+    /// Only the platform's own manifest may carry its origin (a Modrinth index
+    /// wins when both exist).
+    fn matches_archive(&self, modrinth: bool, curse: bool) -> bool {
+        match self {
+            Self::Modrinth { .. } => modrinth,
+            Self::Curseforge { .. } => curse && !modrinth,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1191,6 +1340,11 @@ struct LockedPackFile {
     sha1: String,
     sha512: String,
     size: u64,
+    /// Set for files of a CurseForge manifest; Modrinth locks omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_id: Option<u64>,
     /// Used only to match the staged inventory; not part of the lock format.
     #[serde(skip)]
     sha256: String,
@@ -1296,10 +1450,13 @@ async fn import_inner(
     if final_dir.exists() {
         return Err("整合包目标已存在".into());
     }
-    // An online Modrinth install names its project and version; only a real
-    // Modrinth index may carry that baseline, so no other format is tried.
-    if origin.is_some() && !modrinth {
-        return Err("Modrinth 整合包缺少 modrinth.index.json，已停止导入".into());
+    // An online install names its project and version; only the platform's own
+    // manifest may carry that baseline, so no other format is tried.
+    if origin.as_ref().is_some_and(|origin| !origin.matches_archive(modrinth, curse)) {
+        return Err(match origin.as_ref() {
+            Some(PackOrigin::Curseforge { .. }) => "CurseForge 整合包缺少 manifest.json，已停止导入".into(),
+            _ => "Modrinth 整合包缺少 modrinth.index.json，已停止导入".into(),
+        });
     }
     let mut owned_stage = instances::StagingDirectory::create(stage_name)?;
     let stage = owned_stage.path();
@@ -1325,7 +1482,7 @@ async fn import_inner(
     let (version_id, loader, loader_version) =
         install_dependencies(state, app, &index.dependencies).await?;
     state.control.checkpoint().await?;
-    write_import_lock(stage, &staged, origin.as_ref().filter(|_| modrinth), &inventory, optional)?;
+    write_import_lock(stage, &staged, origin.as_ref().filter(|origin| origin.matches_archive(modrinth, curse)), &inventory, optional)?;
     let instance = instances::build_instance(
         name.as_deref().unwrap_or(&index.name),
         &version_id,
@@ -1432,6 +1589,90 @@ async fn fetch_pack_versions(state: &LauncherState, project_id: &str) -> Result<
     .await
 }
 
+/// Release files of a modpack project newer than `installed` (all releases
+/// when the installed file is gone: the bool), newest first. Up to 10 pages of
+/// 50; stops on a short page or one that holds the installed file. Not wrapped
+/// in `in_task`: the update check is not a task.
+async fn curseforge_pack_versions(
+    state: &LauncherState,
+    project_id: u64,
+    installed: Option<u64>,
+) -> Result<(Vec<ModpackVersion>, bool), String> {
+    let session = crate::curseforge::CfSession::new(state, None)?;
+    let project = crate::curseforge::pack_project(&session, project_id).await.map_err(cf_platform)?;
+    if project.class_id != Some(4471) {
+        return Err("所选项目不是整合包".into());
+    }
+    let mut releases = Vec::new();
+    let mut current = None;
+    for page in 0..10 {
+        let mut files = crate::curseforge::pack_files_page(&session, project_id, page * 50).await.map_err(cf_platform)?;
+        let short = files.len() < 50;
+        if let Some(id) = installed {
+            if let Some(position) = files.iter().position(|file| file.id == id) {
+                current = Some(files.remove(position));
+            }
+        }
+        releases.extend(files.into_iter().filter(installable));
+        if short || current.is_some() {
+            break;
+        }
+    }
+    let mut missing = false;
+    if let Some(id) = installed {
+        if current.is_none() {
+            match crate::curseforge::pack_file(&session, project_id, id).await {
+                Ok(file) => current = Some(file),
+                Err(error) if error == crate::curseforge::NOT_FOUND => missing = true,
+                Err(error) => return Err(cf_platform(error)),
+            }
+        }
+    }
+    if let Some(current) = current.as_ref() {
+        releases.retain(|file| file.id != current.id && crate::curseforge::pack_newer(file, current));
+    }
+    releases.sort_by(|a, b| {
+        if crate::curseforge::pack_newer(a, b) {
+            std::cmp::Ordering::Less
+        } else if crate::curseforge::pack_newer(b, a) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+    let versions = releases
+        .into_iter()
+        .map(|file| {
+            let loaders = file
+                .game_versions
+                .iter()
+                .filter_map(|tag| match tag.to_ascii_lowercase().as_str() {
+                    "fabric" => Some("fabric".into()),
+                    "quilt" => Some("quilt".into()),
+                    "forge" => Some("forge".into()),
+                    "neoforge" => Some("neoforge".into()),
+                    _ => None,
+                })
+                .collect();
+            ModpackVersion {
+                id: file.id.to_string(),
+                name: file.label.clone(),
+                version_number: file.label,
+                game_versions: file
+                    .game_versions
+                    .iter()
+                    .filter(|tag| tag.starts_with(|c: char| c.is_ascii_digit()))
+                    .cloned()
+                    .collect(),
+                loaders,
+                date_published: file.file_date,
+                size: file.size,
+            }
+        })
+        .collect();
+    Ok((versions, missing))
+}
+
 #[tauri::command]
 pub async fn list_modpack_versions(state: State<'_, Arc<LauncherState>>, project_id: String) -> Result<Vec<ModpackVersion>, String> {
     let mut versions = fetch_pack_versions(&state, &project_id).await?;
@@ -1451,6 +1692,15 @@ pub async fn list_modpack_versions(state: State<'_, Arc<LauncherState>>, project
             })
         })
         .collect()
+}
+
+#[tauri::command]
+pub async fn list_curseforge_modpack_versions(
+    state: State<'_, Arc<LauncherState>>,
+    project_id: String,
+) -> crate::errors::AppResult<Vec<ModpackVersion>> {
+    let project_id = crate::curseforge::project_id(&project_id)?;
+    Ok(curseforge_pack_versions(&state, project_id, None).await?.0)
 }
 #[tauri::command]
 pub async fn import_modpack(
@@ -1516,6 +1766,61 @@ pub async fn install_modrinth_modpack(
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
     result.map_err(crate::errors::expected)
+}
+
+#[tauri::command]
+pub async fn install_curseforge_modpack(
+    app: AppHandle,
+    state: State<'_, Arc<LauncherState>>,
+    project_id: String,
+    file_id: u64,
+    name: Option<String>,
+    include_optional: Option<bool>,
+) -> crate::errors::AppResult<PackImportResult> {
+    crate::curseforge::project_id(&project_id)?;
+    if file_id == 0 || file_id > u32::MAX as u64 {
+        return Err("CurseForge 文件标识超出范围".into());
+    }
+    let _operation = state.operation.lock().await;
+    let display = name.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    let retry = crate::downloads::RetryRequest::CurseforgeModpack {
+        project_id: project_id.clone(),
+        file_id,
+        name: name.clone(),
+        include_optional: include_optional.unwrap_or(false),
+    };
+    let task = state.control.begin_recorded("modpack", &project_id, "安装 CurseForge 整合包", display, retry)?;
+    let result = install_curseforge_modpack_body(&app, &state, &project_id, file_id, name, include_optional.unwrap_or(false)).await;
+    forget_retry_when_kept(&state, &task, &result);
+    state
+        .control
+        .finish(&task, result.as_ref().err().map(String::as_str));
+    result.map_err(crate::errors::expected)
+}
+
+/// A CurseForge modpack install retried from the Downloads page: queued behind
+/// the operation lock, then the same install as the interactive one. The
+/// journal never holds a key, so the retry uses the saved or built-in one.
+pub(crate) async fn run_queued_curseforge_modpack(
+    app: AppHandle,
+    state: Arc<LauncherState>,
+    task: String,
+    project_id: String,
+    file_id: u64,
+    name: Option<String>,
+    include_optional: bool,
+) {
+    let result = state
+        .control
+        .run_queued(&state.operation, &task, || async {
+            let result = install_curseforge_modpack_body(&app, &state, &project_id, file_id, name, include_optional).await;
+            forget_retry_when_kept(&state, &task, &result);
+            result
+        })
+        .await;
+    if let Some(Err(error)) = result {
+        crate::minecraft::log(&app, &state, "error", error);
+    }
 }
 
 /// A Modrinth modpack install retried from the Downloads page: queued behind
@@ -1613,6 +1918,57 @@ async fn install_modrinth_modpack_body(
         )
         .await
     }
+    .await
+}
+
+async fn install_curseforge_modpack_body(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+    project_id: &str,
+    file_id: u64,
+    name: Option<String>,
+    include_optional: bool,
+) -> Result<PackImportResult, String> {
+    // A retried install reads these from the journal on disk, so both callers
+    // pass this check before any request is built from them.
+    let project_id = crate::curseforge::project_id(project_id)?;
+    if file_id == 0 || file_id > u32::MAX as u64 {
+        return Err("CurseForge 文件标识超出范围".into());
+    }
+    // The operation lock is held from here to the dependency install, so
+    // refusing now is final and saves downloading a pack that cannot install.
+    crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)?;
+    // Never a key from the journal: a retry uses the saved or built-in key.
+    let session = crate::curseforge::CfSession::new(state, None)?;
+    let (project, file, url) = curseforge_pack_file(state, &session, project_id, file_id).await?;
+    let sha1 = file.sha1.clone().ok_or("CurseForge 文件没有 SHA-1，无法校验")?;
+    let directory = checked_absolute(&state.data_dir.join("pack-downloads"))?;
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    sweep_pack_downloads(&directory, std::time::Duration::from_secs(24 * 60 * 60));
+    let archive = safe_join(&directory, &format!("{}.zip", uuid::Uuid::new_v4()))?;
+    // The verified bytes stay in pack-cache; this copy only feeds the import.
+    let _downloaded = RemoveOnDrop(archive.clone());
+    fetch_verified(
+        &state,
+        &[url],
+        &archive,
+        file.size,
+        &BTreeMap::from([("sha1".into(), sha1)]),
+    )
+    .await?;
+    import_inner(
+        app,
+        state,
+        &archive,
+        name.or(Some(project.name)),
+        None,
+        include_optional,
+        Some(PackOrigin::Curseforge {
+            project_id,
+            file_id,
+            version_number: file.label,
+        }),
+    )
     .await
 }
 
@@ -2073,7 +2429,7 @@ mod tests {
         let source = crate::storage::executable_source(include_str!("modpacks.rs"));
         let (_, body) = source.split_once("async fn import_inner(").unwrap();
         let (body, _) = body.split_once("\n}").unwrap();
-        let origin = body.find("if origin.is_some() && !modrinth {").unwrap();
+        let origin = body.find("if origin.as_ref().is_some_and(|origin| !origin.matches_archive(modrinth, curse)) {").unwrap();
         let stage = body.find("instances::StagingDirectory::create(stage_name)?").unwrap();
         assert!(origin < stage, "a non-Modrinth archive with a Modrinth origin stops before staging");
         let lock = body.find("write_import_lock(").unwrap();
@@ -2466,6 +2822,8 @@ mod tests {
             sha1: format!("{:x}", Sha1::digest(bytes)),
             sha512: format!("{:x}", Sha512::digest(bytes)),
             size: bytes.len() as u64,
+            project_id: None,
+            file_id: None,
             sha256: format!("{:x}", sha2::Sha256::digest(bytes)),
         };
         let staged = StagedPack {
@@ -2603,14 +2961,14 @@ mod tests {
             fs::write(path, b"archive").unwrap();
         }
         sweep_pack_downloads(&root, std::time::Duration::from_secs(24 * 60 * 60));
-        let young_kept = ours.is_file() && stage.is_file();
+        let young_kept = ours.is_file() && stage.is_file() && other.is_file();
         sweep_pack_downloads(&root, std::time::Duration::ZERO);
         let guarded = root.join("guarded.mrpack");
         fs::write(&guarded, b"archive").unwrap();
         drop(RemoveOnDrop(guarded.clone()));
         let kept = [young_kept, ours.exists(), stage.exists(), user.is_file(), other.is_file(), foreign.is_file(), guarded.exists()];
         cleanup(&root);
-        assert_eq!(kept, [true, false, false, true, true, true, false]);
+        assert_eq!(kept, [true, false, false, true, false, true, false]);
     }
 
     #[test]
@@ -3135,6 +3493,652 @@ mod tests {
         assert!(!cache.exists());
         drop(control);
         cleanup(&root);
+    }
+
+    // ---- C12: managed CurseForge modpacks ---------------------------------
+
+    struct C12Endpoints;
+
+    impl Drop for C12Endpoints {
+        fn drop(&mut self) {
+            crate::resources::TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
+        }
+    }
+
+    fn c12_endpoints(state: &LauncherState, api: &RangeServer) -> C12Endpoints {
+        state
+            .update(|persisted| {
+                persisted.config.proxy_mode = "none".into();
+                Ok(())
+            })
+            .unwrap();
+        crate::resources::TEST_ENDPOINTS.with(|endpoints| {
+            *endpoints.borrow_mut() = Some(crate::resources::TestEndpoints {
+                modrinth_api: String::new(),
+                curseforge_api: format!("http://{}", api.address),
+                cdn: "127.0.0.1:1".parse().unwrap(),
+                prepared_version: None,
+            });
+        });
+        C12Endpoints
+    }
+
+    fn c12_save_key(state: &LauncherState) -> String {
+        // A synthetic key of the right shape, assembled here.
+        let key = ["$", "2a", "$", "10", "$"].join("") + &"a".repeat(53);
+        crate::secrets::save_service_secret(&state.data_dir, "curseforge-api-key", &key).unwrap();
+        key
+    }
+
+    fn c12_json(value: Value) -> Scripted {
+        Scripted::ok(value.to_string().as_bytes(), "\"c12\"")
+    }
+
+    fn c12_sha1(bytes: &[u8]) -> String {
+        format!("{:x}", Sha1::digest(bytes))
+    }
+
+    fn c12_file(project: u64, id: u64, name: &str, bytes: &[u8], date: &str) -> Value {
+        json!({
+            "id": id, "modId": project, "gameId": 432, "isAvailable": true,
+            "fileName": name, "fileLength": bytes.len(),
+            "downloadUrl": format!("https://edge.forgecdn.net/files/{id}/{name}"),
+            "hashes": [{"algo": 1, "value": c12_sha1(bytes)}],
+            "gameVersions": ["1.21.1", "Fabric"], "dependencies": [],
+            "fileDate": date, "releaseType": 1, "displayName": format!("Release {id}"),
+        })
+    }
+
+    fn c12_project(id: u64, class_id: u64, name: &str, distributable: bool) -> Value {
+        json!({
+            "id": id, "gameId": 432, "name": name, "slug": format!("pack-{id}"),
+            "summary": "", "classId": class_id, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": distributable,
+            "links": {"websiteUrl": format!("https://www.curseforge.com/minecraft/modpacks/pack-{id}")},
+        })
+    }
+
+    fn c12_zip(path: &Path, name: &str, entries: Vec<Value>, overrides: &[(&str, &[u8])]) {
+        let mut zip = ZipWriter::new(fs::File::create(path).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        zip.start_file("manifest.json", options).unwrap();
+        zip.write_all(
+            &serde_json::to_vec(&json!({
+                "manifestType": "minecraftModpack", "manifestVersion": 1, "name": name,
+                "minecraft": {"version": "1.21.1", "modLoaders": [{"id": "fabric-0.16.9", "primary": true}]},
+                "files": entries, "overrides": "overrides",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for (relative, bytes) in overrides {
+            zip.start_file(format!("overrides/{relative}"), options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn c12_curseforge_lock_records_file_ids_and_online_source() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let (state, _) = shared_export_fixture(&root);
+        let state = Arc::new(state);
+        let key = c12_save_key(&state);
+        let cache = state.data_dir.join("pack-cache");
+        fs::create_dir(&cache).unwrap();
+        let first = b"first mod".as_slice();
+        let second = b"second mod".as_slice();
+        let optional = b"optional mod".as_slice();
+        for bytes in [first, second, optional] {
+            fs::write(cache.join(format!("{}.bin", c12_sha1(bytes))), bytes).unwrap();
+        }
+        let archive = root.join("cf.zip");
+        c12_zip(
+            &archive,
+            "CF Fixture",
+            vec![
+                json!({"projectID": 101, "fileID": 201, "required": true}),
+                json!({"projectID": 102, "fileID": 202, "required": true}),
+                json!({"projectID": 103, "fileID": 203, "required": false}),
+            ],
+            &[("mods/second.jar", b"override bytes")],
+        );
+        let api = RangeServer::new(vec![
+            c12_json(json!({"data": [
+                c12_file(101, 201, "first.jar", first, "2026-01-01T00:00:00Z"),
+                c12_file(102, 202, "second.jar", second, "2026-01-02T00:00:00Z"),
+                c12_file(103, 203, "optional.jar", optional, "2026-01-03T00:00:00Z"),
+            ]})),
+            c12_json(json!({"data": [
+                c12_project(101, 6, "First project", true),
+                c12_project(102, 6, "Second project", true),
+                c12_project(103, 6, "Optional project", true),
+            ]})),
+        ]);
+        let _endpoints = c12_endpoints(&state, &api);
+        block_on(async {
+            let online_stage = root.join("online");
+            fs::create_dir(&online_stage).unwrap();
+            let online = curse_into(&state, &archive, &online_stage, None, true)
+                .await
+                .unwrap();
+            assert_eq!((online.downloaded, online.skipped), (0, 0), "the cache serves both files");
+            let inventory = instances::collect_files_controlled(&online_stage, None).unwrap();
+            let origin = PackOrigin::Curseforge {
+                project_id: 900,
+                file_id: 9001,
+                version_number: "Pack 1.0".into(),
+            };
+            write_import_lock(&online_stage, &online, Some(&origin), &inventory, true).unwrap();
+            let lock: Value =
+                serde_json::from_slice(&fs::read(online_stage.join(".launcher-pack.json")).unwrap()).unwrap();
+            assert_eq!(
+                lock["source"],
+                json!({"kind": "curseforge", "projectId": 900, "fileId": 9001, "versionNumber": "Pack 1.0"})
+            );
+            let files = lock["files"].as_array().unwrap();
+            assert_eq!(
+                files
+                    .iter()
+                    .map(|file| (file["path"].clone(), file["projectId"].clone(), file["fileId"].clone()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (json!("mods/first.jar"), json!(101), json!(201)),
+                    (json!("mods/optional.jar"), json!(103), json!(203)),
+                ]
+            );
+            for (file, bytes) in files.iter().zip([first, optional]) {
+                assert_eq!(file["sha1"], json!(c12_sha1(bytes)));
+                assert_eq!(file["sha512"], json!(format!("{:x}", Sha512::digest(bytes))));
+                assert_eq!(file["size"], json!(bytes.len()));
+                assert!(file.get("sha256").is_none(), "the lock format is unchanged apart from ids");
+            }
+            let overrides = lock["overrides"].as_array().unwrap();
+            assert_eq!(overrides.len(), 1);
+            assert_eq!(overrides[0]["relative"], "mods/second.jar");
+
+            let local_stage = root.join("local");
+            fs::create_dir(&local_stage).unwrap();
+            let local = curse_into(&state, &archive, &local_stage, None, false)
+                .await
+                .unwrap();
+            assert_eq!((local.downloaded, local.skipped), (0, 1));
+            let inventory = instances::collect_files_controlled(&local_stage, None).unwrap();
+            write_import_lock(&local_stage, &local, None, &inventory, false).unwrap();
+            let lock: Value =
+                serde_json::from_slice(&fs::read(local_stage.join(".launcher-pack.json")).unwrap()).unwrap();
+            assert!(lock.get("source").is_none(), "a local ZIP import is never managed");
+            assert_eq!(lock["files"].as_array().unwrap().len(), 1);
+            assert_eq!(lock["files"][0]["path"], "mods/first.jar");
+            assert_eq!(lock["files"][0]["projectId"], 101);
+            assert_eq!(lock["files"][0]["fileId"], 201);
+        });
+        assert_eq!(api.count(), 2, "the second resolve is answered from the cache");
+        assert_eq!(api.header(0, ":path").as_deref(), Some("/mods/files"));
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods"));
+        assert_eq!(api.header(0, "x-api-key").as_deref(), Some(key.as_str()));
+        assert_eq!(api.header(1, "x-api-key").as_deref(), Some(key.as_str()));
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn c12_a_restricted_file_stops_the_install_before_any_download() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let (state, _) = shared_export_fixture(&root);
+        let state = Arc::new(state);
+        c12_save_key(&state);
+        let bytes = b"restricted bytes".as_slice();
+        // A file the launcher may download, in no cache: fetching it first
+        // would fail against the closed CDN instead of listing the others.
+        let mut free = c12_file(300, 400, "free.jar", b"free bytes", "2026-01-01T00:00:00Z");
+        free["downloadUrl"] = json!("https://edge.forgecdn.net/files/400/free.jar");
+        let mut null_url = c12_file(301, 401, "null.jar", bytes, "2026-01-01T00:00:00Z");
+        null_url["downloadUrl"] = Value::Null;
+        let author = c12_file(302, 402, "author.jar", bytes, "2026-01-01T00:00:00Z");
+        let mut off_cdn = c12_file(303, 403, "offcdn.jar", bytes, "2026-01-01T00:00:00Z");
+        off_cdn["downloadUrl"] = json!("https://example.com/files/offcdn.jar");
+        let mut optional = c12_file(304, 404, "optional.jar", bytes, "2026-01-01T00:00:00Z");
+        optional["downloadUrl"] = Value::Null;
+        let api = RangeServer::new(vec![
+            c12_json(json!({"data": [free, null_url, author, off_cdn, optional]})),
+            c12_json(json!({"data": [
+                c12_project(300, 6, "Free project", true),
+                c12_project(301, 6, "Restricted null", true),
+                c12_project(302, 6, "Restricted author", false),
+                c12_project(303, 6, "Restricted cdn", true),
+                c12_project(304, 6, "Unselected optional", true),
+            ]})),
+        ]);
+        let _endpoints = c12_endpoints(&state, &api);
+        let archive = root.join("pack.zip");
+        c12_zip(
+            &archive,
+            "Restricted pack",
+            vec![
+                json!({"projectID": 300, "fileID": 400, "required": true}),
+                json!({"projectID": 301, "fileID": 401, "required": true}),
+                json!({"projectID": 302, "fileID": 402, "required": true}),
+                json!({"projectID": 303, "fileID": 403, "required": true}),
+                json!({"projectID": 304, "fileID": 404, "required": false}),
+            ],
+            &[],
+        );
+        let stage = root.join("stage");
+        fs::create_dir(&stage).unwrap();
+        let error = block_on(curse_into(&state, &archive, &stage, None, false))
+            .err()
+            .expect("a restricted selected file must stop the install");
+        assert_eq!(api.count(), 2, "one files batch and one projects batch, then nothing");
+        let files = error.strip_prefix(MANUAL_DOWNLOAD).unwrap_or_else(|| panic!("{error}"));
+        let listed = files.split('；').collect::<Vec<_>>();
+        assert_eq!(listed.len(), 3, "every restricted selected file, and only those: {files}");
+        for (name, path) in [
+            ("Restricted null", "mods/null.jar"),
+            ("Restricted author", "mods/author.jar"),
+            ("Restricted cdn", "mods/offcdn.jar"),
+        ] {
+            assert!(
+                listed.iter().any(|entry| entry.starts_with(&format!("「{name}」 → {path}（https://www.curseforge.com/"))),
+                "{name}: {files}"
+            );
+        }
+        assert!(fs::read_dir(&stage).unwrap().next().is_none(), "nothing is downloaded or staged");
+        assert!(
+            !state.data_dir.join("pack-cache").exists()
+                || fs::read_dir(state.data_dir.join("pack-cache")).unwrap().next().is_none(),
+            "nothing reached the cache"
+        );
+        let app_error = crate::errors::expected(error.clone());
+        assert_eq!(app_error.code, "modpack.manualDownload");
+        assert_eq!(app_error.params["files"].as_str(), Some(files));
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn c12_curseforge_failures_in_modpack_flows_reach_the_ui_as_platform_codes() {
+        use crate::curseforge::{CF_HTTP_FAILED, CF_RATE_LIMITED, CF_READ_FAILED, CF_REFUSED, CF_UNREACHABLE, NOT_FOUND};
+        let http = format!("{CF_HTTP_FAILED}500）");
+        for error in [CF_UNREACHABLE, CF_READ_FAILED, CF_REFUSED, CF_RATE_LIMITED, NOT_FOUND, http.as_str()] {
+            assert_eq!(crate::errors::expected(cf_platform(error.to_owned())).code, "modpack.platformUnavailable", "{error}");
+        }
+        for kept in ["所选项目不是整合包", MANUAL_DOWNLOAD, NOT_RELEASE] {
+            assert_eq!(cf_platform(kept.to_owned()), kept, "other texts pass through");
+        }
+        // Through the pack-file lookup: a refused project, then a file CurseForge does not have.
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let (state, _) = shared_export_fixture(&root);
+        let state = Arc::new(state);
+        c12_save_key(&state);
+        let bytes = b"mapped bytes".as_slice();
+        let api = RangeServer::new(vec![
+            Scripted::status(403),
+            c12_json(json!({"data": c12_project(900, 4471, "Pack", true)})),
+            Scripted::status(404),
+            Scripted::status(404),
+            Scripted::status(403),
+            // The list: a refused files page, then a refused lookup of the installed file.
+            c12_json(json!({"data": c12_project(902, 4471, "Pack 902", true)})),
+            Scripted::status(403),
+            c12_json(json!({"data": c12_project(903, 4471, "Pack 903", true)})),
+            c12_json(json!({"data": [c12_file(903, 9031, "release-9031.zip", bytes, "2026-01-01T00:00:00Z")]})),
+            Scripted::status(401),
+            // A manifest whose file, then whose project, CurseForge does not return.
+            c12_json(json!({"data": []})),
+            c12_json(json!({"data": [c12_file(1, 4, "gone.jar", bytes, "2026-01-01T00:00:00Z")]})),
+            c12_json(json!({"data": []})),
+        ]);
+        let _endpoints = c12_endpoints(&state, &api);
+        // One file each: the answers are cached by request, so every case asks its own.
+        let manifest_of = |file: u64| -> CurseManifest {
+            serde_json::from_value(json!({
+                "manifestType": "minecraftModpack", "manifestVersion": 1, "name": "Pack",
+                "minecraft": {"version": "1.21.1", "modLoaders": []},
+                "files": [{"projectID": 1, "fileID": file, "required": true}], "overrides": "overrides",
+            }))
+            .unwrap()
+        };
+        block_on(async {
+            let session = crate::curseforge::CfSession::new(&state, None).unwrap();
+            let refused = curseforge_pack_file(&state, &session, 900, 9001).await.err().unwrap();
+            assert_eq!(crate::errors::expected(refused).code, "modpack.platformUnavailable");
+            let missing = curseforge_pack_file(&state, &session, 900, 9002).await.err().unwrap();
+            assert_eq!(crate::errors::expected(missing).code, "modpack.versionMismatch");
+            let gone = curseforge_pack_versions(&state, 901, None).await.err().unwrap();
+            assert_eq!(crate::errors::expected(gone).code, "modpack.platformUnavailable");
+            let refused = resolve_manifest(&state, &session, &manifest_of(2), false).await.err().unwrap();
+            assert_eq!(crate::errors::expected(refused).code, "modpack.platformUnavailable");
+            let page = curseforge_pack_versions(&state, 902, None).await.err().unwrap();
+            assert_eq!(crate::errors::expected(page).code, "modpack.platformUnavailable", "a refused files page");
+            let installed = curseforge_pack_versions(&state, 903, Some(9030)).await.err().unwrap();
+            assert!(installed.contains("401/403"), "a 401 is not reported as a 403: {installed}");
+            assert_eq!(crate::errors::expected(installed).code, "modpack.platformUnavailable", "a refused installed-file lookup");
+            for (file, expected) in [(3, MANIFEST_FILE_MISSING), (4, MANIFEST_PROJECT_MISSING)] {
+                let error = resolve_manifest(&state, &session, &manifest_of(file), false).await.err().unwrap();
+                assert_eq!(error, expected);
+                assert_eq!(crate::errors::expected(error).code, "modpack.manifestMissing");
+            }
+        });
+        assert_eq!(api.count(), 13);
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn c12_the_online_pack_file_must_be_a_release_modpack_zip() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let (state, _) = shared_export_fixture(&root);
+        let state = Arc::new(state);
+        c12_save_key(&state);
+        let bytes = b"pack zip bytes".as_slice();
+        let mut replies = vec![c12_json(json!({"data": c12_project(410, 6, "Not a pack", true)}))];
+        replies.push(c12_json(json!({"data": c12_project(411, 4471, "Beta pack", true)})));
+        let mut beta = c12_file(411, 4111, "pack.zip", bytes, "2026-01-01T00:00:00Z");
+        beta["releaseType"] = json!(2);
+        replies.push(c12_json(json!({"data": beta})));
+        replies.push(c12_json(json!({"data": c12_project(412, 4471, "Server pack", true)})));
+        let mut server = c12_file(412, 4121, "pack.zip", bytes, "2026-01-01T00:00:00Z");
+        server["isServerPack"] = json!(true);
+        replies.push(c12_json(json!({"data": server})));
+        replies.push(c12_json(json!({"data": c12_project(413, 4471, "Not zip", true)})));
+        replies.push(c12_json(json!({"data": c12_file(413, 4131, "pack.tar", bytes, "2026-01-01T00:00:00Z")})));
+        replies.push(c12_json(json!({"data": c12_project(414, 4471, "No sha1", true)})));
+        let mut no_sha1 = c12_file(414, 4141, "pack.zip", bytes, "2026-01-01T00:00:00Z");
+        no_sha1["hashes"] = json!([]);
+        replies.push(c12_json(json!({"data": no_sha1})));
+        replies.push(c12_json(json!({"data": c12_project(415, 4471, "Restricted project", false)})));
+        replies.push(c12_json(json!({"data": c12_file(415, 4151, "pack.zip", bytes, "2026-01-01T00:00:00Z")})));
+        replies.push(c12_json(json!({"data": c12_project(416, 4471, "No url", true)})));
+        let mut no_url = c12_file(416, 4161, "pack.zip", bytes, "2026-01-01T00:00:00Z");
+        no_url["downloadUrl"] = Value::Null;
+        replies.push(c12_json(json!({"data": no_url})));
+        replies.push(c12_json(json!({"data": c12_project(900, 4471, "Good pack", true)})));
+        let mut good = c12_file(900, 9001, "pack.zip", bytes, "2026-01-01T00:00:00Z");
+        good["displayName"] = json!("Pack 1.2.0");
+        replies.push(c12_json(json!({"data": good})));
+        let api = RangeServer::new(replies);
+        let _endpoints = c12_endpoints(&state, &api);
+        block_on(async {
+            let session = crate::curseforge::CfSession::new(&state, None).unwrap();
+            let refused = |before: usize, error: String, expected: &str, calls: usize| {
+                assert!(error.contains(expected), "{error}");
+                assert_eq!(api.count() - before, calls, "{expected}");
+            };
+            let before = api.count();
+            let error = curseforge_pack_file(&state, &session, 410, 4101)
+                .await
+                .err()
+                .expect("a class-6 project is not a modpack");
+            refused(before, error, "所选项目不是整合包", 1);
+            for (project, file, expected) in [
+                (411, 4111, NOT_RELEASE),
+                (412, 4121, NOT_RELEASE),
+                (413, 4131, ".zip"),
+                (414, 4141, "SHA-1"),
+                (415, 4151, MANUAL_DOWNLOAD),
+                (416, 4161, MANUAL_DOWNLOAD),
+            ] {
+                let before = api.count();
+                let error = curseforge_pack_file(&state, &session, project, file)
+                    .await
+                    .err()
+                    .expect("this pack file must be refused");
+                refused(before, error, expected, 2);
+            }
+            let before = api.count();
+            let (project, file, url) = curseforge_pack_file(&state, &session, 900, 9001).await.unwrap();
+            assert_eq!(api.count() - before, 2);
+            assert_eq!((project.id, project.name.as_str()), (900, "Good pack"));
+            assert!(file.release);
+            assert_eq!(file.label, "Pack 1.2.0");
+            assert_eq!(url, format!("https://edge.forgecdn.net/files/9001/pack.zip"));
+            assert_eq!(
+                (file.sha1.as_deref(), file.size),
+                (Some(c12_sha1(bytes).as_str()), bytes.len() as u64)
+            );
+        });
+        if crate::curseforge_key::builtin_cf_key().is_none() {
+            crate::secrets::save_service_secret(&state.data_dir, "curseforge-api-key", "").unwrap();
+            let error = crate::curseforge::CfSession::new(&state, None)
+                .err()
+                .expect("no key must refuse the session");
+            assert_eq!(error, "请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。");
+            assert_eq!(api.count(), 15, "no request is made without a key");
+        }
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn c12_only_newer_releases_are_listed() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let (state, _) = shared_export_fixture(&root);
+        let state = Arc::new(state);
+        c12_save_key(&state);
+        let bytes = b"release bytes".as_slice();
+        let page = |_project: u64, files: Vec<Value>| c12_json(json!({"data": files}));
+        let newer = c12_file(500, 510, "release-510.zip", bytes, "2026-02-05T00:00:00Z");
+        let mut beta = c12_file(500, 511, "beta-511.zip", bytes, "2026-02-06T00:00:00Z");
+        beta["releaseType"] = json!(2);
+        let mut alpha = c12_file(500, 512, "alpha-512.zip", bytes, "2026-02-07T00:00:00Z");
+        alpha["releaseType"] = json!(3);
+        let mut server = c12_file(500, 513, "server-513.zip", bytes, "2026-02-08T00:00:00Z");
+        server["isServerPack"] = json!(true);
+        let installed = c12_file(500, 509, "release-509.zip", bytes, "2026-02-01T00:00:00Z");
+        let older = c12_file(500, 508, "release-508.zip", bytes, "2026-01-01T00:00:00Z");
+        let api = RangeServer::new(vec![
+            // A page holding the installed file stops the scan.
+            c12_json(json!({"data": c12_project(500, 4471, "Pack 500", true)})),
+            page(500, vec![newer, beta, alpha, server, installed, older]),
+            // The installed file is gone: every release counts.
+            c12_json(json!({"data": c12_project(501, 4471, "Pack 501", true)})),
+            page(
+                501,
+                vec![
+                    c12_file(501, 521, "release-521.zip", bytes, "2026-03-02T00:00:00Z"),
+                    c12_file(501, 520, "release-520.zip", bytes, "2026-03-01T00:00:00Z"),
+                ],
+            ),
+            Scripted::status(404),
+            // No installed version: every release the install would accept.
+            c12_json(json!({"data": c12_project(502, 4471, "Pack 502", true)})),
+            page(
+                502,
+                vec![
+                    c12_file(502, 531, "release-531.zip", bytes, "2026-04-02T00:00:00Z"),
+                    {
+                        let mut beta = c12_file(502, 532, "beta-532.zip", bytes, "2026-04-03T00:00:00Z");
+                        beta["releaseType"] = json!(2);
+                        beta
+                    },
+                    {
+                        let mut no_sha1 = c12_file(502, 533, "release-533.zip", bytes, "2026-04-04T00:00:00Z");
+                        no_sha1["hashes"] = json!([]);
+                        no_sha1
+                    },
+                    c12_file(502, 534, "release-534.tar", bytes, "2026-04-05T00:00:00Z"),
+                    {
+                        let mut empty = c12_file(502, 535, "release-535.zip", bytes, "2026-04-06T00:00:00Z");
+                        empty["fileLength"] = json!(0);
+                        empty
+                    },
+                    {
+                        let mut long = c12_file(502, 536, "release-536.zip", bytes, "2026-04-07T00:00:00Z");
+                        long["displayName"] = json!("x".repeat(257));
+                        long
+                    },
+                    c12_file(502, 537, "RELEASE-537.ZIP", bytes, "2026-04-08T00:00:00Z"),
+                    {
+                        let mut named = c12_file(502, 538, "release-538.zip", bytes, "2026-04-09T00:00:00Z");
+                        named["displayName"] = json!("y".repeat(256));
+                        named
+                    },
+                    {
+                        let mut huge = c12_file(502, 539, "release-539.zip", bytes, "2026-04-10T00:00:00Z");
+                        huge["fileLength"] = json!(MAX_ARCHIVE_BYTES + 1);
+                        huge
+                    },
+                    {
+                        let mut largest = c12_file(502, 540, "release-540.zip", bytes, "2026-04-11T00:00:00Z");
+                        largest["fileLength"] = json!(MAX_ARCHIVE_BYTES);
+                        largest
+                    },
+                ],
+            ),
+        ]);
+        let _endpoints = c12_endpoints(&state, &api);
+        block_on(async {
+            let (newer, missing) = curseforge_pack_versions(&state, 500, Some(509)).await.unwrap();
+            assert!(!missing);
+            assert_eq!(newer.len(), 1, "{:?}", newer.iter().map(|version| &version.id).collect::<Vec<_>>());
+            assert_eq!(newer[0].id, "510");
+            assert_eq!(newer[0].name, "Release 510");
+            assert_eq!(newer[0].version_number, "Release 510");
+            assert_eq!(newer[0].game_versions, ["1.21.1"]);
+            assert_eq!(newer[0].loaders, ["fabric"]);
+            assert_eq!(newer[0].date_published, "2026-02-05T00:00:00Z");
+            assert_eq!(newer[0].size, bytes.len() as u64);
+
+            let (all, missing) = curseforge_pack_versions(&state, 501, Some(599)).await.unwrap();
+            assert!(missing, "a 404 on the installed file means it is gone");
+            assert_eq!(all.iter().map(|version| version.id.as_str()).collect::<Vec<_>>(), ["521", "520"]);
+
+            let (all, missing) = curseforge_pack_versions(&state, 502, None).await.unwrap();
+            assert!(!missing);
+            assert_eq!(
+                all.iter().map(|version| version.id.as_str()).collect::<Vec<_>>(),
+                ["540", "538", "537", "531"],
+                "no beta and nothing the install refuses (no SHA-1, not .zip, empty, over 2 GiB, a name over 256 bytes); \
+                 a .ZIP, a 256-byte name and exactly 2 GiB are accepted"
+            );
+        });
+        assert_eq!(api.count(), 7);
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn c12_the_version_list_reads_pages_until_the_installed_file() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let (state, _) = shared_export_fixture(&root);
+        let state = Arc::new(state);
+        c12_save_key(&state);
+        let bytes = b"paged bytes".as_slice();
+        let release = |id: u64| {
+            let minutes = id - 6990;
+            let date = format!("2026-05-01T{:02}:{:02}:00Z", minutes / 60, minutes % 60);
+            c12_file(600, id, &format!("release-{id}.zip"), bytes, &date)
+        };
+        // Page one: 50 newer releases in no particular order. Page two, also
+        // full: 48 newer ones, the installed file and an older one.
+        let first = (0..50u64).map(|n| release(7048 + (n * 37) % 50)).collect::<Vec<_>>();
+        let mut second = (7000..7048u64).map(release).collect::<Vec<_>>();
+        second.push(release(6999));
+        second.push(release(6998));
+        let api = RangeServer::new(vec![
+            c12_json(json!({"data": c12_project(600, 4471, "Pack 600", true)})),
+            c12_json(json!({"data": first})),
+            c12_json(json!({"data": second})),
+            c12_json(json!({"data": [release(6990)]})),
+        ]);
+        let _endpoints = c12_endpoints(&state, &api);
+        let (newer, missing) = block_on(curseforge_pack_versions(&state, 600, Some(6999))).unwrap();
+        assert!(!missing);
+        let expected = (7000..7098u64).rev().map(|id| id.to_string()).collect::<Vec<_>>();
+        assert_eq!(newer.iter().map(|version| version.id.clone()).collect::<Vec<_>>(), expected, "newest first, none older");
+        assert_eq!(api.count(), 3, "the page holding the installed file is the last one read");
+        assert_eq!(api.header(1, ":path").as_deref(), Some("/mods/600/files?pageSize=50&index=0"));
+        assert_eq!(api.header(2, ":path").as_deref(), Some("/mods/600/files?pageSize=50&index=50"));
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn c12_origin_matches_only_its_own_manifest() {
+        let modrinth = PackOrigin::Modrinth {
+            project_id: "pack".into(),
+            version_id: "v1".into(),
+            version_number: "1.0".into(),
+        };
+        let curseforge = PackOrigin::Curseforge {
+            project_id: 1,
+            file_id: 2,
+            version_number: "1.0".into(),
+        };
+        assert!(modrinth.matches_archive(true, false));
+        assert!(!modrinth.matches_archive(false, true));
+        assert!(modrinth.matches_archive(true, true), "a Modrinth index wins when both exist");
+        assert!(curseforge.matches_archive(false, true));
+        assert!(!curseforge.matches_archive(true, true), "a Modrinth index wins when both exist");
+        assert!(!curseforge.matches_archive(true, false));
+        assert!(!curseforge.matches_archive(false, false));
+    }
+
+    #[test]
+    fn c12_curseforge_install_orders_its_guards_and_wraps_requests() {
+        let source = crate::storage::executable_source(include_str!("modpacks.rs"));
+        let body = |name: &str| {
+            let (_, rest) = source.split_once(name).unwrap();
+            rest.split_once("\n}").unwrap().0.to_owned()
+        };
+        let command = body("pub async fn install_curseforge_modpack(");
+        let lock = command.find("state.operation.lock().await").unwrap();
+        let project = command.find("crate::curseforge::project_id(&project_id)?").unwrap();
+        let range = command.find("if file_id == 0 || file_id > u32::MAX as u64").unwrap();
+        assert!(project < lock && range < lock);
+        assert!(lock < command.find("begin_recorded(").unwrap());
+        let body_call = command.find("install_curseforge_modpack_body(").unwrap();
+        assert!(command.find("begin_recorded(").unwrap() < body_call);
+        let forget = "forget_retry_when_kept(&state, &task, &result);";
+        assert!(body_call < command.find(forget).unwrap());
+        assert!(command.find(forget).unwrap() < command.find(".finish(&task,").unwrap());
+        assert!(command.trim_end().ends_with("result.map_err(crate::errors::expected)"));
+        let queued = body("pub(crate) async fn run_queued_curseforge_modpack(");
+        let run = queued.find(".run_queued(&state.operation, &task,").unwrap();
+        assert!(run < queued.find("install_curseforge_modpack_body(").unwrap());
+        assert!(queued.find("install_curseforge_modpack_body(").unwrap() < queued.find(forget).unwrap());
+        let shared = body("async fn install_curseforge_modpack_body(");
+        let guard = shared
+            .find("crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)?;")
+            .unwrap();
+        let project = shared.find("crate::curseforge::project_id(project_id)?").unwrap();
+        let range = shared.find("if file_id == 0 || file_id > u32::MAX as u64").unwrap();
+        assert!(project < guard && range < guard, "the journal's ids are checked before the guard");
+        let session = shared.find("crate::curseforge::CfSession::new(state, None)?").unwrap();
+        assert!(guard < session);
+        assert!(session < shared.find("curseforge_pack_file(").unwrap());
+        let sweep = shared.find("sweep_pack_downloads(&directory,").unwrap();
+        let remove = shared.find("let _downloaded = RemoveOnDrop(archive.clone());").unwrap();
+        let fetch = shared.find("fetch_verified(").unwrap();
+        let import = shared.find("import_inner(").unwrap();
+        assert!(sweep < remove && remove < fetch && fetch < import);
+        let pack_file = body("async fn curseforge_pack_file(");
+        for call in ["crate::curseforge::pack_project(", "crate::curseforge::pack_file("] {
+            let at = pack_file.find(call).unwrap();
+            assert!(
+                pack_file[..at].ends_with("crate::curseforge::in_task(state, "),
+                "{call} must be raced against its task's cancel"
+            );
+        }
+        let versions = body("async fn curseforge_pack_versions(");
+        assert!(!versions.contains("in_task("), "the update check is not a task");
+        let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat(&shared[import..]).contains(
+                "Some(PackOrigin::Curseforge { project_id, file_id, version_number: file.label, }),"
+            ),
+            "the online install records its source: the checked ids and the file's label"
+        );
+        let list = flat(&body("pub async fn list_curseforge_modpack_versions("));
+        assert!(list.contains("let project_id = crate::curseforge::project_id(&project_id)?;"));
+        assert!(list.contains("Ok(curseforge_pack_versions(&state, project_id, None).await?.0)"), "the install list has no installed file");
     }
 
     #[test]

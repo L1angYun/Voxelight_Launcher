@@ -78,6 +78,11 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             .with_param("id", id.lines().next().unwrap_or_default())
             .with_detail(detail);
     }
+    if let Some(files) = detail.strip_prefix(crate::modpacks::MANUAL_DOWNLOAD) {
+        return AppError::new("modpack.manualDownload")
+            .with_param("files", files)
+            .with_detail(detail);
+    }
     let code = if detail.starts_with("预设 JSON 无效") {
         "config.presetInvalid"
     } else if detail.starts_with(crate::modpacks::PLATFORM_REFUSED) {
@@ -89,10 +94,13 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             crate::modpacks::pack_update::UNMANAGED => "modpack.unmanaged",
             crate::modpacks::pack_update::PLAN_CHANGED => "modpack.planChanged",
             crate::modpacks::pack_update::NOT_NEWER => "modpack.notNewer",
-            crate::modpacks::pack_update::VERSION_MISMATCH => "modpack.versionMismatch",
+            crate::modpacks::pack_update::VERSION_MISMATCH | crate::modpacks::NOT_RELEASE => "modpack.versionMismatch",
             crate::modpacks::pack_update::DEPENDENCY_DRIFT => "modpack.dependencyDrift",
             crate::modpacks::pack_update::CONFLICT_CHOICE_INVALID => "modpack.conflictChoiceInvalid",
             crate::modpacks::pack_update::STAGE_MISMATCH | crate::modpacks::pack_update::LOCK_INVALID => "modpack.stageMismatch",
+            crate::modpacks::pack_update::MANUAL_DOWNLOAD_REQUIRED => "modpack.manualDownloadRequired",
+            crate::modpacks::pack_update::PACK_NOT_DOWNLOADABLE => "modpack.packNotDownloadable",
+            crate::modpacks::MANIFEST_FILE_MISSING | crate::modpacks::MANIFEST_PROJECT_MISSING => "modpack.manifestMissing",
             crate::modpacks::NOT_MRPACK => "modpack.notMrpack",
             crate::modpacks::pack_update::SHARED_ROOT => "modpack.sharedRoot",
             crate::modpacks::PLATFORM_UNREACHABLE | crate::modpacks::PLATFORM_INTERRUPTED => "modpack.platformUnavailable",
@@ -339,6 +347,25 @@ mod tests {
             "config.presetInvalid"
         );
         assert_eq!(expected("下载源无效".to_string()).code, "config.invalid");
+    }
+
+    #[test]
+    fn c12_manual_download_and_non_release_errors_have_their_own_codes() {
+        let list = "「Pack」 → mods/a.jar（https://www.curseforge.com/minecraft/modpacks/pack）";
+        let detail = format!("{}{list}", crate::modpacks::MANUAL_DOWNLOAD);
+        let error = expected(detail.clone());
+        assert_eq!(error.code, "modpack.manualDownload");
+        assert_eq!(error.params["files"], list);
+        assert_eq!(error.detail.as_deref(), Some(detail.as_str()));
+        assert_eq!(expected(crate::modpacks::NOT_RELEASE).code, "modpack.versionMismatch");
+        assert_eq!(
+            expected(crate::modpacks::pack_update::MANUAL_DOWNLOAD_REQUIRED).code,
+            "modpack.manualDownloadRequired"
+        );
+        assert_eq!(expected(crate::modpacks::pack_update::PACK_NOT_DOWNLOADABLE).code, "modpack.packNotDownloadable");
+        for missing in [crate::modpacks::MANIFEST_FILE_MISSING, crate::modpacks::MANIFEST_PROJECT_MISSING] {
+            assert_eq!(expected(missing).code, "modpack.manifestMissing");
+        }
     }
 
     #[test]

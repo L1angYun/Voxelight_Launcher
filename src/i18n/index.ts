@@ -62,6 +62,9 @@ export function createLauncherI18n(preference: string, systemLocale: string, pse
     fallbackNS: "common",
     returnEmptyString: false,
     returnNull: false,
+    // React escapes every rendered string; escaping here as well would show
+    // paths and names as &#x2F; and &amp; (nothing renders translations as HTML).
+    interpolation: { escapeValue: false },
     saveMissing: false,
     parseMissingKeyHandler: (_key, defaultValue) =>
       defaultValue ?? (instance.language === "zh-CN" ? "无法显示此内容。" : "This content cannot be displayed."),

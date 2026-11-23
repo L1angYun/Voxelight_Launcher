@@ -316,18 +316,30 @@ describe("DiscoverPage", () => {
   });
 
 
-  it.each(["card", "details"] as const)("routes a CurseForge modpack from %s only through local ZIP import", async (entry) => {
-    const release = { id: "pack-fixture", name: "Example release", versionNumber: "1.0", gameVersions: ["1.21.1"], loaders: ["fabric"], datePublished: "2026-01-01" };
-    const pack = { ...project, project_type: "modpack", project_id: "90210", title: "Example CurseForge pack" };
-    const localPath = "C:\\SyntheticFixture\\CurseForgePack.zip";
+  const curseforgePackRelease = { id: "123456", name: "Example release", versionNumber: "1.0", gameVersions: ["1.21.1"], loaders: ["fabric"], datePublished: "2026-01-01" };
+  async function openCurseforgeModpackDialog(pack: ResourceProject) {
     const dispatch = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => {
       if (name === "search_curseforge") return { hits: [pack] };
-      if (name === "get_curseforge_project_details") return { ...details, project: pack, versions: [release], dependencies: [] };
-      if (name === "list_modpack_versions") return [release];
-      if (name === "choose_launcher_path") return [localPath];
-      if (name === "import_modpack") return { instance: mockLauncher.data.instances[0], warnings: [] };
-      if (name === "list_versions") return mockLauncher.manifest;
+      return dispatch(name, args);
+    });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="来源"]')!.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="curseforge"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('#discover-type-modpack')!.click());
+    const card = container.querySelector(`[data-project-id="${pack.project_id}"]`)!;
+    await act(async () => (card.querySelector('.vx-project-card__actions button:first-child') as HTMLButtonElement).click());
+    return container.querySelector<HTMLDialogElement>('.vx-create-dialog[open]')!;
+  }
+
+  it.each(["card", "details"] as const)("installs a CurseForge modpack online from %s", async (entry) => {
+    const pack = { ...project, project_type: "modpack", project_id: "90210", title: "Example CurseForge pack" };
+    const dispatch = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "search_curseforge") return { hits: [pack] };
+      if (name === "get_curseforge_project_details") return { ...details, project: pack, versions: [curseforgePackRelease], dependencies: [] };
+      if (name === "list_curseforge_modpack_versions") return [curseforgePackRelease];
+      if (name === "install_curseforge_modpack") return { instance: mockLauncher.data.instances[0], warnings: [] };
       return dispatch(name, args);
     });
     await render();
@@ -337,34 +349,118 @@ describe("DiscoverPage", () => {
     const card = container.querySelector('[data-project-id="90210"]')!;
     if (entry === "details") {
       await act(async () => (card.querySelector('.vx-project-card__actions button:last-child') as HTMLButtonElement).click());
+      const drawer = container.querySelector('.vx-project-details')!;
+      const action = [...drawer.querySelectorAll<HTMLButtonElement>('.vx-dialog__footer button')].find(button => button.textContent === "安装")!;
+      await act(async () => action.click());
+    } else {
+      await act(async () => (card.querySelector('.vx-project-card__actions button:first-child') as HTMLButtonElement).click());
     }
-    const area = entry === "details" ? container.querySelector('.vx-project-details .vx-dialog__footer')! : card;
-    const action = [...area.querySelectorAll<HTMLButtonElement>('button')].find(button => /导入本地 ZIP|^安装$/.test(button.textContent ?? ""))!;
-    await act(async () => action.click());
-    expect(commandMock).not.toHaveBeenCalledWith("list_modpack_versions", expect.objectContaining({ projectId: "90210" }));
-    const dialog = container.querySelector('.vx-create-dialog[open]')!;
-    expect(dialog.textContent).toContain('先从 CurseForge 下载整合包 ZIP');
-    expect(dialog.querySelector('[role="tablist"]')).toBeNull();
-    const importZip = [...dialog.querySelectorAll<HTMLButtonElement>('.vx-dialog__footer button')].find(button => button.textContent === "导入本地 ZIP")!;
+    expect(commandMock).toHaveBeenCalledWith("list_curseforge_modpack_versions", { projectId: "90210" });
+    const dialog = container.querySelector<HTMLDialogElement>('.vx-create-dialog[open]')!;
+    expect(dialog.textContent).toContain("只列出正式版。整合包里有作者不允许其他应用下载的文件时，安装会停止并列出这些文件。");
+    const install = [...dialog.querySelectorAll<HTMLButtonElement>('.vx-dialog__footer button')].find(button => button.textContent === "安装整合包")!;
+    await act(async () => install.click());
+    expect(commandMock).toHaveBeenCalledWith("install_curseforge_modpack", {
+      projectId: "90210",
+      fileId: 123456,
+      name: "Example CurseForge pack",
+      includeOptional: false,
+    });
+    expect(commandMock.mock.calls.some(([name]) => name === "list_modpack_versions" || name === "install_modrinth_modpack")).toBe(false);
+  });
+
+  it("keeps the CurseForge local ZIP import on a secondary button", async () => {
+    const pack = { ...project, project_type: "modpack", project_id: "90210", title: "Example CurseForge pack" };
+    const localPath = "C:\\SyntheticFixture\\CurseForgePack.zip";
+    const dispatch = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_curseforge_modpack_versions") return [curseforgePackRelease];
+      if (name === "choose_launcher_path") return [localPath];
+      if (name === "import_modpack") return { instance: mockLauncher.data.instances[0], warnings: [] };
+      return dispatch(name, args);
+    });
+    const dialog = await openCurseforgeModpackDialog(pack);
+    const importZip = [...dialog.querySelectorAll<HTMLButtonElement>('.vx-dialog__footer button')].find(button => button.textContent === "改为导入 CurseForge ZIP")!;
+    expect(importZip).toBeDefined();
+    expect(importZip.classList.contains("vx-button--secondary")).toBe(true);
+    // The visible optional-files choice applies to the ZIP import too, unticked and ticked.
+    const imports = () => commandMock.mock.calls.filter(([name]) => name === "import_modpack").map(([, args]) => args as Record<string, unknown>);
     await act(async () => importZip.click());
     expect(commandMock).toHaveBeenCalledWith("choose_launcher_path", expect.objectContaining({ purpose: "packRead" }));
-    expect(commandMock).toHaveBeenCalledWith("import_modpack", expect.objectContaining({ path: localPath }));
-    expect(commandMock.mock.calls.some(([name]) => name === "install_modrinth_modpack")).toBe(false);
+    expect(imports()[0]).toEqual(expect.objectContaining({ path: localPath, includeOptional: false }));
+    const again = await openCurseforgeModpackDialog(pack);
+    await act(async () => again.querySelector<HTMLInputElement>('.vx-check-row input[type="checkbox"]')!.click());
+    const importAgain = [...again.querySelectorAll<HTMLButtonElement>('.vx-dialog__footer button')].find(button => button.textContent === "改为导入 CurseForge ZIP")!;
+    await act(async () => importAgain.click());
+    expect(imports()[1]).toEqual(expect.objectContaining({ path: localPath, includeOptional: true }));
+    expect(commandMock.mock.calls.some(([name]) => name === "install_curseforge_modpack" || name === "install_modrinth_modpack")).toBe(false);
+  });
+
+  it("never sends a key typed for a Library-style import from the modpack dialog", async () => {
+    // Discover keeps one dialog: "create instance" opens it without a project
+    // (with the key field), a modpack opens it with one (without the field).
+    const { CreateInstanceDialog } = await import("../library/CreateInstanceDialog");
+    const pack = { ...project, project_type: "modpack", project_id: "90213", title: "Key pack" };
+    const localPath = "C:\\SyntheticFixture\\KeyPack.zip";
+    const dispatch = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_curseforge_modpack_versions") return [curseforgePackRelease];
+      if (name === "choose_launcher_path") return [localPath];
+      if (name === "import_modpack") return { instance: mockLauncher.data.instances[0], warnings: [] };
+      return dispatch(name, args);
+    });
+    const i18n = createLauncherI18n("zh-CN", "zh-CN");
+    await i18n.initPromise;
+    const show = (props: Record<string, unknown>) => act(async () => root.render(createElement(I18nextProvider, { i18n },
+      createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(ToastProvider, null,
+        createElement(CreateInstanceDialog, { open: true, onOpenChange: () => {}, onInstalled: () => {}, ...props }))))));
+    await show({ initialMode: "import" });
+    const key = document.querySelector<HTMLInputElement>('.vx-create-dialog[open] input[type="password"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(key, "typed-key-fixture");
+      key.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const footer = () => [...document.querySelectorAll<HTMLButtonElement>('.vx-create-dialog[open] .vx-dialog__footer button')];
+    await act(async () => footer().find(button => button.textContent === "导入整合包")!.click());
+    const imports = () => commandMock.mock.calls.filter(([name]) => name === "import_modpack").map(([, args]) => args as Record<string, unknown>);
+    expect(imports()[0].curseforgeApiKey).toBe("typed-key-fixture");
+    await show({ project: pack, source: "curseforge" });
+    await act(async () => footer().find(button => button.textContent === "改为导入 CurseForge ZIP")!.click());
+    expect(imports()).toHaveLength(2);
+    expect(imports()[1].curseforgeApiKey).toBeUndefined();
+  });
+
+  it.each(["pack-latest", "0", "01", "4294967296"])("refuses an invalid CurseForge file id %s", async (id) => {
+    const pack = { ...project, project_type: "modpack", project_id: "90212", title: "Invalid version pack" };
+    const dispatch = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_curseforge_modpack_versions") return [{ ...curseforgePackRelease, id }];
+      return dispatch(name, args);
+    });
+    const dialog = await openCurseforgeModpackDialog(pack);
+    const version = dialog.querySelector<HTMLButtonElement>('[role="combobox"][id$="-create-pack-version"]')!;
+    expect(version.disabled).toBe(false);
+    expect(version.textContent).toContain("Example release");
+    const install = [...dialog.querySelectorAll<HTMLButtonElement>('.vx-dialog__footer button')].find(button => button.textContent === "安装整合包")!;
+    expect(install.disabled).toBe(true);
+    await act(async () => {
+      install.click();
+      dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(commandMock.mock.calls.some(([name]) => name === "install_curseforge_modpack")).toBe(false);
   });
 
   it.each([[null, false], [["C:\SyntheticFixture\WrongPack.mrpack"], true]] as const)("keeps the CurseForge ZIP dialogue open for %s", async (response, wrongExtension) => {
     const pack = { ...project, project_type: "modpack", project_id: "90211", title: "Example local pack" };
-    const normal = commandMock.getMockImplementation()!;
-    commandMock.mockImplementation(async (name, args) => name === "search_curseforge" ? { hits: [pack] } : normal(name, args));
     const dispatch = commandMock.getMockImplementation()!;
-    commandMock.mockImplementation(async (name, args) => name === "choose_launcher_path" ? response : dispatch(name, args));
-    await render();
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="来源"]')!.click());
-    await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="curseforge"]')!.click());
-    await act(async () => container.querySelector<HTMLButtonElement>('#discover-type-modpack')!.click());
-    const card = container.querySelector('[data-project-id="90211"]')!;
-    await act(async () => (card.querySelector('.vx-project-card__actions button:first-child') as HTMLButtonElement).click());
-    await act(async () => container.querySelector<HTMLButtonElement>('.vx-create-dialog .vx-dialog__footer button')!.click());
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_curseforge_modpack_versions") return [curseforgePackRelease];
+      if (name === "choose_launcher_path") return response;
+      return dispatch(name, args);
+    });
+    const dialog = await openCurseforgeModpackDialog(pack);
+    const importZip = [...dialog.querySelectorAll<HTMLButtonElement>('.vx-dialog__footer button')].find(button => button.textContent === "改为导入 CurseForge ZIP")!;
+    await act(async () => importZip.click());
     expect(container.querySelector('.vx-create-dialog[open]')).not.toBeNull();
     expect(commandMock.mock.calls.some(([name]) => name === "list_modpack_versions" || name === "import_modpack" || name === "install_modrinth_modpack")).toBe(false);
     if (wrongExtension) expect(container.querySelector('.vx-create-dialog [role="alert"]')?.textContent).toContain('请选择 CurseForge 整合包 ZIP 文件');

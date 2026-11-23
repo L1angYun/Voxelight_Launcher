@@ -7,18 +7,17 @@ import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
 import { formatNumber } from "../../i18n/format";
 import { cn } from "../../lib/utils";
 
-export function ProjectCard({ project, targetName, selected = false, localPackOnly = false, onOpen, onInstall }: {
+export function ProjectCard({ project, targetName, selected = false, onOpen, onInstall }: {
   project: ResourceProject;
   targetName: string;
   selected?: boolean;
-  localPackOnly?: boolean;
   onOpen: () => void;
   onInstall: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
-  const installLabel = t(localPackOnly ? "discover:importCurseforgeZip" : "discover:install");
+  const installLabel = t("discover:install");
   return (
     <article className={cn("vx-project-card", selected && "is-selected")} data-project-id={project.project_id} data-visual-owner="lattice" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}>
       <LatticeFrame hovered={hovered} focused={focused} selected={selected} signature={project.project_id} />
@@ -29,7 +28,7 @@ export function ProjectCard({ project, targetName, selected = false, localPackOn
         <div className="vx-project-card__meta"><span title={t("downloads:title")}><Download size={12} aria-hidden="true" />{formatNumber(project.downloads, i18n.language, { notation: "compact" })}</span><span>{project.versions.slice(-3).join(" · ")}</span></div>
       </div>
       <div className="vx-project-card__actions">
-        <Button variant="secondary" size="sm" icon={<Download size={14} />} aria-label={localPackOnly ? `${installLabel} · ${project.title}` : `${installLabel} · ${targetName}`} onClick={onInstall}>{installLabel}</Button>
+        <Button variant="secondary" size="sm" icon={<Download size={14} />} aria-label={`${installLabel} · ${targetName}`} onClick={onInstall}>{installLabel}</Button>
         <Button variant="ghost" size="sm" icon={<ArrowUpRight size={14} />} aria-current={selected || undefined} onClick={onOpen}>{t("discover:details")}</Button>
       </div>
     </article>

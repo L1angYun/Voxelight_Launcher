@@ -73,7 +73,6 @@
     "instanceInstalled": "实例已安装完成。",
     "resourceInstalledNew": "资源已安装到新实例。"
   },
-  "importCurseforgeZip": "导入本地 ZIP",
-  "curseforgeZipHint": "先从 CurseForge 下载整合包 ZIP，再在这里选择文件导入。",
+  "importCurseforgeZip": "改为导入 CurseForge ZIP",
   "curseforgeZipRequired": "请选择 CurseForge 整合包 ZIP 文件。"
 }

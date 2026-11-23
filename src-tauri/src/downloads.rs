@@ -39,6 +39,7 @@ pub(crate) enum RetryRequest {
     Install { version_id: String },
     Loader { loader: String, game_version: String, loader_version: String },
     ModrinthModpack { project_id: String, modpack_version_id: String, name: Option<String>, include_optional: bool },
+    CurseforgeModpack { project_id: String, file_id: u64, name: Option<String>, include_optional: bool },
     /// Recorded now; its runner comes with the resource install refactor (C7).
     Resource { request: ResourceRequest },
 }
@@ -126,7 +127,7 @@ fn retry_plan(job: &DownloadJob, jobs: &[DownloadJob]) -> Result<RetryRequest, &
         None => return Err(RETRY_UNSUPPORTED),
     };
     match &request {
-        RetryRequest::Install { .. } | RetryRequest::Loader { .. } | RetryRequest::ModrinthModpack { .. } => Ok(request),
+        RetryRequest::Install { .. } | RetryRequest::Loader { .. } | RetryRequest::ModrinthModpack { .. } | RetryRequest::CurseforgeModpack { .. } => Ok(request),
         // A payload edited on disk is never offered.
         RetryRequest::Resource { request: resource } if crate::resources::validate_resource_request(resource).is_ok() => Ok(request),
         RetryRequest::Resource { .. } => Err(RETRY_UNSUPPORTED),
@@ -477,6 +478,12 @@ fn retry_job(request: &RetryRequest) -> (&'static str, String, String, Option<St
             "modpack",
             project_id.clone(),
             "安装 Modrinth 整合包".into(),
+            name.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned),
+        ),
+        RetryRequest::CurseforgeModpack { project_id, name, .. } => (
+            "modpack",
+            project_id.clone(),
+            "安装 CurseForge 整合包".into(),
             name.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned),
         ),
         RetryRequest::Resource { request } => ("resource", request.project_id.clone(), resource_label(request).into(), None),
@@ -1161,6 +1168,17 @@ fn spawn_retry(app: AppHandle, state: Arc<LauncherState>, id: String, request: R
                 include_optional,
             ));
         }
+        RetryRequest::CurseforgeModpack { project_id, file_id, name, include_optional } => {
+            tauri::async_runtime::spawn(crate::modpacks::run_queued_curseforge_modpack(
+                app,
+                state,
+                id,
+                project_id,
+                file_id,
+                name,
+                include_optional,
+            ));
+        }
         RetryRequest::Resource { request } => {
             tauri::async_runtime::spawn(crate::resources::run_queued_resource(app, state, id, request));
         }
@@ -1675,6 +1693,7 @@ mod tests {
         for (call, source, signature) in [
             ("crate::loaders::run_queued_loader(", include_str!("loaders.rs"), "pub(crate) async fn run_queued_loader("),
             ("crate::modpacks::run_queued_modpack(", include_str!("modpacks.rs"), "pub(crate) async fn run_queued_modpack("),
+            ("crate::modpacks::run_queued_curseforge_modpack(", include_str!("modpacks.rs"), "pub(crate) async fn run_queued_curseforge_modpack("),
         ] {
             let (arguments, parameters) = (list(spawn, call), list(source, signature));
             assert_eq!(arguments[..3], ["app", "state", "id"], "{call}");
@@ -1714,11 +1733,34 @@ mod tests {
     }
 
     #[test]
+    fn c12_a_curseforge_modpack_retry_round_trips_and_is_offered() {
+        let journal = Journal::new(serde_json::Value::Null);
+        let control = journal.load();
+        let request = RetryRequest::CurseforgeModpack {
+            project_id: "90210".into(),
+            file_id: 42,
+            name: Some("Pack".into()),
+            include_optional: true,
+        };
+        let task = control
+            .begin_recorded("modpack", "90210", "安装 CurseForge 整合包", Some("Pack"), request.clone())
+            .unwrap();
+        control.finish(&task, Some("synthetic failure"));
+        let row = job(&control, &task);
+        assert_eq!(row.retry_request(), Some(request.clone()));
+        assert!(row.retryable);
+        assert_eq!(retry_job(&request), ("modpack", "90210".into(), "安装 CurseForge 整合包".into(), Some("Pack".into())));
+        let (_, planned) = control.queue_retry(&task).unwrap();
+        assert_eq!(planned, request);
+    }
+
+    #[test]
     fn u0256_payloads_hold_only_ids_and_names() {
         let requests = [
             RetryRequest::Install { version_id: "1.20.1".into() },
             RetryRequest::Loader { loader: "forge".into(), game_version: "1.20.1".into(), loader_version: "47.2.0".into() },
             RetryRequest::ModrinthModpack { project_id: "1KVo5zza".into(), modpack_version_id: "abc".into(), name: Some("Pack".into()), include_optional: true },
+            RetryRequest::CurseforgeModpack { project_id: "90210".into(), file_id: 42, name: Some("Pack".into()), include_optional: true },
         ];
         for request in requests {
             let stored = request.stored().to_string();

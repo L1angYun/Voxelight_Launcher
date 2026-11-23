@@ -29,6 +29,12 @@ fn on_disk_for(provided: &Provided) -> OnDisk {
             sha256: "unused".to_owned(),
             size: *size,
         },
+        Provided::Sha1Download { sha1, size } => OnDisk {
+            sha1: sha1.clone(),
+            sha512: "unused".to_owned(),
+            sha256: "unused".to_owned(),
+            size: *size,
+        },
         Provided::Override { sha256, size } => OnDisk {
             sha1: "unused".to_owned(),
             sha512: "unused".to_owned(),
@@ -673,4 +679,28 @@ fn a_hash_difference_alone_breaks_a_match() {
         assert_eq!(plan.conflicts.len(), 1, "{label}");
         assert_eq!(plan.conflicts[0].reason, ConflictReason::UserModified, "{label}");
     }
+}
+
+#[test]
+fn a_curseforge_file_matches_by_sha1_and_size_alone() {
+    let sha1 = |tag: &str| Provided::Sha1Download { sha1: format!("sha1-{tag}"), size: 10 + tag.len() as u64 };
+    let baseline = files(&[("mods/a.jar", sha1("old")), ("mods/b.jar", sha1("same"))]);
+    let upstream = files(&[("mods/a.jar", sha1("new")), ("mods/b.jar", sha1("same"))]);
+    // a is as installed (so it is replaced); b the user changed, but the new
+    // version leaves it alone (kept).
+    let mut changed = on_disk_for(&sha1("same"));
+    changed.sha1 = "edited".into();
+    let first = disk(&[("mods/a.jar", Some(on_disk_for(&sha1("old"))), None), ("mods/b.jar", Some(changed), None)]);
+    assert_eq!(
+        run(&baseline, &upstream, &first),
+        Plan { steps: vec![step("mods/a.jar", Action::Replace, false)], kept: vec!["mods/b.jar".into()], ..Plan::default() }
+    );
+    // The size counts too, and another SHA-1 is another file.
+    let mut longer = on_disk_for(&sha1("new"));
+    longer.size += 1;
+    let second = disk(&[("mods/a.jar", Some(longer), None), ("mods/b.jar", Some(on_disk_for(&sha1("same"))), None)]);
+    let plan = run(&baseline, &upstream, &second);
+    assert_eq!(plan.conflicts.len(), 1);
+    assert_eq!(plan.conflicts[0].reason, ConflictReason::UserModified);
+    assert_eq!(plan.unchanged, 1);
 }

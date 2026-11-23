@@ -10,6 +10,7 @@ import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
+import type { ResourceSource } from "../discover/types";
 import type { Loader, LoaderResult, LoaderVersion, ModpackVersion, PackResult } from "./types";
 import "./create-instance.css";
 
@@ -19,21 +20,24 @@ export function CreateInstanceDialog({
   onInstalled,
   initialMode = "version",
   project,
-  curseforgePack,
+  source,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInstalled: (versionId: string, instanceId?: string) => void | Promise<void>;
   initialMode?: "version" | "import";
   project?: ResourceProject;
-  curseforgePack?: ResourceProject;
+  source?: ResourceSource;
 }) {
   const { t } = useTranslation();
   const modeId = useId();
   const { manifest: initialManifest, run, reload, selectInstance, selectVersion, busy } = useLauncher();
   const [creationMode, setMode] = useState<"version" | "import">(initialMode);
-  const mode = curseforgePack ? "import" : project ? "modpack" : creationMode;
-  const projectName = (curseforgePack ?? project)?.title;
+  const packSource = source ?? "modrinth";
+  const projectId = project?.project_id;
+  const projectKey = projectId ? `${packSource}:${projectId}` : "";
+  const mode = project ? "modpack" : creationMode;
+  const projectName = project?.title;
   const [manifest, setManifest] = useState<VersionManifest | undefined>(initialManifest ?? undefined);
   const [channel, setChannel] = useState("release");
   const [gameVersion, setGameVersion] = useState("");
@@ -44,7 +48,7 @@ export function CreateInstanceDialog({
   const [loaderLoading, setLoaderLoading] = useState(false);
   const [instanceName, setInstanceName] = useState(projectName ?? "");
   const [curseforgeKey, setCurseforgeKey] = useState("");
-  const [packChoice, setPackChoice] = useState<{ projectId: string; versions: ModpackVersion[]; selected: string }>({ projectId: "", versions: [], selected: "" });
+  const [packChoice, setPackChoice] = useState<{ key: string; versions: ModpackVersion[]; selected: string }>({ key: "", versions: [], selected: "" });
   const [includeOptional, setIncludeOptional] = useState(false);
   const [error, setError] = useState("");
   const [manifestState, setManifestState] = useState<"idle" | "pending" | "ready" | "failed">("idle");
@@ -57,12 +61,17 @@ export function CreateInstanceDialog({
   const packGeneration = useRef(0);
   const manifestGeneration = useRef(0);
   const loaderKey = `${loader}:${gameVersion}`;
-  const requestContext = useRef({ isOpen, mode, loaderKey, projectId: project?.project_id });
-  requestContext.current = { isOpen, mode, loaderKey, projectId: project?.project_id };
-  // A different project must never expose the last dialog's install choice,
-  // including the render before its opening effect has reset the request.
-  const packVersions = packChoice.projectId === project?.project_id ? packChoice.versions : [];
-  const packVersion = packChoice.projectId === project?.project_id ? packChoice.selected : "";
+  const requestContext = useRef({ isOpen, mode, loaderKey, projectKey });
+  requestContext.current = { isOpen, mode, loaderKey, projectKey };
+  // A different project, or the same id from another source, must never expose
+  // the last dialog's install choice - including the render before its opening
+  // effect has reset the request.
+  const packVersions = packChoice.key === projectKey ? packChoice.versions : [];
+  const packVersion = packChoice.key === projectKey ? packChoice.selected : "";
+  const numericPackVersion = /^[1-9]\d*$/.test(packVersion) ? Number(packVersion) : 0;
+  const validPackVersion = packSource === "curseforge"
+    ? numericPackVersion > 0 && numericPackVersion <= 0xffff_ffff
+    : Boolean(packVersion);
   const manifestChoices = manifest?.versions.some(version => version.type === channel) || Boolean(manifest?.latestRelease);
   const names: Record<Loader, string> = { vanilla: t("library:vanilla"), fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge" };
   const loaderReady = loaderResponseKey === loaderKey && !loaderLoading && loaderFailure !== loaderKey;
@@ -97,19 +106,22 @@ export function CreateInstanceDialog({
 
   useEffect(() => {
     const request = ++packGeneration.current;
-    if (!isOpen || !project || mode !== "modpack") return;
-    const projectId = project.project_id;
+    if (!isOpen || !projectId || mode !== "modpack") return;
+    const key = `${packSource}:${projectId}`;
     const current = () => request === packGeneration.current && requestContext.current.isOpen
-      && requestContext.current.projectId === projectId && requestContext.current.mode === "modpack";
+      && requestContext.current.projectKey === key && requestContext.current.mode === "modpack";
     setPackState("pending");
-    setPackChoice({ projectId, versions: [], selected: "" });
-    void command<ModpackVersion[]>("list_modpack_versions", { projectId }).then(versions => {
+    setPackChoice({ key, versions: [], selected: "" });
+    const load = packSource === "curseforge"
+      ? command<ModpackVersion[]>("list_curseforge_modpack_versions", { projectId })
+      : command<ModpackVersion[]>("list_modpack_versions", { projectId });
+    void load.then(versions => {
       if (!current()) return;
-      setPackChoice({ projectId, versions, selected: versions[0]?.id ?? "" });
+      setPackChoice({ key, versions, selected: versions[0]?.id ?? "" });
       setPackState("ready");
     }).catch(() => { if (current()) setPackState("failed"); });
     return () => { ++packGeneration.current; };
-  }, [isOpen, mode, packAttempt, project?.project_id]);
+  }, [isOpen, mode, packAttempt, packSource, projectId]);
 
   useEffect(() => {
     const request = ++loaderGeneration.current;
@@ -156,12 +168,14 @@ export function CreateInstanceDialog({
     await run("instance.import", async () => {
       const path = await pickLauncherPath("packRead");
       if (!path) return;
-      if (curseforgePack && !/\.zip$/i.test(path)) { setError(t("discover:curseforgeZipRequired")); return; }
+      if (project && packSource === "curseforge" && !/\.zip$/i.test(path)) { setError(t("discover:curseforgeZipRequired")); return; }
       const result = await command<PackResult>("import_modpack", {
         path,
         name: instanceName.trim() || undefined,
-        curseforgeApiKey: curseforgeKey.trim() || undefined,
-        includeOptional: false,
+        // From Discover's modpack dialog the key field is not shown: the saved
+        // or built-in key is used, never one typed earlier in another mode.
+        curseforgeApiKey: project ? undefined : curseforgeKey.trim() || undefined,
+        includeOptional: project ? includeOptional : false,
       });
       await onInstalled(result.instance.versionId, result.instance.id);
       onOpenChange(false);
@@ -170,29 +184,46 @@ export function CreateInstanceDialog({
 
   async function installModpack(event: FormEvent) {
     event.preventDefault();
-    if (!isOpen || busy || !project || packState !== "ready" || !packVersion || !instanceName.trim()) return;
+    if (!isOpen || busy || !project || packState !== "ready" || !validPackVersion || !instanceName.trim()) return;
+    const name = instanceName.trim();
     await run("instance.modpack", async () => {
-      const result = await command<PackResult>("install_modrinth_modpack", {
-        projectId: project.project_id,
-        modpackVersionId: packVersion,
-        name: instanceName.trim(),
-        includeOptional,
-      });
+      let result: PackResult;
+      if (packSource === "curseforge") {
+        result = await command<PackResult>("install_curseforge_modpack", {
+          projectId: project.project_id,
+          fileId: Number(packVersion),
+          name,
+          includeOptional,
+        });
+      } else {
+        result = await command<PackResult>("install_modrinth_modpack", {
+          projectId: project.project_id,
+          modpackVersionId: packVersion,
+          name,
+          includeOptional,
+        });
+      }
       await onInstalled(result.instance.versionId, result.instance.id);
       onOpenChange(false);
     });
   }
 
   const title = mode === "modpack" ? t("library:installModpack") : mode === "import" ? t("library:importPack") : t("library:createInstance");
+  const packInstallDisabled = busy !== "" || packState !== "ready" || !validPackVersion || !instanceName.trim();
   return (
     <Dialog
       open={isOpen}
       onOpenChange={onOpenChange}
       title={title}
-      description={t(curseforgePack ? "discover:curseforgeZipHint" : "library:createDescription")}
+      description={t("library:createDescription")}
       closeLabel={t("common:actions.close")}
       className="vx-create-dialog"
-      footer={mode === "version" ? <Button variant="primary" type="submit" form={`${modeId}-create-instance-form`} onClick={install} disabled={busy !== "" || !validSelection}>{t("library:installPrepare")}</Button> : mode === "modpack" ? <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={busy !== "" || packState !== "ready" || !packVersion || !instanceName.trim()}>{t("library:installModpack")}</Button> : <Button variant="secondary" onClick={() => void importPack()}>{t(curseforgePack ? "discover:importCurseforgeZip" : "library:importPack")}</Button>}
+      footer={mode === "version" ? <Button variant="primary" type="submit" form={`${modeId}-create-instance-form`} onClick={install} disabled={busy !== "" || !validSelection}>{t("library:installPrepare")}</Button> : mode === "modpack" ? (
+        packSource === "curseforge" ? <>
+          <Button variant="secondary" disabled={busy !== ""} onClick={() => void importPack()}>{t("discover:importCurseforgeZip")}</Button>
+          <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={packInstallDisabled}>{t("library:installModpack")}</Button>
+        </> : <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={packInstallDisabled}>{t("library:installModpack")}</Button>
+      ) : <Button variant="secondary" onClick={() => void importPack()}>{t("library:importPack")}</Button>}
     >
       {!projectName ? <Segmented semantic="tabs" label={t("library:createModes")} value={creationMode} onChange={setMode}
         idPrefix={`${modeId}-mode`} panelId={`${modeId}-panel`}
@@ -249,7 +280,8 @@ export function CreateInstanceDialog({
       ) : null}
       {mode === "modpack" && project ? (
         <form id={`${modeId}-create-modpack-form`} className="vx-form-stack" onSubmit={installModpack}>
-          <Field label={t("library:modpackVersion")} htmlFor={`${modeId}-create-pack-version`}><Select id={`${modeId}-create-pack-version`} aria-label={t("library:modpackVersion")} value={packVersion} disabled={!isOpen || packState !== "ready" || noPackVersions} onChange={(selected) => setPackChoice((current) => current.projectId === project.project_id && current.versions.some((version) => version.id === selected) ? { ...current, selected } : current)} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
+          <Field label={t("library:modpackVersion")} htmlFor={`${modeId}-create-pack-version`}><Select id={`${modeId}-create-pack-version`} aria-label={t("library:modpackVersion")} value={packVersion} disabled={!isOpen || packState !== "ready" || noPackVersions} onChange={(selected) => setPackChoice((current) => current.key === projectKey && current.versions.some((version) => version.id === selected) ? { ...current, selected } : current)} required options={packVersions.map((version) => ({ value: version.id, label: `${version.name || version.versionNumber} / ${version.gameVersions.join(", ")}` }))} /></Field>
+          {packSource === "curseforge" ? <p className="vx-muted">{t("library:curseforgePackHint")}</p> : null}
           {packState === "pending" ? <LoadingStatus active>{t("library:createMetadata.loadingPack")}</LoadingStatus> : null}
           {packState === "failed" || noPackVersions ? <div className="vx-action-row">
             <span role={packState === "failed" ? "alert" : "status"}>{t(packState === "failed" ? "library:createMetadata.failedPack" : "library:createMetadata.emptyPack")}</span>

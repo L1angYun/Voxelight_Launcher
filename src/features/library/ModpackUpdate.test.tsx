@@ -155,7 +155,7 @@ describe("modpack update", () => {
   it.each<[NonNullable<ModpackUpdateCheck["reason"]>, string]>([
     ["noLock", "no online modpack lock file"],
     ["legacyLock", "older modpack lock format"],
-    ["noSource", "does not record its Modrinth source"],
+    ["noSource", "does not record an online source"],
     ["invalidLock", "cannot be read"],
   ])("shows the %s unmanaged note and no version select", async (reason, expected) => {
     commandMock.mockImplementation(async (name) => name === "check_modpack_update"
@@ -170,7 +170,7 @@ describe("modpack update", () => {
     if (reason !== "invalidLock") expect(container.textContent).toContain("Reinstall the pack from Discover");
   });
 
-  it("shows the current version when up to date and notes a version missing from Modrinth", async () => {
+  it("shows the current version when up to date and notes a version missing from its platform", async () => {
     let currentMissing = false;
     commandMock.mockImplementation(async (name) => name === "check_modpack_update"
       ? makeCheck({ newer: [], currentMissing })
@@ -178,11 +178,11 @@ describe("modpack update", () => {
     await render(updateElement());
     await act(async () => button("Check for modpack update")!.click());
     expect(container.textContent).toContain("This modpack is up to date (version 1.0.0).");
-    expect(container.textContent).not.toContain("no longer listed on Modrinth");
+    expect(container.textContent).not.toContain("no longer listed on its platform");
     expect(container.querySelector('[role="combobox"]')).toBeNull();
     currentMissing = true;
     await act(async () => button("Check for modpack update")!.click());
-    expect(container.textContent).toContain("The installed version is no longer listed on Modrinth.");
+    expect(container.textContent).toContain("The installed version is no longer listed on its platform.");
   });
 
   it("shows the choose-carefully notice when the installed version is missing but versions are listed", async () => {
@@ -192,7 +192,7 @@ describe("modpack update", () => {
     await render(updateElement());
     await act(async () => button("Check for modpack update")!.click());
     expect(container.textContent).toContain(
-      "The installed version is no longer listed on Modrinth, so every version of this pack is shown. " +
+      "The installed version is no longer listed on its platform, so every version of this pack is shown. " +
       "Choose carefully: an older version is not refused.",
     );
     expect(container.querySelector('[role="combobox"]')).not.toBeNull();
@@ -309,6 +309,91 @@ describe("modpack update", () => {
     const paths = [...container.querySelectorAll("li.vx-path")].map((node) => node.textContent);
     expect(paths).toContain("mods/optional-a.jar");
     expect(paths).toContain("mods/optional-b.jar");
+  });
+
+  it("lists files CurseForge does not let the launcher download and blocks Apply", async () => {
+    const projectUrl = "https://www.curseforge.com/minecraft/mc-mods/restricted-fixture";
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_modpack_update") return makeCheck();
+      if (name === "plan_modpack_update") return {
+        ...plan,
+        // A disabled mod: the file goes where the update writes it.
+        manual: [{ path: "mods/restricted-fixture.jar", target: "mods/restricted-fixture.jar.disabled", projectUrl, conflict: false }],
+      };
+      return null;
+    });
+    await openPlan();
+    expect(container.textContent).toContain(
+      "CurseForge does not let the launcher download these files. " +
+      "Download each one from its page and put it at the path shown, then show the plan again:",
+    );
+    const row = [...container.querySelectorAll("li.vx-path")]
+      .find((node) => node.textContent?.includes("mods/restricted-fixture.jar"))!;
+    expect(row).toBeDefined();
+    expect(row.querySelector("span")!.textContent).toBe("mods/restricted-fixture.jar.disabled");
+    const link = row.querySelector("a")!;
+    expect(link.getAttribute("href")).toBe(projectUrl);
+    expect(link.textContent).toContain("Download manually");
+    expect(container.textContent).not.toContain("needed only if you use the new version for this file");
+    expect(button("Apply update")!.disabled).toBe(true);
+  });
+
+  it("allows Apply for a manual conflict until the new version is chosen for it", async () => {
+    const path = "mods/restricted-choice.jar";
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_modpack_update") return makeCheck();
+      if (name === "plan_modpack_update") return {
+        ...plan,
+        conflicts: [{ path, reason: "userModified" }],
+        // The choice is keyed by the plan path, not by where the file goes.
+        manual: [{ path, target: `${path}.disabled`, projectUrl: "https://www.curseforge.com/minecraft/mc-mods/restricted-choice", conflict: true }],
+      };
+      return null;
+    });
+    await openPlan();
+    expect(container.textContent).toContain("needed only if you use the new version for this file");
+    expect(button("Apply update")!.disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLInputElement>(`[data-conflict-path="${path}"]`)!.click());
+    expect(button("Apply update")!.disabled).toBe(true);
+  });
+
+  it("shows the files a refused plan names as they are written", async () => {
+    const files = "「Restricted & Co」 → mods/restricted.jar（https://www.curseforge.com/minecraft/mc-mods/restricted）";
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_modpack_update") return makeCheck();
+      if (name === "plan_modpack_update") throw { code: "modpack.manualDownload", params: { files } };
+      return null;
+    });
+    await openPlan();
+    const alert = container.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toBe(
+      "These files' authors do not allow other apps to download them, so the launcher stopped and changed nothing. " +
+      `Download them from their pages: ${files}`,
+    );
+  });
+
+  it("keeps the params of a failed check and a failed apply", async () => {
+    const files = "「Restricted」 → mods/restricted.jar（https://www.curseforge.com/minecraft/mc-mods/restricted）";
+    const failure = { code: "modpack.manualDownload", params: { files } };
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_modpack_update") throw failure;
+      return null;
+    });
+    await render(updateElement(makeCallbacks()));
+    await act(async () => button("Check for modpack update")!.click());
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain(files);
+
+    commandMock.mockImplementation(async (name) => {
+      if (name === "check_modpack_update") return makeCheck();
+      if (name === "plan_modpack_update") return plan;
+      if (name === "apply_modpack_update") throw failure;
+      return null;
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => button("Check for modpack update")!.click());
+    await act(async () => button("Show update plan")!.click());
+    await act(async () => button("Apply update")!.click());
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain(files);
   });
 
   it("applies with the plan fingerprint and per-conflict choices, then reports success and refreshes", async () => {

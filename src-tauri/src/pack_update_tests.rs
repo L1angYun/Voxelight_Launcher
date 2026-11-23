@@ -209,9 +209,12 @@ fn c10_the_lock_says_whether_and_how_an_instance_is_managed() {
     let mut unsourced = valid.clone();
     unsourced.as_object_mut().unwrap().remove("source");
     assert_eq!(reason(Some(bytes(&unsourced))), "noSource");
+    let mut other = valid.clone();
+    other["source"] = json!({"kind": "ftb", "projectId": 1});
+    assert_eq!(reason(Some(bytes(&other))), "noSource", "a platform this launcher does not update");
     let mut curse = valid.clone();
     curse["source"] = json!({"kind": "curseforge", "projectId": 1});
-    assert_eq!(reason(Some(bytes(&curse))), "noSource", "a source this launcher does not update");
+    assert_eq!(reason(Some(bytes(&curse))), "invalidLock", "a CurseForge source without its file and version");
     assert_eq!(reason(Some(bytes(&valid))), "managed");
     let mut bom = b"\xEF\xBB\xBF".to_vec();
     bom.extend(bytes(&valid));
@@ -729,6 +732,7 @@ fn c10_the_update_runs_its_guards_before_it_writes() {
         "prepare(state, instance_id, new_version_id, Some(include_optional)).await?",
         "if prepared.fingerprint != fingerprint",
         "chosen_steps(&prepared.plan, choices)?",
+        "require_downloadable(&prepared, &steps)?",
         "at(&live, \"stage\")",
         "instances::stage_pack_update(",
         "require_copy_matches(&prepared.disk, &stage.files)?",
@@ -851,4 +855,416 @@ fn c10_a_managed_name_too_long_for_a_disabled_copy_is_still_planned() {
     let runtime = runtime();
     let plan = runtime.block_on(prepare(&fixture.state, "test", "newver", None)).unwrap().summary();
     assert_eq!(plan.unchanged, 1);
+}
+
+// ---- C12: a managed CurseForge modpack ------------------------------------
+
+/// Points the CurseForge API at `server` for this thread.
+struct CfApi;
+
+impl CfApi {
+    fn at(fixture: &Fixture, server: &RangeServer) -> Self {
+        // A synthetic key of the right shape, assembled here.
+        let key = ["$", "2a", "$", "10", "$"].join("") + &"b".repeat(53);
+        crate::secrets::save_service_secret(&fixture.data, "curseforge-api-key", &key).unwrap();
+        crate::resources::TEST_ENDPOINTS.with(|endpoints| {
+            *endpoints.borrow_mut() = Some(crate::resources::TestEndpoints {
+                modrinth_api: String::new(),
+                curseforge_api: format!("http://{}", server.address),
+                cdn: "127.0.0.1:1".parse().unwrap(),
+                prepared_version: None,
+            })
+        });
+        CfApi
+    }
+}
+
+impl Drop for CfApi {
+    fn drop(&mut self) {
+        crate::resources::TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
+    }
+}
+
+const PACK: u64 = 100;
+const INSTALLED: u64 = 1000;
+const NEW: u64 = 2000;
+
+impl Fixture {
+    /// Verified bytes where `fetch_verified` finds a SHA-1-only download.
+    fn cache_sha1(&self, bytes: &[u8]) {
+        let cache = self.data.join("pack-cache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join(format!("{}.bin", hex1(bytes))), bytes).unwrap();
+    }
+}
+
+fn cf_file(project: u64, id: u64, name: &str, bytes: &[u8], date: &str, release_type: u32) -> Value {
+    json!({
+        "id": id, "modId": project, "gameId": 432, "isAvailable": true,
+        "fileName": name, "fileLength": bytes.len(),
+        "downloadUrl": format!("https://edge.forgecdn.net/files/{id}/{name}"),
+        "hashes": [{"algo": 1, "value": hex1(bytes)}],
+        "gameVersions": ["1.20.1"], "dependencies": [],
+        "fileDate": date, "releaseType": release_type, "displayName": format!("Pack {id}"),
+    })
+}
+
+fn cf_project(id: u64, class_id: u64, distributable: bool) -> Value {
+    json!({
+        "id": id, "gameId": 432, "name": format!("Project {id}"), "slug": format!("project-{id}"),
+        "summary": "", "classId": class_id, "allowModDistribution": distributable,
+        "links": {"websiteUrl": format!("https://www.curseforge.com/minecraft/mc-mods/project-{id}")},
+    })
+}
+
+fn cf_reply(value: Value) -> Scripted {
+    json_reply(json!({ "data": value }))
+}
+
+/// A CurseForge pack ZIP: manifest entries (projectID, fileID, required) and override files.
+fn cf_pack(entries: &[(u64, u64, bool)], overrides: &[(&str, &[u8])]) -> Vec<u8> {
+    let manifest = json!({
+        "manifestType": "minecraftModpack", "manifestVersion": 1, "name": "Fixture CF Pack",
+        "minecraft": {"version": "1.20.1", "modLoaders": []},
+        "files": entries.iter().map(|(project, file, required)| json!({"projectID": project, "fileID": file, "required": required})).collect::<Vec<_>>(),
+        "overrides": "overrides",
+    });
+    let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("manifest.json", SimpleFileOptions::default()).unwrap();
+    zip.write_all(manifest.to_string().as_bytes()).unwrap();
+    for (name, bytes) in overrides {
+        zip.start_file(format!("overrides/{name}"), SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// The lock an online CurseForge install of the installed version wrote.
+fn cf_lock(files: &[(&str, &[u8], u64, u64)], overrides: &[(&str, &[u8])]) -> Value {
+    json!({
+        "formatVersion": 2,
+        "name": "Fixture CF Pack",
+        "dependencies": {"minecraft": "1.20.1"},
+        "files": files.iter().map(|(path, bytes, project, file)| json!({"path": path, "sha1": hex1(bytes), "sha512": hex512(bytes), "size": bytes.len(), "projectId": project, "fileId": file})).collect::<Vec<_>>(),
+        "overrides": overrides.iter().map(|(path, bytes)| json!({"relative": path, "size": bytes.len(), "sha256": hex256(bytes)})).collect::<Vec<_>>(),
+        "source": {"kind": "curseforge", "projectId": PACK, "fileId": INSTALLED, "versionNumber": "Pack 1000"},
+    })
+}
+
+const OPT: &[u8] = b"an optional mod, installed before";
+
+/// Version 1000 installed (a, b disabled, c, opt; config/x.toml edited by
+/// the user), version 2000 on a local CurseForge API.
+struct CfScenario {
+    fixture: Fixture,
+    pack: Vec<u8>,
+}
+
+impl CfScenario {
+    fn new() -> Self {
+        let fixture = Fixture::new();
+        fixture.write("mods/a.jar", A1);
+        fixture.write("mods/b.jar.disabled", B1);
+        fixture.write("mods/c.jar", C1);
+        fixture.write("mods/opt.jar", OPT);
+        fixture.write("config/x.toml", MINE);
+        fixture.write("saves/world/level.dat", b"the user's world");
+        let installed = cf_lock(
+            &[("mods/a.jar", A1, 11, 111), ("mods/b.jar", B1, 12, 121), ("mods/c.jar", C1, 13, 131), ("mods/opt.jar", OPT, 15, 151)],
+            &[("config/x.toml", X1)],
+        );
+        fs::write(fixture.live.join(LOCK), installed.to_string()).unwrap();
+        let pack = cf_pack(&[(11, 112, true), (12, 122, true), (14, 141, true), (15, 151, false)], &[("config/x.toml", X2)]);
+        for bytes in [A2, B2, D1, pack.as_slice()] {
+            fixture.cache_sha1(bytes);
+        }
+        Self { fixture, pack }
+    }
+
+    /// The five answers of one plan, with these projects' files restricted;
+    /// the apply's plan reuses them from the cache.
+    fn replies(&self, restricted: &[u64]) -> Vec<Scripted> {
+        let free = |project: u64| !restricted.contains(&project);
+        vec![
+            cf_reply(cf_project(PACK, 4471, true)),
+            cf_reply(cf_file(PACK, NEW, "pack-2000.zip", &self.pack, "2026-02-01T00:00:00Z", 1)),
+            cf_reply(cf_file(PACK, INSTALLED, "pack-1000.zip", b"the installed pack", "2026-01-01T00:00:00Z", 1)),
+            cf_reply(json!([
+                cf_file(11, 112, "a.jar", A2, "2026-02-01T00:00:00Z", 1),
+                cf_file(12, 122, "b.jar", B2, "2026-02-01T00:00:00Z", 1),
+                cf_file(14, 141, "d.jar", D1, "2026-02-01T00:00:00Z", 1),
+                cf_file(15, 151, "opt.jar", OPT, "2026-01-01T00:00:00Z", 1),
+            ])),
+            cf_reply(json!([cf_project(11, 6, free(11)), cf_project(12, 6, free(12)), cf_project(14, 6, free(14)), cf_project(15, 6, free(15))])),
+        ]
+    }
+
+    fn plan(&self, runtime: &tokio::runtime::Runtime) -> Result<PackUpdatePlan, String> {
+        runtime.block_on(prepare(&self.fixture.state, "test", &NEW.to_string(), None)).map(|prepared| prepared.summary())
+    }
+
+    fn apply(&self, runtime: &tokio::runtime::Runtime, plan: &PackUpdatePlan, choices: &[ConflictChoice]) -> crate::errors::AppResult<PackUpdateResult> {
+        runtime.block_on(apply_inner(None, &self.fixture.state, "test", &NEW.to_string(), plan.include_optional, &plan.fingerprint, choices))
+    }
+
+    fn read(&self, relative: &str) -> Vec<u8> {
+        fs::read(self.fixture.live.join(relative)).unwrap()
+    }
+}
+
+#[test]
+fn c12_a_curseforge_lock_is_managed_with_its_file_ids() {
+    let fixture = Fixture::new();
+    let reason = |value: &Value| {
+        fs::write(fixture.live.join(LOCK), value.to_string()).unwrap();
+        match read_lock(&fixture.live) {
+            Management::Unmanaged(reason) => reason,
+            Management::Managed(_) => "managed",
+        }
+    };
+    let valid = cf_lock(&[("mods/a.jar", A1, 11, 111)], &[("config/x.toml", X1)]);
+    assert_eq!(reason(&valid), "managed");
+    let Management::Managed(pack) = read_lock(&fixture.live) else { unreachable!() };
+    assert_eq!((pack.project_id.as_str(), pack.version_id.as_str(), pack.version_number.as_str()), ("100", "1000", "Pack 1000"));
+    assert!(matches!(pack.baseline.get("mods/a.jar"), Some((_, Provided::Sha1Download { .. }))));
+    let mut no_sha512 = valid.clone();
+    no_sha512["files"][0].as_object_mut().unwrap().remove("sha512");
+    assert_eq!(reason(&no_sha512), "managed", "a CurseForge file needs no SHA-512");
+    for (label, field) in [("no fileId", "fileId"), ("no projectId", "projectId"), ("no sha1", "sha1")] {
+        let mut broken = valid.clone();
+        broken["files"][0].as_object_mut().unwrap().remove(field);
+        assert_eq!(reason(&broken), "invalidLock", "{label}");
+    }
+    let mut zero = valid.clone();
+    zero["source"]["fileId"] = json!(0);
+    assert_eq!(reason(&zero), "invalidLock", "an id out of range");
+    // A Modrinth lock still needs its SHA-512.
+    let mut modrinth = lock(&[("mods/a.jar", A1)], &[]);
+    modrinth["files"][0].as_object_mut().unwrap().remove("sha512");
+    assert_eq!(reason(&modrinth), "invalidLock");
+}
+
+#[test]
+fn c12_a_curseforge_update_keeps_user_changes_and_records_ids() {
+    let scenario = CfScenario::new();
+    let fixture = &scenario.fixture;
+    let api = RangeServer::new(scenario.replies(&[]));
+    let _api = CfApi::at(fixture, &api);
+    let runtime = runtime();
+    let plan = scenario.plan(&runtime).unwrap();
+    assert_eq!((plan.from.version_id.as_str(), plan.to.version_id.as_str(), plan.to.version_number.as_str()), ("1000", "2000", "Pack 2000"));
+    assert_eq!((plan.add, plan.replace, plan.remove), (1, 2, 2), "d added; a and b (disabled) replaced; c and opt removed");
+    assert_eq!(plan.optional_removed, ["mods/opt.jar"], "an optional file the new version leaves out");
+    assert_eq!(plan.conflicts.len(), 1);
+    assert_eq!((plan.conflicts[0].path.as_str(), plan.conflicts[0].reason), ("config/x.toml", planner::ConflictReason::UserModified));
+    assert!(plan.manual.is_empty());
+    assert_eq!(plan.download_bytes, (A2.len() + B2.len() + D1.len()) as u64);
+    assert_eq!(api.count(), 5);
+    assert_eq!(api.header(3, ":path").as_deref(), Some("/mods/files"));
+    assert!(api.header(0, "x-api-key").is_some_and(|key| !key.is_empty()), "the saved key is sent");
+
+    scenario.apply(&runtime, &plan, &[]).unwrap();
+    assert_eq!(api.count(), 5, "the apply's plan is answered from the cache");
+    assert_eq!(scenario.read("mods/a.jar"), A2);
+    assert_eq!(scenario.read("mods/b.jar.disabled"), B2, "a disabled mod stays disabled");
+    assert_eq!(scenario.read("mods/d.jar"), D1);
+    assert!(!fixture.live.join("mods/c.jar").exists() && !fixture.live.join("mods/opt.jar").exists());
+    assert_eq!(scenario.read("config/x.toml"), MINE, "the user's edit is kept");
+    assert_eq!(scenario.read("saves/world/level.dat"), b"the user's world");
+    let written: Value = serde_json::from_slice(&scenario.read(LOCK)).unwrap();
+    assert_eq!(written["source"], json!({"kind": "curseforge", "projectId": PACK, "fileId": NEW, "versionNumber": "Pack 2000"}));
+    let files = written["files"].as_array().unwrap();
+    assert_eq!(files.iter().map(|file| file["path"].as_str().unwrap()).collect::<Vec<_>>(), ["mods/a.jar", "mods/b.jar", "mods/d.jar"]);
+    let a = &files[0];
+    assert_eq!((a["projectId"].clone(), a["fileId"].clone(), a["sha1"].clone()), (json!(11), json!(112), json!(hex1(A2))));
+    assert!(a.get("sha512").is_none(), "CurseForge gives no SHA-512");
+    let x = written["overrides"].as_array().unwrap().iter().find(|record| record["relative"] == "config/x.toml").unwrap();
+    assert_eq!(x["sha256"], hex256(X2), "the new baseline is what the new version provides");
+    let Management::Managed(pack) = read_lock(&fixture.live) else { panic!("the new lock is managed") };
+    assert_eq!(pack.version_id, "2000");
+    assert_eq!(fixture.siblings(), ["test"]);
+}
+
+#[test]
+fn c12_a_file_the_launcher_may_not_download_blocks_only_the_steps_that_write_it() {
+    let scenario = CfScenario::new();
+    let fixture = &scenario.fixture;
+    let api = RangeServer::new(scenario.replies(&[14]));
+    let _api = CfApi::at(fixture, &api);
+    let runtime = runtime();
+    let plan = scenario.plan(&runtime).unwrap();
+    assert_eq!(
+        plan.manual,
+        [ManualDownload {
+            path: "mods/d.jar".into(),
+            target: "mods/d.jar".into(),
+            project_url: "https://www.curseforge.com/minecraft/mc-mods/project-14".into(),
+            conflict: false
+        }]
+    );
+    let before = crate::instances::collect_files(&fixture.live).unwrap();
+    let error = scenario.apply(&runtime, &plan, &[]).err().unwrap();
+    assert_eq!(error.code, "modpack.manualDownloadRequired", "{error:?}");
+    assert_eq!(crate::instances::collect_files(&fixture.live).unwrap(), before, "nothing changed");
+    assert!(fixture.backups().is_empty(), "refused before the backup");
+    // The user puts the file in place: the next plan finds it unchanged.
+    fixture.write("mods/d.jar", D1);
+    let plan = scenario.plan(&runtime).unwrap();
+    assert!(plan.manual.is_empty());
+    assert_eq!(plan.add, 0);
+    scenario.apply(&runtime, &plan, &[]).unwrap();
+    assert_eq!(scenario.read("mods/a.jar"), A2);
+    assert_eq!(scenario.read("mods/d.jar"), D1);
+    assert_eq!(api.count(), 5, "every plan after the first is answered from the cache");
+}
+
+#[test]
+fn c12_a_restricted_file_is_named_where_the_update_writes_it() {
+    // b is disabled, so its new version goes to b.jar.disabled; opt (also
+    // restricted) is optional and left out, so it blocks nothing.
+    let scenario = CfScenario::new();
+    let fixture = &scenario.fixture;
+    let api = RangeServer::new(scenario.replies(&[12, 15]));
+    let _api = CfApi::at(fixture, &api);
+    let runtime = runtime();
+    let plan = scenario.plan(&runtime).unwrap();
+    assert_eq!(plan.optional_removed, ["mods/opt.jar"]);
+    assert_eq!(
+        plan.manual,
+        [ManualDownload {
+            path: "mods/b.jar".into(),
+            target: "mods/b.jar.disabled".into(),
+            project_url: "https://www.curseforge.com/minecraft/mc-mods/project-12".into(),
+            conflict: false
+        }]
+    );
+    assert_eq!(scenario.apply(&runtime, &plan, &[]).err().unwrap().code, "modpack.manualDownloadRequired");
+    assert_eq!(scenario.read("mods/b.jar.disabled"), B1, "nothing changed");
+    // The user puts the new b where the list says.
+    fixture.write("mods/b.jar.disabled", B2);
+    let plan = scenario.plan(&runtime).unwrap();
+    assert!(plan.manual.is_empty());
+    scenario.apply(&runtime, &plan, &[]).unwrap();
+    assert_eq!(scenario.read("mods/b.jar.disabled"), B2, "b stays disabled");
+    assert!(!fixture.live.join("mods/b.jar").exists());
+    assert!(!fixture.live.join("mods/opt.jar").exists());
+    assert_eq!(scenario.read("mods/d.jar"), D1);
+    assert_eq!(api.count(), 5);
+}
+
+#[test]
+fn c12_a_restricted_new_version_of_a_conflict_blocks_only_when_chosen() {
+    let scenario = CfScenario::new();
+    let fixture = &scenario.fixture;
+    fixture.write("mods/a.jar", b"the user's own build of a");
+    let api = RangeServer::new(scenario.replies(&[11]));
+    let _api = CfApi::at(fixture, &api);
+    let runtime = runtime();
+    let plan = scenario.plan(&runtime).unwrap();
+    assert!(plan.conflicts.iter().any(|conflict| conflict.path == "mods/a.jar"), "the user's a conflicts with the new a");
+    assert_eq!(
+        plan.manual,
+        [ManualDownload {
+            path: "mods/a.jar".into(),
+            target: "mods/a.jar".into(),
+            project_url: "https://www.curseforge.com/minecraft/mc-mods/project-11".into(),
+            conflict: true
+        }]
+    );
+    let before = crate::instances::collect_files(&fixture.live).unwrap();
+    let error = scenario
+        .apply(&runtime, &plan, &[ConflictChoice { path: "mods/a.jar".into(), use_upstream: true }])
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "modpack.manualDownloadRequired", "{error:?}");
+    assert_eq!(crate::instances::collect_files(&fixture.live).unwrap(), before, "nothing changed");
+    assert!(fixture.backups().is_empty(), "refused before the backup");
+    // Keeping the user's a needs nothing the launcher may not download.
+    scenario.apply(&runtime, &plan, &[]).unwrap();
+    assert_eq!(scenario.read("mods/a.jar"), b"the user's own build of a");
+    assert_eq!(scenario.read("mods/d.jar"), D1);
+}
+
+#[test]
+fn c12_a_curseforge_plan_refuses_the_installed_an_older_and_a_non_release_file() {
+    let runtime = runtime();
+    // The installed file itself: refused before any request.
+    let scenario = CfScenario::new();
+    let api = RangeServer::new(Vec::new());
+    let _api = CfApi::at(&scenario.fixture, &api);
+    let error = runtime.block_on(prepare(&scenario.fixture.state, "test", &INSTALLED.to_string(), None)).err().unwrap();
+    assert_eq!(error, NOT_NEWER);
+    assert_eq!(api.count(), 0);
+    drop(_api);
+    // An older file of the pack.
+    let api = RangeServer::new(vec![
+        cf_reply(cf_project(PACK, 4471, true)),
+        cf_reply(cf_file(PACK, NEW, "pack-2000.zip", &scenario.pack, "2025-12-01T00:00:00Z", 1)),
+        cf_reply(cf_file(PACK, INSTALLED, "pack-1000.zip", b"the installed pack", "2026-01-01T00:00:00Z", 1)),
+    ]);
+    let _api = CfApi::at(&scenario.fixture, &api);
+    assert_eq!(scenario.plan(&runtime).err().unwrap(), NOT_NEWER);
+    assert_eq!(api.count(), 3);
+    drop(_api);
+    // A beta.
+    let api = RangeServer::new(vec![
+        cf_reply(cf_project(PACK, 4471, true)),
+        cf_reply(cf_file(PACK, NEW, "pack-2000.zip", &scenario.pack, "2026-02-01T00:00:00Z", 2)),
+    ]);
+    let _api = CfApi::at(&scenario.fixture, &api);
+    let error = scenario.plan(&runtime).err().unwrap();
+    assert_eq!(crate::errors::expected(error).code, "modpack.versionMismatch");
+    drop(_api);
+    // CurseForge no longer has the installed file: any release is allowed.
+    let mut replies = scenario.replies(&[]);
+    replies[2] = Scripted::status(404);
+    let api = RangeServer::new(replies);
+    let _api = CfApi::at(&scenario.fixture, &api);
+    assert!(scenario.plan(&runtime).is_ok());
+}
+
+#[test]
+fn c12_a_plan_names_the_curseforge_refusals_it_cannot_get_past() {
+    let runtime = runtime();
+    let scenario = CfScenario::new();
+    // The installed file's lookup is refused: the platform's code, not a generic one.
+    let mut replies = scenario.replies(&[]);
+    replies.truncate(2);
+    replies.push(Scripted::status(403));
+    let api = RangeServer::new(replies);
+    let _api = CfApi::at(&scenario.fixture, &api);
+    let error = scenario.plan(&runtime).err().unwrap();
+    assert_eq!(crate::errors::expected(error).code, "modpack.platformUnavailable");
+    assert_eq!(api.count(), 3);
+    drop(_api);
+    // CurseForge may not let the launcher download the new pack itself: no
+    // hand-download list, since a downloaded ZIP is no update.
+    let scenario = CfScenario::new();
+    let api = RangeServer::new(vec![cf_reply(cf_project(PACK, 4471, false)), cf_reply(cf_file(PACK, NEW, "pack-2000.zip", &scenario.pack, "2026-02-01T00:00:00Z", 1))]);
+    let _api = CfApi::at(&scenario.fixture, &api);
+    let before = crate::instances::collect_files(&scenario.fixture.live).unwrap();
+    let error = scenario.plan(&runtime).err().unwrap();
+    assert_eq!(error, PACK_NOT_DOWNLOADABLE);
+    assert_eq!(crate::errors::expected(error).code, "modpack.packNotDownloadable");
+    assert_eq!(api.count(), 2, "refused before any download");
+    assert_eq!(crate::instances::collect_files(&scenario.fixture.live).unwrap(), before);
+}
+
+#[test]
+fn c12_the_check_offers_newer_releases_of_a_curseforge_pack() {
+    let scenario = CfScenario::new();
+    let runtime = runtime();
+    let page = json!([
+        cf_file(PACK, 2001, "pack-2001.zip", b"beta", "2026-03-01T00:00:00Z", 2),
+        cf_file(PACK, NEW, "pack-2000.zip", &scenario.pack, "2026-02-01T00:00:00Z", 1),
+        cf_file(PACK, INSTALLED, "pack-1000.zip", b"the installed pack", "2026-01-01T00:00:00Z", 1),
+    ]);
+    let api = RangeServer::new(vec![cf_reply(cf_project(PACK, 4471, true)), cf_reply(page)]);
+    let _api = CfApi::at(&scenario.fixture, &api);
+    let result = runtime.block_on(check(&scenario.fixture.state, "test")).unwrap();
+    assert!(result.managed);
+    let current = result.current.unwrap();
+    assert_eq!((current.version_id.as_str(), current.version_number.as_str()), ("1000", "Pack 1000"));
+    assert_eq!(result.newer.iter().map(|version| version.id.as_str()).collect::<Vec<_>>(), ["2000"], "releases only");
+    assert!(!result.current_missing);
 }

@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Provided {
     Download { sha1: String, sha512: String, size: u64 },
+    /// A CurseForge download: the API gives only SHA-1 (and MD5) and size.
+    Sha1Download { sha1: String, size: u64 },
     Override { sha256: String, size: u64 },
 }
 
@@ -110,6 +112,9 @@ fn matches(on_disk: &OnDisk, provided: &Provided) -> bool {
             on_disk.size == *size
                 && on_disk.sha1.eq_ignore_ascii_case(sha1)
                 && on_disk.sha512.eq_ignore_ascii_case(sha512)
+        }
+        Provided::Sha1Download { sha1, size } => {
+            on_disk.size == *size && on_disk.sha1.eq_ignore_ascii_case(sha1)
         }
         Provided::Override { sha256, size } => {
             on_disk.size == *size && on_disk.sha256.eq_ignore_ascii_case(sha256)

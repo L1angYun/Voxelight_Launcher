@@ -151,7 +151,7 @@ export interface ModpackUpdateCheck {
   current?: { versionId: string; versionNumber: string };
   /** Newer versions of the same pack, newest first (the existing ModpackVersion type above). */
   newer: ModpackVersion[];
-  /** The installed version is no longer listed on Modrinth. */
+  /** The installed version is no longer listed on its platform. */
   currentMissing: boolean;
   /** Whether the installed version included optional files (from its lock; false when not managed). */
   includeOptional: boolean;
@@ -172,6 +172,9 @@ export interface PackUpdatePlan {
   kept: string[];
   /** Optional files on disk that the plan removes because optional files are not included. Sorted paths. */
   optionalRemoved: string[];
+  /** Files the new version needs that CurseForge does not let the launcher download. Absent on older plans. */
+  /** `target` is where to put the file (`.disabled` kept); `path` is the plan path. */
+  manual?: { path: string; target: string; projectUrl: string; conflict: boolean }[];
   /** Paths left alone on purpose (saves, logs, screenshots, launcher files). */
   skipped: string[];
   dependencyChange: { from: Record<string, string>; to: Record<string, string> } | null;
