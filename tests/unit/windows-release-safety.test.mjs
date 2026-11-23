@@ -74,12 +74,19 @@ $result | ConvertTo-Json -Compress
 });
 
 test("B01 clean-extract instructions document the verified direct Debug link command", () => {
-  const readme = readFileSync(join(root, "README.md"), "utf8");
-  const verification = readme.slice(readme.indexOf("## Verification"));
-  const paragraph = verification.match(/^To verify a released source ZIP,.*$/m)?.[0];
-  assert.ok(paragraph, "The released source ZIP instructions should be written explicitly");
-  assert.ok(paragraph.includes("npm run tauri -- build --no-bundle --no-sign --debug -- --locked"), paragraph);
-  assert.doesNotMatch(paragraph, /build\.ps1 -NoBundle/);
+  for (const [name, heading, lead] of [
+    ["docs/development.md", "## Source archive", "To check a released source ZIP,"],
+    ["docs/development.zh-CN.md", "## 源码包", "检查已发布的源码包："],
+  ]) {
+    // A Windows checkout may carry CRLF line endings.
+    const guide = readFileSync(join(root, name), "utf8").replace(/\r\n/g, "\n");
+    const section = guide.slice(guide.indexOf(heading)).split(/^## /m)[1] ?? "";
+    const steps = section.slice(section.indexOf(lead));
+    assert.ok(section.includes(lead), `${name}: the released source ZIP instructions should be written explicitly`);
+    const block = steps.match(/```powershell\n([\s\S]*?)```/)?.[1] ?? "";
+    assert.ok(block.includes("npm run tauri -- build --no-bundle --no-sign --debug -- --locked"), block);
+    assert.doesNotMatch(block, /build\.ps1/);
+  }
 });
 
 test("H09 registered path contract matches the current NSIS template and retains the legacy vendor name", windowsOnly, () => {

@@ -22,8 +22,8 @@
 
 .PARAMETER CloseRunning
     Stop only a running executable at -CloseRunningPath instead of aborting. It first asks the
-    window to close (WM_CLOSE); this app hides to the tray instead of exiting,
-    so it is then terminated. Anything unsaved is lost, and a Minecraft instance
+    window to close (WM_CLOSE) and waits up to 15 seconds; a launcher still
+    running then is terminated. Anything unsaved is lost, and a Minecraft instance
     the launcher started keeps running on its own.
 
 .PARAMETER Clean

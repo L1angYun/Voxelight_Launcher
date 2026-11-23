@@ -7,6 +7,6 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 
 The project's original source code, geometric icon and WorldScene artwork are provided under GPL-3.0-only. Third-party libraries, component source and external resources retain their own licenses; see THIRD_PARTY_NOTICES.md and the licenses directory. Those notices are preserved and are not replaced by this file.
 
-Steve and Alex are optional character choices, not bundled GPL artwork. Their textures are read at runtime from an official, hash-verified Minecraft client after the user selects them. They are not claimed as original project assets or relicensed under GPLv3.
+Steve and Alex are default preview characters, not bundled GPL artwork. Their textures are read at runtime from an official, hash-verified Minecraft client when a default character is shown. They are not claimed as original project assets or relicensed under GPLv3.
 
 Minecraft is a trademark of Mojang/Microsoft. This project is not affiliated with or endorsed by Mojang or Microsoft. Minecraft game files, Java, WebView2, third-party loader files and user-provided skins are separate resources and are not relicensed under GPLv3.

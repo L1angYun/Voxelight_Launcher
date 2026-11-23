@@ -13,34 +13,46 @@ const json = name => JSON.parse(source(name));
 
 test("public source links match the migrated repository from the README to the NSIS metadata", () => {
   const repository = "https://github.com/L1angYun/Voxelight_Launcher";
-  const readme = source("README.md");
   const pkg = json("package.json");
   const cargo = source("src-tauri/Cargo.toml");
   const tauri = json("src-tauri/tauri.conf.json");
-  assert.equal(readme.match(/^Source repository: (\S+)$/m)?.[1], repository);
+  for (const name of ["README.md", "README.zh-CN.md"]) {
+    assert.ok(source(name).includes(`[GitHub](${repository})`), `${name} links the source repository`);
+  }
   assert.equal(pkg.homepage, repository);
   assert.equal(pkg.repository.url, `git+${repository}.git`);
   assert.equal(cargo.match(/^homepage = "([^"]+)"$/m)?.[1], repository);
   assert.equal(cargo.match(/^repository = "([^"]+)"$/m)?.[1], repository);
   assert.equal(tauri.bundle.homepage, repository);
   assert.match(source(`src-tauri/${tauri.bundle.windows.nsis.template}`), /"URLInfoAbout" "\$\{HOMEPAGE\}"/);
-  assert.match(readme, /scripts\/build\.ps1 -NoBundle/);
-  assert.match(readme, /source:package.*separate|separately.*source:package/i);
+  // The build guide says how to build the executable alone, and that the
+  // source archive is a separate step (a build never writes releases\).
+  for (const name of ["docs/development.md", "docs/development.zh-CN.md"]) {
+    const guide = source(name);
+    assert.match(guide, /scripts\\build\.ps1/, name);
+    assert.match(guide, /`-NoBundle`/, name);
+    assert.match(guide, /npm run source:package/, name);
+  }
+  assert.match(source("docs/development.md"), /Builds never write to `releases\\`/);
+  assert.match(source("docs/development.zh-CN.md"), /构建从不写入 `releases\\`/);
 });
 
 test("the declared Node LTS minimum satisfies the locked jsdom floor and the README names the supported toolchains", () => {
   const pkg = json("package.json");
   const lock = json("package-lock.json");
-  const readme = source("README.md");
+  const docs = ["README.md", "README.zh-CN.md", "docs/development.md", "docs/development.zh-CN.md"].map(name => [name, source(name)]);
   const cargo = source("src-tauri/Cargo.toml");
   const lockedNode22 = lock.packages["node_modules/jsdom"].engines.node.match(/\^(22\.\d+\.\d+)/)?.[1];
   assert.ok(lockedNode22, "update the supported LTS check when jsdom's Node ranges change");
   assert.equal(pkg.engines?.node, `^${lockedNode22} || >=24.0.0`);
   assert.equal(lock.packages[""].engines?.node, pkg.engines.node);
-  assert.ok(readme.includes(`Node.js ${lockedNode22}`));
   const minimumRust = cargo.match(/^rust-version = "([^"]+)"$/m)?.[1];
   assert.ok(minimumRust);
-  assert.ok(readme.includes(`Rust ${minimumRust}`));
+  for (const [name, text] of docs) {
+    assert.ok(text.includes(`Node.js ${lockedNode22}`), `${name} names Node.js ${lockedNode22}`);
+    assert.ok(text.includes("24.0.0"), `${name} names Node.js 24.0.0`);
+    assert.ok(text.includes(`Rust ${minimumRust}`), `${name} names Rust ${minimumRust}`);
+  }
 });
 
 test("Windows desktop Cargo check and test load the nested Cargo configuration", { skip: process.platform !== "win32" }, () => {

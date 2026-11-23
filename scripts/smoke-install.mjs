@@ -314,7 +314,6 @@ try {
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "dependency-inventory.json",
-    "MagicUI-MIT.txt",
   ]) {
     assert(
       await exists(path.join(target, "licenses", relative)),
@@ -348,7 +347,6 @@ try {
   );
   const inventory = JSON.parse(inventoryBytes.toString("utf8"));
   const notices = new Set(inventory.packages.flatMap((entry) => entry.notices));
-  notices.add("licenses/MagicUI-MIT.txt");
   for (const relative of notices) {
     assert(
       relative.startsWith("licenses/") && !relative.split("/").includes(".."),

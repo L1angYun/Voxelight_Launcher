@@ -13,6 +13,7 @@ ROOT_FILES = {
     "LICENSE",
     "NOTICE",
     "README.md",
+    "README.zh-CN.md",
     "THIRD_PARTY_NOTICES.md",
     "package.json",
     "package-lock.json",
@@ -128,6 +129,10 @@ def source_files():
             if allowed(path):
                 selected.add(path.relative_to(ROOT))
     for path in (ROOT / "docs").rglob("*.md"):
+        if allowed(path):
+            selected.add(path.relative_to(ROOT))
+    # The images the READMEs show (the public guard allows media there).
+    for path in (ROOT / "docs" / "images").rglob("*.png"):
         if allowed(path):
             selected.add(path.relative_to(ROOT))
     missing = REQUIRED.difference(path.as_posix() for path in selected)

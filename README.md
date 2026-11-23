@@ -1,122 +1,132 @@
 # Voxelight Launcher
 
-Voxelight Launcher is a Minecraft Java desktop launcher built with Rust, Tauri 2, React and TypeScript. Its original interface includes a WebGL2 voxel-and-point "crystal world" background that responds to launch progress, and a skinview3d WebGL character preview. The application entry points are `src/main.tsx` and `src-tauri/src/main.rs`.
+English | [简体中文](README.zh-CN.md)
 
-This directory contains only the active Rust application. WinUI is not part of this project.
+An open-source launcher for Minecraft: Java Edition on 64-bit Windows, built with Rust, Tauri 2 and React. GPL-3.0-only. Unofficial: not affiliated with or endorsed by Mojang or Microsoft.
 
-![Voxelight Launcher 0.5.0 home](docs/images/home-0.5.0.png)
+![Voxelight Launcher home page](docs/images/home-0.5.0.png)
 
-_Screenshot from 0.5.0. The current interface differs; an updated screenshot will replace it._
+_Screenshot from 0.5.0; the current interface looks different._
 
-## Open-source license and source
+## Download
 
-Original project code and original artwork are **GPL-3.0-only**. See `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`. Third-party dependencies keep their own licenses; their notices are collected in `licenses/`.
+Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://github.com/L1angYun/Voxelight_Launcher/releases) or the [Gitee mirror](https://gitee.com/liangyun_Liu/Voxelight_Launcher/releases) (same files).
 
-Source repository: https://github.com/L1angYun/Voxelight_Launcher
+- Installs for the current user, without administrator rights, by default to `%LOCALAPPDATA%\Voxelight Launcher`. Installs the WebView2 runtime if it is missing.
+- **Releases come with a built-in Microsoft Client ID and CurseForge API key**, so Microsoft sign-in and CurseForge work without any setup. A build from source has neither; see [Accounts and service keys](#accounts-and-service-keys).
+- Updates install from **Settings → About → Download and update**, after the installer's size and SHA-256 are checked. Older versions are never installed over newer ones.
 
-The source archive contains the Rust/React sources, original assets, build scripts, tests and lockfiles. It does not contain user accounts, tokens, save games, downloaded game clients, build outputs or proprietary UI sources. `python scripts/package-source.py --output <output.zip>` creates and verifies a source archive matching the current files.
+## Features
 
-New configurations default to Steve, with Alex also available. The home preview prioritizes the selected account's actual skin, model and cape rather than replacing them with a default character. Steve and Alex textures are read at runtime from a hash-verified official Minecraft client, rather than being bundled as project assets. If the selected client texture is unavailable, the launcher shows an empty preview with retry or local-import actions instead of substituting another character. Voxelight Launcher is unofficial and is not endorsed by Mojang or Microsoft.
+✅ available · 🚧 planned. Planned items are updated as they are done.
 
-## Data isolation
+| Area | Feature | Status |
+| --- | --- | --- |
+| Versions | Every release and snapshot, with Fabric, Quilt, Forge or NeoForge | ✅ |
+| Versions | Version list grouped into releases, snapshots, old beta/alpha and April Fools versions, with search, sorting and release dates | 🚧 |
+| Versions | OptiFine | 🚧 |
+| Versions | Change the loader of an existing instance | 🚧 |
+| Java | Finds installed Java; downloads Mojang's runtime when a version needs another; automatic or manual memory | ✅ |
+| Instances | Own folder per instance, with its own or the global Java, memory, JVM arguments, window size and game proxy | ✅ |
+| Instances | Backup and restore, copy, export as a personal backup or a Modrinth `.mrpack` | ✅ |
+| Instances | Worlds: import and back up as ZIP; screenshots | ✅ |
+| Instances | Data packs per world | 🚧 |
+| Instances | Crash-log analysis and diagnostic report | ✅ |
+| Instances | Game logs per instance, with search and level filters | 🚧 |
+| Content | Search and install mods, resource packs, shaders and modpacks from Modrinth and CurseForge | ✅ |
+| Content | Modrinth installs bring required dependencies; update checks with rollback | ✅ |
+| Content | Search, filter and batch-manage local mods and packs | 🚧 |
+| Content | In a project's version list, show how many of your instances each version fits | 🚧 |
+| Content | Drag-and-drop import of mods, modpacks and skins | 🚧 |
+| Modpacks | Import a `.mrpack` or CurseForge ZIP, or install online | ✅ |
+| Modpacks | Update online-installed packs: a plan of every change, your edits kept, automatic backup | ✅ |
+| Modpacks | Import MultiMC and MCBBS packs | 🚧 |
+| Downloads | One task page with pause, resume, cancel and retry | ✅ |
+| Downloads | Resumable and multi-connection downloads; game files, Java, mods and modpacks checked against their published hashes; Official or BMCLAPI source; proxy | ✅ |
+| Downloads | Retry all, and clear unfinished downloads | 🚧 |
+| Accounts | Microsoft, offline and Authlib accounts; skin upload and cape for Microsoft accounts | ✅ |
+| Multiplayer | Server list, status, LAN worlds, direct join; local vanilla servers with a console | ✅ |
+| Multiplayer | Import third-party server software, such as Spigot or Paper, or an existing server folder, as a managed server | 🚧 |
+| Multiplayer | Network check: IPv4 and IPv6, NAT type, and advice for direct connections | 🚧 |
+| Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows accessibility settings | ✅ |
+| Interface | Lower memory use, such as unloading the 3D world in Lite mode | 🚧 |
+| Interface | Instance icons by loader and version type | 🚧 |
+| Interface | Keyboard shortcuts, settings search and a first-run tour | 🚧 |
+| Interface | Custom home background (the setting exists but the image is not shown yet) | 🚧 |
+| Updates | Update checks on GitHub or Gitee, and updates from inside the launcher | ✅ |
+| Installer | Installer pages in the same design language as the launcher | 🚧 |
+| Assistant | Built-in assistant using your own AI API key, also available over MCP | 🚧 |
 
-The default launcher data directory is `%LOCALAPPDATA%\dev.voxelight.launcher`, matching the application identifier and deliberately separate from the NSIS program directory `%LOCALAPPDATA%\Voxelight Launcher`. Existing accounts, service secrets, settings and instances from other launchers are not imported automatically.
+## Accounts and service keys
 
-Portable runs and isolated tests can override these locations explicitly:
+**Microsoft sign-in** uses the device-code flow: the launcher shows a code, you enter it on Microsoft's page, and the launcher never sees your password. The flow runs under a Microsoft app registration (a Client ID) that Mojang has to approve for the Minecraft Java API.
 
-- `VOXELIGHT_LAUNCHER_DATA_DIR`: launcher state, encrypted service secrets and managed runtimes.
-- `VOXELIGHT_LAUNCHER_GAME_DIR`: Minecraft versions, libraries, assets and instances.
+**CurseForge** needs an API key for search, installs and update checks. Modrinth needs no key.
 
-The former `MINECRAFT_LAUNCHER_*` variables remain explicit override aliases. They do not enable legacy data migration.
+Releases include both. To use your own instead, or in a build from source, enter them in **Settings → General → Service connections**. Your own Client ID must be a public-client registration that allows the device-code flow for personal accounts and has passed Mojang's review; don't reuse another launcher's.
 
-## Download sources and game safety
+An **offline account** is enough for single-player and for servers that allow offline players. An **Authlib** password goes only to that server and is not saved.
 
-Settings offers three download modes: `official` uses only Mojang/Minecraft sources, `auto` measures both sources once per session and tries the official source first unless it does not answer or is slower than twice BMCLAPI plus 150 ms (provisional thresholds), with the other as the fallback; the measurement is not saved or uploaded, and `bmclapi` tries BMCLAPI before the official fallback. The mirror applies to supported vanilla metadata, clients, libraries, assets, logging, hash-verified Java runtime entries and the official server JAR. It does not invent mirrors for Quilt, Modrinth, CurseForge, OptiFine or arbitrary Maven hosts.
+## Your data
 
-Version-manifest v2 entries retain the official URL and expected SHA-1. Files are checked before being committed. A hash supplied by a mirrored manifest belongs to that mirror's trust chain and is not independent Mojang signing. BMCLAPI is a community service, not an official Mojang endpoint.
+| | Location |
+| --- | --- |
+| Launcher data (settings, accounts, logs, Java runtimes, backups, servers, caches) | `%LOCALAPPDATA%\dev.voxelight.launcher` |
+| Game directory (versions, libraries, assets, `instances\`) | `%APPDATA%\.minecraft` by default; **Settings → Game** |
 
-A running instance cannot be launched twice or modified by backup, clone, restore, export or removal operations. Separate instances can run the same game version independently, and an instance can be restarted after its process exits.
+- The default game directory is the official launcher's, so versions, libraries and assets are shared with it. Nothing is imported from other launchers.
+- Tokens, the saved CurseForge key and proxy credentials are encrypted with Windows DPAPI for your Windows user. Copy the data folder to another user or PC and you have to sign in and enter the CurseForge key and proxy credentials again.
+- Uninstalling keeps your data unless you tick **Delete the application data**. The game directory is never deleted.
+- `VOXELIGHT_LAUNCHER_DATA_DIR` and `VOXELIGHT_LAUNCHER_GAME_DIR` move the folders for test setups or a second profile; a game directory set this way is also saved in the settings.
 
-The Rust HTTP client honors the existing Windows system proxy through reqwest's `system-proxy` support. Proxy use does not disable TLS verification, redirect restrictions or content hashes. Local test fixtures explicitly bypass proxies so they cannot accidentally reach external services.
+## Network
 
-## Run
+No telemetry, analytics or crash reporting. The launcher connects only to:
 
-Requirements on Windows: Node.js 22.13.0 or later on 22.x, or Node.js 24.0.0 or later; Rust 1.90 or later with the MSVC target; Visual Studio C++ build tools, the Windows SDK and WebView2. Python 3 is used for original asset generation and source packaging; only `scripts/generate-installer-assets.py` additionally needs Pillow. The license collector uses the system `tar` in local-archive mode and does not run dependency install scripts.
+| For | Hosts |
+| --- | --- |
+| Game files, version list, Java | Mojang; BMCLAPI if the download source allows |
+| Loaders | Fabric, Quilt, Forge and NeoForge servers; partly BMCLAPI if allowed |
+| Microsoft accounts | Microsoft, Xbox Live and Minecraft services |
+| Authlib accounts | The server you entered; `authlib-injector.yushi.moe` |
+| Content and modpacks | Modrinth, CurseForge; files listed in a modpack can also come from GitHub or GitLab |
+| Launcher updates | GitHub, Gitee |
+| Multiplayer | The servers you check; UDP 4445 for LAN discovery |
+| Skin preview | A skin URL you enter |
+
+- Every start fetches the version list. The update check also runs at every start by default; with the default Auto source it asks both GitHub and Gitee (**Settings → About**).
+- With an offline account or none, showing the default Steve or Alex can download an official Minecraft client once, if no installed one can be used.
+- Installing from Modrinth, checking content for updates and exporting a Modrinth pack send hashes of local files, not their names, to Modrinth; update checks also send CurseForge fingerprints if a key is available.
+
+## Download sources and proxy
+
+**Settings → Downloads → Download source**: **Official only** (default), **Automatic** (Mojang first, unless it fails or is clearly slower this session), or **BMCLAPI first**. BMCLAPI is a community mirror, not a Mojang service; it covers Mojang's files and part of Fabric, Forge, NeoForge and authlib-injector, and every mirrored file is still hash-checked.
+
+**Network proxy**: Follow system (default), Off, or Custom `http://` / `https://`; restart the launcher after changing it. **Game proxy mode** (default Off) lets Minecraft itself follow the system proxy or inherit the launcher's `http://` proxy, globally or per instance. Modrinth search and images such as project icons and skins are loaded by WebView2, which does not use the launcher's proxy setting.
+
+## Limitations
+
+- Windows x64 and Java Edition only.
+- Shader packs need a shader loader such as Iris, installed as a mod.
+- The built-in server download is vanilla only. CurseForge installs don't fetch dependencies.
+- Closing the window quits the launcher; unfinished installs can be retried from **Downloads**.
+
+## Building from source
+
+Windows, Node.js 22.13.0+ on 22.x or 24.0.0+, Rust 1.90+ (MSVC), Visual Studio C++ build tools with the Windows SDK, WebView2, Git.
 
 ```powershell
 npm ci
-npm run desktop:dev
+npm run desktop:dev      # run in development
+npm run desktop:build    # build the installer
 ```
 
-Build the Windows desktop executable with `powershell -File scripts/build.ps1 -NoBundle`. Omit `-NoBundle` when building an NSIS installer for release. The script wraps Tauri, configures the Rust PATH, and prints output paths from the configured Cargo target directory. It does not copy artifacts to `releases/<version>/`. Create the matching source archive separately with `npm run source:package` from the same checkout used to build the binary; this command writes to the untracked `releases/<version>/` directory. The NSIS installer uses current-user installation mode and includes the GPL and third-party notices under `licenses/`. It does not require administrator rights.
+A build from source has no built-in Client ID or CurseForge key unless you set them at build time. Tests, release steps and details: [docs/development.md](docs/development.md).
 
-Settings → About checks for stable releases on GitHub and on the Gitee mirror, at startup when that option is on. **Download and update** downloads the installer, verifies its size and SHA-256 against the release's `update.json`, closes the launcher and runs the installer as an upgrade, then reopens the launcher. It is refused while a game, a managed server, a download or another launcher using the same installation is running. The installer refuses downgrades in this mode.
+## License
 
-To publish a release, build and sign the installer, then write the update manifest from the final file:
-`node scripts/release-metadata.mjs --installer "<path>/Voxelight Launcher_<version>_x64-setup.exe" --out releases/<version>-installer`.
-It copies the installer under the fixed name `VoxelightLauncher-<version>-x64-setup.exe` and writes `update.json` from those bytes. After `npm run source:package`, stage the release files with
-`node scripts/prepare-release-assets.mjs --version <version> --installer releases/<version>-installer/VoxelightLauncher-<version>-x64-setup.exe --source releases/<version>/VoxelightLauncher-<version>-source.zip --out releases/<version>-assets`.
-Upload the same four files to the GitHub and the Gitee release of tag `v<version>`: the installer, the source ZIP and `SHA256SUMS.txt` first, `update.json` last. The scripts never upload, sign or run anything.
+[GPL-3.0-only](LICENSE); see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Third-party licenses are in [licenses/](licenses/). The MiSans typeface is Xiaomi's, under its own license. Steve and Alex textures are not included; the launcher reads them from an official, hash-checked Minecraft client.
 
-`scripts/desktop.ps1` is an optional helper when local PowerShell policy permits unsigned local scripts. Do not change that policy merely to build the app: the npm commands above invoke the same Tauri toolchain.
+Minecraft is a trademark of Mojang and Microsoft.
 
-For a planned signing run, use `scripts/build.ps1 -PrepareSigning` (add `-NoBundle` for the launcher only). It builds into a fresh directory and prints a receipt. Then run `scripts/desktop.ps1 -Action sign -CertificateThumbprint <thumbprint> -SigningReceipt <receipt-path>` using a code-signing certificate provisioned in the current user's Windows certificate store. No PFX path or password is passed to SignTool. The receipt pins the paths and bytes built in that run; rebuild to get a new receipt if an artifact changes.
-
-If the checkout has a Windows **Low mandatory label**, newly linked executables inherit it and Windows starts them at Low integrity. They cannot write normal user data. The Windows npm/Tauri entry points repair the executable's own label to Medium before every development launch, including after a Rust rebuild. Successful builds also repair their executable and NSIS setup files. This requires no administrator rights and leaves directory ACLs and integrity labels unchanged. Cargo still runs from `src-tauri`, so its `.cargo/config.toml` remains effective; output directories are not shared between checkouts by these scripts.
-
-For an older build or a setup copied back into a Low-labeled `releases` directory, run:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/repair-build-integrity.ps1
-# Or repair one explicitly selected executable:
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/repair-build-integrity.ps1 -Path 'C:\Downloads\Voxelight-setup.exe'
-```
-
-This changes only the selected `.exe` files' mandatory labels; it does not recurse or grant access permissions. `-ExecutionPolicy Bypass` applies only to that PowerShell invocation. Reinstalling or copying the program into a normal directory is another option; a same-volume move can retain the old label. A Low-integrity startup that cannot open either data directory now explains this cause in Chinese or English instead of suggesting elevation. A new file installed by the Medium-integrity setup into a normal directory inherits that destination's security, rather than the build directory's Low label.
-
-`npm run dev` starts a browser preview. It can display the interface, WebGL skins and public resource search, but cannot access local game files or launch games.
-
-## Verification
-
-```powershell
-npm run build
-npm test
-npm run test:e2e
-Push-Location src-tauri
-cargo test --locked
-Pop-Location
-npm run license:check
-```
-
-Use `npm run check:msrv` to check the Rust version declared in `src-tauri/Cargo.toml`
-against all locked targets. The check uses a separate `src-tauri/target/msrv` directory.
-If the toolchain is missing, install it with `rustup toolchain install 1.90 --profile minimal`.
-For release verification or CI, run `npm run check:msrv -- --strict` so a missing toolchain fails.
-
-Run `npm run audit:deps` when preparing a release. For one dependency graph, use
-`npm run audit:deps -- --only=npm` or `npm run audit:deps -- --only=cargo`.
-These checks may access the network and are separate from `npm test`.
-The Rust audit skips if neither cargo-audit nor OSV-Scanner is installed.
-The wrapper fails on findings reported by either scanner unless an exact advisory ID and
-package pair is covered by an optional `scripts/advisory-allowlist.json` entry with
-`id`, `package`, `reason`, and `expires` (YYYY-MM-DD, inclusive in UTC).
-Expired entries fail the check. npm advisories without a GitHub advisory ID are listed as
-`npm:<source>`; Cargo yanks without an advisory are listed as `RUSTSEC-YANKED`.
-
-The license check reads the locked npm/Cargo dependency graph and compares it with the collected notices. After intentionally changing dependencies, run `npm run license:update` to refresh the inventory. Missing npm notices use the integrity-checked registry metadata/package and verified upstream source; missing Cargo notices use the source commit recorded by Cargo. Packages without a standalone license file retain their actual metadata and the official SPDX text, with that distinction recorded in `licenses/dependency-inventory.json`; no copyright lines are invented.
-
-`npm run source:package` creates and verifies the GPL source archive under `releases/<version>/`. It excludes dependencies, build outputs, user data, secrets, proprietary textures and restricted UI sources.
-
-To verify a released source ZIP, extract it into a clean directory outside any Git checkout. Run `npm run source:check` there to verify the manifest and run the public source guard, then run `npm ci` and `npm run tauri -- build --no-bundle --no-sign --debug -- --locked` to build and link the Debug Windows executable without packaging or signing. The archive does not include Git metadata; `npm test` in a normal Git checkout still checks the index and history.
-
-`node scripts/smoke-install.mjs` verifies a current-user NSIS installation and uninstall, including registration, license resources, executable integrity and preservation of launcher data. **Run installer verification only in a clean, dedicated Windows account or VM.** The silent and UI smoke scripts refuse to start if a Voxelight installation is registered or the registration cannot be checked. Temporary directories do not isolate Windows installer registration. The silent script looks for a matching Release setup in the configured Cargo target directory; set `SMOKE_INSTALLER` to pick an exact file. If the setup has a Low mandatory label, copy it to a normal per-user directory and set `SMOKE_INSTALLER` to that copy. Set `SMOKE_REPORT` to choose its JSON report path.
-
-`node scripts/smoke-native.mjs` runs isolated native IPC checks against the Debug executable in the configured Cargo target directory. Set `SMOKE_BINARY` to choose a specific executable if several are present or to test an installed Release build. On Windows it rejects an executable with a Low mandatory label. Set `SMOKE_CACHE` to reuse immutable versions, libraries and assets from an isolated prior run; worlds and credentials are never copied. `SMOKE_CHECKS` optionally selects comma-separated substrings of check names for focused debugging; omit it for the full suite.
-
-Test state is created below `src-tauri/target/native-*`; do not point the test overrides at personal launcher or game directories.
-
-## Features and research
-
-Third-party component attribution is in `THIRD_PARTY_NOTICES.md`.
-
-Microsoft device authorization requires your own OAuth Client ID. CurseForge requires your own API Key and is subject to each project's distribution permissions. Neither is configured by default; missing credentials are not treated as a successful login or restricted-download test.
+Source: [GitHub](https://github.com/L1angYun/Voxelight_Launcher) · [Gitee](https://gitee.com/liangyun_Liu/Voxelight_Launcher)

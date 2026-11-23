@@ -38,7 +38,7 @@ function Stop-SelectedBuildLauncher([string[]]$ExePaths, [switch]$CloseRunning, 
         $null = $process.CloseMainWindow()
         if ($process.WaitForExit(15000)) { continue }
         if ((Resolve-LauncherProcessPath $process) -ine $selected) { throw 'The selected launcher process changed before stop.' }
-        Write-Detail "pid $($process.Id) ignored WM_CLOSE (hides to tray); terminating"
+        Write-Detail "pid $($process.Id) did not exit after WM_CLOSE; terminating"
         try { $process.Kill() } catch { }
         if (-not $process.WaitForExit(15000)) {
             throw "pid $($process.Id) could not be stopped: $selected. Close it with Task Manager before building."
