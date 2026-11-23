@@ -54,7 +54,8 @@ for (const mode of ["full", "lite", "reduced"] as const) test(`create ${mode}: c
   const dialog = page.locator(".vx-create-dialog[open]");
   await expect(dialog).toHaveCSS("opacity", "1");
   const readGap = () => dialog.evaluate(root => {
-    const track = root.querySelector('.vx-field:has(button[aria-pressed]) .vx-selection')!;
+    // The loader track: the game version field has a type toggle of its own above it.
+    const track = root.querySelector('.vx-create-loader-group .vx-field:has(button[aria-pressed]) .vx-selection')!;
     const label = root.querySelector('label[for$="-create-instance-name"]')!;
     return label.getBoundingClientRect().top - track.getBoundingClientRect().bottom;
   });

@@ -19,6 +19,8 @@ export interface AnchoredListboxProps extends AriaAttributes {
   disabled?: boolean; required?: boolean; id?: string; className?: string;
   triggerClassName?: string; popupClassName?: string; embedded?: boolean; minimumMenuWidth?: number;
   material?: "flat" | "glass";
+  /** Show the chosen option's metadata under its label in the closed control (the menu always shows it). */
+  showSelectedMetadata?: boolean;
 }
 interface Placement { left: number; top: number; width: number; maxHeight: number; anchorX: number; side: "top" | "bottom" }
 
@@ -53,7 +55,7 @@ function SelectSurface({ glass, variant, className, children }: { glass: boolean
 }
 
 export function AnchoredListbox({ value, onChange, onOpenChange, options, disabled = false, required, id, className,
-  triggerClassName, popupClassName, embedded = false, minimumMenuWidth = 280, material = "flat",
+  triggerClassName, popupClassName, embedded = false, minimumMenuWidth = 280, material = "flat", showSelectedMetadata = true,
   "aria-label": label, "aria-describedby": describedBy, ...aria }: AnchoredListboxProps) {
   const { effects, reducedMotion, reducedTransparency, highContrast } = useAppearance();
   const staticMotion = effects !== "full" || reducedMotion || reducedTransparency || highContrast;
@@ -190,7 +192,7 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
     onBlur={(event) => { if (openRef.current && !popupRef.current?.contains(event.relatedTarget as Node | null)) close(); }}>
     {selected?.icon}<span className="vx-select__text" id={valueId}>
       <span className="vx-select__value" title={selected?.label ?? value}>{selected?.label ?? value}</span>
-      {selected?.metadata ? <span className="vx-select__metadata" title={selected.metadata}>{selected.metadata}</span> : null}
+      {showSelectedMetadata && selected?.metadata ? <span className="vx-select__metadata" title={selected.metadata}>{selected.metadata}</span> : null}
     </span><ChevronDown className="vx-select__chevron" size={16} aria-hidden="true" />
   </button>;
   return <div className={cn("vx-select", `vx-select--${material}`, embedded && "vx-select--embedded", className)} ref={embedded ? undefined : jelly.ref} {...(embedded ? {} : jelly.handlers)}>

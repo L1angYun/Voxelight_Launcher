@@ -799,6 +799,167 @@ describe("library and instance details", () => {
     expect(container.textContent).not.toContain("Could not load Minecraft versions.");
   });
 
+  const versionAt = (id: string, type: string, releaseTime: string) => ({ id, type, releaseTime, url: `https://piston-meta.mojang.com/v1/packages/${id}.json` });
+  const versionFixture = () => ({
+    latestRelease: "1.21.11",
+    latestSnapshot: "26w14a",
+    versions: [
+      versionAt("26w14a", "snapshot", "2026-04-01T12:13:30+00:00"),
+      versionAt("1.21.11", "release", "2025-12-09T12:23:30+00:00"),
+      versionAt("24w14potato", "snapshot", "2024-04-01T11:07:19+00:00"),
+      versionAt("1.21.1", "release", "2024-08-08T12:24:45+00:00"),
+      versionAt("24w14a", "snapshot", "2024-04-03T12:49:39+00:00"),
+      // A later fix for an older line: the date order and the version order disagree.
+      versionAt("1.19.4", "release", "2023-07-01T00:00:00+00:00"),
+      versionAt("1.20.1", "release", "2023-06-12T13:25:51+00:00"),
+      versionAt("b1.7.3", "old_beta", "2011-07-07T22:00:00+00:00"),
+      versionAt("a1.0.4", "old_alpha", "2010-07-08T22:00:00+00:00"),
+    ],
+  });
+  const versionBox = () => container.querySelector<HTMLButtonElement>('[role="combobox"][id$="-create-game-version"]')!;
+  const versionCategory = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.startsWith(label))!;
+  const installButton = () => container.querySelector<HTMLButtonElement>('.vx-dialog__footer button')!;
+  const searchBox = () => container.querySelector<HTMLInputElement>('input[type="search"][id$="-create-version-search"]')!;
+  // jsdom has no layout; an open menu closes when its trigger looks off screen.
+  const listedVersions = async () => {
+    giveBackupSelectBounds(versionBox());
+    await act(async () => versionBox().click());
+    const rows = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .filter(row => row.dataset.value)
+      .map(row => [row.dataset.value, row.textContent?.replace(row.dataset.value!, "").trim()]);
+    await act(async () => versionBox().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    return rows;
+  };
+  const pickVersion = async (id: string) => {
+    giveBackupSelectBounds(versionBox());
+    await act(async () => versionBox().click());
+    await act(async () => document.querySelector<HTMLElement>(`[role="option"][data-value="${id}"]`)!.click());
+  };
+  const searchVersions = async (text: string) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(searchBox(), text);
+      searchBox().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const sortVersions = async (label: string) => {
+    const sort = container.querySelector<HTMLButtonElement>('[role="combobox"][id$="-create-version-sort"]')!;
+    giveBackupSelectBounds(sort);
+    await act(async () => sort.click());
+    await act(async () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(row => row.textContent === label)!.click());
+  };
+
+  it("groups game versions into releases, snapshots, Beta & Alpha and April Fools, with sorting and dates", async () => {
+    mockLauncher.manifest = versionFixture();
+    // Installed means the client is there; a version directory without it is not.
+    mockLauncher.data.installedVersions = [...mockLauncher.data.installedVersions, { id: "1.20.1", type: "release", installed: false, launchable: false, reason: "missing", javaMajor: 17 }];
+    commandMock.mockImplementation(async (name) => name === "list_versions" ? mockLauncher.manifest : null);
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }), "en-US");
+
+    // Releases first, newest first, each with its date.
+    expect(versionCategory("Releases").getAttribute("aria-pressed")).toBe("true");
+    expect(await listedVersions()).toEqual([
+      ["1.21.11", "Dec 9, 2025"], ["1.21.1", "Aug 8, 2024 · Installed"], ["1.19.4", "Jul 1, 2023"], ["1.20.1", "Jun 12, 2023"],
+    ]);
+    // The closed control shows only the version, keeping the dialog compact.
+    expect(versionBox().textContent).toBe("1.21.11");
+
+    // Clicking the type that is already shown keeps the pick.
+    await pickVersion("1.20.1");
+    await act(async () => versionCategory("Releases").click());
+    expect(versionBox().textContent).toBe("1.20.1");
+
+    // The version sorts differ from the date sorts.
+    await sortVersions("Version, high to low");
+    expect((await listedVersions()).map(([id]) => id)).toEqual(["1.21.11", "1.21.1", "1.20.1", "1.19.4"]);
+    await sortVersions("Oldest first");
+    expect((await listedVersions()).map(([id]) => id)).toEqual(["1.20.1", "1.19.4", "1.21.1", "1.21.11"]);
+    expect(versionBox().textContent).toBe("1.20.1");
+    await sortVersions("Newest first");
+
+    // April Fools versions are not mixed in with snapshots; a new type picks its first version.
+    await act(async () => versionCategory("April Fools").click());
+    expect(await listedVersions()).toEqual([["26w14a", "Apr 1, 2026"], ["24w14potato", "Apr 1, 2024"]]);
+    expect(versionBox().textContent).toBe("26w14a");
+    await act(async () => versionCategory("Snapshots").click());
+    expect((await listedVersions()).map(([id]) => id)).toEqual(["24w14a"]);
+    await act(async () => versionCategory("Beta & Alpha").click());
+    expect(await listedVersions()).toEqual([["b1.7.3", "Jul 7, 2011 · Beta"], ["a1.0.4", "Jul 8, 2010 · Alpha"]]);
+  });
+
+  it("searches game versions, keeps the pick among those shown, and never submits on Enter", async () => {
+    mockLauncher.manifest = versionFixture();
+    commandMock.mockImplementation(async (name) => name === "list_versions" ? mockLauncher.manifest : null);
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }), "en-US");
+
+    // A search keeps a pick it still shows.
+    await pickVersion("1.20.1");
+    await searchVersions("1.2");
+    expect((await listedVersions()).map(([id]) => id)).toEqual(["1.21.11", "1.21.1", "1.20.1"]);
+    expect(versionBox().textContent).toBe("1.20.1");
+
+    // Typing a whole id picks it, not a longer id listed first.
+    await searchVersions("1.21.1");
+    expect((await listedVersions()).map(([id]) => id)).toEqual(["1.21.11", "1.21.1"]);
+    expect(versionBox().textContent).toBe("1.21.1");
+
+    // Enter in the search box does not submit the form.
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => searchBox().dispatchEvent(enter));
+    expect(enter.defaultPrevented).toBe(true);
+    expect(commandMock.mock.calls.some(([name]) => name === "install_version")).toBe(false);
+
+    // No match: counts per type, a message, and nothing to install.
+    await searchVersions("14");
+    expect(versionCategory("Releases").textContent).toBe("Releases · 0");
+    expect(versionCategory("Snapshots").textContent).toBe("Snapshots · 1");
+    expect(versionCategory("April Fools").textContent).toBe("April Fools · 2");
+    expect(container.textContent).toContain("No versions match the search.");
+    expect(installButton().disabled).toBe(true);
+
+    await searchVersions("1.19");
+    expect(versionBox().textContent).toBe("1.19.4");
+    expect(container.textContent).not.toContain("No versions match the search.");
+    await act(async () => installButton().click());
+    expect(commandMock).toHaveBeenCalledWith("install_version", { versionId: "1.19.4" });
+  });
+
+  it("never installs a version the type or search hides, after reopening or once the list arrives", async () => {
+    const manifest = versionFixture();
+    mockLauncher.manifest = null;
+    let answer!: (value: typeof manifest) => void;
+    commandMock.mockImplementation(async (name) => name === "list_versions" ? new Promise(resolve => { answer = resolve; }) : null);
+    const props = { onOpenChange: vi.fn(), onInstalled: vi.fn() };
+    await render(createElement(CreateInstanceDialog, { ...props, open: true }), "en-US");
+    // The list is still loading when another type is chosen.
+    await act(async () => versionCategory("Snapshots").click());
+    await act(async () => answer(manifest));
+    expect(versionCategory("Snapshots").getAttribute("aria-pressed")).toBe("true");
+    expect(versionBox().textContent).toBe("24w14a");
+    expect(installButton().disabled).toBe(false);
+
+    // A search that hides everything, then a reopen: the search is cleared and
+    // the pick is a shown version, never the hidden latest release.
+    await searchVersions("zzz");
+    expect(installButton().disabled).toBe(true);
+    await render(createElement(CreateInstanceDialog, { ...props, open: false }), "en-US");
+    await render(createElement(CreateInstanceDialog, { ...props, open: true }), "en-US");
+    await act(async () => answer(manifest));
+    expect(searchBox().value).toBe("");
+    expect(versionCategory("Snapshots").getAttribute("aria-pressed")).toBe("true");
+    expect(versionBox().textContent).toBe("24w14a");
+    await act(async () => installButton().click());
+    expect(commandMock).toHaveBeenCalledWith("install_version", { versionId: "24w14a" });
+    expect(commandMock.mock.calls.some(([name, args]) => name === "install_version" && (args as { versionId: string }).versionId === "1.21.11")).toBe(false);
+
+    // The next list (another download source, say) no longer has the pick: it is no choice.
+    await render(createElement(CreateInstanceDialog, { ...props, open: false }), "en-US");
+    await render(createElement(CreateInstanceDialog, { ...props, open: true }), "en-US");
+    await act(async () => answer({ ...manifest, versions: manifest.versions.filter(version => version.id !== "24w14a") }));
+    expect((await listedVersions()).map(([id]) => id)).toEqual([]);
+    expect(installButton().disabled).toBe(true);
+    expect(versionBox().textContent).toBe("Select game version");
+  });
+
   it("keeps loader errors local and retries without re-requesting Minecraft or an unrelated loader", async () => {
     const manifest = vi.fn(() => mockLauncher.manifest);
     let attempts = 0;

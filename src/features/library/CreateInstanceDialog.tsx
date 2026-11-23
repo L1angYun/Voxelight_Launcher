@@ -1,7 +1,7 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
-import { command, type Instance, type ResourceProject, type VersionManifest } from "../../lib/launcher";
+import { command, type Instance, type RemoteVersion, type ResourceProject, type VersionManifest } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -12,6 +12,8 @@ import { SectionPanel } from "../../components/ui/SectionPanel";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import type { ResourceSource } from "../discover/types";
 import type { Loader, LoaderResult, LoaderVersion, ModpackVersion, PackResult } from "./types";
+import { formatDate } from "../../i18n/format";
+import { catalogVersions, categoryCounts, VERSION_CATEGORIES, VERSION_SORTS, visibleVersions, type VersionCategory, type VersionSort } from "./versionCatalog";
 import "./create-instance.css";
 
 export function CreateInstanceDialog({
@@ -29,9 +31,9 @@ export function CreateInstanceDialog({
   project?: ResourceProject;
   source?: ResourceSource;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const modeId = useId();
-  const { manifest: initialManifest, run, reload, selectInstance, selectVersion, busy } = useLauncher();
+  const { data, manifest: initialManifest, run, reload, selectInstance, selectVersion, busy } = useLauncher();
   const [creationMode, setMode] = useState<"version" | "import">(initialMode);
   const packSource = source ?? "modrinth";
   const projectId = project?.project_id;
@@ -39,7 +41,9 @@ export function CreateInstanceDialog({
   const mode = project ? "modpack" : creationMode;
   const projectName = project?.title;
   const [manifest, setManifest] = useState<VersionManifest | undefined>(initialManifest ?? undefined);
-  const [channel, setChannel] = useState("release");
+  const [category, setCategory] = useState<VersionCategory>("release");
+  const [versionQuery, setVersionQuery] = useState("");
+  const [versionSort, setVersionSort] = useState<VersionSort>("newest");
   const [gameVersion, setGameVersion] = useState("");
   const [loader, setLoader] = useState<Loader>("vanilla");
   const [loaderVersions, setLoaderVersions] = useState<LoaderVersion[]>([]);
@@ -60,7 +64,17 @@ export function CreateInstanceDialog({
   const loaderGeneration = useRef(0);
   const packGeneration = useRef(0);
   const manifestGeneration = useRef(0);
-  const loaderKey = `${loader}:${gameVersion}`;
+  // The launcher's own list stands in until this dialog's request answers.
+  const allVersions = useMemo(() => catalogVersions(manifest ?? initialManifest ?? undefined), [initialManifest, manifest]);
+  const shownVersions = useMemo(() => visibleVersions(allVersions, { category, query: versionQuery, sort: versionSort }),
+    [allVersions, category, versionQuery, versionSort]);
+  // Only a version the list shows is ever requested or installed; a pick the
+  // current type or search hides counts as no choice.
+  const chosenVersion = shownVersions.some(version => version.id === gameVersion) ? gameVersion : "";
+  const filters = useRef({ category, query: versionQuery, sort: versionSort });
+  filters.current = { category, query: versionQuery, sort: versionSort };
+  const firstShown = (versions: RemoteVersion[]) => visibleVersions(versions, filters.current)[0]?.id ?? "";
+  const loaderKey = `${loader}:${chosenVersion}`;
   const requestContext = useRef({ isOpen, mode, loaderKey, projectKey });
   requestContext.current = { isOpen, mode, loaderKey, projectKey };
   // A different project, or the same id from another source, must never expose
@@ -72,22 +86,48 @@ export function CreateInstanceDialog({
   const validPackVersion = packSource === "curseforge"
     ? numericPackVersion > 0 && numericPackVersion <= 0xffff_ffff
     : Boolean(packVersion);
-  const manifestChoices = manifest?.versions.some(version => version.type === channel) || Boolean(manifest?.latestRelease);
+  const versionCounts = useMemo(() => categoryCounts(allVersions, versionQuery), [allVersions, versionQuery]);
+  const installedIds = useMemo(() => new Set(data.installedVersions.filter(version => version.installed).map(version => version.id)),
+    [data.installedVersions]);
+  const searching = versionQuery.trim() !== "";
+  const manifestChoices = allVersions.length > 0;
   const names: Record<Loader, string> = { vanilla: t("library:vanilla"), fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge" };
   const loaderReady = loaderResponseKey === loaderKey && !loaderLoading && loaderFailure !== loaderKey;
   // Keep the mounted control's previous text during its collapse; it remains inert and cannot submit.
   const displayLoaderChoice = loaderReady || loader === "vanilla";
-  const validSelection = Boolean(gameVersion && (loader === "vanilla" || loaderReady && loaderVersion));
+  const validSelection = Boolean(chosenVersion && (loader === "vanilla" || loaderReady && loaderVersion));
   const noManifestVersions = manifestState === "ready" && !manifestChoices;
   const noPackVersions = packState === "ready" && packVersions.length === 0;
   const retry = (handler: () => void) => <Button type="button" size="sm" variant="ghost" onClick={handler}>{t("common:actions.retry")}</Button>;
+  // The chosen version is always one of those shown, so a search never installs a hidden one.
+  const chooseCategory = (next: VersionCategory) => {
+    if (next === category) return;
+    setCategory(next);
+    setGameVersion(visibleVersions(allVersions, { category: next, query: versionQuery, sort: versionSort })[0]?.id ?? "");
+  };
+  const searchVersions = (next: string) => {
+    setVersionQuery(next);
+    const shown = visibleVersions(allVersions, { category, query: next, sort: versionSort });
+    // Typing a whole id picks that version, even when a longer id that contains it is listed first.
+    const exact = shown.find(version => version.id.toLowerCase() === next.trim().toLowerCase());
+    if (exact) setGameVersion(exact.id);
+    else if (!shown.some(version => version.id === gameVersion)) setGameVersion(shown[0]?.id ?? "");
+  };
+  const versionDetails = (id: string, type: string, releaseTime: string) => [
+    releaseTime ? formatDate(releaseTime, i18n.language) : "",
+    type === "old_beta" ? t("library:oldBeta") : type === "old_alpha" ? t("library:oldAlpha") : "",
+    installedIds.has(id) ? t("library:versionInstalled") : "",
+  ].filter(Boolean).join(" · ");
 
   useEffect(() => {
     if (!isOpen) return;
     setMode(initialMode);
     setInstanceName(projectName ?? "");
     setError("");
-    setGameVersion(current => current || initialManifest?.latestRelease || "");
+    // A reopened dialog starts without the last search; the type and order stay.
+    setVersionQuery("");
+    filters.current = { ...filters.current, query: "" };
+    setGameVersion(current => current || firstShown(catalogVersions(manifest ?? initialManifest ?? undefined)));
   }, [initialMode, isOpen, projectName]);
 
   useEffect(() => {
@@ -98,7 +138,7 @@ export function CreateInstanceDialog({
     void command<VersionManifest>("list_versions").then(value => {
       if (!current()) return;
       setManifest(value);
-      setGameVersion(selected => selected || value.latestRelease || "");
+      setGameVersion(selected => selected || firstShown(catalogVersions(value)));
       setManifestState("ready");
     }).catch(() => { if (current()) setManifestState("failed"); });
     return () => { ++manifestGeneration.current; };
@@ -125,14 +165,14 @@ export function CreateInstanceDialog({
 
   useEffect(() => {
     const request = ++loaderGeneration.current;
-    if (!isOpen || mode !== "version" || loader === "vanilla" || !gameVersion) return;
+    if (!isOpen || mode !== "version" || loader === "vanilla" || !chosenVersion) return;
     const current = () => request === loaderGeneration.current && requestContext.current.isOpen
       && requestContext.current.mode === "version" && requestContext.current.loaderKey === loaderKey;
     setLoaderFailure("");
     setLoaderLoading(true);
     setLoaderVersions([]);
     setLoaderVersion("");
-    void command<LoaderVersion[]>("list_loader_versions", { loader, gameVersion }).then(versions => {
+    void command<LoaderVersion[]>("list_loader_versions", { loader, gameVersion: chosenVersion }).then(versions => {
       if (!current()) return;
       setLoaderVersions(versions);
       setLoaderVersion((versions.find((version) => version.recommended) ?? versions.find((version) => version.stable) ?? versions[0])?.id ?? "");
@@ -144,15 +184,15 @@ export function CreateInstanceDialog({
         }
       });
     return () => { ++loaderGeneration.current; };
-  }, [gameVersion, isOpen, loader, loaderAttempt, loaderKey, mode]);
+  }, [chosenVersion, isOpen, loader, loaderAttempt, loaderKey, mode]);
 
   async function install(event: FormEvent) {
     event.preventDefault();
     if (busy || !validSelection) return;
     await run("instance.install", async () => {
-      let versionId = gameVersion;
-      if (loader === "vanilla") await command("install_version", { versionId: gameVersion });
-      else versionId = (await command<LoaderResult>("install_loader", { loader, gameVersion, loaderVersion })).versionId;
+      let versionId = chosenVersion;
+      if (loader === "vanilla") await command("install_version", { versionId: chosenVersion });
+      else versionId = (await command<LoaderResult>("install_loader", { loader, gameVersion: chosenVersion, loaderVersion })).versionId;
       let instance: Instance | undefined;
       if (instanceName.trim()) instance = await command<Instance>("create_instance", { name: instanceName.trim(), versionId });
       await reload();
@@ -234,16 +274,29 @@ export function CreateInstanceDialog({
         id={`${modeId}-panel`} aria-labelledby={!projectName ? `${modeId}-mode-${mode}` : undefined}>
       {mode === "version" ? (
         <form id={`${modeId}-create-instance-form`} className="vx-form-stack" onSubmit={install}>
-          <Segmented semantic="toggle" label={t("library:channel")} value={channel}
-            options={["release", "snapshot"].map((value) => ({ value, label: t(`library:${value}`) }))}
-            onChange={(value) => { setChannel(value); setGameVersion(manifest?.versions.find((version) => version.type === value)?.id ?? manifest?.latestRelease ?? ""); }} />
           <Field label={t("library:version")} htmlFor={`${modeId}-create-game-version`}>
-            <Select id={`${modeId}-create-game-version`} aria-label={t("library:version")} value={gameVersion} onChange={setGameVersion} required options={[
-              { value: "", label: t("library:selectVersion") },
-              ...(manifest?.latestRelease ? [{ value: manifest.latestRelease, label: manifest.latestRelease }] : []),
-              ...(manifest?.versions.filter((version) => version.type === channel && version.id !== manifest.latestRelease).map((version) => ({ value: version.id, label: version.id })) ?? []),
-            ]} />
+            <div className="vx-create-version-picker">
+              {/* Type, search and sort narrow the list below; they share the field's label. */}
+              <Segmented semantic="toggle" label={t("library:channel")} value={category} onChange={chooseCategory}
+                options={VERSION_CATEGORIES.map((value) => ({ value, label: `${t(`library:versionCategory.${value}`)}${searching ? ` · ${versionCounts[value]}` : ""}` }))} />
+              <div className="vx-create-version-tools">
+                <input id={`${modeId}-create-version-search`} type="search" value={versionQuery} autoComplete="off" spellCheck={false}
+                  aria-label={t("library:versionSearch")} placeholder={t("library:versionSearchPlaceholder")}
+                  onChange={(event) => searchVersions(event.target.value)}
+                  // Enter in a form field would submit the form and start installing.
+                  onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} />
+                <Select id={`${modeId}-create-version-sort`} aria-label={t("library:versionSort")} value={versionSort}
+                  onChange={(value) => setVersionSort(value as VersionSort)}
+                  options={VERSION_SORTS.map((value) => ({ value, label: t(`library:versionSorts.${value}`) }))} />
+              </div>
+              <Select id={`${modeId}-create-game-version`} aria-label={t("library:version")} value={chosenVersion} onChange={setGameVersion} required
+                showSelectedMetadata={false} options={[
+                  { value: "", label: t("library:selectVersion") },
+                  ...shownVersions.map((version) => ({ value: version.id, label: version.id, metadata: versionDetails(version.id, version.type, version.releaseTime) || undefined })),
+                ]} />
+            </div>
           </Field>
+          {searching && manifestChoices && !shownVersions.length ? <p className="vx-muted" role="status">{t("library:versionNoMatch")}</p> : null}
           {manifestState === "pending" && !manifestChoices
             ? <LoadingStatus active>{t("library:createMetadata.loadingGame")}</LoadingStatus> : null}
           {manifestState === "failed" || noManifestVersions ? <div className="vx-action-row">

@@ -33,11 +33,11 @@ function active() { return document.getElementById(trigger().getAttribute("aria-
 async function key(value: string) {
   await act(async () => trigger().dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true })));
 }
-async function render({ choices = options, disabled = false, dialog = false, material }: { choices?: SelectOption[]; disabled?: boolean; dialog?: boolean; material?: "flat" | "glass" } = {}) {
+async function render({ choices = options, disabled = false, dialog = false, material, showSelectedMetadata }: { choices?: SelectOption[]; disabled?: boolean; dialog?: boolean; material?: "flat" | "glass"; showSelectedMetadata?: boolean } = {}) {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
   const control = createElement(MotionConfig, { skipAnimations: appearance.effects !== "full", reducedMotion: appearance.reducedMotion ? "always" : "never" },
-    createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, onOpenChange: openChanges, disabled, material }));
+    createElement(Select, { id: "source", "aria-label": "Game download source", value: "official", options: choices, onChange, onOpenChange: openChanges, disabled, material, showSelectedMetadata }));
   await act(async () => root.render(createElement(I18nextProvider, { i18n }, dialog
     ? createElement(Dialog, { open: true, onOpenChange: dialogChanges, title: "Install" }, control)
     : createElement("div", { style: { overflow: "hidden", transform: "translateX(0)" } }, control))));
@@ -180,6 +180,16 @@ describe("shared Select", () => {
     expect(popup!.parentElement).toBe(container);
     expect(popup!.dataset.placement).toBe("top");
     expect(Number.parseFloat(popup!.style.top)).toBeGreaterThanOrEqual(16);
+  });
+
+  it("shows the chosen option's metadata in the closed control unless asked not to", async () => {
+    const choices: SelectOption[] = [{ value: "official", label: "Official only", metadata: "Mojang" }, { value: "auto", label: "Automatic" }];
+    await render({ choices });
+    expect(trigger().textContent).toBe("Official onlyMojang");
+    await render({ choices, showSelectedMetadata: false });
+    expect(trigger().textContent).toBe("Official only");
+    await act(async () => trigger().click());
+    expect(listbox()?.textContent).toContain("Mojang");
   });
 
   it("keeps a dialog menu inside that dialog and Escape closes only the menu", async () => {

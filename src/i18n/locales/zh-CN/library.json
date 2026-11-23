@@ -138,6 +138,25 @@
   "release": "正式版",
   "snapshot": "快照",
   "selectVersion": "选择游戏版本",
+  "versionCategory": {
+    "release": "正式版",
+    "snapshot": "快照",
+    "old": "远古版",
+    "aprilFools": "愚人节版"
+  },
+  "versionSearch": "搜索版本",
+  "versionSearchPlaceholder": "搜索版本，例如 1.20",
+  "versionSort": "排序",
+  "versionSorts": {
+    "newest": "最新发布",
+    "oldest": "最早发布",
+    "versionDesc": "版本号从高到低",
+    "versionAsc": "版本号从低到高"
+  },
+  "versionInstalled": "已安装",
+  "versionNoMatch": "没有符合搜索的版本。",
+  "oldBeta": "Beta",
+  "oldAlpha": "Alpha",
   "vanilla": "原版",
   "loaderVersion": "加载器版本",
   "recommended": "推荐",

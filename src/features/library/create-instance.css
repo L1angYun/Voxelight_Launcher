@@ -6,6 +6,10 @@
 .vx-create-panel > .vx-form-stack { gap: calc(var(--space-4) + var(--space-1)); }
 .vx-create-project { margin: 0; color: var(--text-primary); font-weight: var(--weight-strong); }
 .vx-create-loader-group { min-width: 0; }
+/* Search and sort for the game version list, side by side above it. */
+.vx-create-version-picker { display: grid; gap: var(--space-2); min-width: 0; }
+.vx-create-version-picker > .vx-segmented, .vx-create-version-picker > .vx-selection { justify-self: start; }
+.vx-create-version-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 12rem); gap: var(--space-2); }
 .vx-create-loader-slot { display: grid; grid-template-rows: 0fr; margin-block-start: 0; transition: grid-template-rows var(--duration-normal) var(--ease-out), margin-block-start var(--duration-normal) var(--ease-out); }
 .vx-create-loader-slot[data-expanded="true"] { grid-template-rows: 1fr; margin-block-start: 20px; }
 .vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 6px; margin: 0 -6px; }
