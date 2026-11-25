@@ -219,7 +219,7 @@
   "instanceNameOptional": "Instance name (optional)",
   "instanceNamePlaceholder": "Name this world",
   "curseforgeKeyOptional": "CurseForge API key (optional)",
-  "importHint": "Modrinth .mrpack needs no key. A CurseForge ZIP with restricted files stops and lists them.",
+  "importHint": "Supports Modrinth .mrpack, CurseForge, MultiMC/Prism, MCBBS, and launcher backup ZIPs. A CurseForge pack with restricted files stops and lists them.",
   "curseforgePackHint": "Only release versions are listed. If the pack contains files their authors do not allow other apps to download, the install stops and lists them.",
   "installPrepare": "Install and prepare game",
   "installModpack": "Install modpack",

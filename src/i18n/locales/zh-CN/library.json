@@ -217,7 +217,7 @@
   "instanceNameOptional": "实例名称（可选）",
   "instanceNamePlaceholder": "给这个世界起个名字",
   "curseforgeKeyOptional": "CurseForge API Key（可选）",
-  "importHint": "Modrinth .mrpack 无需密钥；CurseForge ZIP 含受限文件时会停止并列出。",
+  "importHint": "支持 Modrinth .mrpack、CurseForge、MultiMC/Prism、MCBBS 整合包及本启动器个人备份 ZIP；含 CurseForge 受限文件时会停止并列出。",
   "curseforgePackHint": "只列出正式版。整合包里有作者不允许其他应用下载的文件时，安装会停止并列出这些文件。",
   "installPrepare": "安装并准备游戏",
   "installModpack": "安装整合包",

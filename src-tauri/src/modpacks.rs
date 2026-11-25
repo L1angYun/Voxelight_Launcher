@@ -1415,6 +1415,343 @@ fn write_import_lock(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MultiMcPack {
+    #[serde(default)]
+    format_version: u32,
+    #[serde(default)]
+    components: Vec<MultiMcComponent>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MultiMcComponent {
+    uid: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    disabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McbbsManifest {
+    #[serde(default)]
+    manifest_type: String,
+    #[serde(default)]
+    manifest_version: u32,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    addons: Vec<McbbsAddon>,
+    #[serde(default)]
+    files: Vec<McbbsFile>,
+}
+
+#[derive(Deserialize)]
+struct McbbsAddon {
+    id: String,
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct McbbsFile {
+    #[serde(rename = "projectID")]
+    project_id: Option<u64>,
+    #[serde(rename = "fileID")]
+    file_id: Option<u64>,
+    #[serde(default = "default_true")]
+    force: bool,
+}
+
+/// Locate `mmc-pack.json` at the ZIP root or inside a single top-level wrapper folder.
+fn find_multimc_prefix(path: &Path) -> Result<Option<String>, String> {
+    let mut zip = ZipArchive::new(fs::File::open(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if zip.by_name("mmc-pack.json").is_ok() {
+        return Ok(Some(String::new()));
+    }
+    let mut common_root: Option<String> = None;
+    for n in 0..zip.len() {
+        let entry = zip.by_index(n).map_err(|e| e.to_string())?;
+        let name = entry.name().map_err(|e| e.to_string())?;
+        let trimmed = name.trim_end_matches('/');
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((first, _)) = trimmed.split_once('/') else {
+            return Ok(None);
+        };
+        match &common_root {
+            None => common_root = Some(first.to_owned()),
+            Some(existing) if existing == first => {}
+            Some(_) => return Ok(None),
+        }
+    }
+    if let Some(root) = common_root {
+        let candidate = format!("{root}/mmc-pack.json");
+        if zip.by_name(&candidate).is_ok() {
+            return Ok(Some(format!("{root}/")));
+        }
+    }
+    Ok(None)
+}
+
+fn has_mcbbs_manifest(path: &Path) -> Result<Option<&'static str>, String> {
+    if has_entry(path, "mcbbs.packmeta")? {
+        return Ok(Some("mcbbs.packmeta"));
+    }
+    if has_entry(path, "manifest.json")? {
+        if let Ok(value) = zip_json::<Value>(path, "manifest.json") {
+            if value.get("addons").and_then(Value::as_array).is_some()
+                && value.get("minecraft").is_none()
+            {
+                return Ok(Some("manifest.json"));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn multimc_instance_cfg_name(archive: &Path, prefix: &str) -> Option<String> {
+    let mut zip = ZipArchive::new(fs::File::open(archive).ok()?).ok()?;
+    let mut file = zip.by_name(&format!("{prefix}instance.cfg")).ok()?;
+    if file.size() > 64 * 1024 {
+        return None;
+    }
+    let mut text = String::new();
+    (&mut file).take(64 * 1024).read_to_string(&mut text).ok()?;
+    text.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let value = trimmed.strip_prefix("name=")?.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+fn fallback_pack_name(archive: &Path, prefix: &str) -> String {
+    let from_prefix = prefix.trim_end_matches('/');
+    if !from_prefix.is_empty() {
+        return from_prefix.to_owned();
+    }
+    archive
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("Imported Modpack")
+        .to_owned()
+}
+
+fn multimc_dependencies(pack: &MultiMcPack) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
+    if pack.format_version != 1 {
+        return Err("不支持此 MultiMC / Prism 整合包格式版本".into());
+    }
+    let mut deps = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for component in &pack.components {
+        if component.disabled || component.version.trim().is_empty() {
+            continue;
+        }
+        let version = component.version.trim().to_owned();
+        match component.uid.as_str() {
+            "net.minecraft" => {
+                deps.insert("minecraft".into(), version);
+            }
+            "net.fabricmc.fabric-loader" => {
+                deps.insert("fabric-loader".into(), version);
+            }
+            "org.quiltmc.quilt-loader" => {
+                deps.insert("quilt-loader".into(), version);
+            }
+            "net.minecraftforge" => {
+                deps.insert("forge".into(), version);
+            }
+            "net.neoforged" => {
+                deps.insert("neoforge".into(), version);
+            }
+            "net.fabricmc.intermediary"
+            | "org.quiltmc.hashed"
+            | "org.lwjgl"
+            | "org.lwjgl3"
+            | "net.minecraft.java" => {}
+            other => {
+                warnings.push(format!("已忽略未映射的 MultiMC 组件：{other}"));
+            }
+        }
+    }
+    dependencies(&deps)?;
+    Ok((deps, warnings))
+}
+
+async fn multimc_into(
+    state: &Arc<LauncherState>,
+    archive: &Path,
+    stage: &Path,
+    prefix: &str,
+) -> Result<StagedPack, String> {
+    let pack: MultiMcPack = zip_json(archive, &format!("{prefix}mmc-pack.json"))?;
+    let (deps, warnings) = multimc_dependencies(&pack)?;
+    let name = multimc_instance_cfg_name(archive, prefix)
+        .unwrap_or_else(|| fallback_pack_name(archive, prefix));
+    let override_paths = extract_pack_overrides(
+        state,
+        archive,
+        stage,
+        vec![format!("{prefix}.minecraft/"), format!("{prefix}minecraft/")],
+    )
+    .await?;
+    Ok(StagedPack {
+        index: PackIndex {
+            format_version: 1,
+            game: "minecraft".into(),
+            version_id: "multimc-import".into(),
+            name,
+            summary: None,
+            files: Vec::new(),
+            dependencies: deps,
+        },
+        downloaded: 0,
+        skipped: 0,
+        warnings,
+        files: Vec::new(),
+        override_paths,
+    })
+}
+
+fn mcbbs_dependencies(manifest: &McbbsManifest) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
+    if !manifest.manifest_type.is_empty() && manifest.manifest_type != "minecraftModpack" {
+        return Err("不支持此 MCBBS 整合包格式".into());
+    }
+    if manifest.manifest_version > 2 {
+        return Err("不支持此 MCBBS 整合包清单版本".into());
+    }
+    let mut deps = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for addon in &manifest.addons {
+        let version = addon.version.trim().to_owned();
+        if version.is_empty() {
+            continue;
+        }
+        match addon.id.to_ascii_lowercase().as_str() {
+            "game" => {
+                deps.insert("minecraft".into(), version);
+            }
+            "fabric" => {
+                deps.insert("fabric-loader".into(), version);
+            }
+            "quilt" => {
+                deps.insert("quilt-loader".into(), version);
+            }
+            "forge" => {
+                deps.insert("forge".into(), version);
+            }
+            "neoforge" => {
+                deps.insert("neoforge".into(), version);
+            }
+            "optifine" => {
+                warnings.push(format!("整合包声明了 OptiFine {version}，可在实例设置或加载器中单独安装"));
+            }
+            other => {
+                warnings.push(format!("已忽略未映射的 MCBBS 组件：{other}"));
+            }
+        }
+    }
+    dependencies(&deps)?;
+    Ok((deps, warnings))
+}
+
+async fn mcbbs_into(
+    state: &Arc<LauncherState>,
+    archive: &Path,
+    stage: &Path,
+    entry_name: &str,
+    key: Option<String>,
+    optional: bool,
+) -> Result<StagedPack, String> {
+    let manifest: McbbsManifest = zip_json(archive, entry_name)?;
+    let (deps, mut warnings) = mcbbs_dependencies(&manifest)?;
+    let cf_files: Vec<CurseEntry> = manifest
+        .files
+        .iter()
+        .filter_map(|file| {
+            Some(CurseEntry {
+                project_id: file.project_id?,
+                file_id: file.file_id?,
+                required: file.force,
+            })
+        })
+        .collect();
+    let mut downloaded = 0usize;
+    let mut skipped = 0usize;
+    let mut files = Vec::new();
+    if !cf_files.is_empty() {
+        let session = crate::curseforge::CfSession::new(state, key.as_deref())?;
+        skipped = cf_files.iter().filter(|item| !item.required && !optional).count();
+        let synthetic = CurseManifest {
+            manifest_type: "minecraftModpack".into(),
+            manifest_version: 1,
+            name: manifest.name.clone(),
+            minecraft: CurseMinecraft {
+                version: deps.get("minecraft").cloned().unwrap_or_default(),
+                mod_loaders: Vec::new(),
+            },
+            files: cf_files,
+            overrides: "overrides".into(),
+        };
+        let (resolved, _) = resolve_manifest(state, &session, &synthetic, optional).await?;
+        let restricted: Vec<&CurseResolved> = resolved.iter().filter(|f| f.download.is_none()).collect();
+        if !restricted.is_empty() {
+            return Err(manual_download_error(&restricted));
+        }
+        for resolved in resolved {
+            state.control.checkpoint().await?;
+            let url = resolved.download.ok_or("CurseForge 文件没有可用的下载地址")?;
+            let target = safe_join(stage, &resolved.path)?;
+            let expected = BTreeMap::from([("sha1".into(), resolved.sha1.clone())]);
+            let materialized = fetch_verified(state, &[url], &target, resolved.size, &expected).await?;
+            if materialized.downloaded {
+                downloaded += 1;
+            }
+            let mut entry = materialized.lock_entry(resolved.path);
+            entry.project_id = Some(resolved.project_id);
+            entry.file_id = Some(resolved.file_id);
+            files.push(entry);
+        }
+        if skipped > 0 {
+            warnings.push(format!("按选择跳过 {skipped} 个可选文件"));
+        }
+    }
+    let override_paths = extract_pack_overrides(state, archive, stage, vec!["overrides/".into()]).await?;
+    let name = if manifest.name.trim().is_empty() {
+        fallback_pack_name(archive, "")
+    } else {
+        manifest.name.trim().to_owned()
+    };
+    let version_id = if manifest.version.trim().is_empty() {
+        "mcbbs-import".into()
+    } else {
+        manifest.version.trim().to_owned()
+    };
+    Ok(StagedPack {
+        index: PackIndex {
+            format_version: 1,
+            game: "minecraft".into(),
+            version_id,
+            name,
+            summary: None,
+            files: Vec::new(),
+            dependencies: deps,
+        },
+        downloaded,
+        skipped,
+        warnings,
+        files,
+        override_paths,
+    })
+}
+
 async fn import_inner(
     app: &AppHandle,
     state: &Arc<LauncherState>,
@@ -1429,7 +1766,7 @@ async fn import_inner(
     crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
     let source = archive.to_owned();
     let inspect_state = state.clone();
-    let (personal, modrinth, curse) = tokio::task::spawn_blocking(move || {
+    let (personal, modrinth, curse, mcbbs_entry, multimc_prefix) = tokio::task::spawn_blocking(move || {
         instances::sync_checkpoint(&inspect_state)?;
         inspect_zip_limits_controlled(&source, MAX_ZIP_BYTES, MAX_ZIP_BYTES, MAX_ZIP_BYTES, Some(&inspect_state))?;
         let personal = has_entry(&source, "launcher-backup.json")?;
@@ -1437,11 +1774,12 @@ async fn import_inner(
             inspect_zip_limits_controlled(&source, MAX_ARCHIVE_BYTES, MAX_PACK_BYTES, MAX_ARCHIVE_BYTES, Some(&inspect_state))?;
         }
         instances::sync_checkpoint(&inspect_state)?;
-        Ok::<_, String>((
-            personal,
-            has_entry(&source, "modrinth.index.json")?,
-            has_entry(&source, "manifest.json")?,
-        ))
+        let modrinth = has_entry(&source, "modrinth.index.json")?;
+        let mcbbs_entry = has_mcbbs_manifest(&source)?;
+        let has_manifest = has_entry(&source, "manifest.json")?;
+        let curse = has_manifest && mcbbs_entry != Some("manifest.json");
+        let multimc_prefix = find_multimc_prefix(&source)?;
+        Ok::<_, String>((personal, modrinth, curse, mcbbs_entry, multimc_prefix))
     }).await.map_err(|error| error.to_string())??;
     let root = instances::instance_root(state)?;
     let token = uuid::Uuid::new_v4().to_string();
@@ -1462,12 +1800,18 @@ async fn import_inner(
     let stage = owned_stage.path();
     let staged = if modrinth {
         mrpack_into(state, archive, stage, optional).await?
+    } else if origin.is_some() && curse {
+        curse_into(state, archive, stage, key, optional).await?
+    } else if let Some(entry_name) = mcbbs_entry {
+        mcbbs_into(state, archive, stage, entry_name, key, optional).await?
     } else if curse {
         curse_into(state, archive, stage, key, optional).await?
+    } else if let Some(prefix) = multimc_prefix.as_deref() {
+        multimc_into(state, archive, stage, prefix).await?
     } else if personal {
         return import_personal_backup(app, state, archive, &mut owned_stage, &final_dir, name).await;
     } else {
-        return Err("无法识别整合包。支持 .mrpack、CurseForge manifest.zip 和本启动器带清单的个人备份 ZIP；普通未知 ZIP 不会盲目覆盖游戏目录。".into());
+        return Err("无法识别整合包。支持 .mrpack、CurseForge、MultiMC/Prism、MCBBS 整合包和本启动器带清单的个人备份 ZIP；普通未知 ZIP 不会盲目覆盖游戏目录。".into());
     };
     let inventory_state = state.clone();
     let inventory_stage = stage.to_owned();
@@ -2436,6 +2780,138 @@ mod tests {
         let publish = body.find("owned_stage.publish(&final_dir)").unwrap();
         let checkpoint = body[lock..publish].rfind("state.control.checkpoint().await?;").map(|at| lock + at);
         assert!(checkpoint.is_some_and(|at| at > lock), "cancellation is checked after the lock and before publishing");
+    }
+
+    #[test]
+    fn u6_multimc_and_prism_packs_stage_flat_and_wrapped_archives_safely() {
+        let root = instances::StagingDirectory::create(test_root()).unwrap();
+        let (state, _) = shared_export_fixture(root.path());
+        let state = Arc::new(state);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+        // 1. Flat MultiMC ZIP with instance.cfg + .minecraft/ overrides.
+        let flat = root.path().join("flat-mmc.zip");
+        {
+            let mut zip = ZipWriter::new(fs::File::create(&flat).unwrap());
+            let opts = SimpleFileOptions::default();
+            zip.start_file("mmc-pack.json", opts).unwrap();
+            zip.write_all(br#"{"formatVersion":1,"components":[{"uid":"net.minecraft","version":"1.21.1"},{"uid":"net.fabricmc.intermediary","version":"1.21.1"},{"uid":"net.fabricmc.fabric-loader","version":"0.16.10"},{"uid":"net.minecraftforge","version":"52.0.0","disabled":true}]}"#).unwrap();
+            zip.start_file("instance.cfg", opts).unwrap();
+            zip.write_all(b"InstanceType=OneSix\nname=Prism Survival\n").unwrap();
+            zip.start_file(".minecraft/mods/sodium.jar", opts).unwrap();
+            zip.write_all(b"mod-bytes").unwrap();
+            zip.start_file(".minecraft/config/sodium.json", opts).unwrap();
+            zip.write_all(b"{}").unwrap();
+            zip.finish().unwrap();
+        }
+        assert_eq!(find_multimc_prefix(&flat).unwrap().as_deref(), Some(""));
+        let stage1 = root.path().join("stage1");
+        fs::create_dir_all(&stage1).unwrap();
+        let staged = rt.block_on(multimc_into(&state, &flat, &stage1, "")).unwrap();
+        assert_eq!(staged.index.name, "Prism Survival");
+        assert_eq!(staged.index.dependencies.get("minecraft").map(String::as_str), Some("1.21.1"));
+        assert_eq!(staged.index.dependencies.get("fabric-loader").map(String::as_str), Some("0.16.10"));
+        assert!(!staged.index.dependencies.contains_key("forge"));
+        assert_eq!(fs::read(stage1.join("mods/sodium.jar")).unwrap(), b"mod-bytes");
+        assert_eq!(fs::read(stage1.join("config/sodium.json")).unwrap(), b"{}");
+
+        // 2. Single-folder wrapped Prism ZIP using `minecraft/` and NeoForge.
+        let wrapped = root.path().join("wrapped-prism.zip");
+        {
+            let mut zip = ZipWriter::new(fs::File::create(&wrapped).unwrap());
+            let opts = SimpleFileOptions::default();
+            zip.start_file("TechPack/mmc-pack.json", opts).unwrap();
+            zip.write_all(br#"{"formatVersion":1,"components":[{"uid":"net.minecraft","version":"1.21.1"},{"uid":"net.neoforged","version":"21.1.77"}]}"#).unwrap();
+            zip.start_file("TechPack/minecraft/options.txt", opts).unwrap();
+            zip.write_all(b"fov:0.5\n").unwrap();
+            zip.finish().unwrap();
+        }
+        assert_eq!(find_multimc_prefix(&wrapped).unwrap().as_deref(), Some("TechPack/"));
+        let stage2 = root.path().join("stage2");
+        fs::create_dir_all(&stage2).unwrap();
+        let staged2 = rt.block_on(multimc_into(&state, &wrapped, &stage2, "TechPack/")).unwrap();
+        assert_eq!(staged2.index.name, "TechPack");
+        assert_eq!(staged2.index.dependencies.get("neoforge").map(String::as_str), Some("21.1.77"));
+        assert_eq!(fs::read(stage2.join("options.txt")).unwrap(), b"fov:0.5\n");
+
+        // 3. Traversal entry in MultiMC ZIP is rejected by inspect_zip_limits_controlled.
+        let evil = root.path().join("evil-mmc.zip");
+        {
+            let mut zip = ZipWriter::new(fs::File::create(&evil).unwrap());
+            let opts = SimpleFileOptions::default();
+            zip.start_file("mmc-pack.json", opts).unwrap();
+            zip.write_all(br#"{"formatVersion":1,"components":[{"uid":"net.minecraft","version":"1.21.1"}]}"#).unwrap();
+            zip.start_file(".minecraft/../../escape.txt", opts).unwrap();
+            zip.write_all(b"nope").unwrap();
+            zip.finish().unwrap();
+        }
+        let stage3 = root.path().join("stage3");
+        fs::create_dir_all(&stage3).unwrap();
+        assert!(rt.block_on(multimc_into(&state, &evil, &stage3, "")).is_err());
+    }
+
+    #[test]
+    fn u6_mcbbs_packs_stage_packmeta_and_addons_manifest_safely() {
+        let root = instances::StagingDirectory::create(test_root()).unwrap();
+        let (state, _) = shared_export_fixture(root.path());
+        let state = Arc::new(state);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+        // 1. Standard mcbbs.packmeta with overrides and optifine warning.
+        let packmeta = root.path().join("mcbbs-pack.zip");
+        {
+            let mut zip = ZipWriter::new(fs::File::create(&packmeta).unwrap());
+            let opts = SimpleFileOptions::default();
+            zip.start_file("mcbbs.packmeta", opts).unwrap();
+            zip.write_all(br#"{"manifestType":"minecraftModpack","manifestVersion":2,"name":"Sky Island","version":"1.2.0","addons":[{"id":"game","version":"1.20.1"},{"id":"forge","version":"47.2.0"},{"id":"optifine","version":"HD_U_I6"}]}"#).unwrap();
+            zip.start_file("overrides/mods/create.jar", opts).unwrap();
+            zip.write_all(b"create-mod").unwrap();
+            zip.finish().unwrap();
+        }
+        assert_eq!(has_mcbbs_manifest(&packmeta).unwrap(), Some("mcbbs.packmeta"));
+        let stage1 = root.path().join("mcbbs-stage1");
+        fs::create_dir_all(&stage1).unwrap();
+        let staged = rt.block_on(mcbbs_into(&state, &packmeta, &stage1, "mcbbs.packmeta", None, false)).unwrap();
+        assert_eq!(staged.index.name, "Sky Island");
+        assert_eq!(staged.index.version_id, "1.2.0");
+        assert_eq!(staged.index.dependencies.get("minecraft").map(String::as_str), Some("1.20.1"));
+        assert_eq!(staged.index.dependencies.get("forge").map(String::as_str), Some("47.2.0"));
+        assert!(staged.warnings.iter().any(|w| w.contains("OptiFine")));
+        assert_eq!(fs::read(stage1.join("mods/create.jar")).unwrap(), b"create-mod");
+
+        // 2. MCBBS-style manifest.json (addons array, no mcbbs.packmeta).
+        let alt = root.path().join("mcbbs-alt.zip");
+        {
+            let mut zip = ZipWriter::new(fs::File::create(&alt).unwrap());
+            let opts = SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            zip.write_all(br#"{"manifestVersion":2,"name":"Quilt Pack","addons":[{"id":"game","version":"1.20.4"},{"id":"quilt","version":"0.25.0"}]}"#).unwrap();
+            zip.start_file("overrides/config/pack.toml", opts).unwrap();
+            zip.write_all(b"ok = true\n").unwrap();
+            zip.finish().unwrap();
+        }
+        assert_eq!(has_mcbbs_manifest(&alt).unwrap(), Some("manifest.json"));
+        let stage2 = root.path().join("mcbbs-stage2");
+        fs::create_dir_all(&stage2).unwrap();
+        let staged2 = rt.block_on(mcbbs_into(&state, &alt, &stage2, "manifest.json", None, false)).unwrap();
+        assert_eq!(staged2.index.name, "Quilt Pack");
+        assert_eq!(staged2.index.dependencies.get("quilt-loader").map(String::as_str), Some("0.25.0"));
+        assert_eq!(fs::read(stage2.join("config/pack.toml")).unwrap(), b"ok = true\n");
+
+        // 3. Conflicting loaders or missing game version are rejected.
+        let bad_manifest = McbbsManifest {
+            manifest_type: "minecraftModpack".into(),
+            manifest_version: 2,
+            name: "Bad".into(),
+            version: "1.0".into(),
+            addons: vec![
+                McbbsAddon { id: "game".into(), version: "1.20.1".into() },
+                McbbsAddon { id: "fabric".into(), version: "0.15.0".into() },
+                McbbsAddon { id: "forge".into(), version: "47.2.0".into() },
+            ],
+            files: Vec::new(),
+        };
+        assert!(mcbbs_dependencies(&bad_manifest).is_err());
     }
 
     fn shared_export_fixture(root: &Path) -> (LauncherState, Instance) {

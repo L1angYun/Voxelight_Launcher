@@ -41,7 +41,7 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Content | Drag-and-drop import of mods, modpacks and skins | ✅ |
 | Modpacks | Import a `.mrpack` or CurseForge ZIP, or install online | ✅ |
 | Modpacks | Update online-installed packs: a plan of every change, your edits kept, automatic backup | ✅ |
-| Modpacks | Import MultiMC and MCBBS packs | 🚧 |
+| Modpacks | Import MultiMC and MCBBS packs | ✅ |
 | Downloads | One task page with pause, resume, cancel and retry | ✅ |
 | Downloads | Resumable and multi-connection downloads; game files, Java, mods and modpacks checked against their published hashes; Official or BMCLAPI source; proxy | ✅ |
 | Downloads | Retry all, and clear unfinished downloads | ✅ |
