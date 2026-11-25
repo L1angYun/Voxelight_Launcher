@@ -619,7 +619,7 @@ describe("multiplayer", () => {
 
   it.each([
     ["installer", "This is an installer, not a server."],
-    ["argsFile", "This server starts only from an arguments file"],
+    ["argsFile", "This server only has Unix arguments files"],
     ["noJar", "This folder has no server JAR"],
     ["needsFolder", "This JAR cannot start on its own"],
   ] as const)("keeps Import disabled for %s imports", async (unsupported, message) => {
@@ -702,6 +702,53 @@ describe("multiplayer", () => {
     expect(button(container, "Start server").disabled).toBe(true);
     expect(container.querySelector(".vx-managed-error")?.textContent).toBe("The imported server's JAR is missing from its folder. Import the server again.");
     expect(container.textContent).not.toContain("Install and start");
+  });
+
+  it("imports a NeoForge arguments-file folder and surfaces missing win_args.txt clearly", async () => {
+    mockLauncher.manifest = releaseManifest("1.21.1");
+    pickedPath = "C:\\SyntheticFixture\\neoforge-folder";
+    const rel = "libraries/net/neoforged/neoforge/21.1.77/win_args.txt";
+    inspection = {
+      kind: "folder",
+      software: "NeoForge",
+      minecraftVersion: "1.21.1",
+      jars: [],
+      details: [],
+      defaultJar: null,
+      argsFile: rel,
+      totalBytes: 12288,
+      fileCount: 6,
+      unsupported: null,
+    };
+    await render();
+    const scope = await openImport();
+    await click("Server folder", scope);
+    await click("Choose folder…", scope);
+    expect(scope.textContent).toContain("Detected: NeoForge 1.21.1");
+    expect(scope.textContent).toContain(`Start via arguments file: ${rel}`);
+    expect(button(scope, "Import").disabled).toBe(false);
+    await click("Import", scope);
+    expect(commandMock).toHaveBeenCalledWith("import_managed_server", {
+      request: { kind: "folder", path: pickedPath, name: "NeoForge 1.21.1", versionId: "1.21.1", jar: "", argsFile: rel },
+    });
+
+    const missingArgs: ManagedServer = {
+      ...managedFixture(),
+      id: "imported-args",
+      source: "imported",
+      software: "NeoForge",
+      jar: null,
+      argsFile: rel,
+      installed: false,
+      eulaAccepted: true,
+    };
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => name === "list_managed_servers" ? [missingArgs] : normal(name, args));
+    await act(async () => button(container.querySelector(".vx-multiplayer-toolbar")!, "Refresh").click());
+    expect(button(container, "Start server").disabled).toBe(true);
+    expect(container.querySelector(".vx-managed-error")?.textContent).toBe(
+      "The imported server's win_args.txt arguments file is missing from its folder. Import the server again.",
+    );
   });
 
   it("names an imported server of unknown software as imported", async () => {

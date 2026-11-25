@@ -134,7 +134,11 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
               </header>
               <p className="vx-managed-directory">{current.directory}</p>
               {current.error ? <p className="vx-managed-error" role="alert">{t("multiplayer:errors.processFailed")}</p> : null}
-              {jarMissing ? <p className="vx-managed-error" role="alert">{t("multiplayer:errors.server.importedJarMissing")}</p> : null}
+              {jarMissing ? (
+                <p className="vx-managed-error" role="alert">
+                  {current.argsFile ? t("multiplayer:errors.server.importedArgsMissing") : t("multiplayer:errors.server.importedJarMissing")}
+                </p>
+              ) : null}
               <label className="vx-managed-checkbox">
                 <input
                   type="checkbox"

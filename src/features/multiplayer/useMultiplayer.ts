@@ -82,6 +82,7 @@ export interface ManagedServer {
   source: "vanilla" | "imported";
   software: string | null;
   jar: string | null;
+  argsFile?: string | null;
 }
 
 export type ServerImportKind = "jar" | "folder";
@@ -94,6 +95,7 @@ export interface ServerImportInspection {
   /** What each JAR says about itself, in the order of `jars`. */
   details: { jar: string; software: string | null; minecraftVersion: string | null }[];
   defaultJar: string | null;
+  argsFile?: string | null;
   totalBytes: number;
   fileCount: number;
   unsupported: "installer" | "argsFile" | "noJar" | "needsFolder" | null;
@@ -105,6 +107,7 @@ export interface ManagedServerImportRequest {
   name: string;
   versionId: string;
   jar: string;
+  argsFile?: string | null;
 }
 
 export interface ServerLog {

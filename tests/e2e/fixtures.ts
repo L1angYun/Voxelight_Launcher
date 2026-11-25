@@ -718,6 +718,7 @@ export async function installLauncherFixture(
               source: "imported",
               software: "Paper",
               jar: String(request.jar ?? "paper.jar"),
+              argsFile: (request.argsFile as string | null | undefined) ?? null,
             };
             importedManagedServers.unshift(imported);
             return structuredClone(imported);
@@ -741,6 +742,7 @@ export async function installLauncherFixture(
               source: "vanilla",
               software: null,
               jar: null,
+              argsFile: null,
             };
             return structuredClone([...importedManagedServers, vanilla]);
           }

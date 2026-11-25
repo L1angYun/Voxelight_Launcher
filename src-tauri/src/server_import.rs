@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Third-party server software (Spigot, Paper, Fabric and others), imported as
-//! a server JAR or an existing server folder. What is imported is copied into
-//! the launcher's data folder; it is only ever run as `java -jar <jar> nogui`
-//! from there, never as a script or with an arguments file, and nothing here
-//! runs it. Detection reads a few small entries of a JAR and is a default only.
+//! Third-party server software (Spigot, Paper, Fabric, Forge, NeoForge and others),
+//! imported as a server JAR or an existing server folder. What is imported is copied into
+//! the launcher's data folder; it is run as `java -jar <jar> nogui` or, for Forge 1.17+ /
+//! NeoForge folders without a shim JAR, with tokens parsed and validated from the canonical
+//! `libraries/net/{minecraftforge,neoforged}/.../win_args.txt` file (never via `.bat`/`.sh`).
+//! Detection reads a few small entries of a JAR or `win_args.txt` and is a default only.
 use super::*;
 use crate::{
     instances::{
@@ -14,7 +15,8 @@ use crate::{
 };
 
 pub(crate) const IMPORT_INSTALLER: &str = "这是服务端安装器，不是服务端。请先运行它安装服务端，再导入安装生成的文件夹。";
-pub(crate) const IMPORT_ARGS_FILE: &str = "这个服务端只能用参数文件启动（1.17 及以后没有 shim JAR 的 Forge，或 NeoForge），启动器暂不支持导入。";
+pub(crate) const IMPORT_ARGS_FILE: &str = "这个服务端只包含 Unix 参数文件（缺少 win_args.txt），无法在 Windows 上导入。";
+pub(crate) const IMPORT_ARGS_INVALID: &str = "服务端的 win_args.txt 包含不受支持或不安全的 Java 参数，无法导入或启动。";
 pub(crate) const IMPORT_NEEDS_FOLDER: &str = "这个 JAR 无法单独启动：它需要安装时所在文件夹里的库和服务端文件。请改为导入那个文件夹。";
 pub(crate) const IMPORT_JAR_NAME: &str = "服务端 JAR 的文件名无法使用：须以 .jar 结尾，不能以 @ 或 - 开头，也不能是 Windows 保留的名称。请重命名后再导入";
 pub(crate) const IMPORT_PROPERTIES_TEXT: &str = "导入的 server.properties 不是 UTF-8 文本、超过 1 MiB 或无法读取";
@@ -61,6 +63,7 @@ pub struct ServerImportInspection {
     /// What each of `jars` says about itself, in the same order.
     details: Vec<JarDetail>,
     default_jar: Option<String>,
+    args_file: Option<String>,
     total_bytes: u64,
     file_count: u64,
     unsupported: Option<&'static str>,
@@ -82,6 +85,8 @@ pub struct ImportServerRequest {
     name: String,
     version_id: String,
     jar: String,
+    #[serde(default)]
+    args_file: Option<String>,
 }
 
 /// What a JAR says about itself, read without running it.
@@ -339,23 +344,362 @@ fn measure(root: &Path) -> Result<(u64, u64), String> {
     Ok((files, bytes))
 }
 
-/// Forge and NeoForge 1.17+ start from a generated arguments file instead of a JAR.
-fn arguments_file_server(root: &Path) -> Option<&'static str> {
-    [
-        ("libraries/net/minecraftforge/forge", "Forge"),
-        ("libraries/net/neoforged/neoforge", "NeoForge"),
-        ("libraries/net/neoforged/forge", "NeoForge"),
-    ]
-    .into_iter()
-    .find(|(folder, _)| {
-        fs::read_dir(root.join(folder)).is_ok_and(|entries| {
-            entries.flatten().any(|entry| {
-                let dir = entry.path();
-                dir.join("win_args.txt").is_file() || dir.join("unix_args.txt").is_file()
+const MAX_ARGS_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_ARGS_TOKENS: usize = 4096;
+
+const ARGS_FILE_PREFIXES: &[(&str, &str)] = &[
+    ("libraries/net/minecraftforge/forge", "Forge"),
+    ("libraries/net/neoforged/neoforge", "NeoForge"),
+    ("libraries/net/neoforged/forge", "NeoForge"),
+];
+
+pub(crate) fn is_canonical_args_file_rel(rel: &str) -> bool {
+    let Some(rest) = ARGS_FILE_PREFIXES
+        .iter()
+        .find_map(|(prefix, _)| rel.strip_prefix(prefix)?.strip_prefix('/'))
+    else {
+        return false;
+    };
+    let Some(segment) = rest.strip_suffix("/win_args.txt") else {
+        return false;
+    };
+    !segment.is_empty()
+        && !segment.contains(['/', '\\'])
+        && validate_id(segment).is_ok()
+}
+
+/// Derive a Minecraft version from a NeoForge version string such as `21.1.77` -> `1.21.1`
+/// or `26.1.0` -> `26.1`.
+fn neoforge_mc_version(segment: &str) -> Option<String> {
+    let mut nums = segment
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u32>().ok());
+    let major = nums.next()?;
+    let minor = nums.next()?;
+    if (20..=25).contains(&major) {
+        if minor == 0 {
+            Some(format!("1.{major}"))
+        } else {
+            Some(format!("1.{major}.{minor}"))
+        }
+    } else if (26..=29).contains(&major) {
+        Some(format!("{major}.{minor}"))
+    } else {
+        None
+    }
+}
+
+fn mc_version_from_tokens(tokens: &[String]) -> Option<String> {
+    let mut iter = tokens.iter();
+    while let Some(token) = iter.next() {
+        if token == "--fml.mcVersion" {
+            if let Some(next) = iter.next() {
+                if let Some(id) = version_id(next) {
+                    return Some(id);
+                }
+            }
+        } else if let Some(rest) = token.strip_prefix("--fml.mcVersion=") {
+            if let Some(id) = version_id(rest) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// Parse a Java `@argfile` (whitespace-separated tokens, `#` line comments, quoted strings).
+pub(crate) fn parse_java_argfile(text: &str) -> Result<Vec<String>, String> {
+    if text.contains('\0') {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_token = false;
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if let Some(q) = quote {
+            if ch == '\\' {
+                if let Some(&next) = chars.peek() {
+                    match next {
+                        'n' => {
+                            chars.next();
+                            current.push('\n');
+                        }
+                        'r' => {
+                            chars.next();
+                            current.push('\r');
+                        }
+                        't' => {
+                            chars.next();
+                            current.push('\t');
+                        }
+                        '\\' | '"' | '\'' => {
+                            chars.next();
+                            current.push(next);
+                        }
+                        _ => current.push('\\'),
+                    }
+                } else {
+                    return Err(IMPORT_ARGS_INVALID.into());
+                }
+            } else if ch == q {
+                quote = None;
+            } else if ch.is_control() {
+                return Err(IMPORT_ARGS_INVALID.into());
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '#' if !in_token => {
+                while let Some(c) = chars.next() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            c if c.is_whitespace() => {
+                if in_token {
+                    tokens.push(std::mem::take(&mut current));
+                    in_token = false;
+                    if tokens.len() > MAX_ARGS_TOKENS {
+                        return Err(IMPORT_ARGS_INVALID.into());
+                    }
+                }
+            }
+            '"' | '\'' => {
+                quote = Some(ch);
+                in_token = true;
+            }
+            c if c.is_control() => return Err(IMPORT_ARGS_INVALID.into()),
+            c => {
+                in_token = true;
+                current.push(c);
+            }
+        }
+    }
+
+    if quote.is_some() {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    if in_token {
+        tokens.push(current);
+    }
+    if tokens.is_empty() || tokens.len() > MAX_ARGS_TOKENS {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    Ok(tokens)
+}
+
+fn has_unsafe_path_segment(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with("\\\\") || trimmed.starts_with('/') || trimmed.starts_with('\\') {
+        return true;
+    }
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return true;
+    }
+    trimmed.split(['/', '\\']).any(|part| part == "..")
+}
+
+fn validate_path_list(value: &str) -> Result<(), String> {
+    for entry in value.split(';') {
+        if entry.is_empty() {
+            continue;
+        }
+        if has_unsafe_path_segment(entry) {
+            return Err(IMPORT_ARGS_INVALID.into());
+        }
+    }
+    Ok(())
+}
+
+/// Validate tokens parsed from a Forge/NeoForge `win_args.txt` before importing or launching.
+pub(crate) fn validate_args_file_tokens(tokens: &[String]) -> Result<Vec<String>, String> {
+    if tokens.is_empty() || tokens.len() > MAX_ARGS_TOKENS {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    let mut expect_path_list = false;
+    let mut has_entry_point = false;
+
+    for token in tokens {
+        if token.is_empty() || token.chars().any(char::is_control) {
+            return Err(IMPORT_ARGS_INVALID.into());
+        }
+        if token.starts_with('@') {
+            return Err(IMPORT_ARGS_INVALID.into());
+        }
+        if expect_path_list {
+            validate_path_list(token)?;
+            expect_path_list = false;
+            continue;
+        }
+
+        let lower = token.to_ascii_lowercase();
+        let forbidden_prefixes = [
+            "-javaagent",
+            "-agentlib",
+            "-agentpath",
+            "-xrun",
+            "-xbootclasspath",
+            "-xx:onerror",
+            "-xx:onoutofmemoryerror",
+            "-xx:errorfile",
+            "-xx:heapdumppath",
+            "-xms",
+            "-xmx",
+            "-djava.io.tmpdir",
+            "-dhttp.proxy",
+            "-dhttps.proxy",
+            "-dsocksproxy",
+        ];
+        if forbidden_prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
+            return Err(IMPORT_ARGS_INVALID.into());
+        }
+
+        if matches!(
+            token.as_str(),
+            "-p" | "--module-path" | "-cp" | "-classpath" | "--class-path" | "--upgrade-module-path"
+        ) {
+            expect_path_list = true;
+            continue;
+        }
+        for prefix in ["--module-path=", "--class-path=", "--upgrade-module-path="] {
+            if let Some(rest) = token.strip_prefix(prefix) {
+                validate_path_list(rest)?;
+            }
+        }
+        for prop in [
+            "-DlibraryDirectory=",
+            "-DlegacyClassPath.file=",
+            "-Djava.library.path=",
+            "-Djava.ext.dirs=",
+        ] {
+            if let Some(rest) = token.strip_prefix(prop) {
+                validate_path_list(rest)?;
+            }
+        }
+        // Reject path traversal or absolute paths anywhere in any argument token.
+        if has_unsafe_path_segment(token) {
+            return Err(IMPORT_ARGS_INVALID.into());
+        }
+        if let Some((_, rhs)) = token.split_once('=') {
+            if has_unsafe_path_segment(rhs) {
+                return Err(IMPORT_ARGS_INVALID.into());
+            }
+        }
+        if !token.starts_with('-') {
+            has_entry_point = true;
+        }
+    }
+
+    if expect_path_list || !has_entry_point {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    Ok(tokens.to_vec())
+}
+
+pub(crate) fn load_and_validate_args_file(dir: &Path, rel: &str) -> Result<Vec<String>, String> {
+    if !is_canonical_args_file_rel(rel) {
+        return Err(IMPORTED_RECORD_INVALID.into());
+    }
+    let path = safe_join(dir, rel)?;
+    let metadata = fs::symlink_metadata(&path).map_err(|_| IMPORTED_ARGS_MISSING.to_owned())?;
+    if is_link(&metadata) || !metadata.is_file() || metadata.len() > MAX_ARGS_FILE_BYTES {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    let text = fs::read_to_string(&path).map_err(|_| IMPORT_ARGS_INVALID.to_owned())?;
+    let tokens = parse_java_argfile(&text)?;
+    validate_args_file_tokens(&tokens)
+}
+
+/// Format validated tokens back into a safe Java `@argfile` when the command line is very long.
+pub(crate) fn serialize_java_argfile(tokens: &[String]) -> String {
+    let mut out = String::new();
+    for token in tokens {
+        if token.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '\\' | '#')) {
+            out.push('"');
+            for ch in token.chars() {
+                match ch {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        } else {
+            out.push_str(token);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+struct ArgsFileCandidate {
+    software: &'static str,
+    rel_path: String,
+    folder_is_neoforge: bool,
+    segment: String,
+}
+
+/// Find the canonical Windows arguments file (`win_args.txt`) of a Forge 1.17+ or NeoForge server.
+/// Tokens are validated only when the server actually launches via this arguments file.
+fn find_win_args_file(root: &Path) -> Option<ArgsFileCandidate> {
+    for &(folder, software) in ARGS_FILE_PREFIXES {
+        let Ok(entries) = fs::read_dir(root.join(folder)) else {
+            continue;
+        };
+        let mut versions: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_str()?.to_owned();
+                if validate_id(&name).is_err() || name.contains(['/', '\\']) {
+                    return None;
+                }
+                let args_path = entry.path().join("win_args.txt");
+                let meta = fs::symlink_metadata(&args_path).ok()?;
+                (!is_link(&meta) && meta.is_file()).then_some(name)
+            })
+            .collect();
+        versions.sort_by(|a, b| {
+            version_order(Some(b))
+                .cmp(&version_order(Some(a)))
+                .then_with(|| a.cmp(b))
+        });
+        if let Some(segment) = versions.into_iter().next() {
+            let rel_path = format!("{folder}/{segment}/win_args.txt");
+            return Some(ArgsFileCandidate {
+                software,
+                rel_path,
+                folder_is_neoforge: folder.ends_with("/neoforge"),
+                segment,
+            });
+        }
+    }
+    None
+}
+
+/// True when a folder only contains `unix_args.txt` (no `win_args.txt`).
+fn has_unix_only_args_file(root: &Path) -> Option<&'static str> {
+    ARGS_FILE_PREFIXES
+        .iter()
+        .find(|(folder, _)| {
+            fs::read_dir(root.join(folder)).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.path().join("unix_args.txt").is_file())
             })
         })
-    })
-    .map(|(_, software)| software)
+        .map(|(_, software)| *software)
 }
 
 fn inspect(kind: ImportKind, path: &Path) -> Result<ServerImportInspection, String> {
@@ -388,6 +732,7 @@ fn inspect(kind: ImportKind, path: &Path) -> Result<ServerImportInspection, Stri
                     .collect(),
                 minecraft_version: facts.version,
                 default_jar: jars.first().cloned(),
+                args_file: None,
                 jars,
                 total_bytes: metadata.len(),
                 file_count: 1,
@@ -412,11 +757,16 @@ fn inspect(kind: ImportKind, path: &Path) -> Result<ServerImportInspection, Stri
                     }
                 }
             }
-            let arguments = arguments_file_server(&path);
-            if arguments.is_some() {
-                // Such a server starts through a JAR that loads the loader:
-                // Forge's shim, or a hybrid such as Arclight. A vanilla or
-                // unknown JAR beside it would start without the loader.
+            let win_args = find_win_args_file(&path);
+            let unix_only = if win_args.is_none() {
+                has_unix_only_args_file(&path)
+            } else {
+                None
+            };
+            if win_args.is_some() || unix_only.is_some() {
+                // Such a server starts through a JAR that loads the loader (Forge's
+                // shim or a hybrid such as Arclight) or through its arguments file.
+                // A vanilla or unknown JAR beside it would start without the loader.
                 found.retain(|(_, facts)| facts.software.is_some_and(|software| software != "Vanilla"));
             }
             found.sort_by(|a, b| a.0.cmp(&b.0));
@@ -432,16 +782,35 @@ fn inspect(kind: ImportKind, path: &Path) -> Result<ServerImportInspection, Stri
             let chosen = found.iter().min_by_key(|(name, facts)| {
                 (rank(facts), std::cmp::Reverse(version_order(facts.version.as_deref())), name.clone())
             });
+            let (software, minecraft_version, args_file, unsupported) = if let Some((_, facts)) = chosen {
+                (facts.software, facts.version.clone(), None, None)
+            } else if let Some(candidate) = win_args {
+                let tokens = load_and_validate_args_file(&path, &candidate.rel_path)?;
+                let mc_ver = mc_version_from_tokens(&tokens).or_else(|| {
+                    if candidate.folder_is_neoforge {
+                        neoforge_mc_version(&candidate.segment)
+                    } else {
+                        candidate
+                            .segment
+                            .split('-')
+                            .next()
+                            .and_then(version_in_name)
+                            .or_else(|| version_in_name(&candidate.segment))
+                    }
+                });
+                (Some(candidate.software), mc_ver, Some(candidate.rel_path), None)
+            } else if let Some(unix_software) = unix_only {
+                (Some(unix_software), None, None, Some("argsFile"))
+            } else {
+                (None, None, None, Some("noJar"))
+            };
             Ok(ServerImportInspection {
                 kind,
-                software: chosen.and_then(|(_, facts)| facts.software).or(arguments),
-                minecraft_version: chosen.and_then(|(_, facts)| facts.version.clone()),
+                software,
+                minecraft_version,
                 default_jar: chosen.map(|(name, _)| name.clone()),
-                unsupported: match (found.is_empty(), arguments.is_some()) {
-                    (true, true) => Some("argsFile"),
-                    (true, false) => Some("noJar"),
-                    (false, _) => None,
-                },
+                args_file,
+                unsupported,
                 details: found
                     .iter()
                     .map(|(jar, facts)| JarDetail { jar: jar.clone(), software: facts.software, minecraft_version: facts.version.clone() })
@@ -540,7 +909,16 @@ fn import_with(
         Some(_) => return Err(IMPORT_NO_JAR.into()),
         None => {}
     }
-    if !found.jars.contains(&request.jar) {
+    let use_args_file = request
+        .args_file
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let Some(ref rel) = use_args_file {
+        if request.kind != ImportKind::Folder || found.args_file.as_deref() != Some(rel.as_str()) {
+            return Err("所选参数文件不在导入的内容中".into());
+        }
+    } else if !found.jars.contains(&request.jar) {
         return Err("所选服务端 JAR 不在导入的内容中".into());
     }
     if request.kind == ImportKind::Folder {
@@ -568,10 +946,16 @@ fn import_with(
         }
     }
     // What runs is the copy, so what is recorded comes from the copy.
-    let facts = jar_facts(&safe_join(&content, &request.jar)?)?;
-    if facts.installer {
-        return Err(IMPORT_INSTALLER.into());
-    }
+    let (jar, args_file, software_name) = if let Some(rel) = use_args_file {
+        load_and_validate_args_file(&content, &rel)?;
+        (None, Some(rel), found.software.map(Into::into))
+    } else {
+        let facts = jar_facts(&safe_join(&content, &request.jar)?)?;
+        if facts.installer {
+            return Err(IMPORT_INSTALLER.into());
+        }
+        (Some(request.jar.clone()), None, facts.software.map(Into::into))
+    };
     let settings = imported_settings(&properties(&content).map_err(properties_problem)?)?;
     if !safe_join(&content, "server.properties")?.is_file() {
         atomic_write(&content, "server.properties", update_properties("", &settings).as_bytes())?;
@@ -593,8 +977,9 @@ fn import_with(
         java_major: None,
         install_error: None,
         source: ServerSource::Imported,
-        jar: Some(request.jar.clone()),
-        software: facts.software.map(Into::into),
+        jar,
+        args_file,
+        software: software_name,
     };
     save_definition(&content, &definition)?;
     if let Some(state) = control {

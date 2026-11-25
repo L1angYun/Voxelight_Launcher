@@ -102,6 +102,9 @@ struct ServerDefinition {
     /// The imported JAR to run, a file name in the server folder.
     #[serde(default)]
     jar: Option<String>,
+    /// Validated relative path to a Forge/NeoForge `win_args.txt` inside the server folder.
+    #[serde(default)]
+    args_file: Option<String>,
     /// The detected server software, for display only.
     #[serde(default)]
     software: Option<String>,
@@ -126,6 +129,7 @@ pub struct ManagedServerInfo {
     pub source: ServerSource,
     pub software: Option<String>,
     pub jar: Option<String>,
+    pub args_file: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -747,7 +751,10 @@ fn runnable_jar(name: &str) -> bool {
 }
 
 pub(crate) const IMPORTED_JAR_MISSING: &str = "找不到导入的服务端 JAR，请重新导入此服务端";
+pub(crate) const IMPORTED_ARGS_MISSING: &str = "找不到导入服务端的 win_args.txt 参数文件，请重新导入此服务端";
 pub(crate) const IMPORTED_RECORD_INVALID: &str = "导入的服务端记录无效，请重新导入";
+
+const ARGFILE_SPILL_CHARS: usize = 16_000;
 
 /// The JAR a server runs: the downloaded vanilla server.jar, or the imported one.
 fn server_jar(definition: &ServerDefinition) -> Result<&str, String> {
@@ -761,8 +768,7 @@ fn server_jar(definition: &ServerDefinition) -> Result<&str, String> {
     }
 }
 
-/// Java arguments after the launcher's own properties. Only a JAR is ever run,
-/// never a script or an arguments file from the server folder.
+/// Java arguments for JAR-based servers.
 fn launch_args(definition: &ServerDefinition, settings: &ServerSettings) -> Result<Vec<String>, String> {
     Ok(vec![
         "-Xms512M".into(),
@@ -771,6 +777,37 @@ fn launch_args(definition: &ServerDefinition, settings: &ServerSettings) -> Resu
         server_jar(definition)?.into(),
         "nogui".into(),
     ])
+}
+
+/// Java arguments for any managed server, including imported Forge/NeoForge `win_args.txt` servers.
+/// Never executes `.bat`/`.sh` scripts; every token from `win_args.txt` is re-validated on launch.
+fn launch_args_in_dir(
+    definition: &ServerDefinition,
+    settings: &ServerSettings,
+    dir: &Path,
+) -> Result<Vec<String>, String> {
+    if definition.source == ServerSource::Imported {
+        if let Some(rel) = definition.args_file.as_deref() {
+            let tokens = import::load_and_validate_args_file(dir, rel)?;
+            let mut args = vec![
+                "-Xms512M".into(),
+                format!("-Xmx{}M", settings.max_memory_mb),
+            ];
+            let total_chars: usize = tokens.iter().map(|token| token.len() + 3).sum();
+            if total_chars > ARGFILE_SPILL_CHARS {
+                let encoded = import::serialize_java_argfile(&tokens);
+                atomic_write(dir, ".launcher-args.txt", encoded.as_bytes())?;
+                args.push("@.launcher-args.txt".into());
+            } else {
+                args.extend(tokens.iter().cloned());
+            }
+            if !tokens.last().is_some_and(|last| last == "nogui") {
+                args.push("nogui".into());
+            }
+            return Ok(args);
+        }
+    }
+    launch_args(definition, settings)
 }
 
 fn require_eula(definition: &ServerDefinition, dir: &Path) -> Result<(), String> {
@@ -799,9 +836,18 @@ fn server_info(
     let process = registry.process(&definition.id)?;
     let installed = match definition.source {
         ServerSource::Vanilla => definition.jar_sha1.is_some() && safe_join(&dir, "server.jar")?.is_file(),
-        ServerSource::Imported => server_jar(&definition)
-            .and_then(|jar| safe_join(&dir, jar))
-            .is_ok_and(|path| path.is_file()),
+        ServerSource::Imported => {
+            if let Some(rel) = definition.args_file.as_deref() {
+                import::is_canonical_args_file_rel(rel)
+                    && safe_join(&dir, rel).is_ok_and(|path| {
+                        fs::symlink_metadata(&path).is_ok_and(|meta| !meta.file_type().is_symlink() && meta.is_file())
+                    })
+            } else {
+                server_jar(&definition)
+                    .and_then(|jar| safe_join(&dir, jar))
+                    .is_ok_and(|path| path.is_file())
+            }
+        }
     };
     let status = process
         .as_ref()
@@ -836,6 +882,7 @@ fn server_info(
         source: definition.source,
         software: definition.software,
         jar: definition.jar,
+        args_file: definition.args_file,
     })
 }
 async fn install_jar(
@@ -947,6 +994,7 @@ pub async fn create_managed_server(
         install_error: None,
         source: ServerSource::Vanilla,
         jar: None,
+        args_file: None,
         software: None,
     };
     save_definition(&dir, &definition)?;
@@ -1040,8 +1088,11 @@ async fn start_managed_server_inner(
     let mut definition = load_definition(&dir)?;
     require_eula(&definition, &dir)?;
     let settings = settings_from_properties(&properties(&dir)?, &definition.settings)?;
-    let launch = launch_args(&definition, &settings)?;
-    if definition.source == ServerSource::Imported && !safe_join(&dir, server_jar(&definition)?)?.is_file() {
+    let launch = launch_args_in_dir(&definition, &settings, &dir)?;
+    if definition.source == ServerSource::Imported
+        && definition.args_file.is_none()
+        && !safe_join(&dir, server_jar(&definition)?)?.is_file()
+    {
         return Err(IMPORTED_JAR_MISSING.into());
     }
     if registry
@@ -1250,6 +1301,7 @@ mod tests {
             install_error: None,
             source: ServerSource::Vanilla,
             jar: None,
+            args_file: None,
             software: None,
         }
     }
@@ -1276,7 +1328,56 @@ mod tests {
         assert!(imported.contains("minecraft::official_metadata("), "{imported}");
         assert!(!imported.contains("install_jar("), "{imported}");
         assert!(start.split_once("ServerSource::Vanilla =>").unwrap().1.split_once(',').unwrap().0.contains("install_jar("));
-        assert!(start.contains("launch_args(&definition, &settings)?"));
+        assert!(start.contains("launch_args_in_dir(&definition, &settings, &dir)?"));
+    }
+
+    #[test]
+    fn args_file_server_launches_validated_tokens_and_spills_long_command_lines() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/server-manager-tests")
+            .join(uuid::Uuid::new_v4().to_string());
+        let rel = "libraries/net/neoforged/neoforge/21.1.77/win_args.txt";
+        let args_path = root.join(rel);
+        fs::create_dir_all(args_path.parent().unwrap()).unwrap();
+        fs::write(
+            &args_path,
+            "# NeoForge generated args\n-DlibraryDirectory=libraries\n-p libraries/cpw/mods/bootstraplauncher/2.0.2/bootstraplauncher-2.0.2.jar\n--add-modules ALL-MODULE-PATH\ncpw.mods.bootstraplauncher.BootstrapLauncher\n--launchTarget forge_server\n--fml.neoForgeVersion 21.1.77\n--fml.mcVersion 1.21.1\n",
+        )
+        .unwrap();
+
+        let settings = ServerSettings::default();
+        let mut value = definition();
+        value.source = ServerSource::Imported;
+        value.args_file = Some(rel.into());
+        value.software = Some("NeoForge".into());
+
+        let args = launch_args_in_dir(&value, &settings, &root).unwrap();
+        assert_eq!(args[0], "-Xms512M");
+        assert_eq!(args[1], "-Xmx2048M");
+        assert!(args.contains(&"cpw.mods.bootstraplauncher.BootstrapLauncher".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("nogui"));
+
+        // Long module path (> 16 KiB) spills into launcher-owned @.launcher-args.txt.
+        let long_mp = (0..350)
+            .map(|i| format!("libraries/org/example/mod-{i:03}/1.0/mod-{i:03}-1.0.jar"))
+            .collect::<Vec<_>>()
+            .join(";");
+        fs::write(
+            &args_path,
+            format!("-p {long_mp}\ncpw.mods.bootstraplauncher.BootstrapLauncher\n--launchTarget forge_server\n"),
+        )
+        .unwrap();
+        let spilled = launch_args_in_dir(&value, &settings, &root).unwrap();
+        assert_eq!(spilled, ["-Xms512M", "-Xmx2048M", "@.launcher-args.txt", "nogui"]);
+        let written = fs::read_to_string(root.join(".launcher-args.txt")).unwrap();
+        assert!(written.contains("cpw.mods.bootstraplauncher.BootstrapLauncher"));
+
+        // Post-import tampering with a dangerous JVM flag is caught at launch time.
+        fs::write(&args_path, "-javaagent:evil.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n").unwrap();
+        let err = launch_args_in_dir(&value, &settings, &root).unwrap_err();
+        assert_eq!(crate::errors::expected(err).code, "server.importArgsInvalid");
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

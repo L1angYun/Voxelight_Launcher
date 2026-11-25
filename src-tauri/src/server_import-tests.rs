@@ -37,6 +37,18 @@ fn request(kind: ImportKind, path: &Path, jar: &str) -> ImportServerRequest {
         name: "Imported fixture".into(),
         version_id: "1.21.4".into(),
         jar: jar.into(),
+        args_file: None,
+    }
+}
+
+fn args_request(path: &Path, version_id: &str, args_file: &str) -> ImportServerRequest {
+    ImportServerRequest {
+        kind: ImportKind::Folder,
+        path: path.to_string_lossy().into_owned(),
+        name: "Imported args fixture".into(),
+        version_id: version_id.into(),
+        jar: String::new(),
+        args_file: Some(args_file.into()),
     }
 }
 
@@ -234,20 +246,36 @@ fn v2_an_installer_an_arguments_file_server_or_a_folder_without_a_jar_is_not_imp
     jar(&launcher, Some("net.fabricmc.installer.ServerLauncher"), &[]);
     assert_eq!(inspect(ImportKind::Jar, &launcher).unwrap().unsupported, None);
 
-    // Forge and NeoForge 1.17+ start from an arguments file, even beside a JAR.
-    for (folder, args) in [
-        ("forge", "libraries/net/minecraftforge/forge/1.20.1-47.2.0/win_args.txt"),
-        ("neoforge", "libraries/net/neoforged/neoforge/21.1.77/win_args.txt"),
-        ("neoforge-1.20.1", "libraries/net/neoforged/forge/1.20.1-47.1.106/win_args.txt"),
+    // Forge and NeoForge 1.17+ with win_args.txt are now importable, detecting software and version.
+    for (folder, args, expected_software, expected_version) in [
+        ("forge", "libraries/net/minecraftforge/forge/1.20.1-47.2.0/win_args.txt", "Forge", "1.20.1"),
+        ("neoforge", "libraries/net/neoforged/neoforge/21.1.77/win_args.txt", "NeoForge", "1.21.1"),
+        ("neoforge-1.20.1", "libraries/net/neoforged/forge/1.20.1-47.1.106/win_args.txt", "NeoForge", "1.20.1"),
     ] {
         let dir = root.join(folder);
         let file = dir.join(args);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(&file, "-p libraries/x.jar\n").unwrap();
+        fs::write(
+            &file,
+            "-p libraries/cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n--launchTarget forgeserver\n",
+        )
+        .unwrap();
         fs::write(dir.join("run.bat"), "java @user_jvm_args.txt @libraries/x/win_args.txt %*\n").unwrap();
         jar(&dir.join("server.jar"), Some("net.minecraft.bundler.Main"), &[]);
-        assert_eq!(inspect(ImportKind::Folder, &dir).unwrap().unsupported, Some("argsFile"), "{folder}");
+        let found = inspect(ImportKind::Folder, &dir).unwrap();
+        assert_eq!(found.unsupported, None, "{folder}");
+        assert_eq!(found.software, Some(expected_software), "{folder}");
+        assert_eq!(found.minecraft_version.as_deref(), Some(expected_version), "{folder}");
+        assert_eq!(found.args_file.as_deref(), Some(args), "{folder}");
+        assert!(found.jars.is_empty(), "vanilla server.jar beside win_args.txt is not offered");
     }
+
+    // A folder with only unix_args.txt (no win_args.txt) stays unsupported on Windows.
+    let unix_only = root.join("forge-unix-only");
+    let unix_file = unix_only.join("libraries/net/minecraftforge/forge/1.20.1-47.2.0/unix_args.txt");
+    fs::create_dir_all(unix_file.parent().unwrap()).unwrap();
+    fs::write(&unix_file, "-p libraries/x.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n").unwrap();
+    assert_eq!(inspect(ImportKind::Folder, &unix_only).unwrap().unsupported, Some("argsFile"));
 
     // Newer Forge adds a shim JAR that starts it with -jar: that is offered, the vanilla JAR is not.
     let shim = root.join("forge");
@@ -480,7 +508,7 @@ fn v2_an_import_the_launcher_cannot_manage_leaves_nothing_behind() {
 
     let forge = root.join("forge");
     fs::create_dir_all(forge.join("libraries/net/minecraftforge/forge/1.20.1-47.2.0")).unwrap();
-    fs::write(forge.join("libraries/net/minecraftforge/forge/1.20.1-47.2.0/win_args.txt"), "-p x\n").unwrap();
+    fs::write(forge.join("libraries/net/minecraftforge/forge/1.20.1-47.2.0/unix_args.txt"), "-p x\n").unwrap();
     jar(&forge.join("server.jar"), Some("net.minecraft.bundler.Main"), &[]);
     let error = import_into(&state, &request(ImportKind::Folder, &forge, "server.jar"), &forge).unwrap_err();
     assert_eq!(crate::errors::expected(error).code, "server.importArgsFile");
@@ -520,6 +548,66 @@ fn v2_an_import_the_launcher_cannot_manage_leaves_nothing_behind() {
     assert!(import_into(&state, &odd, &folder).is_err());
 
     assert!(servers(&state).is_empty(), "no server or staging folder is left: {:?}", servers(&state));
+    drop(state);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn u4_importing_a_neoforge_args_file_folder_records_args_file_and_rejects_unsafe_flags() {
+    let root = scratch();
+    let state = state(&root);
+    let folder = root.join("neoforge-server");
+    let rel = "libraries/net/neoforged/neoforge/21.1.77/win_args.txt";
+    let args_path = folder.join(rel);
+    fs::create_dir_all(args_path.parent().unwrap()).unwrap();
+    fs::write(
+        &args_path,
+        "-Djava.net.preferIPv6Addresses=system\n-DlibraryDirectory=libraries\n-p libraries/cpw/mods/bootstraplauncher/2.0.2/bootstraplauncher-2.0.2.jar\n--add-modules ALL-MODULE-PATH\ncpw.mods.bootstraplauncher.BootstrapLauncher\n--launchTarget forge_server\n--fml.neoForgeVersion 21.1.77\n--fml.mcVersion 1.21.1\n",
+    )
+    .unwrap();
+    fs::write(folder.join("server.properties"), "server-port=25580\n").unwrap();
+    fs::write(folder.join("eula.txt"), "eula=true\n").unwrap();
+
+    let found = inspect(ImportKind::Folder, &folder).unwrap();
+    assert_eq!(found.unsupported, None);
+    assert_eq!(found.software, Some("NeoForge"));
+    assert_eq!(found.minecraft_version.as_deref(), Some("1.21.1"));
+    assert_eq!(found.args_file.as_deref(), Some(rel));
+
+    let definition = import_into(&state, &args_request(&folder, "1.21.1", rel), &folder).unwrap();
+    let dir = server_directory(&state, &definition.id).unwrap();
+    assert_eq!(definition.jar, None);
+    assert_eq!(definition.args_file.as_deref(), Some(rel));
+    assert_eq!(definition.software.as_deref(), Some("NeoForge"));
+    assert!(!definition.eula_accepted);
+    assert!(fs::read_to_string(dir.join("eula.txt")).unwrap().contains("eula=false"));
+
+    let info = server_info(&state, &ServerRegistry::default(), definition.clone()).unwrap();
+    assert!(info.installed);
+    assert_eq!(info.args_file.as_deref(), Some(rel));
+
+    // Removing win_args.txt marks the server as no longer installed.
+    fs::remove_file(dir.join(rel)).unwrap();
+    assert!(!server_info(&state, &ServerRegistry::default(), definition).unwrap().installed);
+
+    // Unsafe tokens in win_args.txt are refused before copying.
+    for bad in [
+        "@user_jvm_args.txt\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-javaagent:agent.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-agentlib:jdwp=transport=dt_socket\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-XX:OnError=calc.exe\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-XX:OnOutOfMemoryError=calc.exe\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-Xmx8G\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-p ../outside/evil.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-p C:\\Windows\\evil.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-DlibraryDirectory=\\\\server\\share\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-p libraries/a.jar\n",
+    ] {
+        fs::write(&args_path, bad).unwrap();
+        let err = inspect(ImportKind::Folder, &folder).unwrap_err();
+        assert_eq!(crate::errors::expected(err).code, "server.importArgsInvalid", "{bad}");
+    }
+
     drop(state);
     fs::remove_dir_all(&root).unwrap();
 }

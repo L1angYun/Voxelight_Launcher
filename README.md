@@ -48,7 +48,7 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Accounts | Microsoft, offline and Authlib accounts; skin upload and cape for Microsoft accounts | ✅ |
 | Multiplayer | Server list, status, LAN worlds, direct join; local vanilla servers with a console | ✅ |
 | Multiplayer | Import third-party server software, such as Spigot, Paper or Fabric, as a JAR or an existing server folder, and run it as a managed server | ✅ |
-| Multiplayer | Import Forge and NeoForge servers that start only from an arguments file (Forge 1.17+ without a shim JAR, NeoForge) | 🚧 |
+| Multiplayer | Import Forge and NeoForge servers that start only from an arguments file (Forge 1.17+ without a shim JAR, NeoForge) | ✅ |
 | Multiplayer | Network check: IPv4 and IPv6, NAT type, and advice for direct connections | ✅ |
 | Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows accessibility settings | ✅ |
 | Interface | Lower memory use, such as unloading the 3D world in Lite mode | ✅ |
@@ -111,7 +111,7 @@ No telemetry, analytics or crash reporting. The launcher connects only to:
 
 - Windows x64 and Java Edition only.
 - Shader packs need a shader loader such as Iris, installed as a mod.
-- The built-in server download is vanilla only; other server software can be imported, except Forge and NeoForge servers that start only from an arguments file. CurseForge installs don't fetch dependencies.
+- The built-in server download is vanilla only; other server software can be imported, including Forge and NeoForge servers that start from `win_args.txt`. CurseForge installs don't fetch dependencies.
 - Closing the window quits the launcher; unfinished installs can be retried from **Downloads**.
 
 ## Building from source

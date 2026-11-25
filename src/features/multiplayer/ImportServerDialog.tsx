@@ -110,6 +110,7 @@ export function ImportServerDialog({
   }, [catalog, detected?.minecraftVersion]);
   const selectedVersion = versions.some((version) => version.id === versionId) ? versionId : "";
   const unsupported = visible?.unsupported ?? null;
+  const selectedArgsFile = selectedJar ? null : (visible?.argsFile ?? null);
   const valid = Boolean(
     path
     && visible
@@ -117,7 +118,7 @@ export function ImportServerDialog({
     && name.trim()
     && name.trim().length <= 80
     && selectedVersion
-    && selectedJar,
+    && (selectedJar || selectedArgsFile),
   );
   const detection = detected
     ? detected.software
@@ -203,7 +204,7 @@ export function ImportServerDialog({
       if (request !== generation.current || !again) return;
       inspectedAt.current = Date.now();
       setInspection(again);
-      if (again.unsupported || !again.jars.includes(selectedJar)) return;
+      if (again.unsupported || (selectedJar ? !again.jars.includes(selectedJar) : again.argsFile !== selectedArgsFile)) return;
     }
     const result = await importManaged({
       kind,
@@ -211,6 +212,7 @@ export function ImportServerDialog({
       name: name.trim(),
       versionId: selectedVersion,
       jar: selectedJar,
+      ...(selectedArgsFile ? { argsFile: selectedArgsFile } : {}),
     });
     if (result !== undefined) onOpenChange(false);
   }
@@ -266,6 +268,9 @@ export function ImportServerDialog({
                   options={visible.jars.map((value) => ({ value, label: value }))}
                 />
               </Field>
+            ) : null}
+            {selectedArgsFile ? (
+              <p className="vx-path">{t("multiplayer:importArgsFileLabel", { path: selectedArgsFile })}</p>
             ) : null}
             <Field label={t("multiplayer:fields.serverName")} htmlFor={`${formId}-name`}>
               <input
