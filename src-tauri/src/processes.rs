@@ -545,6 +545,179 @@ fn diagnose_instance_inner(
         excerpt,
     })
 }
+const GAME_LOG_TAIL_BYTES: u64 = 2 * 1024 * 1024;
+const GAME_LOG_MAX_LINES: usize = 5000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GameLogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameLogLine {
+    pub time: Option<String>,
+    pub thread: Option<String>,
+    pub level: GameLogLevel,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameLog {
+    pub path: Option<String>,
+    pub lines: Vec<GameLogLine>,
+    pub truncated: bool,
+}
+
+/// Split one log record header from its message. A continuation line (a stack
+/// frame, `Caused by:`, or a bare `...`) has no header and is appended to the
+/// previous record, so its level and timestamp stay those of the record.
+fn game_log_record(line: &str) -> Option<(Option<String>, Option<String>, GameLogLevel, &str)> {
+    let rest = line.strip_prefix('[')?;
+    let (time, rest) = rest.split_once(']')?;
+    let rest = rest.trim_start().strip_prefix('[')?;
+    let (thread_level, message) = rest.split_once(']')?;
+    let (thread, level) = thread_level.rsplit_once('/')?;
+    let level = match level.trim().to_ascii_uppercase().as_str() {
+        "ERROR" | "FATAL" => GameLogLevel::Error,
+        "WARN" | "WARNING" => GameLogLevel::Warn,
+        "INFO" => GameLogLevel::Info,
+        "DEBUG" | "TRACE" => GameLogLevel::Debug,
+        _ => GameLogLevel::Other,
+    };
+    let message = message.strip_prefix(':').unwrap_or(message).trim_start();
+    Some((
+        (!time.trim().is_empty()).then(|| time.trim().to_owned()),
+        (!thread.trim().is_empty()).then(|| thread.trim().to_owned()),
+        level,
+        message,
+    ))
+}
+
+fn parse_game_log<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<GameLogLine> {
+    let mut records: Vec<GameLogLine> = Vec::new();
+    for line in lines {
+        if let Some((time, thread, level, message)) = game_log_record(line) {
+            records.push(GameLogLine {
+                time,
+                thread,
+                level,
+                message: message.to_owned(),
+            });
+        } else if let Some(previous) = records.last_mut() {
+            previous.message.push('\n');
+            previous.message.push_str(line);
+        } else if !line.is_empty() {
+            records.push(GameLogLine {
+                time: None,
+                thread: None,
+                level: GameLogLevel::Other,
+                message: line.to_owned(),
+            });
+        }
+    }
+    for record in &mut records {
+        record.message = redact(&record.message);
+    }
+    records
+}
+
+fn read_game_log_file(root: &Path) -> Result<GameLog, String> {
+    let path = safe_join(root, "logs/latest.log")?;
+    let size = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if crate::resources::linked(&metadata) => {
+            return Err("日志路径包含符号链接或目录联接，拒绝读取外部目标".into());
+        }
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        Ok(_) => {
+            return Ok(GameLog { path: None, lines: Vec::new(), truncated: false });
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(GameLog { path: None, lines: Vec::new(), truncated: false });
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let tail_bytes = size.min(GAME_LOG_TAIL_BYTES);
+    let start = size - tail_bytes;
+    let mut file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+    let truncated = size > tail_bytes;
+    let mut partial_first_line = false;
+    if truncated && start > 0 {
+        // The tail starts in the middle of a line only when the byte before it
+        // is not a newline. At an exact line boundary the first line is whole.
+        let mut previous = [0u8; 1];
+        file.seek(std::io::SeekFrom::Start(start - 1))
+            .and_then(|_| file.read_exact(&mut previous))
+            .map_err(|error| error.to_string())?;
+        partial_first_line = previous[0] != b'\n';
+    }
+    file.seek(std::io::SeekFrom::Start(start))
+        .map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(tail_bytes as usize);
+    file.take(tail_bytes)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if partial_first_line {
+        // That fragment is not a log record and must not become a synthetic
+        // first entry.
+        match text.find('\n') {
+            Some(end) => { text.drain(..=end); }
+            None => text.clear(),
+        }
+    }
+    let mut lines: Vec<&str> = text.lines().collect();
+    let mut truncated = truncated;
+    if lines.len() > GAME_LOG_MAX_LINES {
+        let extra = lines.len() - GAME_LOG_MAX_LINES;
+        lines.drain(..extra);
+        truncated = true;
+    }
+    Ok(GameLog {
+        path: Some(path.to_string_lossy().into_owned()),
+        lines: parse_game_log(lines),
+        truncated,
+    })
+}
+
+fn read_game_log_inner(
+    state: &LauncherState,
+    version_id: &str,
+    instance_id: Option<&str>,
+) -> Result<GameLog, String> {
+    // Resolve the directory with the same rules as diagnose_instance: a
+    // registered instance controls its own directory, otherwise the version
+    // directory (or the configured root) is used.
+    let data = state.snapshot()?;
+    let instance = instance_id.and_then(|id| data.instances.iter().find(|i| &i.id == id));
+    if instance_id.is_some() && instance.is_none() {
+        return Err("实例不存在".into());
+    }
+    let root = crate::minecraft::game_directory(&data.config, version_id, instance)?;
+    read_game_log_file(&root)
+}
+
+#[tauri::command]
+pub async fn read_game_log(
+    state: State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+) -> AppResult<GameLog> {
+    let state = state.inner().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        read_game_log_inner(state.as_ref(), &version_id, instance_id.as_deref())
+    })
+    .await
+    .map_err(|error| expected(error.to_string()))?;
+    result.map_err(expected)
+}
+
 #[tauri::command]
 pub fn export_diagnostics(
     window: tauri::WebviewWindow,
@@ -755,6 +928,186 @@ mod tests {
             "links below the approved root must remain forbidden");
     }
     use super::*;
+
+    struct GameLogFixture {
+        root: PathBuf,
+        state: LauncherState,
+        game: PathBuf,
+    }
+
+    impl GameLogFixture {
+        fn new(contents: Option<&[u8]>) -> Self {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/game-log-tests")
+                .join(uuid::Uuid::new_v4().to_string());
+            let data = root.join("data");
+            let game = root.join("game");
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::create_dir_all(game.join("logs")).unwrap();
+            if let Some(contents) = contents {
+                std::fs::write(game.join("logs/latest.log"), contents).unwrap();
+            }
+            let state = LauncherState::test_fixture(
+                data,
+                crate::models::Persisted::default(),
+                crate::storage::test_client(),
+            );
+            state.update(|profile| {
+                profile.config.game_directory = game.display().to_string();
+                profile.config.version_isolation = false;
+                Ok(())
+            }).unwrap();
+            Self { root, state, game }
+        }
+
+        fn read(&self) -> Result<GameLog, String> {
+            read_game_log_inner(&self.state, "1.21.1", None)
+        }
+
+        fn cleanup(self) {
+            drop(self.state);
+            let _ = std::fs::remove_dir_all(self.root);
+        }
+    }
+
+    #[test]
+    fn game_log_parses_vanilla_loader_and_dated_record_shapes() {
+        let fixture = GameLogFixture::new(Some(concat!(
+            "[12:34:56] [Server thread/INFO]: Starting minecraft server version 1.21.1\n",
+            "[12:34:56] [main/WARN] (Mod) risky option\n",
+            "[23Nov2026 12:34:56.789] [Render thread/ERROR] [com.example.Mod/]: boom\n",
+        ).as_bytes()));
+        let log = fixture.read().unwrap();
+        let path = log.path.as_deref().expect("existing log path");
+        assert!(path.replace('\\', "/").ends_with("/logs/latest.log"), "{path}");
+        assert!(Path::new(path).is_file(), "{path}");
+        assert!(!log.truncated);
+        assert_eq!(log.lines.len(), 3, "{:?}", log.lines);
+        assert_eq!(log.lines[0].time.as_deref(), Some("12:34:56"));
+        assert_eq!(log.lines[0].thread.as_deref(), Some("Server thread"));
+        assert_eq!(log.lines[0].level, GameLogLevel::Info);
+        assert_eq!(log.lines[0].message, "Starting minecraft server version 1.21.1");
+        assert_eq!(log.lines[1].thread.as_deref(), Some("main"));
+        assert_eq!(log.lines[1].level, GameLogLevel::Warn);
+        assert_eq!(log.lines[1].message, "(Mod) risky option");
+        assert_eq!(log.lines[2].time.as_deref(), Some("23Nov2026 12:34:56.789"));
+        assert_eq!(log.lines[2].level, GameLogLevel::Error);
+        assert_eq!(log.lines[2].message, "[com.example.Mod/]: boom");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn game_log_continuations_keep_the_previous_record_and_level() {
+        let fixture = GameLogFixture::new(Some(concat!(
+            "[12:34:56] [main/ERROR]: java.lang.RuntimeException: boom\n",
+            "\tat net.minecraft.Foo.bar(Foo.java:1)\n",
+            "Caused by: java.lang.IllegalStateException: bad\n",
+            "[12:34:56] [main/INFO]: recovered\n",
+        ).as_bytes()));
+        let log = fixture.read().unwrap();
+        assert_eq!(log.lines.len(), 2, "{:?}", log.lines);
+        assert_eq!(log.lines[0].level, GameLogLevel::Error);
+        assert_eq!(
+            log.lines[0].message,
+            "java.lang.RuntimeException: boom\n\tat net.minecraft.Foo.bar(Foo.java:1)\nCaused by: java.lang.IllegalStateException: bad",
+        );
+        assert_eq!(log.lines[1].message, "recovered");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn game_log_maps_fatal_to_error_and_trace_to_debug() {
+        let fixture = GameLogFixture::new(Some(concat!(
+            "[12:34:56] [main/FATAL]: fatal failure\n",
+            "[12:34:56] [main/TRACE]: detailed trace\n",
+            "[12:34:56] [main/DEBUG]: debug detail\n",
+            "[12:34:56] [main/INFO]: ordinary\n",
+        ).as_bytes()));
+        let levels: Vec<_> = fixture.read().unwrap().lines.into_iter().map(|line| line.level).collect();
+        assert_eq!(
+            levels,
+            [GameLogLevel::Error, GameLogLevel::Debug, GameLogLevel::Debug, GameLogLevel::Info],
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn game_log_redacts_credentials_in_every_message() {
+        let fixture = GameLogFixture::new(Some(concat!(
+            "[12:34:56] [main/INFO]: connecting access_token=fixture-secret-token now\n",
+            "[12:34:56] [main/INFO]: open https://fixture-user:fixture-pass@example.invalid/path\n",
+        ).as_bytes()));
+        let log = fixture.read().unwrap();
+        assert!(!log.lines[0].message.contains("fixture-secret-token"), "{:?}", log.lines);
+        assert!(log.lines[0].message.contains("[已隐藏]"), "{:?}", log.lines);
+        assert!(!log.lines[1].message.contains("fixture-user"), "{:?}", log.lines);
+        assert!(!log.lines[1].message.contains("fixture-pass"), "{:?}", log.lines);
+        assert!(log.lines[1].message.contains("example.invalid/path"), "{:?}", log.lines);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn game_log_reads_only_the_last_two_mebibytes() {
+        let mut content = String::new();
+        while content.len() <= 2 * 1024 * 1024 {
+            content.push_str("[12:34:56] [main/INFO]: filler line for the tail limit\n");
+        }
+        content.push_str("[12:34:56] [main/INFO]: tail marker\n");
+        let fixture = GameLogFixture::new(Some(content.as_bytes()));
+        let log = fixture.read().unwrap();
+        assert!(log.truncated);
+        assert_eq!(log.lines.last().map(|line| line.message.as_str()), Some("tail marker"));
+        assert!(log.lines.len() <= GAME_LOG_MAX_LINES);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn game_log_keeps_at_most_the_last_five_thousand_lines() {
+        let mut content = String::new();
+        for index in 1..=GAME_LOG_MAX_LINES + 1 {
+            content.push_str(&format!("[12:34:56] [main/INFO]: line {index}\n"));
+        }
+        let fixture = GameLogFixture::new(Some(content.as_bytes()));
+        let log = fixture.read().unwrap();
+        assert!(log.truncated);
+        assert_eq!(log.lines.len(), GAME_LOG_MAX_LINES);
+        assert_eq!(log.lines.first().map(|line| line.message.as_str()), Some("line 2"));
+        assert_eq!(log.lines.last().map(|line| line.message.as_str()), Some("line 5001"));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn game_log_missing_file_has_no_path_and_no_lines() {
+        let fixture = GameLogFixture::new(None);
+        let log = fixture.read().unwrap();
+        assert_eq!(log.path, None);
+        assert!(log.lines.is_empty());
+        assert!(!log.truncated);
+        fixture.cleanup();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn game_log_refuses_a_junction_at_logs() {
+        let fixture = GameLogFixture::new(None);
+        let target = fixture.root.join("junction-target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(
+            target.join("latest.log"),
+            "[12:34:56] [main/INFO]: should not be reachable\n",
+        ).unwrap();
+        std::fs::remove_dir(fixture.game.join("logs")).unwrap();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(fixture.game.join("logs").to_string_lossy().replace('/', r"\"))
+            .arg(target.to_string_lossy().replace('/', r"\"))
+            .output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let error = fixture.read().unwrap_err();
+        assert!(error.contains("符号链接") || error.contains("目录联接"), "{error}");
+        std::fs::remove_dir(fixture.game.join("logs")).unwrap();
+        fixture.cleanup();
+    }
 
     #[test]
     fn diagnostics_report_accepts_mixed_case_txt_and_leaves_other_extensions_unwritten() {

@@ -73,9 +73,13 @@ function article(id: string): HTMLElement {
   return element;
 }
 
+function queryButton(scope: ParentNode, label: string): HTMLButtonElement | null {
+  return Array.from(scope.querySelectorAll<HTMLButtonElement>("button"))
+    .find((candidate) => candidate.textContent?.trim() === label) ?? null;
+}
+
 function button(scope: ParentNode, label: string): HTMLButtonElement {
-  const element = Array.from(scope.querySelectorAll<HTMLButtonElement>("button"))
-    .find((candidate) => candidate.textContent?.trim() === label);
+  const element = queryButton(scope, label);
   if (!element) throw new Error(`Missing button ${label}`);
   return element;
 }
@@ -124,6 +128,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -417,5 +422,96 @@ describe("download task center", () => {
     await act(async () => button(article("missing"), "Retry").click());
     expect(container.textContent).toContain("This task no longer exists. Refresh and try again.");
     expect(container.textContent).not.toContain("Something went wrong");
+  });
+
+  it("offers bulk retry and clear only for the history tasks they apply to", async () => {
+    currentTasks = [
+      task({ id: "finished", status: "completed", stage: "complete" }),
+      task({ id: "failed-final", status: "failed", stage: "failed", retryable: false }),
+    ];
+    await render();
+    const history = () => container.querySelector<HTMLElement>(".vx-task-section--history")!;
+    expect(queryButton(history(), "Retry failed")).toBeNull();
+    expect(queryButton(history(), "Clear failed and cancelled")).not.toBeNull();
+
+    currentTasks = [
+      ...currentTasks,
+      task({ id: "failed-again", status: "failed", stage: "failed", retryable: true }),
+      task({ id: "cancelled", status: "cancelled", stage: "cancelled", retryable: true }),
+    ];
+    await act(async () => listeners.get("launcher://tasks")?.({ revision: ++revision, tasks: currentTasks }));
+    expect(queryButton(history(), "Retry failed")).not.toBeNull();
+    expect(queryButton(history(), "Clear failed and cancelled")).not.toBeNull();
+
+    currentTasks = [task({ id: "only-cancelled", status: "cancelled", stage: "cancelled" })];
+    await act(async () => listeners.get("launcher://tasks")?.({ revision: ++revision, tasks: currentTasks }));
+    expect(queryButton(history(), "Retry failed")).toBeNull();
+    expect(queryButton(history(), "Clear failed and cancelled")).not.toBeNull();
+  });
+
+  it("retries every failed task in one bulk action and reports the counts", async () => {
+    currentTasks = [
+      task({ id: "failed-a", status: "failed", stage: "failed", retryable: true }),
+      task({ id: "failed-b", status: "failed", stage: "failed", retryable: true }),
+      task({ id: "finished", status: "completed", stage: "complete" }),
+    ];
+    await render();
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "retry_failed_downloads") return { ids: ["bulk-1", "bulk-2"], skipped: 1 };
+      return normal(name, args);
+    });
+    commandMock.mockClear();
+    await act(async () => button(container.querySelector(".vx-task-section--history")!, "Retry failed").click());
+    expect(commandMock).toHaveBeenCalledWith("retry_failed_downloads");
+    expect(commandMock).toHaveBeenCalledWith("list_download_tasks");
+    expect(container.textContent).toContain("Queued 2 tasks");
+    expect(container.textContent).toContain("1 skipped");
+    expect(container.querySelector(".vx-downloads-notice")?.textContent).not.toBe("");
+  });
+
+  it("asks before clearing failed and cancelled history and reports the bytes freed", async () => {
+    currentTasks = [
+      task({ id: "failed-clear", status: "failed", stage: "failed" }),
+      task({ id: "cancelled-clear", status: "cancelled", stage: "cancelled" }),
+      task({ id: "kept", status: "completed", stage: "complete" }),
+    ];
+    await render();
+    const history = () => container.querySelector<HTMLElement>(".vx-task-section--history")!;
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const normal = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "clear_unfinished_downloads") {
+        currentTasks = currentTasks.filter(item => item.status !== "failed" && item.status !== "cancelled");
+        ++revision;
+        return { tasks: 2, bytes: 2048 };
+      }
+      return normal(name, args);
+    });
+    await act(async () => button(history(), "Clear failed and cancelled").click());
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(String(confirm.mock.calls[0][0])).toContain("2");
+    expect(commandMock).not.toHaveBeenCalledWith("clear_unfinished_downloads");
+
+    confirm.mockReturnValue(true);
+    await act(async () => button(history(), "Clear failed and cancelled").click());
+    expect(commandMock).toHaveBeenCalledWith("clear_unfinished_downloads");
+    expect(container.textContent).toContain("Removed 2 tasks");
+    expect(container.textContent).toContain("2 KiB");
+    expect(queryButton(history(), "Clear failed and cancelled")).toBeNull();
+  });
+
+  it("shows a bulk clear refusal through the existing error display", async () => {
+    currentTasks = [task({ id: "failed-busy", status: "failed", stage: "failed" })];
+    await render();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_download_tasks") return snapshot();
+      if (name === "clear_unfinished_downloads") throw new LauncherError("download.busy");
+      return null;
+    });
+    await act(async () => button(container.querySelector(".vx-task-section--history")!, "Clear failed and cancelled").click());
+    expect(container.textContent).toContain("A download is still running or queued. Wait for it to finish before clearing.");
+    expect(container.querySelector(".vx-downloads-error")).not.toBeNull();
   });
 });

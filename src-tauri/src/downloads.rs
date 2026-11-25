@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicUsize;
 pub(crate) const CANCELLED: &str = "任务已取消，已校验文件保留供下次复用";
 pub(crate) const RETRY_UNSUPPORTED: &str = "请回到对应资源、整合包或备份页面重新执行；已校验文件会复用";
 pub(crate) const ALREADY_RETRIED: &str = "此任务已经重试过，请在新的任务上操作";
+pub(crate) const BUSY: &str = "有任务正在下载或排队，请等待完成后再清理";
 const STILL_ACTIVE: &str = "该任务仍在执行或排队";
 
 /// What a task needs to run again from the Downloads page (U0256). Only the
@@ -148,6 +149,29 @@ fn resource_label(request: &ResourceRequest) -> &'static str {
 pub struct DownloadSnapshot {
     revision: u64,
     tasks: Vec<DownloadJob>,
+}
+
+/// The ids of the new tasks queued by retrying every failed one, and how many
+/// failed tasks could not be queued (not retryable, or already retried).
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryFailedResult {
+    pub ids: Vec<String>,
+    pub skipped: usize,
+}
+
+/// How many history rows and how many bytes of kept part data a clear freed.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearUnfinishedResult {
+    pub tasks: usize,
+    pub bytes: u64,
+}
+
+/// What `queue_failed_retries` queued, ready for `spawn_retry`.
+pub(crate) struct QueuedRetries {
+    pub(crate) queued: Vec<(String, RetryRequest)>,
+    pub(crate) skipped: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -704,6 +728,57 @@ impl DownloadControl {
         }
     }
 
+    /// Retries every finished failed task that can still run, in history
+    /// order, through `queue_retry` (so the already-retried and unsupported
+    /// rules are the same as for one task). Every failed task that is not
+    /// queued is counted as skipped.
+    pub(crate) fn queue_failed_retries(&self) -> Result<QueuedRetries, String> {
+        let failed: Vec<String> = self
+            .scheduler
+            .lock()
+            .map_err(|_| "下载任务状态异常")?
+            .jobs
+            .iter()
+            .filter(|job| job.status == "failed")
+            .map(|job| job.id.clone())
+            .collect();
+        let mut queued = Vec::new();
+        let mut skipped = 0;
+        for id in failed {
+            match self.queue_retry(&id) {
+                Ok((new_id, request)) => queued.push((new_id, request)),
+                Err(_) => skipped += 1,
+            }
+        }
+        Ok(QueuedRetries { queued, skipped })
+    }
+
+    /// Removes every failed or cancelled finished task from the history, saves
+    /// the journal and publishes the new snapshot. Refused while a task is
+    /// running or queued. The parts of the removed tasks are freed through the
+    /// part store's locks only, so a part anything still holds is kept.
+    pub(crate) fn clear_unfinished(&self, stores: &[crate::parts::PartStore]) -> Result<ClearUnfinishedResult, String> {
+        let mut refusal: Option<&'static str> = None;
+        let tasks = self.mutate(true, |state| {
+            if state.jobs.iter().any(|job| matches!(job.status.as_str(), "running" | "queued")) {
+                refusal = Some(BUSY);
+                return None;
+            }
+            let before = state.jobs.len();
+            state.jobs.retain(|job| !matches!(job.status.as_str(), "failed" | "cancelled"));
+            Some(before - state.jobs.len())
+        });
+        match (tasks, refusal) {
+            (Some(tasks), _) => {
+                // Nothing was kept by an empty clear: leave every part alone.
+                let bytes = if tasks == 0 { 0 } else { crate::parts::remove_unreferenced(stores) };
+                Ok(ClearUnfinishedResult { tasks, bytes })
+            }
+            (None, Some(reason)) => Err(reason.into()),
+            (None, None) => Err("下载任务状态异常".into()),
+        }
+    }
+
     /// Runs a queued task when its turn comes: behind the operation lock,
     /// with cancel honoured while it waits, and its result recorded.
     pub(crate) async fn run_queued<T, F, Fut>(&self, operation: &tokio::sync::Mutex<()>, id: &str, run: F) -> Option<Result<T, String>>
@@ -1197,9 +1272,45 @@ pub async fn retry_download_task(
     Ok(id)
 }
 
+/// Retries every failed task that can still run, in history order. The new
+/// tasks wait for their turn exactly like single retries.
+#[tauri::command]
+pub async fn retry_failed_downloads(
+    app: AppHandle,
+    state: State<'_, Arc<LauncherState>>,
+) -> AppResult<RetryFailedResult> {
+    let plan = state.control.queue_failed_retries().map_err(expected)?;
+    let ids = plan.queued.iter().map(|(id, _)| id.clone()).collect();
+    for (id, request) in plan.queued {
+        spawn_retry(app.clone(), state.inner().clone(), id, request);
+    }
+    Ok(RetryFailedResult { ids, skipped: plan.skipped })
+}
+
+/// Clears failed and cancelled history rows and the part files they kept.
+/// Refused while a download is running or queued.
+#[tauri::command]
+pub async fn clear_unfinished_downloads(
+    state: State<'_, Arc<LauncherState>>,
+) -> AppResult<ClearUnfinishedResult> {
+    let shared = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let game_root = shared
+            .snapshot()
+            .ok()
+            .and_then(|snapshot| crate::processes::configured_game_root(Path::new(&snapshot.config.game_directory)).ok());
+        let stores = crate::parts::startup_stores(&shared.data_dir, game_root.as_deref());
+        shared.control.clear_unfinished(&stores)
+    })
+    .await
+    .map_err(|error| expected(error.to_string()))?
+    .map_err(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parts::{Algo, PartKey, PartStore};
     use futures_util::FutureExt;
     use std::sync::{atomic::AtomicBool, mpsc};
 
@@ -1678,6 +1789,148 @@ mod tests {
         let queued = threads.into_iter().map(|thread| thread.join().unwrap()).filter(|ok| *ok).count();
         assert_eq!(queued, 1);
         assert_eq!(control.list().iter().filter(|job| job.retried_from.as_deref() == Some(task.as_str())).count(), 1);
+    }
+
+    fn retry_row(id: &str, kind: &str, target: &str, status: &str, retry: serde_json::Value) -> serde_json::Value {
+        let mut row = row(id, kind, target, status);
+        row["retry"] = retry;
+        row
+    }
+
+    fn payload(kind: &str) -> serde_json::Value {
+        match kind {
+            "install" => serde_json::json!({"v": 1, "request": {"kind": "install", "versionId": "1.20.1"}}),
+            "loader" => serde_json::json!({"v": 1, "request": {"kind": "loader", "loader": "fabric", "gameVersion": "1.20.1", "loaderVersion": "0.15.11"}}),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn retry_all_queues_only_failed_retryable_not_yet_retried_tasks_in_history_order() {
+        let mut retried = row("retry-queued", "install", "1.20.1", "queued");
+        retried["retriedFrom"] = serde_json::json!("failed-already");
+        let journal = Journal::new(serde_json::json!([
+            row("completed", "install", "1.20.1", "completed"),
+            retry_row("failed-install", "install", "1.20.1", "failed", payload("install")),
+            retry_row("cancelled", "loader", "1.20.1", "cancelled", payload("loader")),
+            retry_row("failed-loader", "loader", "1.20.1", "failed", payload("loader")),
+            retry_row("interrupted", "install", "1.20.1", "interrupted", payload("install")),
+            row("failed-export", "export", "fixture", "failed"),
+            retry_row("failed-already", "install", "1.20.1", "failed", payload("install")),
+            retried,
+            retry_row("failed-after", "install", "1.20.1", "failed", payload("install")),
+        ]));
+        let control = journal.load();
+        let plan = control.queue_failed_retries().unwrap();
+        assert_eq!(plan.skipped, 2, "a non-retryable and an already retried failed task are counted");
+        assert_eq!(plan.queued.len(), 3);
+        let new_ids: Vec<String> = plan.queued.iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(new_ids, control.list().iter().filter(|job| job.status == "queued").map(|job| job.id.clone()).collect::<Vec<_>>());
+        let listed = control.list();
+        let retried_from: Vec<&str> = listed
+            .iter()
+            .filter(|job| job.status == "queued" && job.retried_from.is_some())
+            .filter_map(|job| job.retried_from.as_deref())
+            .collect();
+        assert_eq!(retried_from, ["failed-install", "failed-loader", "failed-after"], "history order");
+        for (new_id, request) in &plan.queued {
+            let row = job(&control, new_id);
+            assert_eq!(row.status, "queued");
+            assert_eq!(row.retry_request().as_ref(), Some(request));
+        }
+        assert_eq!(job(&control, "cancelled").status, "cancelled", "cancelled tasks are not retried");
+        assert_eq!(job(&control, "completed").status, "completed", "completed tasks are not retried");
+        assert_eq!(job(&control, "interrupted").status, "interrupted", "interrupted tasks are not retried");
+        assert_eq!(job(&control, "failed-export").status, "failed");
+        assert_eq!(job(&control, "failed-already").status, "failed");
+        assert_eq!(job(&control, "retry-queued").retried_from.as_deref(), Some("failed-already"));
+
+        // The saved journal holds the same queued retries, in the same order.
+        let disk: Vec<DownloadJob> = serde_json::from_slice(&fs::read(journal.0.join("download-jobs.json")).unwrap()).unwrap();
+        let disk_retried: Vec<&str> = disk
+            .iter()
+            .filter(|job| job.status == "queued")
+            .filter_map(|job| job.retried_from.as_deref())
+            .collect();
+        assert_eq!(disk_retried, ["failed-install", "failed-loader", "failed-after"]);
+        assert_eq!(disk.len(), control.list().len());
+    }
+
+    fn kept_part(store: &PartStore, seed: u64, bytes: usize) -> PartKey {
+        let key = PartKey::new(Algo::Sha1, &format!("{seed:040x}"), bytes as u64).unwrap();
+        let mut part = store.open(&key, bytes as u64).unwrap().unwrap();
+        part.append(&vec![0x5a; bytes]).unwrap();
+        drop(part);
+        key
+    }
+
+    #[test]
+    fn clear_removes_only_failed_and_cancelled_tasks_their_parts_and_keeps_the_rest() {
+        let journal = Journal::new(serde_json::json!([
+            row("completed", "install", "1.20.1", "completed"),
+            row("failed-1", "install", "1.20.1", "failed"),
+            row("interrupted", "install", "1.20.1", "interrupted"),
+            row("cancelled-1", "loader", "1.20.1", "cancelled"),
+            row("failed-2", "install", "1.20.1", "failed"),
+        ]));
+        let control = journal.load();
+        let paused = control.begin_recorded("install", "1.20.1", "Minecraft 1.20.1", None, RetryRequest::Install { version_id: "1.20.1".into() }).unwrap();
+        control.set_paused(&paused, true);
+        assert_eq!(job(&control, &paused).status, "paused");
+
+        let store = PartStore::new(journal.0.join("parts"));
+        let failed = kept_part(&store, 1, 24);
+        let cancelled = kept_part(&store, 2, 16);
+        let paused_part = {
+            let key = PartKey::new(Algo::Sha1, &format!("{:040x}", 4), 12).unwrap();
+            let mut part = store.open(&key, 12).unwrap().unwrap();
+            part.append(&[0x5a; 12]).unwrap();
+            (key, part)
+        };
+        fs::write(store.root().join("notes.part"), b"keep").unwrap();
+
+        let result = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
+        assert_eq!(result.tasks, 3);
+        assert_eq!(result.bytes, 40, "only the bytes of removed part files are counted");
+        let listed = control.list();
+        let remaining: Vec<&str> = listed.iter().map(|job| job.id.as_str()).collect();
+        assert_eq!(remaining, ["completed", "interrupted", paused.as_str()], "kept rows keep their order");
+        assert_eq!(job(&control, &paused).status, "paused");
+
+        for key in [&failed, &cancelled] {
+            assert!(!key.file(store.root(), "part").exists(), "a failed or cancelled part is removed");
+            assert!(!key.file(store.root(), "json").exists());
+        }
+        let (paused_key, paused_part) = paused_part;
+        assert!(paused_key.file(store.root(), "part").is_file(), "a part a paused task holds stays");
+        assert_eq!(paused_part.done(), 12);
+        assert!(store.root().join("notes.part").is_file(), "foreign files are never touched");
+        drop(paused_part);
+
+        // The journal on disk matches the published history.
+        let disk: Vec<DownloadJob> = serde_json::from_slice(&fs::read(journal.0.join("download-jobs.json")).unwrap()).unwrap();
+        assert_eq!(disk.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(), ["completed", "interrupted", paused.as_str()]);
+        assert_eq!(disk.iter().map(|job| job.status.as_str()).collect::<Vec<_>>(), ["completed", "interrupted", "paused"]);
+
+        // Clearing nothing leaves an unlocked part alone.
+        let untouched = kept_part(&store, 5, 6);
+        let empty = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
+        assert_eq!((empty.tasks, empty.bytes), (0, 0));
+        assert!(untouched.file(store.root(), "part").is_file());
+    }
+
+    #[test]
+    fn clear_refuses_while_a_download_is_running_or_queued() {
+        let journal = Journal::new(serde_json::Value::Null);
+        let control = journal.load();
+        let running = control.begin("install", "1.20.1", "Minecraft 1.20.1").unwrap();
+        assert_eq!(code(control.clear_unfinished(&[]).unwrap_err()), "download.busy");
+        assert_eq!(control.list().len(), 1, "the refused clear changes nothing");
+        control.finish(&running, None);
+        let queued = control.enqueue("install", "1.20.1", "Minecraft 1.20.1").unwrap();
+        assert_eq!(code(control.clear_unfinished(&[]).unwrap_err()), "download.busy");
+        assert_eq!(control.list().len(), 2);
+        control.cancel(&queued);
     }
 
     #[test]

@@ -122,6 +122,18 @@ export interface Diagnosis {
   logPath?: string | null;
   excerpt: string;
 }
+export type GameLogLevel = "error" | "warn" | "info" | "debug" | "other";
+export interface GameLogLine {
+  time: string | null;
+  thread: string | null;
+  level: GameLogLevel;
+  message: string;
+}
+export interface GameLog {
+  path: string | null;
+  lines: GameLogLine[];
+  truncated: boolean;
+}
 export interface LoaderVersion {
   id: string;
   stable: boolean;

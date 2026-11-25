@@ -83,3 +83,25 @@ test("local resource packs can be searched and disabled in a batch", async ({ pa
     .toEqual(["faithful.zip", "fresh-animations.zip"]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("local resources can be deleted in a batch with confirmation and logs tab loads game logs", async ({ page }) => {
+  await page.setViewportSize({ width: 1050, height: 720 });
+  await installLauncherFixture(page, { localResources: [
+    { fileName: "alpha.zip" }, { fileName: "beta.zip" }, { fileName: "gamma.zip" },
+  ] });
+  await page.goto("/?next-ui");
+  await navigation(page).getByRole("button", { name: "游戏库", exact: true }).click();
+  await page.locator(".vx-instance-card").first().click();
+  await page.getByRole("tab", { name: "内容", exact: true }).click();
+  await page.getByRole("checkbox", { name: /alpha/ }).check();
+  await page.getByRole("checkbox", { name: /beta/ }).check();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(page.getByText("已从磁盘永久删除 2 个资源。")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /alpha/ })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /gamma/ })).toHaveCount(1);
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "游戏日志", exact: true })).toBeVisible();
+  await expect(page.getByRole("searchbox", { name: "搜索游戏日志" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

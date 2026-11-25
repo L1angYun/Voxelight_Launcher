@@ -31,6 +31,17 @@ export interface DownloadTaskSnapshot {
 
 export type DownloadTaskAction = "pause" | "resume" | "cancel" | "retry";
 
+export interface RetryFailedResult {
+  ids: string[];
+  queued: number;
+  skipped: number;
+}
+
+export interface ClearUnfinishedResult {
+  tasks: number;
+  bytes: number;
+}
+
 export interface DownloadTasksModel {
   tasks: DownloadTask[];
   active: DownloadTask[];
@@ -38,10 +49,47 @@ export interface DownloadTasksModel {
   rates: Record<string, number>;
   activeCount: number;
   busyTaskId: string | null;
+  bulkBusy: boolean;
   loading: boolean;
   error: LauncherError | null;
   act(task: DownloadTask, action: DownloadTaskAction): Promise<void>;
+  retryFailed(): Promise<RetryFailedResult | null>;
+  clearUnfinished(): Promise<ClearUnfinishedResult | null>;
   refresh(): Promise<void>;
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** The command returns ids; tolerate a plain id list too. */
+function retryFailedResult(value: unknown, candidates: number): RetryFailedResult {
+  if (Array.isArray(value)) {
+    return { ids: strings(value), queued: value.length, skipped: Math.max(0, candidates - value.length) };
+  }
+  const record = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+  const ids = strings(record.ids).length ? strings(record.ids) : strings(record.queuedIds);
+  const queued = count(record.queued) ?? ids.length;
+  return {
+    ids,
+    queued,
+    skipped: count(record.skipped) ?? Math.max(0, candidates - queued),
+  };
+}
+
+function clearUnfinishedResult(value: unknown): ClearUnfinishedResult {
+  if (Array.isArray(value)) {
+    return { tasks: count(value[0]) ?? 0, bytes: count(value[1]) ?? 0 };
+  }
+  const record = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+  return {
+    tasks: count(record.tasks) ?? count(record.removed) ?? count(record.removedTasks) ?? count(record.count) ?? 0,
+    bytes: count(record.bytes) ?? count(record.bytesFreed) ?? count(record.freedBytes) ?? count(record.freed) ?? 0,
+  };
 }
 
 const liveStatuses = new Set(["queued", "running", "paused"]);
@@ -61,6 +109,7 @@ export function useDownloadTasks(): DownloadTasksModel {
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
   const [rates, setRates] = useState<Record<string, number>>({});
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<LauncherError | null>(null);
   const previousTasks = useRef<DownloadTask[]>([]);
@@ -162,6 +211,49 @@ export function useDownloadTasks(): DownloadTasksModel {
     }
   }, [applyTasks, refresh]);
 
+  const retryFailed = useCallback(async (): Promise<RetryFailedResult | null> => {
+    if (!mounted.current || busy.current) return null;
+    const session = lifecycle.current;
+    const candidates = previousTasks.current.filter(task => task.status === "failed" && task.retryable).length;
+    busy.current = true;
+    setBulkBusy(true);
+    setError(null);
+    try {
+      const result = retryFailedResult(await command<unknown>("retry_failed_downloads"), candidates);
+      if (lifecycle.current === session) await refresh();
+      return result;
+    } catch (cause) {
+      if (lifecycle.current === session) setError(normalizeError(cause));
+      return null;
+    } finally {
+      if (lifecycle.current === session) {
+        busy.current = false;
+        setBulkBusy(false);
+      }
+    }
+  }, [refresh]);
+
+  const clearUnfinished = useCallback(async (): Promise<ClearUnfinishedResult | null> => {
+    if (!mounted.current || busy.current) return null;
+    const session = lifecycle.current;
+    busy.current = true;
+    setBulkBusy(true);
+    setError(null);
+    try {
+      const result = clearUnfinishedResult(await command<unknown>("clear_unfinished_downloads"));
+      if (lifecycle.current === session) await refresh();
+      return result;
+    } catch (cause) {
+      if (lifecycle.current === session) setError(normalizeError(cause));
+      return null;
+    } finally {
+      if (lifecycle.current === session) {
+        busy.current = false;
+        setBulkBusy(false);
+      }
+    }
+  }, [refresh]);
+
   // This model outlives the Downloads page, so returning to it reuses prepared groups.
   const { active, history } = useMemo(() => {
     const active: DownloadTask[] = [], history: DownloadTask[] = [];
@@ -176,5 +268,8 @@ export function useDownloadTasks(): DownloadTasksModel {
     return { active, history };
   }, [tasks]);
 
-  return { tasks, active, history, rates, activeCount: active.length, busyTaskId, loading, error, act, refresh };
+  return {
+    tasks, active, history, rates, activeCount: active.length, busyTaskId, bulkBusy,
+    loading, error, act, retryFailed, clearUnfinished, refresh,
+  };
 }

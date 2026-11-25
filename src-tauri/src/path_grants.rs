@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 #[serde(rename_all = "camelCase")]
 pub enum PathUse {
     GameDirectory, Java, InstanceIcon, Skin, Background, PresetRead, PresetWrite,
-    LocalResources, WorldRead, WorldWrite, PackRead, PackWrite, InstanceArchive, Diagnostics,
+    LocalResources, Datapack, WorldRead, WorldWrite, PackRead, PackWrite, InstanceArchive, Diagnostics,
     ServerJar, ServerFolder,
 }
 
@@ -24,7 +24,7 @@ impl PathUse {
             Self::Background => &["png", "jpg", "jpeg", "webp"],
             Self::PresetRead | Self::PresetWrite => &["json"],
             Self::LocalResources => &["jar", "zip"],
-            Self::WorldRead | Self::WorldWrite | Self::InstanceArchive => &["zip"],
+            Self::Datapack | Self::WorldRead | Self::WorldWrite | Self::InstanceArchive => &["zip"],
             Self::PackRead => &["mrpack", "zip"],
             Self::PackWrite => &["mrpack"],
             Self::Diagnostics => &["txt"],
@@ -50,6 +50,7 @@ impl PathUse {
             Self::PresetRead => "导入设置预设 / Import settings preset",
             Self::PresetWrite => "导出设置预设 / Export settings preset",
             Self::LocalResources => "导入本地资源 / Import local resources",
+            Self::Datapack => "导入数据包 / Import data packs",
             Self::WorldRead => "导入世界 / Import world",
             Self::WorldWrite => "备份世界 / Back up world",
             Self::PackRead => "导入整合包 / Import modpack",
@@ -162,6 +163,11 @@ impl PathGrants {
         self.consume_all(PathUse::LocalResources, &paths, window.label(), Instant::now())
     }
 
+    pub(crate) fn consume_datapacks(&self, values: &[String], window: &WebviewWindow) -> AppResult<Vec<PathBuf>> {
+        let paths = values.iter().map(String::as_str).collect::<Vec<_>>();
+        self.consume_all(PathUse::Datapack, &paths, window.label(), Instant::now())
+    }
+
     pub(crate) async fn choose_or_confirm(
         &self, purpose: PathUse, path: &str, window: &WebviewWindow, may_confirm_typed: bool,
     ) -> AppResult<PathBuf> {
@@ -225,7 +231,7 @@ pub async fn choose_launcher_path(
         }
     }
     let (tx, rx) = oneshot::channel();
-    if purpose == PathUse::LocalResources {
+    if matches!(purpose, PathUse::LocalResources | PathUse::Datapack) {
         dialog.pick_files(move |paths| { let _ = tx.send(paths); });
     } else {
         let receive = move |path: Option<FilePath>| { let _ = tx.send(path.map(|path| vec![path])); };
@@ -329,5 +335,29 @@ mod tests {
         assert!(table.consume_all(PathUse::LocalResources, &[&display, &other], "main", now).is_err());
         assert!(table.consume_all(PathUse::LocalResources, &[&display, &display], "main", now).is_err());
         assert_eq!(table.consume_all(PathUse::LocalResources, &[&display], "main", now).unwrap(), vec![selected]);
+    }
+
+    #[test]
+    fn u2_datapack_grants_accept_only_zip_files_and_consume_atomically() {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let pack = root.path().join("pack.zip");
+        let jar = root.path().join("mod.jar");
+        let folder = root.path().join("folder");
+        fs::write(&pack, b"zip").unwrap();
+        fs::write(&jar, b"jar").unwrap();
+        fs::create_dir(&folder).unwrap();
+        let resolved = PathUse::Datapack.resolve(&pack).unwrap();
+        assert!(PathUse::Datapack.resolve(&jar).is_err());
+        assert!(PathUse::Datapack.resolve(&folder).is_err());
+        let display = crate::storage::display_profile_path(&resolved);
+        let table = PathGrants::default();
+        let now = Instant::now();
+        table.insert_all(PathUse::Datapack, &[resolved.clone()], "main", now).unwrap();
+        assert!(table.consume_all(PathUse::LocalResources, &[&display], "main", now).is_err());
+        assert_eq!(table.consume_all(PathUse::Datapack, &[&display], "main", now).unwrap(), vec![resolved]);
+        assert!(table.consume_all(PathUse::Datapack, &[&display], "main", now).is_err());
     }
 }

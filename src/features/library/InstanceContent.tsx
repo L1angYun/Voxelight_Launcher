@@ -55,13 +55,20 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
   const { t, i18n } = useTranslation();
   const id = useId();
   const manager = useResourceManager(versionId, instanceId);
-  const { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice,
-    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany } = manager;
+  const { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice, noticeParams,
+    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany, deleteMany } = manager;
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<ResourceStateFilter>("all");
   const [sort, setSort] = useState<ResourceSort>("name");
   const searchRef = useRef<HTMLInputElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+  const [focusAfterDelete, setFocusAfterDelete] = useState(false);
+  useEffect(() => {
+    if (!focusAfterDelete) return;
+    setFocusAfterDelete(false);
+    (selectAllRef.current ?? searchRef.current)?.focus();
+  }, [focusAfterDelete, files]);
   const waitingForView = busy === view || (view === "files" && busy === "import");
   const showEmpty = !waitingForView && !error;
   const visible = visibleResources(files, { query, state: stateFilter, sort });
@@ -78,6 +85,16 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
     setQuery("");
     clearSelection();
     setKind(value as typeof kind);
+  };
+  const deleteSelected = async () => {
+    const hadFocus = document.activeElement === deleteRef.current;
+    const deleted = await deleteMany(selectedFiles, t("library:batchDeleteConfirm", { count: selectedFiles.length }));
+    // This action always deletes the whole selection, so success leaves nothing
+    // selected; if focus was on Delete or fell back to body, move it cleanly
+    // after the refreshed list renders rather than losing it with the button.
+    if (deleted && (hadFocus || document.activeElement === deleteRef.current || document.activeElement === document.body)) {
+      setFocusAfterDelete(true);
+    }
   };
   return (
     <div className="vx-detail-stack">
@@ -106,7 +123,7 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
         options={(["files", "updates", "history"] as const).map((value) => ({ value, label: t(`library:${value}`) }))} />
       <LoadingStatus active={Boolean(busy)}>{t("common:status.loading")}</LoadingStatus>
       {error ? <p role="alert">{errorText(error, t)}</p> : null}
-      {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}
+      {notice ? <p className="vx-inline-notice">{noticeText(notice, t, noticeParams)}</p> : null}
       <SectionPanel selectionKey={`${kind}:${view}`} role="tabpanel" id={`${id}-resource-panel`} aria-labelledby={`${id}-resource-tab-${view}`}>
       {view === "files" ? (
         files.length ? (
@@ -137,6 +154,7 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
               <span role="status">{t("library:selectedCount", { count: selectedFiles.length })}</span>
               <Button variant="secondary" disabled={Boolean(busy) || selectedFiles.length === 0} onClick={() => void toggleMany(selectedFiles, true)}>{t("library:batchEnable")}</Button>
               <Button variant="secondary" disabled={Boolean(busy) || selectedFiles.length === 0} onClick={() => void toggleMany(selectedFiles, false)}>{t("library:batchDisable")}</Button>
+              <Button ref={deleteRef} variant="secondary" tone="danger" disabled={Boolean(busy) || selectedFiles.length === 0} onClick={() => void deleteSelected()}>{t("library:batchDelete")}</Button>
               {/* Remains mounted so clearing selection never removes a focused control. */}
               <Button variant="ghost" disabled={Boolean(busy) || selectedFiles.length === 0} onClick={clearSelectionAndFocus}>{t("library:batchClear")}</Button>
             </div>

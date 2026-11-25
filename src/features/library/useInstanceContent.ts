@@ -30,6 +30,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   const [busy, setBusy] = useState(versionId && desktop ? "files" : "");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [noticeParams, setNoticeParams] = useState<Record<string, unknown> | undefined>(undefined);
   const generation = useRef(0);
 
   const selectionArgs = useCallback(() => ({ versionId, instanceId, resourceType: kind }), [instanceId, kind, versionId]);
@@ -92,6 +93,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     setBusy("");
     setError("");
     setNotice("");
+    setNoticeParams(undefined);
     if (versionId && desktop) void refresh();
     return () => {
       ++generation.current;
@@ -169,6 +171,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
           return next;
         });
       }
+      setNoticeParams(undefined);
       setNotice("resourceToggled");
       await refresh();
     } catch (cause) {
@@ -234,6 +237,67 @@ export function useResourceManager(versionId: string, instanceId?: string) {
         setSelectedFileNames(new Set());
         if (!failed) report(request, cause);
       }
+    } finally {
+      if (request === generation.current) setBusy("");
+    }
+  }, [busy, report, selectionArgs]);
+
+  const deleteMany = useCallback(async (targets: LocalResource[], confirmation: string) => {
+    if (!desktop || busy || !targets.length || !window.confirm(confirmation)) return false;
+    const request = ++generation.current;
+    const target = selectionArgs();
+    setBusy("delete:batch");
+    setError("");
+    setNotice("");
+    try {
+      const result = await command<{ deleted: string[] }>("delete_local_resources", {
+        ...target,
+        fileNames: targets.map((file) => file.fileName),
+      });
+      if (request !== generation.current) return true;
+      const deleted = new Set(result.deleted);
+      setNoticeParams({ count: result.deleted.length });
+      setNotice("resourceDeleted");
+      setUpdates(null);
+      setCurseforgeSkipped(false);
+      setCurseforgeFailed(false);
+      // The deletion normally empties the selection. Drop the reported names
+      // immediately so they stay gone even if the folder cannot be listed.
+      setSelectedFileNames((previous) => {
+        const next = new Set([...previous].filter((name) => !deleted.has(name)));
+        return next.size === previous.size ? previous : next;
+      });
+      try {
+        const nextFiles = await command<LocalResource[]>("list_local_resources", target);
+        if (request !== generation.current) return true;
+        setFiles(nextFiles);
+        const present = new Set(nextFiles.map((file) => file.fileName));
+        setSelectedFileNames((previous) => {
+          const next = new Set([...previous].filter((name) => present.has(name)));
+          return next.size === previous.size ? previous : next;
+        });
+      } catch (cause) {
+        report(request, cause);
+      }
+      return true;
+    } catch (cause) {
+      report(request, cause);
+      if (request === generation.current) {
+        try {
+          const nextFiles = await command<LocalResource[]>("list_local_resources", target);
+          if (request === generation.current) {
+            setFiles(nextFiles);
+            const present = new Set(nextFiles.map((file) => file.fileName));
+            setSelectedFileNames((previous) => {
+              const next = new Set([...previous].filter((name) => present.has(name)));
+              return next.size === previous.size ? previous : next;
+            });
+          }
+        } catch {
+          // Keep the deletion error visible; the list refresh is best effort.
+        }
+      }
+      return false;
     } finally {
       if (request === generation.current) setBusy("");
     }
@@ -356,8 +420,8 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   }, [busy, kind, refresh, report, selectionArgs, t]);
 
   return {
-    kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice,
-    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany,
+    kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice, noticeParams,
+    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany, deleteMany,
     refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles,
   };
 }

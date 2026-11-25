@@ -1650,5 +1650,87 @@ describe("library and instance details", () => {
       expect(rowCheckbox("Delta Mod").checked).toBe(false);
       expect(filterLabels()).toEqual(["全部 (1)", "已启用 (1)", "已禁用 (0)"]);
     });
+
+    it("enables batch delete only with a selection and cancels without deleting", async () => {
+      const resources = [localFile("Alpha"), localFile("Beta")];
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+
+      expect(batchButton("删除").disabled).toBe(true);
+      await act(async () => rowCheckbox("Alpha").click());
+      expect(batchButton("删除").disabled).toBe(false);
+
+      await act(async () => batchButton("删除").click());
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(String(confirm.mock.calls[0][0])).toContain("1");
+      expect(String(confirm.mock.calls[0][0])).toContain("永久");
+      expect(commandMock.mock.calls.filter(([name]) => name === "delete_local_resources")).toHaveLength(0);
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(1);
+      expect(selectionStatus()?.textContent).toBe("已选择 1 个文件");
+    });
+
+    it("deletes the selected files in one batch, refreshes, and clears stale updates", async () => {
+      let resources = [localFile("Alpha"), localFile("Beta"), localFile("Gamma")];
+      const updates: ResourceUpdate[] = [{
+        fileName: "alpha.jar", name: "Alpha", currentVersion: "1.0", newVersion: "1.1",
+        projectId: "alpha-project", newVersionId: "alpha-version", enabled: true, source: "modrinth",
+      }];
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      commandMock.mockImplementation(async (name, args) => {
+        if (name === "list_local_resources") return resources;
+        if (name === "check_resource_updates") return { updates, curseforgeSkipped: false };
+        if (name === "delete_local_resources") {
+          const fileNames = args?.fileNames as string[];
+          resources = resources.filter((file) => !fileNames.includes(file.fileName));
+          return { deleted: fileNames };
+        }
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => rowCheckbox("Alpha").click());
+      await act(async () => rowCheckbox("Beta").click());
+      const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
+      const tab = (label: string) => [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find((node) => node.textContent === label)!;
+      await act(async () => find("检查更新").click());
+      expect(container.querySelectorAll(".vx-resource-row")).toHaveLength(1);
+      await act(async () => tab("文件").click());
+
+      const remove = batchButton("删除");
+      remove.focus();
+      await act(async () => remove.click());
+      expect(String(confirm.mock.calls[0][0])).toContain("2");
+      expect(commandMock).toHaveBeenCalledWith("delete_local_resources", {
+        versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack",
+        fileNames: ["alpha.jar", "beta.jar"],
+      });
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(2);
+      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(rowNames()).toEqual(["Gamma"]);
+      expect(container.querySelector(".vx-inline-notice")?.textContent).toBe("已从磁盘永久删除 2 个资源。");
+      expect(document.activeElement).toBe(headerCheckbox());
+
+      await act(async () => tab("更新").click());
+      expect(container.querySelector(".vx-empty h2")?.textContent).toBe("尚未检查更新");
+    });
+
+    it("shows a batch delete error and still refreshes the file list", async () => {
+      const resources = [localFile("Alpha"), localFile("Beta")];
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      commandMock.mockImplementation(async (name) => {
+        if (name === "list_local_resources") return resources;
+        if (name === "delete_local_resources") throw { code: "resource.unavailable", params: {} };
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("已选择 2 个文件");
+
+      await act(async () => batchButton("删除").click());
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("无法读取资源目录");
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(2);
+      expect(rowNames()).toEqual(["Alpha", "Beta"]);
+      expect(selectionStatus()?.textContent).toBe("已选择 2 个文件");
+    });
   });
 });

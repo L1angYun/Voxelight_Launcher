@@ -88,10 +88,15 @@ commands.allow = [
   "apply_modpack_update",
   "import_modpack",
   "diagnose_instance",
+  "read_game_log",
   "export_diagnostics",
   "list_worlds",
   "backup_world",
   "import_world",
+  "list_world_datapacks",
+  "import_world_datapacks",
+  "toggle_world_datapack",
+  "delete_world_datapack",
   "list_screenshots",
   "read_screenshot",
   "import_local_resources",
@@ -108,6 +113,8 @@ commands.allow = [
   "cancel_download_task",
   "queue_install",
   "retry_download_task",
+  "retry_failed_downloads",
+  "clear_unfinished_downloads",
 ]
 
 [[permission]]
@@ -123,6 +130,7 @@ commands.allow = [
   "list_local_resources",
   "read_local_mod_icon",
   "toggle_resource",
+  "delete_local_resources",
   "check_resource_updates",
   "update_resource",
   "list_resource_update_history",

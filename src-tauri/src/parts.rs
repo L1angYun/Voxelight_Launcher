@@ -80,7 +80,7 @@ impl PartKey {
         Self::new(algo, hex, size).filter(|key| key.0 == name)
     }
 
-    fn file(&self, root: &Path, extension: &str) -> PathBuf {
+    pub(crate) fn file(&self, root: &Path, extension: &str) -> PathBuf {
         root.join(format!("{}.{extension}", self.0))
     }
 }
@@ -404,6 +404,38 @@ impl PartStore {
         true
     }
 
+    /// Removes every part of this folder that no download holds, returning the
+    /// bytes of part data that were freed. The lock is the ownership rule: a
+    /// part another task (in this or another launcher) holds is kept. Only
+    /// exact part names are touched, and nothing is done through a link.
+    pub(crate) fn remove_unreferenced(&self) -> u64 {
+        if crate::instances::validate_absolute_syntax(&self.root).is_err() || !ordinary_tree(&self.root) {
+            return 0;
+        }
+        let Ok(entries) = fs::read_dir(&self.root) else { return 0 };
+        let mut groups: std::collections::BTreeMap<String, (PartKey, u64)> = Default::default();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(stem) = EXTENSIONS.iter().find_map(|extension| name.strip_suffix(&format!(".{extension}"))) else {
+                continue;
+            };
+            let Some(key) = PartKey::parse(stem) else { continue };
+            let Ok(metadata) = fs::symlink_metadata(entry.path()) else { continue };
+            if !metadata.is_file() || !ordinary(&metadata) {
+                continue;
+            }
+            let group = groups.entry(key.0.clone()).or_insert_with(|| (key, 0));
+            if name.ends_with(".part") {
+                group.1 += metadata.len();
+            }
+        }
+        groups
+            .into_values()
+            .filter_map(|(key, bytes)| self.remove_unlocked(&key).then_some(bytes))
+            .sum()
+    }
+
     /// Takes back a verified `file` of `size` bytes that a download moved out
     /// of its part, as a complete part: the next download only checks it.
     /// Best effort: false when the part is in use or the file cannot be moved
@@ -513,6 +545,19 @@ pub(crate) fn sweep(stores: &[PartStore], now: SystemTime, keep: Duration, cap: 
             total = total.saturating_sub(bytes);
         }
     }
+}
+
+/// Removes every part in `stores` that no download holds, returning the bytes
+/// of part data freed. A folder reachable by several store entries is listed
+/// once. This never removes a part whose lock is held, so a paused task's or
+/// another launcher's part is safe.
+pub(crate) fn remove_unreferenced(stores: &[PartStore]) -> u64 {
+    let mut seen = std::collections::HashSet::new();
+    stores
+        .iter()
+        .filter(|store| fs::canonicalize(store.root()).map_or(true, |real| seen.insert(real)))
+        .map(|store| store.remove_unreferenced())
+        .sum()
 }
 
 /// The part folders this launcher writes: the data directory's, the modpack
@@ -1648,3 +1693,49 @@ mod tests;
 #[cfg(test)]
 #[path = "parts-range-server.rs"]
 pub(crate) mod range_server;
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    fn temp_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/part-removal-probes")
+            .join(uuid::Uuid::new_v4().to_string())
+    }
+
+    fn key(n: u64, size: u64) -> PartKey {
+        PartKey::new(Algo::Sha1, &format!("{n:040x}"), size).unwrap()
+    }
+
+    #[test]
+    fn only_unlocked_parts_are_removed_and_their_bytes_are_counted() {
+        let root = temp_root();
+        let store = PartStore::new(root.join("parts"));
+        fs::create_dir_all(store.root()).unwrap();
+        let freed = key(1, 100);
+        let held = key(2, 50);
+        fs::write(freed.file(store.root(), "part"), vec![0u8; 100]).unwrap();
+        fs::write(freed.file(store.root(), "json"), b"{}").unwrap();
+        fs::write(held.file(store.root(), "part"), vec![0u8; 50]).unwrap();
+        fs::write(held.file(store.root(), "json"), b"{}").unwrap();
+        let held_lock = lock_options().create(true).truncate(false).open(held.file(store.root(), "lock")).unwrap();
+        held_lock.try_lock().unwrap();
+        // Foreign names and directories with part-like names are never touched.
+        fs::write(store.root().join("notes.part"), b"keep").unwrap();
+        fs::create_dir(store.root().join(format!("{}.part", key(3, 1).0))).unwrap();
+
+        assert_eq!(store.remove_unreferenced(), 100);
+        assert!(!freed.file(store.root(), "part").exists());
+        assert!(!freed.file(store.root(), "json").exists());
+        assert!(held.file(store.root(), "part").is_file(), "a held part stays");
+        assert!(store.root().join("notes.part").is_file());
+        assert!(store.root().join(format!("{}.part", key(3, 1).0)).is_dir());
+
+        drop(held_lock);
+        assert_eq!(store.remove_unreferenced(), 50);
+        assert!(!held.file(store.root(), "part").exists());
+        assert!(store.root().join("notes.part").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

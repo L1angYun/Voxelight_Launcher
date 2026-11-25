@@ -95,6 +95,7 @@
       "notFound": "This task no longer exists. Refresh and try again.",
       "retryUnsupported": "Return to the content, modpack, or backup page to run this task again. Verified files will be reused.",
       "active": "This task is still running or queued.",
+      "busy": "A download is still running or queued. Wait for it to finish before clearing.",
       "alreadyRetried": "This task was already retried. Use the newer task instead."
     }
   },
@@ -107,5 +108,13 @@
   },
   "showMore": "Show more",
   "historyFiles": "Files: {{count}}",
-  "refresh": "Refresh"
+  "refresh": "Refresh",
+  "retryFailed": "Retry failed",
+  "clearUnfinished": "Clear failed and cancelled",
+  "retryFailedNotice_one": "Queued {{count}} task; {{skipped}} skipped.",
+  "retryFailedNotice_other": "Queued {{count}} tasks; {{skipped}} skipped.",
+  "clearConfirm_one": "Clear 1 failed or cancelled task? Its kept partial files will be deleted.",
+  "clearConfirm_other": "Clear {{count}} failed or cancelled tasks? Their kept partial files will be deleted.",
+  "clearNotice_one": "Removed {{count}} task; freed {{bytes}}.",
+  "clearNotice_other": "Removed {{count}} tasks; freed {{bytes}}."
 }

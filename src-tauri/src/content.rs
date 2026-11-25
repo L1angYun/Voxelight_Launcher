@@ -64,6 +64,24 @@ pub struct ImportedResource {
     pub path: String,
     pub size_bytes: u64,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldDatapack {
+    pub file_name: String,
+    pub name: String,
+    pub is_directory: bool,
+    pub enabled: bool,
+    pub size_bytes: u64,
+    pub description: Option<String>,
+    pub pack_format: Option<i64>,
+}
+
+pub(crate) const DATAPACK_INVALID: &str = "datapack.invalid";
+pub(crate) const DATAPACK_EXISTS: &str = "datapack.exists";
+pub(crate) const DATAPACK_NOT_FOUND: &str = "datapack.notFound";
+const MAX_PACK_MCMETA_BYTES: u64 = 256 * 1024;
+const MAX_DATAPACK_DIR_FILES: usize = 50_000;
+const MAX_DATAPACK_DIR_DEPTH: usize = 64;
 
 fn game_root(
     state: &LauncherState,
@@ -987,6 +1005,522 @@ pub async fn import_local_resources(
     result.map_err(expected)
 }
 
+fn reject_path_links(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("资源路径不安全".into());
+    }
+    for component in path.ancestors() {
+        if let Ok(metadata) = fs::symlink_metadata(component) {
+            if crate::resources::linked(&metadata) {
+                return Err("资源路径不安全".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn world_datapacks_dir(root: &Path, world_folder: &str) -> Result<PathBuf, String> {
+    validate_id(world_folder)?;
+    reject_path_links(root)?;
+    let saves = safe_join(root, "saves")?;
+    reject_path_links(&saves)?;
+    let world = safe_join(&saves, world_folder)?;
+    reject_path_links(&world)?;
+    let level = safe_join(&world, "level.dat")?;
+    let level_meta = fs::symlink_metadata(&level).map_err(|_| "世界目录缺少 level.dat".to_string())?;
+    if crate::resources::linked(&level_meta) || !level_meta.is_file() {
+        return Err("世界目录缺少 level.dat".into());
+    }
+    let datapacks = safe_join(&world, "datapacks")?;
+    reject_path_links(&datapacks)?;
+    Ok(datapacks)
+}
+
+fn extract_mc_text(value: &serde_json::Value, out: &mut String, depth: usize) {
+    if depth > 16 || out.len() >= 240 {
+        return;
+    }
+    match value {
+        serde_json::Value::String(text) => out.push_str(text),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                extract_mc_text(item, out, depth + 1);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(serde_json::Value::as_str) {
+                out.push_str(text);
+            } else if let Some(text) = map.get("translate").and_then(serde_json::Value::as_str) {
+                out.push_str(text);
+            }
+            if let Some(extra) = map.get("extra") {
+                extract_mc_text(extra, out, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strip_section_codes(raw: &str) -> String {
+    let mut cleaned = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '§' {
+            let _ = chars.next();
+            continue;
+        }
+        cleaned.push(ch);
+    }
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_pack_mcmeta(bytes: &[u8]) -> (Option<String>, Option<i64>) {
+    let trimmed = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(trimmed) else {
+        return (None, None);
+    };
+    let Some(pack) = json.get("pack").and_then(serde_json::Value::as_object) else {
+        return (None, None);
+    };
+    let description = pack.get("description").and_then(|value| {
+        let mut raw = String::new();
+        extract_mc_text(value, &mut raw, 0);
+        let text = strip_section_codes(&raw);
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.chars().take(240).collect())
+        }
+    });
+    let pack_format = pack
+        .get("pack_format")
+        .and_then(serde_json::Value::as_i64)
+        .or_else(|| {
+            pack.get("min_format").and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_array().and_then(|a| a.first()).and_then(serde_json::Value::as_i64))
+            })
+        });
+    (description, pack_format)
+}
+
+fn read_zip_pack_mcmeta(path: &Path) -> Result<Option<(Option<String>, Option<i64>)>, String> {
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut archive = match ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(_) => return Ok(None),
+    };
+    let Ok(entry) = archive.by_name("pack.mcmeta") else {
+        return Ok(None);
+    };
+    if entry.is_dir() || entry.size() > MAX_PACK_MCMETA_BYTES {
+        return Ok(Some((None, None)));
+    }
+    let mut bytes = Vec::new();
+    entry
+        .take(MAX_PACK_MCMETA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_PACK_MCMETA_BYTES {
+        return Ok(Some((None, None)));
+    }
+    Ok(Some(parse_pack_mcmeta(&bytes)))
+}
+
+fn dir_size_bounded(root: &Path) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut count = 0usize;
+    let mut queue = VecDeque::from([(root.to_path_buf(), 0usize)]);
+    while let Some((dir, depth)) = queue.pop_front() {
+        if depth > MAX_DATAPACK_DIR_DEPTH {
+            return Err("资源路径不安全".into());
+        }
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let meta = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+            if crate::resources::linked(&meta) {
+                continue;
+            }
+            count += 1;
+            if count > MAX_DATAPACK_DIR_FILES {
+                return Ok(total);
+            }
+            if meta.is_dir() {
+                queue.push_back((entry.path(), depth + 1));
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn read_datapack_entry(path: &Path, file_name: &str) -> Result<Option<WorldDatapack>, String> {
+    if file_name.starts_with(".datapack-import-") {
+        return Ok(None);
+    }
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if crate::resources::linked(&meta) {
+        return Ok(None);
+    }
+    let lower = file_name.to_ascii_lowercase();
+    if meta.is_file() {
+        let (enabled, base) = if lower.ends_with(".zip.disabled") {
+            (false, &file_name[..file_name.len() - ".zip.disabled".len()])
+        } else if lower.ends_with(".zip") {
+            (true, &file_name[..file_name.len() - ".zip".len()])
+        } else {
+            return Ok(None);
+        };
+        if base.is_empty() {
+            return Ok(None);
+        }
+        let (description, pack_format) = read_zip_pack_mcmeta(path)?.unwrap_or((None, None));
+        return Ok(Some(WorldDatapack {
+            file_name: file_name.to_owned(),
+            name: base.to_owned(),
+            is_directory: false,
+            enabled,
+            size_bytes: meta.len(),
+            description,
+            pack_format,
+        }));
+    }
+    if meta.is_dir() {
+        let mcmeta = safe_join(path, "pack.mcmeta")?;
+        let Ok(mcmeta_stat) = fs::symlink_metadata(&mcmeta) else {
+            return Ok(None);
+        };
+        if crate::resources::linked(&mcmeta_stat) || !mcmeta_stat.is_file() {
+            return Ok(None);
+        }
+        let (enabled, base) = if lower.ends_with(".disabled") {
+            (false, &file_name[..file_name.len() - ".disabled".len()])
+        } else {
+            (true, file_name)
+        };
+        if base.is_empty() {
+            return Ok(None);
+        }
+        let (description, pack_format) = if mcmeta_stat.len() <= MAX_PACK_MCMETA_BYTES {
+            fs::read(&mcmeta)
+                .map(|bytes| parse_pack_mcmeta(&bytes))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+        return Ok(Some(WorldDatapack {
+            file_name: file_name.to_owned(),
+            name: base.to_owned(),
+            is_directory: true,
+            enabled,
+            size_bytes: dir_size_bounded(path)?,
+            description,
+            pack_format,
+        }));
+    }
+    Ok(None)
+}
+
+fn remove_datapack_dir(dir: &Path) -> Result<(), String> {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    let mut queue = VecDeque::from([(dir.to_path_buf(), 0usize)]);
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth > MAX_DATAPACK_DIR_DEPTH {
+            return Err("资源路径不安全".into());
+        }
+        let meta = fs::symlink_metadata(&current).map_err(|e| e.to_string())?;
+        if crate::resources::linked(&meta) || !meta.is_dir() {
+            return Err("资源路径不安全".into());
+        }
+        dirs.push(current.clone());
+        for entry in fs::read_dir(&current).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            let entry_meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if crate::resources::linked(&entry_meta) {
+                return Err("资源路径不安全".into());
+            }
+            if files.len() + dirs.len() >= MAX_DATAPACK_DIR_FILES {
+                return Err("资源路径不安全".into());
+            }
+            if entry_meta.is_dir() {
+                queue.push_back((path, depth + 1));
+            } else if entry_meta.is_file() {
+                files.push(path);
+            } else {
+                return Err("资源路径不安全".into());
+            }
+        }
+    }
+    for file in files {
+        fs::remove_file(&file).map_err(|e| e.to_string())?;
+    }
+    for folder in dirs.into_iter().rev() {
+        fs::remove_dir(&folder).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn list_world_datapacks_in_root(root: &Path, world_folder: &str) -> Result<Vec<WorldDatapack>, String> {
+    let datapacks = world_datapacks_dir(root, world_folder)?;
+    if !datapacks.exists() {
+        return Ok(Vec::new());
+    }
+    let meta = fs::symlink_metadata(&datapacks).map_err(|e| e.to_string())?;
+    if crate::resources::linked(&meta) || !meta.is_dir() {
+        return Err("资源路径不安全".into());
+    }
+    let mut items = Vec::new();
+    for entry in fs::read_dir(&datapacks).map_err(|e| e.to_string())?.take(2000) {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        if validate_id(&file_name).is_err() {
+            continue;
+        }
+        let path = safe_join(&datapacks, &file_name)?;
+        if let Some(pack) = read_datapack_entry(&path, &file_name)? {
+            items.push(pack);
+        }
+    }
+    items.sort_by(|a, b| {
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+            .then_with(|| a.file_name.cmp(&b.file_name))
+    });
+    Ok(items)
+}
+
+fn import_world_datapacks_in_root(
+    state: &LauncherState,
+    root: &Path,
+    world_folder: &str,
+    paths: Vec<String>,
+) -> Result<Vec<WorldDatapack>, String> {
+    if paths.is_empty() || paths.len() > 100 {
+        return Err(DATAPACK_INVALID.into());
+    }
+    let datapacks = world_datapacks_dir(root, world_folder)?;
+    if datapacks.exists() {
+        let meta = fs::symlink_metadata(&datapacks).map_err(|e| e.to_string())?;
+        if crate::resources::linked(&meta) || !meta.is_dir() {
+            return Err("资源路径不安全".into());
+        }
+    }
+    let mut plan = Vec::with_capacity(paths.len());
+    let mut seen = HashSet::new();
+    for raw in paths {
+        let source = instances::checked_absolute(Path::new(&raw))?;
+        let meta = fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
+        if crate::resources::linked(&meta)
+            || !meta.is_file()
+            || meta.len() > 2 * 1024 * 1024 * 1024
+        {
+            return Err(DATAPACK_INVALID.into());
+        }
+        if !source
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            return Err(DATAPACK_INVALID.into());
+        }
+        let file_name = source
+            .file_name()
+            .ok_or_else(|| DATAPACK_INVALID.to_string())?
+            .to_string_lossy()
+            .into_owned();
+        validate_id(&file_name)?;
+        if !seen.insert(file_name.to_ascii_lowercase()) {
+            return Err(DATAPACK_EXISTS.into());
+        }
+        if read_zip_pack_mcmeta(&source)?.is_none() {
+            return Err(DATAPACK_INVALID.into());
+        }
+        let destination = safe_join(&datapacks, &file_name)?;
+        if destination.exists() {
+            return Err(DATAPACK_EXISTS.into());
+        }
+        plan.push((source, destination, file_name));
+    }
+    fs::create_dir_all(&datapacks).map_err(|e| e.to_string())?;
+    reject_path_links(&datapacks)?;
+    let mut imported = Vec::with_capacity(plan.len());
+    for (source, destination, file_name) in plan {
+        instances::sync_checkpoint(state)?;
+        let expected_hash = hash(&source)?;
+        let temporary =
+            datapacks.join(format!(".datapack-import-{}.part", uuid::Uuid::new_v4()));
+        let copy_result = (|| -> Result<WorldDatapack, String> {
+            fs::copy(&source, &temporary).map_err(|e| e.to_string())?;
+            if hash(&temporary)? != expected_hash || hash(&source)? != expected_hash {
+                return Err("复制期间源资源发生变化，现有资源未覆盖".into());
+            }
+            if destination.exists() {
+                return Err(DATAPACK_EXISTS.into());
+            }
+            let mut output = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&destination)
+                .map_err(|e| e.to_string())?;
+            std::io::copy(
+                &mut fs::File::open(&temporary).map_err(|e| e.to_string())?,
+                &mut output,
+            )
+            .map_err(|e| e.to_string())?;
+            output.sync_all().map_err(|e| e.to_string())?;
+            drop(output);
+            if hash(&destination)? != expected_hash {
+                let _ = fs::remove_file(&destination);
+                return Err("本地资源副本校验失败，源文件未改变".into());
+            }
+            read_datapack_entry(&destination, &file_name)?
+                .ok_or_else(|| DATAPACK_INVALID.to_string())
+        })();
+        let _ = fs::remove_file(&temporary);
+        imported.push(copy_result?);
+    }
+    Ok(imported)
+}
+
+fn toggle_world_datapack_in_root(
+    root: &Path,
+    world_folder: &str,
+    file_name: &str,
+) -> Result<WorldDatapack, String> {
+    validate_id(file_name)?;
+    let datapacks = world_datapacks_dir(root, world_folder)?;
+    let source = safe_join(&datapacks, file_name)?;
+    reject_path_links(&source)?;
+    let current = read_datapack_entry(&source, file_name)?
+        .ok_or_else(|| DATAPACK_NOT_FOUND.to_string())?;
+    let target_name = if current.enabled {
+        format!("{file_name}.disabled")
+    } else {
+        file_name[..file_name.len() - ".disabled".len()].to_owned()
+    };
+    validate_id(&target_name)?;
+    let target = safe_join(&datapacks, &target_name)?;
+    if target.exists() {
+        return Err(DATAPACK_EXISTS.into());
+    }
+    fs::rename(&source, &target).map_err(|_| "切换资源状态失败，请检查文件是否被游戏占用".to_string())?;
+    read_datapack_entry(&target, &target_name)?
+        .ok_or_else(|| DATAPACK_NOT_FOUND.to_string())
+}
+
+fn delete_world_datapack_in_root(
+    root: &Path,
+    world_folder: &str,
+    file_name: &str,
+) -> Result<(), String> {
+    validate_id(file_name)?;
+    let datapacks = world_datapacks_dir(root, world_folder)?;
+    let target = safe_join(&datapacks, file_name)?;
+    reject_path_links(&target)?;
+    let current = read_datapack_entry(&target, file_name)?
+        .ok_or_else(|| DATAPACK_NOT_FOUND.to_string())?;
+    if current.is_directory {
+        remove_datapack_dir(&target)
+    } else {
+        fs::remove_file(&target).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn list_world_datapacks(
+    state: State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+    world_folder: String,
+) -> AppResult<Vec<WorldDatapack>> {
+    let root = game_root(&state, &version_id, instance_id.as_deref()).map_err(expected)?;
+    tokio::task::spawn_blocking(move || list_world_datapacks_in_root(&root, &world_folder))
+        .await
+        .map_err(|e| expected(e.to_string()))?
+        .map_err(expected)
+}
+
+#[tauri::command]
+pub async fn import_world_datapacks(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
+    state: State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+    world_folder: String,
+    paths: Vec<String>,
+) -> AppResult<Vec<WorldDatapack>> {
+    let paths = grants
+        .consume_datapacks(&paths, &window)?
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let _guard = state.operation.lock().await;
+    let root = game_root(&state, &version_id, instance_id.as_deref())?;
+    let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
+    if let Some(id) = instance_id.as_deref() {
+        instances::require_no_pending_restore(&state, id)?;
+    }
+    let shared = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        import_world_datapacks_in_root(&shared, &root, &world_folder, paths)
+    })
+    .await
+    .map_err(|e| expected(e.to_string()))?
+    .map_err(expected)
+}
+
+#[tauri::command]
+pub async fn toggle_world_datapack(
+    state: State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+    world_folder: String,
+    file_name: String,
+) -> AppResult<WorldDatapack> {
+    let _guard = state.operation.lock().await;
+    let root = game_root(&state, &version_id, instance_id.as_deref())?;
+    let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
+    if let Some(id) = instance_id.as_deref() {
+        instances::require_no_pending_restore(&state, id)?;
+    }
+    tokio::task::spawn_blocking(move || {
+        toggle_world_datapack_in_root(&root, &world_folder, &file_name)
+    })
+    .await
+    .map_err(|e| expected(e.to_string()))?
+    .map_err(expected)
+}
+
+#[tauri::command]
+pub async fn delete_world_datapack(
+    state: State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+    world_folder: String,
+    file_name: String,
+) -> AppResult<()> {
+    let _guard = state.operation.lock().await;
+    let root = game_root(&state, &version_id, instance_id.as_deref())?;
+    let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
+    if let Some(id) = instance_id.as_deref() {
+        instances::require_no_pending_restore(&state, id)?;
+    }
+    tokio::task::spawn_blocking(move || {
+        delete_world_datapack_in_root(&root, &world_folder, &file_name)
+    })
+    .await
+    .map_err(|e| expected(e.to_string()))?
+    .map_err(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1000,7 +1534,14 @@ mod tests {
     #[test]
     fn a4_world_writers_check_running_before_writing_and_after_taking_the_lock() {
         let source = include_str!("content.rs");
-        for command in ["backup_world", "import_world", "import_local_resources"] {
+        for command in [
+            "backup_world",
+            "import_world",
+            "import_local_resources",
+            "import_world_datapacks",
+            "toggle_world_datapack",
+            "delete_world_datapack",
+        ] {
             let (_, body) = source.split_once(&format!("pub async fn {command}(")).unwrap();
             let (body, _) = body.split_once("\n}").unwrap();
             let body = &crate::storage::executable_source(body);
@@ -1566,5 +2107,162 @@ mod tests {
                 );
             }
         });
+    }
+
+    fn write_zip_file(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, bytes) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn u2_datapacks_list_import_toggle_and_delete_roundtrip() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::task::spawn_blocking(move || {
+                    let fixture = crate::storage::SameRootFixture::new();
+                    let world = fixture.game.join("saves/Survival");
+                    fs::create_dir_all(world.join("datapacks")).unwrap();
+                    fs::write(world.join("level.dat"), b"level").unwrap();
+
+                    // Directory datapack with JSON text component description and min_format
+                    let folder_pack = world.join("datapacks/VanillaTweaks");
+                    fs::create_dir_all(folder_pack.join("data")).unwrap();
+                    fs::write(
+                        folder_pack.join("pack.mcmeta"),
+                        r#"{"pack":{"min_format":[88,0],"description":{"text":"§aNice ","extra":[{"text":"Tweaks"}]}}}"#.as_bytes(),
+                    )
+                    .unwrap();
+                    fs::write(folder_pack.join("data/fn.mcfunction"), b"say hi").unwrap();
+
+                    // Unrelated folder and file must be ignored and non-deletable
+                    fs::create_dir_all(world.join("datapacks/NotAPack")).unwrap();
+                    fs::write(world.join("datapacks/readme.txt"), b"note").unwrap();
+
+                    // Import valid zip datapack and reject zip without pack.mcmeta
+                    let external = fixture.root().join("imports");
+                    fs::create_dir_all(&external).unwrap();
+                    let valid_zip = external.join("Terralith.zip");
+                    write_zip_file(
+                        &valid_zip,
+                        &[(
+                            "pack.mcmeta",
+                            br#"{"pack":{"pack_format":48,"description":"Overworld terrain"}}"#,
+                        )],
+                    );
+                    let invalid_zip = external.join("NotADatapack.zip");
+                    write_zip_file(&invalid_zip, &[("hello.txt", b"no mcmeta")]);
+
+                    let bad = import_world_datapacks_in_root(
+                        &fixture.state,
+                        &fixture.game,
+                        "Survival",
+                        vec![invalid_zip.to_string_lossy().into_owned()],
+                    );
+                    assert_eq!(bad.unwrap_err(), DATAPACK_INVALID);
+                    assert!(!world.join("datapacks/NotADatapack.zip").exists());
+
+                    let imported = import_world_datapacks_in_root(
+                        &fixture.state,
+                        &fixture.game,
+                        "Survival",
+                        vec![valid_zip.to_string_lossy().into_owned()],
+                    )
+                    .unwrap();
+                    assert_eq!(imported.len(), 1);
+                    assert_eq!(imported[0].file_name, "Terralith.zip");
+                    assert_eq!(imported[0].name, "Terralith");
+                    assert!(imported[0].enabled);
+                    assert!(!imported[0].is_directory);
+                    assert_eq!(imported[0].pack_format, Some(48));
+                    assert_eq!(imported[0].description.as_deref(), Some("Overworld terrain"));
+
+                    // Duplicate import refuses without overwriting
+                    let dup = import_world_datapacks_in_root(
+                        &fixture.state,
+                        &fixture.game,
+                        "Survival",
+                        vec![valid_zip.to_string_lossy().into_owned()],
+                    );
+                    assert_eq!(dup.unwrap_err(), DATAPACK_EXISTS);
+
+                    let listed = list_world_datapacks_in_root(&fixture.game, "Survival").unwrap();
+                    assert_eq!(listed.len(), 2);
+                    assert_eq!(listed[0].name, "Terralith");
+                    assert_eq!(listed[1].name, "VanillaTweaks");
+                    assert!(listed[1].is_directory);
+                    assert_eq!(listed[1].pack_format, Some(88));
+                    assert_eq!(listed[1].description.as_deref(), Some("Nice Tweaks"));
+
+                    // Toggle zip off and back on, and toggle directory off
+                    let disabled_zip = toggle_world_datapack_in_root(&fixture.game, "Survival", "Terralith.zip").unwrap();
+                    assert!(!disabled_zip.enabled);
+                    assert_eq!(disabled_zip.file_name, "Terralith.zip.disabled");
+                    let reenabled = toggle_world_datapack_in_root(&fixture.game, "Survival", "Terralith.zip.disabled").unwrap();
+                    assert!(reenabled.enabled);
+                    assert_eq!(reenabled.file_name, "Terralith.zip");
+
+                    let disabled_dir = toggle_world_datapack_in_root(&fixture.game, "Survival", "VanillaTweaks").unwrap();
+                    assert!(!disabled_dir.enabled);
+                    assert_eq!(disabled_dir.file_name, "VanillaTweaks.disabled");
+
+                    // Refuses deleting non-datapack files/folders
+                    assert_eq!(
+                        delete_world_datapack_in_root(&fixture.game, "Survival", "readme.txt").unwrap_err(),
+                        DATAPACK_NOT_FOUND
+                    );
+                    assert_eq!(
+                        delete_world_datapack_in_root(&fixture.game, "Survival", "NotAPack").unwrap_err(),
+                        DATAPACK_NOT_FOUND
+                    );
+                    assert!(world.join("datapacks/readme.txt").is_file());
+                    assert!(world.join("datapacks/NotAPack").is_dir());
+
+                    // Delete both valid datapacks
+                    delete_world_datapack_in_root(&fixture.game, "Survival", "Terralith.zip").unwrap();
+                    delete_world_datapack_in_root(&fixture.game, "Survival", "VanillaTweaks.disabled").unwrap();
+                    assert!(list_world_datapacks_in_root(&fixture.game, "Survival").unwrap().is_empty());
+                })
+                .await
+                .unwrap();
+            });
+    }
+
+    #[test]
+    fn u2_datapacks_refuse_running_game_and_linked_directories() {
+        let fixture = crate::storage::SameRootFixture::new();
+        let world = fixture.game.join("saves/WorldA");
+        fs::create_dir_all(&world).unwrap();
+        fs::write(world.join("level.dat"), b"level").unwrap();
+
+        let root = game_root(&fixture.state, &fixture.instance.version_id, Some(&fixture.instance.id)).unwrap();
+        fixture.mark_running();
+        let err = stopped_game_root(&fixture.state, &root, Some(&fixture.instance.id)).unwrap_err();
+        assert_eq!(crate::errors::expected(err).code, "instance.running");
+
+        #[cfg(windows)]
+        {
+            let outside = fixture.root().join("outside-datapacks");
+            fs::create_dir_all(&outside).unwrap();
+            let linked_dir = world.join("datapacks");
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(linked_dir.to_string_lossy().replace('/', r"\"))
+                .arg(outside.to_string_lossy().replace('/', r"\"))
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let res = list_world_datapacks_in_root(&fixture.game, "WorldA");
+            let _ = fs::remove_dir(&linked_dir);
+            assert!(res.is_err(), "linked datapacks directory must be refused");
+        }
     }
 }

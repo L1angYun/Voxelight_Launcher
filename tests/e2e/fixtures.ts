@@ -633,6 +633,32 @@ export async function installLauncherFixture(
             return taskSnapshot();
           }
           if (name === "list_download_tasks") return taskSnapshot();
+          if (name === "retry_failed_downloads") {
+            const ids: string[] = [];
+            let skipped = 0;
+            for (const task of [...downloadTasks]) {
+              if (task.status !== "failed") continue;
+              if (!task.retryable) { skipped += 1; continue; }
+              const id = `retry-${downloadTasks.length + 1}`;
+              ids.push(id);
+              downloadTasks.push({ ...task, id, status: "queued", stage: "queued", retryable: false });
+            }
+            publishTasks();
+            return { ids, skipped };
+          }
+          if (name === "clear_unfinished_downloads") {
+            if (downloadTasks.some(item => item.status === "running" || item.status === "queued")) {
+              throw { code: "download.busy", params: {} };
+            }
+            const before = downloadTasks.length;
+            for (let i = downloadTasks.length - 1; i >= 0; i--) {
+              if (downloadTasks[i].status === "failed" || downloadTasks[i].status === "cancelled") {
+                downloadTasks.splice(i, 1);
+              }
+            }
+            publishTasks();
+            return { tasks: before - downloadTasks.length, bytes: 0 };
+          }
           if (name === "list_servers" && options.stress)
             return [{
               index: 0,
@@ -719,6 +745,7 @@ export async function installLauncherFixture(
           }
           if (name === "check_resource_updates") return { updates: [], curseforgeSkipped: false };
           if (name === "diagnose_instance") return { kind: "empty", logPath: null, excerpt: "" };
+          if (name === "read_game_log") return { path: null, lines: [], truncated: false };
           if (name === "get_system_appearance") return {
             accentColor: "#b4f17a", animationsEnabled: true, advancedEffectsEnabled: true, locale: options.language ?? "zh-CN",
           };
@@ -798,10 +825,19 @@ export async function installLauncherFixture(
             localResourceSets.set(key, files.map((item, itemIndex) => itemIndex === index ? toggled : item));
             return structuredClone(toggled);
           }
+          if (name === "delete_local_resources") {
+            const key = localResourceKey(args);
+            const files = localResourceSets.get(key) ?? [];
+            const requested = Array.isArray(args?.fileNames) ? args.fileNames.map(String) : [];
+            const removeSet = new Set(requested);
+            const deleted = files.filter(file => removeSet.has(file.fileName)).map(file => file.fileName);
+            localResourceSets.set(key, files.filter(file => !removeSet.has(file.fileName)));
+            return { deleted };
+          }
           // These concrete query fixtures deliberately represent empty records.
           if ([
             "list_modpack_versions", "list_resource_update_history",
-            "list_screenshots", "list_servers", "list_worlds", "read_managed_server_logs",
+            "list_screenshots", "list_servers", "list_worlds", "list_world_datapacks", "read_managed_server_logs",
           ].includes(name)) return [];
           throw new Error(`Unhandled launcher fixture IPC: ${name}`);
         },

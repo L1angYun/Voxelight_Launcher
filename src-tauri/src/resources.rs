@@ -155,6 +155,12 @@ pub struct ResourceInstall {
     pub update_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteResourcesResult {
+    pub deleted: Vec<String>,
+}
+
 /// Resource transfers use the same progress/task channel as the loader phase.
 pub(super) struct ResourceProgress {
     app: Option<AppHandle>,
@@ -2232,6 +2238,80 @@ pub async fn toggle_resource(
         .ok_or_else(|| expected("资源状态无法读取"))
 }
 
+/// Reject an empty or unbounded batch and fold case-insensitive duplicates
+/// before the writer takes the operation lock.
+fn delete_file_names(file_names: Vec<String>) -> Result<Vec<String>, String> {
+    if file_names.is_empty() {
+        return Err("请选择要删除的资源文件".into());
+    }
+    if file_names.len() > 500 {
+        return Err("一次最多删除 500 个资源文件".into());
+    }
+    let mut seen = HashSet::new();
+    let mut names = Vec::with_capacity(file_names.len());
+    for name in file_names {
+        validate_id(&name)?;
+        if seen.insert(name.to_ascii_lowercase()) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+#[tauri::command]
+pub async fn delete_local_resources(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    version_id: String,
+    instance_id: Option<String>,
+    resource_type: String,
+    file_names: Vec<String>,
+) -> AppResult<DeleteResourcesResult> {
+    let kind = ResourceKind::parse(&resource_type)?;
+    delete_local_resources_inner(&state, version_id, instance_id, kind, file_names).await
+}
+
+/// Every path is validated before any file is removed, so a refused batch
+/// leaves all of its valid files in place.
+async fn delete_local_resources_inner(
+    state: &LauncherState,
+    version_id: String,
+    instance_id: Option<String>,
+    kind: ResourceKind,
+    file_names: Vec<String>,
+) -> AppResult<DeleteResourcesResult> {
+    let file_names = delete_file_names(file_names)?;
+    let _operation = state.operation.lock().await;
+    require_resource_stopped(state, &version_id, instance_id.as_deref())?;
+    let directory = resource_directory(
+        &state.snapshot()?,
+        &version_id,
+        instance_id.as_deref(),
+        kind,
+    )?;
+    resource_transactions::require_no_pending(&directory)?;
+    reject_links(&directory)?;
+    tokio::task::spawn_blocking(move || {
+        let mut paths = Vec::with_capacity(file_names.len());
+        for file_name in &file_names {
+            let path = safe_join(&directory, file_name)?;
+            reject_links(&path)?;
+            if local_resource_without_metadata(path.clone(), kind)?.is_none() {
+                return Err(format!("请选择有效的资源文件：{file_name}"));
+            }
+            paths.push(path);
+        }
+        let mut deleted = Vec::with_capacity(paths.len());
+        for (file_name, path) in file_names.into_iter().zip(paths) {
+            fs::remove_file(&path).map_err(|_| format!("无法删除资源文件：{file_name}"))?;
+            deleted.push(file_name);
+        }
+        Ok(DeleteResourcesResult { deleted })
+    })
+    .await
+    .map_err(|_| expected("资源删除任务意外中止"))?
+    .map_err(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2358,6 +2438,7 @@ mod tests {
             (modrinth, "pub async fn update_resource(", LOCK, "crate::curseforge::update_one("),
             (modrinth, "pub async fn rollback_resource_update(", LOCK, "resource_transactions::rollback("),
             (modrinth, "pub async fn toggle_resource(", LOCK, "fs::rename(&source, &target)"),
+            (modrinth, "async fn delete_local_resources_inner(", LOCK, "fs::remove_file("),
             (curseforge, "pub(crate) async fn install_curseforge(", "with_reserved_resource_task(", "let key = service_key("),
         ] {
             let (_, body) = source.split_once(command).unwrap();
@@ -2381,8 +2462,207 @@ mod tests {
         assert!(turn < wrapper.find("task.await").unwrap());
     }
 
+    fn u2_delete_fixture(kind: ResourceKind) -> (crate::storage::SameRootFixture, PathBuf) {
+        let fixture = crate::storage::SameRootFixture::new();
+        let directory = resource_directory(
+            &fixture.state.snapshot().unwrap(),
+            &fixture.instance.version_id,
+            Some(&fixture.instance.id),
+            kind,
+        )
+        .unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        (fixture, directory)
+    }
 
+    fn u2_delete_names(
+        fixture: &crate::storage::SameRootFixture,
+        kind: ResourceKind,
+        file_names: Vec<String>,
+    ) -> AppResult<DeleteResourcesResult> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(delete_local_resources_inner(
+                &fixture.state,
+                fixture.instance.version_id.clone(),
+                Some(fixture.instance.id.clone()),
+                kind,
+                file_names,
+            ))
+    }
 
+    fn u2_delete(
+        fixture: &crate::storage::SameRootFixture,
+        kind: ResourceKind,
+        names: &[&str],
+    ) -> AppResult<DeleteResourcesResult> {
+        u2_delete_names(fixture, kind, names.iter().map(|name| (*name).to_owned()).collect())
+    }
+
+    #[cfg(windows)]
+    fn u2_delete_directory_link(link: &Path, target: &Path) {
+        // mklink is a command-line tool, so give it ordinary paths rather than
+        // the verbatim form canonicalization produces.
+        let link = crate::storage::to_process_path(link).unwrap();
+        let target = crate::storage::to_process_path(target).unwrap();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(link.to_string_lossy().replace('/', r"\"))
+            .arg(target.to_string_lossy().replace('/', r"\"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[cfg(unix)]
+    fn u2_delete_directory_link(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn u2_remove_directory_link(link: &Path) {
+        fs::remove_dir(link).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn u2_remove_directory_link(link: &Path) {
+        fs::remove_file(link).unwrap();
+    }
+
+    fn u2_pending_resource_transaction(directory: &Path) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let folder = directory
+            .parent()
+            .unwrap()
+            .join(".launcher-resource-history")
+            .join(directory.file_name().unwrap())
+            .join(&id);
+        fs::create_dir_all(&folder).unwrap();
+        let journal = serde_json::json!({
+            "id": id,
+            "name": "Fixture transaction",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "status": "staged",
+            "directory": directory.to_string_lossy(),
+            "projects": [],
+            "beforeExists": false,
+            "before": [],
+            "after": [],
+        });
+        fs::write(folder.join("journal.json"), journal.to_string()).unwrap();
+    }
+
+    #[test]
+    fn u2_delete_removes_enabled_and_disabled_files_for_every_resource_kind() {
+        let expected = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+        for (kind, names) in [
+            (ResourceKind::Mod, ["alpha.jar", "beta.jar.disabled", "keep.jar"]),
+            (ResourceKind::ResourcePack, ["alpha.zip", "beta.zip.disabled", "keep.zip"]),
+            (ResourceKind::Shader, ["alpha.zip", "beta.zip.disabled", "keep.zip"]),
+        ] {
+            let (fixture, directory) = u2_delete_fixture(kind);
+            for name in names {
+                fs::write(directory.join(name), b"fixture").unwrap();
+            }
+            let result = u2_delete(&fixture, kind, &names[..2]).unwrap();
+            assert_eq!(result.deleted, expected(&names[..2]));
+            for name in &names[..2] {
+                assert!(!directory.join(name).exists(), "{name} was deleted");
+            }
+            assert!(directory.join(names[2]).exists(), "an unselected file is kept");
+        }
+    }
+
+    #[test]
+    fn u2_delete_refuses_a_running_instance_or_same_root_game_without_deleting_any_file() {
+        let (fixture, directory) = u2_delete_fixture(ResourceKind::Mod);
+        fs::write(directory.join("alpha.jar"), b"fixture").unwrap();
+        fixture.mark_running();
+        let error = u2_delete(&fixture, ResourceKind::Mod, &["alpha.jar"]).unwrap_err();
+        assert_eq!(error.code, "instance.running");
+        assert!(directory.join("alpha.jar").exists());
+    }
+
+    #[test]
+    fn u2_delete_refuses_a_pending_resource_transaction_without_deleting_any_file() {
+        let (fixture, directory) = u2_delete_fixture(ResourceKind::Mod);
+        fs::write(directory.join("alpha.jar"), b"fixture").unwrap();
+        u2_pending_resource_transaction(&directory);
+        let error = u2_delete(&fixture, ResourceKind::Mod, &["alpha.jar"]).unwrap_err();
+        assert_eq!(error.code, "resource.recoveryRequired");
+        assert!(directory.join("alpha.jar").exists());
+    }
+
+    #[test]
+    fn u2_delete_refuses_linked_directory_or_file_without_deleting_any_file() {
+        // The resource directory itself may not be a link.
+        let (fixture, directory) = u2_delete_fixture(ResourceKind::Mod);
+        let real = fixture.root().join("real-mods");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("keep.jar"), b"fixture").unwrap();
+        fs::remove_dir(&directory).unwrap();
+        u2_delete_directory_link(&directory, &real);
+        assert!(u2_delete(&fixture, ResourceKind::Mod, &["keep.jar"]).is_err());
+        assert!(real.join("keep.jar").exists());
+        u2_remove_directory_link(&directory);
+
+        // A linked member fails preflight before the valid files in the same
+        // batch are removed.
+        let (fixture, directory) = u2_delete_fixture(ResourceKind::Mod);
+        fs::write(directory.join("alpha.jar"), b"fixture").unwrap();
+        let outside = fixture.root().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("outside.jar"), b"fixture").unwrap();
+        let linked_file = directory.join("linked.jar");
+        u2_delete_directory_link(&linked_file, &outside);
+        assert!(u2_delete(&fixture, ResourceKind::Mod, &["alpha.jar", "linked.jar"]).is_err());
+        assert!(directory.join("alpha.jar").exists());
+        assert!(outside.join("outside.jar").exists());
+        u2_remove_directory_link(&linked_file);
+    }
+
+    #[test]
+    fn u2_delete_refuses_traversal_non_resource_or_missing_files_without_partial_deletion() {
+        let (fixture, directory) = u2_delete_fixture(ResourceKind::Mod);
+        fs::write(directory.join("alpha.jar"), b"fixture").unwrap();
+        fs::write(directory.join("notes.txt"), b"fixture").unwrap();
+        fs::create_dir(directory.join("folder.jar")).unwrap();
+        for names in [
+            vec!["alpha.jar", "../outside.jar"],
+            vec!["alpha.jar", "notes.txt"],
+            vec!["alpha.jar", "missing.jar"],
+            vec!["alpha.jar", "folder.jar"],
+        ] {
+            assert!(u2_delete(&fixture, ResourceKind::Mod, &names).is_err());
+            assert!(directory.join("alpha.jar").exists(), "{names:?}");
+            assert!(directory.join("notes.txt").exists(), "{names:?}");
+            assert!(directory.join("folder.jar").is_dir(), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn u2_delete_deduplicates_case_insensitively_and_rejects_empty_or_oversized_batches() {
+        let (fixture, directory) = u2_delete_fixture(ResourceKind::Mod);
+        fs::write(directory.join("Alpha.jar"), b"fixture").unwrap();
+        fs::write(directory.join("Beta.jar"), b"fixture").unwrap();
+        let result = u2_delete(
+            &fixture,
+            ResourceKind::Mod,
+            &["Alpha.jar", "Beta.jar", "Alpha.jar", "alpha.JAR"],
+        )
+        .unwrap();
+        assert_eq!(result.deleted, vec!["Alpha.jar".to_owned(), "Beta.jar".to_owned()]);
+        assert!(!directory.join("Alpha.jar").exists());
+        assert!(!directory.join("Beta.jar").exists());
+
+        let empty = u2_delete(&fixture, ResourceKind::Mod, &[]).unwrap_err();
+        assert!(empty.detail.unwrap_or_default().contains("选择"));
+        let too_many: Vec<String> = (0..501).map(|index| format!("{index}.jar")).collect();
+        let oversized = u2_delete_names(&fixture, ResourceKind::Mod, too_many).unwrap_err();
+        assert!(oversized.detail.unwrap_or_default().contains("500"));
+    }
 
     #[test]
     fn u1264_curseforge_create_reservation_requires_the_exact_pinned_file() {

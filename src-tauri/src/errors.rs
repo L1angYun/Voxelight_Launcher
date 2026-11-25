@@ -148,6 +148,9 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             | "个人备份导出路径必须以 .zip 结尾" => "backup.path",
             "资源路径不安全" | "资源路径越界" => "resource.pathUnsafe",
             "无法读取资源目录，请检查访问权限" => "resource.unavailable",
+            crate::content::DATAPACK_INVALID => "datapack.invalid",
+            crate::content::DATAPACK_EXISTS => "datapack.exists",
+            crate::content::DATAPACK_NOT_FOUND => "datapack.notFound",
             "请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。" => {
                 "auth.serviceKeyMissing"
             }
@@ -158,6 +161,7 @@ pub fn expected(detail: impl Into<String>) -> AppError {
                 "download.retryUnsupported"
             }
             "该任务仍在执行或排队" => "download.active",
+            crate::downloads::BUSY => "download.busy",
             crate::downloads::ALREADY_RETRIED => "download.alreadyRetried",
             "只能结束由本启动器启动、且仍在运行的游戏进程" => "game.notRunning",
             "正在处理此游戏的结束请求" => "game.stopBusy",
@@ -255,6 +259,18 @@ mod tests {
             expected("任务已取消，已校验文件保留供下次复用").code,
             "download.cancelled"
         );
+    }
+
+    #[test]
+    fn clearing_downloads_while_busy_has_a_stable_code() {
+        assert_eq!(expected(crate::downloads::BUSY).code, "download.busy");
+    }
+
+    #[test]
+    fn datapack_errors_map_to_stable_codes() {
+        assert_eq!(expected(crate::content::DATAPACK_INVALID).code, "datapack.invalid");
+        assert_eq!(expected(crate::content::DATAPACK_EXISTS).code, "datapack.exists");
+        assert_eq!(expected(crate::content::DATAPACK_NOT_FOUND).code, "datapack.notFound");
     }
 
     #[test]

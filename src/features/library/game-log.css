@@ -1,0 +1,85 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+@layer features {
+  .vx-game-log__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .vx-game-log__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .vx-game-log__search { flex: 1 1 220px; min-width: 0; }
+  .vx-game-log__path {
+    margin: 0;
+    color: var(--text-tertiary);
+    font: var(--weight-regular) var(--text-xs)/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+  .vx-game-log__lines {
+    display: grid;
+    gap: var(--space-1);
+    max-height: 420px;
+    overflow: auto;
+    padding: var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--bg-base);
+  }
+  .vx-game-log__line {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: var(--space-1) 0;
+    border-bottom: 1px solid var(--hairline);
+    color: var(--text-secondary);
+    font: var(--weight-regular) var(--text-xs)/1.65 var(--font-mono);
+  }
+  .vx-game-log__line:last-child { border-bottom: 0; }
+  .vx-game-log__time {
+    flex: none;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+  .vx-game-log__level {
+    flex: none;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-sm);
+    color: var(--text-tertiary);
+    background: var(--surface-hover);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .vx-game-log__level[data-level="error"] {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+  }
+  .vx-game-log__level[data-level="warn"] {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+  }
+  .vx-game-log__level[data-level="info"] {
+    color: var(--info);
+    background: color-mix(in srgb, var(--info) 14%, transparent);
+  }
+  .vx-game-log__thread {
+    flex: none;
+    color: var(--text-tertiary);
+    overflow-wrap: anywhere;
+  }
+  .vx-game-log__message {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .vx-game-log__no-match {
+    margin: 0;
+    padding: var(--space-4) var(--space-1);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+  }
+}

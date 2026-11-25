@@ -6,21 +6,53 @@ import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { Button } from "../../components/ui/Button";
 import { Segmented } from "../../components/ui/Segmented";
+import { formatBytes } from "../../i18n/format";
 import { TaskList } from "./TaskList";
 import type { DownloadTasksModel } from "./useDownloadTasks";
 import "./downloads.css";
 
 export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   const { t, i18n } = useTranslation();
-  const { tasks, active, history, rates, busyTaskId, loading, error, act, refresh } = model;
+  const {
+    tasks, active, history, rates, busyTaskId, bulkBusy, loading, error,
+    act, retryFailed, clearUnfinished, refresh,
+  } = model;
   const [historyFilter, setHistoryFilter] = useState<"all" | "failed" | "completed">("all");
   const [historyLimit, setHistoryLimit] = useState(30);
+  const [notice, setNotice] = useState("");
   const filteredHistory = historyFilter === "all" ? history : history.filter(task => task.status === historyFilter);
+  const retryableFailed = history.filter(task => task.status === "failed" && task.retryable).length;
+  const clearable = history.filter(task => task.status === "failed" || task.status === "cancelled").length;
+  const busy = loading || busyTaskId !== null || bulkBusy;
   const errorText = error
     ? i18n.exists(`downloads:errors.${error.code}`)
       ? t(`downloads:errors.${error.code}`, error.params)
       : t("common:errors.internalUnexpected")
     : "";
+
+  async function retryAllFailed() {
+    setNotice("");
+    const result = await retryFailed();
+    if (result) {
+      setNotice(t("downloads:retryFailedNotice", {
+        count: result.queued,
+        skipped: result.skipped,
+      }));
+    }
+  }
+
+  async function clearFailedAndCancelled() {
+    if (!window.confirm(t("downloads:clearConfirm", { count: clearable }))) return;
+    setNotice("");
+    const result = await clearUnfinished();
+    if (result) {
+      setNotice(t("downloads:clearNotice", {
+        count: result.tasks,
+        bytes: formatBytes(result.bytes, i18n.language),
+      }));
+    }
+  }
+
   const listProps = {
     rates,
     busyTaskId,
@@ -34,11 +66,16 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
     <PageShell className="vx-downloads-page">
       <PageHeader title={t("downloads:title")} description={t("downloads:subtitle")}
         actions={<Button variant="secondary" size="sm" icon={<RefreshCw size={16} />}
-          disabled={loading || busyTaskId !== null} onClick={() => void refresh()}>{t("downloads:refresh")}</Button>} />
+          disabled={busy} onClick={() => void refresh()}>{t("downloads:refresh")}</Button>} />
 
       {errorText ? (
         <p className="vx-downloads-error" role="alert">
           {errorText}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="vx-downloads-notice vx-inline-notice" role="status">
+          {notice}
         </p>
       ) : null}
       <LoadingStatus active={loading && tasks.length === 0}>{t("common:status.loading")}</LoadingStatus>
@@ -87,6 +124,12 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
                 label={t("downloads:historyFilter")} value={historyFilter}
                 onChange={value => { setHistoryFilter(value); setHistoryLimit(30); }}
                 options={(["all", "failed", "completed"] as const).map(value => ({ value, label: t(`downloads:historyFilters.${value}`) }))} /> : null}
+              <div className="vx-task-history-actions">
+                {retryableFailed > 0 ? <Button size="sm" variant="secondary" disabled={busy}
+                  onClick={() => void retryAllFailed()}>{t("downloads:retryFailed")}</Button> : null}
+                {clearable > 0 ? <Button size="sm" variant="secondary" disabled={busy}
+                  onClick={() => void clearFailedAndCancelled()}>{t("downloads:clearUnfinished")}</Button> : null}
+              </div>
               <span
                 aria-label={t("downloads:historyCount", {
                   count: history.length,

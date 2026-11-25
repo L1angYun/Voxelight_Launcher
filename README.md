@@ -30,13 +30,13 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Instances | Own folder per instance, with its own or the global Java, memory, JVM arguments, window size and game proxy | ✅ |
 | Instances | Backup and restore, copy, export as a personal backup or a Modrinth `.mrpack` | ✅ |
 | Instances | Worlds: import and back up as ZIP; screenshots | ✅ |
-| Instances | Data packs per world | 🚧 |
+| Instances | Data packs per world | ✅ |
 | Instances | Crash-log analysis and diagnostic report | ✅ |
-| Instances | Game logs per instance, with search and level filters | 🚧 |
+| Instances | Game logs per instance, with search and level filters | ✅ |
 | Content | Search and install mods, resource packs, shaders and modpacks from Modrinth and CurseForge | ✅ |
 | Content | Modrinth installs bring required dependencies; update checks with rollback | ✅ |
 | Content | Search, filter, sort and batch enable or disable local mods and packs | ✅ |
-| Content | Batch delete of local mods and packs | 🚧 |
+| Content | Batch delete of local mods and packs | ✅ |
 | Content | In a project's version list, show how many of your instances each version fits | ✅ |
 | Content | Drag-and-drop import of mods, modpacks and skins | 🚧 |
 | Modpacks | Import a `.mrpack` or CurseForge ZIP, or install online | ✅ |
@@ -44,7 +44,7 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Modpacks | Import MultiMC and MCBBS packs | 🚧 |
 | Downloads | One task page with pause, resume, cancel and retry | ✅ |
 | Downloads | Resumable and multi-connection downloads; game files, Java, mods and modpacks checked against their published hashes; Official or BMCLAPI source; proxy | ✅ |
-| Downloads | Retry all, and clear unfinished downloads | 🚧 |
+| Downloads | Retry all, and clear unfinished downloads | ✅ |
 | Accounts | Microsoft, offline and Authlib accounts; skin upload and cape for Microsoft accounts | ✅ |
 | Multiplayer | Server list, status, LAN worlds, direct join; local vanilla servers with a console | ✅ |
 | Multiplayer | Import third-party server software, such as Spigot, Paper or Fabric, as a JAR or an existing server folder, and run it as a managed server | ✅ |

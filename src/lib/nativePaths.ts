@@ -2,7 +2,7 @@ import { command } from "./launcher";
 
 export type LauncherPathUse =
   | "gameDirectory" | "java" | "instanceIcon" | "skin" | "background"
-  | "presetRead" | "presetWrite" | "localResources" | "worldRead" | "worldWrite"
+  | "presetRead" | "presetWrite" | "localResources" | "datapack" | "worldRead" | "worldWrite"
   | "packRead" | "packWrite" | "instanceArchive" | "diagnostics"
   | "serverJar" | "serverFolder";
 
