@@ -70,6 +70,40 @@ fn current_system_appearance() -> SystemAppearance {
     SystemAppearance::default()
 }
 
+#[cfg(windows)]
+pub(crate) fn system_prefers_light() -> bool {
+    use windows::UI::ViewManagement::{UIColorType, UISettings};
+    let Ok(settings) = UISettings::new() else {
+        return false;
+    };
+    let Ok(bg) = settings.GetColorValue(UIColorType::Background) else {
+        return false;
+    };
+    u16::from(bg.R) + u16::from(bg.G) + u16::from(bg.B) > 382
+}
+
+#[cfg(not(windows))]
+pub(crate) fn system_prefers_light() -> bool {
+    false
+}
+
+fn resolve_initial_window_background(theme: &str, system_light: bool) -> tauri::webview::Color {
+    let light = match theme {
+        "light" => true,
+        "dark" => false,
+        _ => system_light,
+    };
+    if light {
+        tauri::webview::Color(0xf3, 0xf1, 0xeb, 0xff)
+    } else {
+        tauri::webview::Color(0x14, 0x15, 0x16, 0xff)
+    }
+}
+
+pub(crate) fn initial_window_background(theme: &str) -> tauri::webview::Color {
+    resolve_initial_window_background(theme, system_prefers_light())
+}
+
 #[tauri::command]
 pub fn get_system_appearance() -> SystemAppearance {
     current_system_appearance()
@@ -197,5 +231,15 @@ mod tests {
         assert!(appearance.accent_color.starts_with('#'));
         assert_eq!(appearance.accent_color.len(), 7);
         assert!(["zh-CN", "en-US"].contains(&appearance.locale.as_str()));
+    }
+
+    #[test]
+    fn initial_window_background_follows_system_or_explicit_theme() {
+        let light = tauri::webview::Color(0xf3, 0xf1, 0xeb, 0xff);
+        let dark = tauri::webview::Color(0x14, 0x15, 0x16, 0xff);
+        assert_eq!(resolve_initial_window_background("system", true), light);
+        assert_eq!(resolve_initial_window_background("system", false), dark);
+        assert_eq!(resolve_initial_window_background("light", false), light);
+        assert_eq!(resolve_initial_window_background("dark", true), dark);
     }
 }

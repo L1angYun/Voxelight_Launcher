@@ -267,7 +267,7 @@ describe("global settings", () => {
     await click("Save settings");
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
       proxyMode: "custom", proxyScheme: "https", proxyHost: "proxy.example.test", proxyPort: 443,
-      gameProxyMode: "off",
+      gameProxyMode: "system",
     }), { preserveAppearance: true });
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.not.objectContaining({ username: expect.anything() }), expect.anything());
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.not.objectContaining({ password: expect.anything() }), expect.anything());

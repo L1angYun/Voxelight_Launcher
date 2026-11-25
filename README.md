@@ -50,14 +50,14 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Multiplayer | Import third-party server software, such as Spigot, Paper or Fabric, as a JAR or an existing server folder, and run it as a managed server | ✅ |
 | Multiplayer | Import Forge and NeoForge servers that start only from an arguments file (Forge 1.17+ without a shim JAR, NeoForge) | ✅ |
 | Multiplayer | Network check: IPv4 and IPv6, NAT type, and advice for direct connections | ✅ |
-| Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows accessibility settings | ✅ |
+| Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows theme, language, accent color and accessibility settings by default | ✅ |
 | Interface | Lower memory use, such as unloading the 3D world in Lite mode | ✅ |
 | Interface | Instance icons by loader and version type | ✅ |
 | Interface | Keyboard shortcuts, settings search and a first-run tour | ✅ |
 | Interface | Custom home background | ✅ |
 | Updates | Update checks on GitHub or Gitee, and updates from inside the launcher | ✅ |
 | Installer | Installer pages with the launcher's icon, colors, typeface and world scene | ✅ |
-| Installer | A dark installer theme to match the launcher's default theme | 🚧 |
+| Installer | Follow Windows dark and light theme in the installer | 🚧 |
 | Assistant | Built-in assistant using your own AI API key, also available over MCP | ✅ |
 
 ## Accounts and service keys
@@ -106,7 +106,7 @@ No telemetry, analytics or crash reporting. The launcher connects only to:
 
 **Settings → Downloads → Download source**: **Official only** (default), **Automatic** (Mojang first, unless it fails or is clearly slower this session), or **BMCLAPI first**. BMCLAPI is a community mirror, not a Mojang service; it covers Mojang's files and part of Fabric, Forge, NeoForge and authlib-injector, and every mirrored file is still hash-checked.
 
-**Network proxy**: Follow system (default), Off, or Custom `http://` / `https://`; restart the launcher after changing it. **Game proxy mode** (default Off) lets Minecraft itself follow the system proxy or inherit the launcher's `http://` proxy, globally or per instance. Modrinth search and images such as project icons and skins are loaded by WebView2, which does not use the launcher's proxy setting.
+**Network proxy**: Follow system (default), Off, or Custom `http://` / `https://`; restart the launcher after changing it. **Game proxy mode** (default Follow system) lets Minecraft itself follow the system proxy, turn proxying off, or inherit the launcher's `http://` proxy, globally or per instance. Modrinth search and images such as project icons and skins are loaded by WebView2, which does not use the launcher's proxy setting.
 
 ## Limitations
 

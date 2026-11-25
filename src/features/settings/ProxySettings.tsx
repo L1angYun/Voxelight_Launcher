@@ -140,9 +140,9 @@ export function ProxySettings({ config, savedConfig, onChange, onError, onNotice
         </>
       ) : null}
       <label data-settings-target="downloads-proxy-game-mode">{t("settings:proxy.gameMode")}
-        <Select aria-label={t("settings:proxy.gameMode")} value={config.gameProxyMode ?? "off"}
+        <Select aria-label={t("settings:proxy.gameMode")} value={config.gameProxyMode ?? "system"}
           onChange={(gameProxyMode) => onChange({ ...config, gameProxyMode })}
-          options={["off", "system", "launcher"].map((value) => ({ value, label: t(`settings:proxy.gameModes.${value}`) }))} />
+          options={["system", "off", "launcher"].map((value) => ({ value, label: t(`settings:proxy.gameModes.${value}`) }))} />
       </label>
       <p>{t("settings:proxy.javaDescription")}</p>
       <ProxyActions key={`${endpointKey}:${endpointSaved}`} config={config} endpointSaved={endpointSaved} onError={onError} onNotice={onNotice} />

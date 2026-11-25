@@ -51,9 +51,9 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
               value={config.theme}
               onChange={(v) => onChange({ ...config, theme: v as Config["theme"] })}
               options={[
+                { value: "system", label: t("settings:theme.system") },
                 { value: "dark", label: t("settings:theme.dark") },
                 { value: "light", label: t("settings:theme.light") },
-                { value: "system", label: t("settings:theme.system") },
               ]}
             />
           </label>
@@ -115,8 +115,8 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
               value={config.accentSource}
               onChange={(v) => onChange({ ...config, accentSource: v as Config["accentSource"] })}
               options={[
-                { value: "voxelight", label: t("settings:accent.voxelight") },
                 { value: "system", label: t("settings:accent.system") },
+                { value: "voxelight", label: t("settings:accent.voxelight") },
                 { value: "custom", label: t("settings:accent.custom") },
               ]}
             />

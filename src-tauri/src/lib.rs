@@ -173,7 +173,8 @@ pub fn run() {
                     app,
                     &window_config,
                 )
-                .map_err(|error| format!("准备主窗口失败：{error}"))?;
+                .map_err(|error| format!("准备主窗口失败：{error}"))?
+                .background_color(platform::initial_window_background(&config.theme));
                 let builder = match profile {
                     Some(path) => builder.data_directory(path.to_path_buf()),
                     None => builder,

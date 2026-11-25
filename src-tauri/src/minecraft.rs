@@ -4010,11 +4010,14 @@ mod tests {
     #[test]
     fn c7_default_jvm_options_match_the_pre_c7_baseline() {
         let config = Config::default();
-        assert_eq!(config.game_proxy_mode, "off");
+        assert_eq!(config.game_proxy_mode, "system");
         let proxy = launch_proxy_args(&config, None, &[]).unwrap();
-        assert!(proxy.is_empty(), "the default adds no proxy flags: {proxy:?}");
+        assert_eq!(proxy, ["-Djava.net.useSystemProxies=true"]);
+        let off = Config { game_proxy_mode: "off".into(), ..Config::default() };
+        let off_proxy = launch_proxy_args(&off, None, &[]).unwrap();
+        assert!(off_proxy.is_empty(), "explicit off adds no proxy flags: {off_proxy:?}");
         let memory = vec!["-Xmx4096M".to_string(), "-Xms1024M".to_string()];
-        let options = launcher_jvm_options(memory, proxy, &[], || Ok("T:\\tmp".into())).unwrap();
+        let options = launcher_jvm_options(memory, off_proxy, &[], || Ok("T:\\tmp".into())).unwrap();
         assert_eq!(options, ["-Xmx4096M", "-Xms1024M", "-Dfile.encoding=UTF-8", "-Djava.io.tmpdir=T:\\tmp"]);
         assert_eq!(
             jvm_response_file(&options),

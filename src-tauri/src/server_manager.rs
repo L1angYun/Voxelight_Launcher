@@ -1279,6 +1279,8 @@ mod tests {
     #[test]
     fn c7_server_proxy_follows_the_global_game_mode_and_refuses_tls() {
         let mut config = crate::models::Config::default();
+        assert_eq!(server_proxy_args(&config).unwrap(), ["-Djava.net.useSystemProxies=true"], "System is the default");
+        config.game_proxy_mode = "off".into();
         assert!(server_proxy_args(&config).unwrap().is_empty(), "Off keeps the old command line");
         config.proxy_mode = "custom".into();
         config.proxy_scheme = "http".into();

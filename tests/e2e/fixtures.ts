@@ -110,7 +110,7 @@ export async function installLauncherFixture(
       downloadConcurrency: 6,
       microsoftClientId: "",
       proxyMode: "system", proxyScheme: "http", proxyHost: "", proxyPort: 0,
-      gameProxyMode: "off",
+      gameProxyMode: "system",
       downloadLimitKib: 0,
       downloadSource: "official",
       screenWidth: 1280,

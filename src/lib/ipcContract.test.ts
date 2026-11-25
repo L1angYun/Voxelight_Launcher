@@ -97,9 +97,12 @@ describe("Tauri IPC registration contract", () => {
 
   it("exposes the new visual defaults and system appearance command", () => {
     expect(defaults).toMatchObject({
+      theme: "system",
       effects: "full",
       accentSource: "system",
       language: "system",
+      proxyMode: "system",
+      gameProxyMode: "system",
       soundEnabled: false,
     });
     expect(registered.has("get_system_appearance")).toBe(true);

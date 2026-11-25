@@ -218,7 +218,7 @@ export const defaults: Config = {
   proxyScheme: "http",
   proxyHost: "",
   proxyPort: 0,
-  gameProxyMode: "off",
+  gameProxyMode: "system",
   screenWidth: 1280,
   screenHeight: 720,
   language: "system",

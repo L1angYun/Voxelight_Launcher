@@ -281,7 +281,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         <Field label={t("library:jvmArguments")} htmlFor="instance-jvm"><input id="instance-jvm" value={jvmArguments} onChange={(event) => setJvmArguments(event.target.value)} /></Field>
         <Field label={t("settings:proxy.gameMode")} htmlFor="instance-game-proxy">
           <Select id="instance-game-proxy" aria-label={t("settings:proxy.gameMode")} value={gameProxyMode} onChange={setGameProxyMode}
-            options={["default", "off", "system", "launcher"].map((value) => ({ value, label: t(`settings:proxy.gameModes.${value}`) }))} />
+            options={["default", "system", "off", "launcher"].map((value) => ({ value, label: t(`settings:proxy.gameModes.${value}`) }))} />
         </Field>
         <div className="vx-action-row">
           <Button variant="secondary" onClick={() => void run("instance.settings", () => pickLauncherPath("java").then((path) => { if (typeof path === "string") setJavaPath(path); }))}>{t("library:chooseJava")}</Button>

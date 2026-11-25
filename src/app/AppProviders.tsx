@@ -96,6 +96,9 @@ function VisualProviders({ children }: { children?: ReactNode }) {
     () => createLauncherI18n(config.language, systemLocale, pseudoLocale),
     [config.language, systemLocale, pseudoLocale],
   );
+  useEffect(() => {
+    if (i18n.language) document.documentElement.lang = i18n.language;
+  }, [i18n.language]);
   return (
     <I18nextProvider i18n={i18n}>
       <MotionConfig reducedMotion={tier === "none" ? "always" : "never"}>

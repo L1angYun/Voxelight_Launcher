@@ -84,7 +84,7 @@ impl Default for Config {
             proxy_scheme: "http".into(),
             proxy_host: String::new(),
             proxy_port: 0,
-            game_proxy_mode: "off".into(),
+            game_proxy_mode: "system".into(),
             screen_width: 1280,
             screen_height: 720,
             language: "system".into(),
@@ -332,9 +332,12 @@ mod tests {
     #[test]
     fn visual_preferences_have_consistent_defaults() {
         let config = Config::default();
+        assert_eq!(config.theme, "system");
         assert_eq!(config.effects, "full");
         assert_eq!(config.accent_source, "system");
         assert_eq!(config.language, "system");
+        assert_eq!(config.proxy_mode, "system");
+        assert_eq!(config.game_proxy_mode, "system");
         assert!(!config.sound_enabled);
     }
 }
