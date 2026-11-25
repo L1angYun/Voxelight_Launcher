@@ -45,6 +45,16 @@ pub struct Config {
     pub default_skin: String,
     /// The first-run tour was finished or skipped; older profiles have not seen it.
     pub tour_completed: bool,
+    /// Built-in assistant provider: "openai" (OpenAI-compatible) or "anthropic".
+    pub assistant_provider: String,
+    /// Optional custom API base URL (HTTPS, or loopback HTTP for local models).
+    pub assistant_base_url: String,
+    /// Model identifier sent to the user's configured AI provider.
+    pub assistant_model: String,
+    /// Permission level for assistant and MCP tools: "readOnly", "controlled", or "fullAccess".
+    pub assistant_permission: String,
+    /// Localhost TCP port for the opt-in MCP server (127.0.0.1 only).
+    pub assistant_mcp_port: u16,
 }
 
 impl Default for Config {
@@ -90,6 +100,11 @@ impl Default for Config {
             update_source: "auto".into(),
             default_skin: "steve".into(),
             tour_completed: false,
+            assistant_provider: "openai".into(),
+            assistant_base_url: String::new(),
+            assistant_model: String::new(),
+            assistant_permission: "readOnly".into(),
+            assistant_mcp_port: 25590,
         }
     }
 }

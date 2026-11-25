@@ -27,6 +27,7 @@
     "game": "Game",
     "java": "Java",
     "downloads": "Downloads",
+    "assistant": "Assistant & MCP",
     "about": "About"
   },
   "search": {
@@ -78,7 +79,12 @@
       "credentials": "Proxy credentials",
       "startupCheck": "Startup check",
       "updateChannel": "Update channel",
-      "updateCheck": "Update check"
+      "updateCheck": "Update check",
+      "aiAssistant": "AI assistant",
+      "mcpServer": "MCP server",
+      "llmProvider": "LLM provider",
+      "modelName": "Model name",
+      "permissionTier": "Tool permissions"
     }
   },
   "generalDescription": "Service credentials and portable launcher presets.",
@@ -247,7 +253,53 @@
     "backgroundCleared": "Default home background restored.",
     "javaDetected_one": "Found {{count}} Java environment.",
     "javaDetected_other": "Found {{count}} Java environments.",
-    "javaNotFound": "No Java environment found. Install one or enter its path."
+    "javaNotFound": "No Java environment found. Install one or enter its path.",
+    "assistantKeySaved": "Assistant API key saved with system encryption.",
+    "assistantKeyCleared": "Saved assistant API key cleared.",
+    "mcpStarted": "Local MCP server started on 127.0.0.1:{{port}}.",
+    "mcpStopped": "Local MCP server stopped.",
+    "mcpTokenRotated": "MCP access token rotated. Update connected clients with the new token.",
+    "mcpConfigCopied": "MCP client configuration copied to clipboard."
+  },
+  "assistant": {
+    "description": "Use your own AI API key inside the launcher, or expose launcher tools over a localhost-only MCP server.",
+    "providerTitle": "AI provider and key",
+    "providerDescription": "Requests are sent only when you ask the assistant a question, directly to the endpoint you configure.",
+    "provider": "Provider",
+    "providers": {
+      "openai": "OpenAI-compatible",
+      "anthropic": "Anthropic"
+    },
+    "model": "Model",
+    "modelPlaceholder": "e.g. gpt-4o-mini, claude-sonnet-4-20250514, deepseek-chat",
+    "baseUrl": "API base URL (optional)",
+    "baseUrlHint": "Leave empty for the provider's default HTTPS endpoint. Use HTTPS for remote endpoints, or http://127.0.0.1 / http://localhost for local servers such as Ollama or LM Studio.",
+    "apiKey": "Assistant API key",
+    "apiKeyPlaceholder": "Enter your own API key (optional for local loopback endpoints)",
+    "apiKeyHint": "Encrypted with Windows DPAPI for your Windows user and never exported in presets.",
+    "permission": "Tool permissions",
+    "permissions": {
+      "readOnly": "Read-only",
+      "controlled": "Controlled",
+      "fullAccess": "Full access"
+    },
+    "permissionHints": {
+      "readOnly": "Inspect instances, versions, mods, logs, crash diagnostics, downloads, and servers without changing anything.",
+      "controlled": "Read-only tools run immediately. Write actions in the built-in assistant always ask for your confirmation; external MCP clients stay read-only.",
+      "fullAccess": "Allows both the built-in assistant and authenticated local MCP clients to run curated launcher write tools (toggle resources, create instances from installed versions, update notes, gracefully stop games)."
+    },
+    "openDialog": "Open built-in assistant (Ctrl+K)",
+    "mcpTitle": "Local MCP server",
+    "mcpDescription": "Off by default on every start. Binds strictly to 127.0.0.1 and requires a per-session Bearer token with loopback Host/Origin checks.",
+    "mcpPort": "MCP port (1024–65535)",
+    "mcpRunning": "Running on 127.0.0.1:{{port}} (localhost only).",
+    "mcpStopped": "Stopped.",
+    "mcpEndpoint": "Endpoint",
+    "mcpToken": "Session token",
+    "mcpStart": "Start MCP server",
+    "mcpStop": "Stop MCP server",
+    "mcpCopyConfig": "Copy MCP config JSON",
+    "mcpRotateToken": "Rotate token"
   },
   "errors": {
     "proxy": {
@@ -275,6 +327,13 @@
       "minMemoryAboveMax": "Initial memory cannot exceed maximum memory. Lower the initial memory or raise the maximum.",
       "heapArguments": "Set memory with the memory fields and remove -Xms, -Xmx or -XX:…HeapSize from the custom JVM arguments.",
       "invalid": "Some settings are invalid. Review the highlighted values and try again."
+    },
+    "assistant": {
+      "apiKeyRequired": "Save your own AI API key in Settings → Assistant & MCP first.",
+      "modelRequired": "Enter a model name in Settings → Assistant & MCP first.",
+      "invalidBaseUrl": "The assistant API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
+      "providerError": "The configured AI service returned an error.",
+      "emptyMessage": "Enter a message before sending."
     }
   },
   "updates": {

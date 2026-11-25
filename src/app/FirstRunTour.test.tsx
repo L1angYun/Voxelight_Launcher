@@ -400,7 +400,7 @@ describe("FirstRunTour", () => {
     const list = dialog.querySelector<HTMLDListElement>("dl.vx-shortcut-help")!;
     expect(list).not.toBeNull();
     const rows = [...list.querySelectorAll<HTMLElement>(".vx-shortcut-help__row")];
-    expect(rows).toHaveLength(11);
+    expect(rows).toHaveLength(12);
     expect(rows[0].querySelectorAll("dt kbd")).toHaveLength(2);
     expect(rows[0].textContent).toContain("Ctrl");
     expect(rows[0].textContent).toContain("1");
@@ -408,7 +408,8 @@ describe("FirstRunTour", () => {
     expect(rows[0].textContent).not.toContain("Go to Home");
     expect(rows[6].textContent).toContain("Go to Settings");
     expect(rows[7].textContent).toContain(",");
-    expect(rows[8].textContent).toContain("Focus the page search");
+    expect(rows[8].textContent).toContain("Open built-in assistant");
+    expect(rows[9].textContent).toContain("Focus the page search");
     expect(list.textContent).toContain("Show keyboard shortcuts");
 
     const showAgain = [...dialog.querySelectorAll<HTMLButtonElement>("button")]
@@ -429,7 +430,8 @@ describe("FirstRunTour", () => {
     expect(rows[0].textContent).toContain("Go to Play");
     expect(rows[1].textContent).toContain("Go to Settings");
     expect(rows[2].textContent).toContain(",");
-    expect(rows[3].textContent).toContain("Focus the page search");
+    expect(rows[3].textContent).toContain("Open built-in assistant");
+    expect(rows[4].textContent).toContain("Focus the page search");
   });
 
   it("names each tour step exactly like the navigation item it points at", async () => {

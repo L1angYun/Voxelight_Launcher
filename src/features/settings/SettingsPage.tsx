@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { RotateCcw, Save, SlidersHorizontal, Palette, Gamepad2, Coffee, Download, Info } from "lucide-react";
+import { RotateCcw, Save, SlidersHorizontal, Palette, Gamepad2, Coffee, Download, Bot, Info } from "lucide-react";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { settingsSectionRegistry } from "../../app/registry";
 import { appearanceFields, configChanges, type Config } from "../../lib/launcher";
@@ -14,17 +14,26 @@ import { AppearanceSettings } from "./AppearanceSettings";
 import { GameSettings } from "./GameSettings";
 import { JavaSettings } from "./JavaSettings";
 import { DownloadSettings } from "./DownloadSettings";
+import { AssistantSettings } from "./AssistantSettings";
 import { AboutSettings } from "./AboutSettings";
 import { searchSettings, type SettingsEntry, type SettingsSectionId } from "./settingsIndex";
 import "./settings.css";
 
 type Section = SettingsSectionId;
-const sectionIcons = { general: SlidersHorizontal, appearance: Palette, game: Gamepad2, java: Coffee, downloads: Download, about: Info };
+const sectionIcons = { general: SlidersHorizontal, appearance: Palette, game: Gamepad2, java: Coffee, downloads: Download, assistant: Bot, about: Info };
 const appearanceKeys = new Set<keyof Config>(appearanceFields);
 type SaveResult = { ok: true } | { ok: false; error: LauncherError };
 
 /** `reviewUpdates` changes when the startup notice asks to review the update. */
-export function SettingsPage({ reviewUpdates = 0 }: { reviewUpdates?: number }) {
+export function SettingsPage({
+  reviewUpdates = 0,
+  focusAssistant = 0,
+  onOpenAssistant,
+}: {
+  reviewUpdates?: number;
+  focusAssistant?: number;
+  onOpenAssistant?: () => void;
+}) {
   const { t, i18n } = useTranslation();
   const {
     config,
@@ -33,11 +42,14 @@ export function SettingsPage({ reviewUpdates = 0 }: { reviewUpdates?: number }) 
     saveConfig,
     reload,
   } = useLauncher();
-  const [section, setSection] = useState<Section>(reviewUpdates ? "about" : "general");
+  const [section, setSection] = useState<Section>(
+    reviewUpdates ? "about" : focusAssistant ? "assistant" : "general",
+  );
   // The review request focuses the update action once, not on every return to About.
   // Parent effects run after the child's, so the handled tick is remembered here.
   const [focusUpdates, setFocusUpdates] = useState(0);
   const handledReview = useRef(0);
+  const handledAssistant = useRef(0);
   const focusHandled = useCallback(() => setFocusUpdates(0), []);
   useEffect(() => {
     if (!reviewUpdates || reviewUpdates === handledReview.current) return;
@@ -45,6 +57,11 @@ export function SettingsPage({ reviewUpdates = 0 }: { reviewUpdates?: number }) 
     setSection("about");
     setFocusUpdates(reviewUpdates);
   }, [reviewUpdates]);
+  useEffect(() => {
+    if (!focusAssistant || focusAssistant === handledAssistant.current) return;
+    handledAssistant.current = focusAssistant;
+    setSection("assistant");
+  }, [focusAssistant]);
   const [query, setQuery] = useState("");
   const [pendingTarget, setPendingTarget] = useState<SettingsEntry | null>(null);
   const layout = useRef<HTMLDivElement>(null);
@@ -392,6 +409,7 @@ export function SettingsPage({ reviewUpdates = 0 }: { reviewUpdates?: number }) 
           {section === "game" ? <GameSettings {...sectionProps} /> : null}
           {section === "java" ? <JavaSettings {...sectionProps} /> : null}
           {section === "downloads" ? <DownloadSettings {...sectionProps} savedConfig={savedConfig.current} /> : null}
+          {section === "assistant" ? <AssistantSettings {...sectionProps} onOpenAssistant={onOpenAssistant} /> : null}
           {section === "about" ? <AboutSettings {...sectionProps} focusUpdates={focusUpdates} onFocusHandled={focusHandled} /> : null}
         </SectionPanel>
       </div>

@@ -10,6 +10,7 @@
     "description": "These shortcuts work anywhere in the launcher.",
     "actions": {
       "goTo": "Go to {{page}}",
+      "assistant": "Open built-in assistant",
       "search": "Focus the page search",
       "help": "Show keyboard shortcuts"
     },
@@ -144,7 +145,44 @@
     "update.cancelled": "Update cancelled.",
     "update.sourceChanged": "The update source changed. Check for updates again.",
     "update.notOffered": "There is no update to download. Check for updates first.",
-    "update.sourceInvalid": "The update source is not valid."
+    "update.sourceInvalid": "The update source is not valid.",
+    "assistant.apiKeyRequired": "Save your own AI API key in Settings → Assistant & MCP first.",
+    "assistant.modelRequired": "Enter a model name in Settings → Assistant & MCP first.",
+    "assistant.invalidBaseUrl": "The assistant API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
+    "assistant.providerError": "The configured AI service returned an error.",
+    "assistant.emptyMessage": "Enter a message before sending."
+  },
+  "assistant": {
+    "title": "Built-in assistant",
+    "description": "Ask about your instances, mods, logs, crash reports, downloads, or managed servers using your own AI API key.",
+    "notConfigured": "Model not configured",
+    "configure": "Configure",
+    "emptyReady": "Ask a question about your launcher setup, or pick a starter prompt below.",
+    "emptyUnconfigured": "Configure a provider, model, and API key (or a local loopback endpoint) in Settings → Assistant & MCP to start chatting.",
+    "prompts": {
+      "instances": "Summarize my instances and installed versions.",
+      "resources": "Check my memory setup and any recent download tasks.",
+      "servers": "List my running games and managed servers."
+    },
+    "roleUser": "You",
+    "roleAssistant": "Assistant",
+    "toolActivity": "Launcher tool calls",
+    "traceStatus": {
+      "executed": "ran",
+      "approved": "approved",
+      "denied": "denied",
+      "blocked": "blocked",
+      "error": "failed"
+    },
+    "approvalTitle": "Approve launcher action",
+    "approvalDescription": "Controlled mode requires your confirmation before the assistant modifies launcher state.",
+    "approveAction": "Approve & run",
+    "denyAction": "Deny",
+    "inputLabel": "Message for the assistant",
+    "inputPlaceholder": "Ask about instances, crash logs, mods, or servers… (Enter to send)",
+    "inputUnconfiguredPlaceholder": "Configure a model and API key in Settings → Assistant & MCP first…",
+    "clear": "Clear",
+    "send": "Send"
   },
   "storage": {
     "fallbackTitle": "Using a fallback data profile",

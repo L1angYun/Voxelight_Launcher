@@ -128,7 +128,16 @@ export async function installLauncherFixture(
       checkForUpdates: true,
       updateSource: "auto",
       tourCompleted: options.tourCompleted ?? true,
+      assistantProvider: "openai",
+      assistantBaseUrl: "",
+      assistantModel: "",
+      assistantPermission: "readOnly",
+      assistantMcpPort: 25590,
     };
+    let assistantApiKeyConfigured = false;
+    let mcpRunning = false;
+    let mcpPort = 25590;
+    let mcpToken = "synthetic-mcp-token-000001";
     const installedVersions = Array.from(
       { length: Math.max(0, Math.floor(options.versionDirectoryCount ?? 1)) },
       (_, index) => ({
@@ -928,6 +937,134 @@ export async function installLauncherFixture(
                 { code: "ipv6DirectReady", severity: "good" },
                 { code: "ipv4ConeForward", severity: "info" },
               ],
+            };
+          }
+          if (name === "get_assistant_status") {
+            const effectiveBaseUrl = config.assistantBaseUrl.trim() || (
+              config.assistantProvider === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com/v1"
+            );
+            const loopbackEndpoint = /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(effectiveBaseUrl);
+            return {
+              apiKeyConfigured: assistantApiKeyConfigured,
+              provider: config.assistantProvider,
+              baseUrl: config.assistantBaseUrl,
+              effectiveBaseUrl,
+              model: config.assistantModel,
+              permission: config.assistantPermission,
+              loopbackEndpoint,
+              ready: Boolean(config.assistantModel.trim()) && (assistantApiKeyConfigured || loopbackEndpoint),
+              mcp: {
+                running: mcpRunning,
+                port: mcpRunning ? mcpPort : config.assistantMcpPort,
+                url: mcpRunning ? `http://127.0.0.1:${mcpPort}/mcp` : null,
+                tokenMasked: mcpRunning ? `••••••••${mcpToken.slice(-6)}` : null,
+              },
+              tools: [],
+            };
+          }
+          if (name === "set_assistant_api_key") {
+            assistantApiKeyConfigured = Boolean(String(args?.secret ?? "").trim());
+            return assistantApiKeyConfigured;
+          }
+          if (name === "start_mcp_server") {
+            mcpPort = Number(args?.port ?? config.assistantMcpPort) || 25590;
+            mcpRunning = true;
+            return {
+              running: true,
+              port: mcpPort,
+              url: `http://127.0.0.1:${mcpPort}/mcp`,
+              tokenMasked: `••••••••${mcpToken.slice(-6)}`,
+            };
+          }
+          if (name === "stop_mcp_server") {
+            mcpRunning = false;
+            return { running: false, port: config.assistantMcpPort, url: null, tokenMasked: null };
+          }
+          if (name === "rotate_mcp_token") {
+            mcpToken = `synthetic-mcp-token-${Date.now().toString().slice(-6)}`;
+            return {
+              running: mcpRunning,
+              port: mcpPort,
+              url: mcpRunning ? `http://127.0.0.1:${mcpPort}/mcp` : null,
+              tokenMasked: mcpRunning ? `••••••••${mcpToken.slice(-6)}` : null,
+            };
+          }
+          if (name === "get_mcp_token") {
+            return mcpRunning ? mcpToken : null;
+          }
+          if (name === "assistant_chat") {
+            const req = (args?.request ?? {}) as {
+              approvedCallIds?: string[];
+              deniedCallIds?: string[];
+              pendingContinuation?: unknown;
+            };
+            if (req.pendingContinuation) {
+              const approved = (req.approvedCallIds ?? []).length > 0;
+              return {
+                reply: approved ? "已更新实例备注。" : "已按你的要求取消该写入操作。",
+                traces: [
+                  {
+                    id: "call_notes_1",
+                    name: "update_instance_notes",
+                    arguments: { instanceId: instances[0]?.id ?? "fixture-instance-1", notes: "测试备注" },
+                    tier: "controlled",
+                    status: approved ? "approved" : "denied",
+                    summary: approved ? "{\"notes\":\"测试备注\"}" : "User denied this action.",
+                  },
+                ],
+                pendingApprovals: [],
+                continuation: null,
+                model: config.assistantModel || "gpt-4o-mini",
+                provider: config.assistantProvider,
+              };
+            }
+            if (config.assistantPermission === "controlled") {
+              const pendingCall = {
+                id: "call_notes_1",
+                name: "update_instance_notes",
+                arguments: { instanceId: instances[0]?.id ?? "fixture-instance-1", notes: "测试备注" },
+                description: "Update the notes and/or category metadata of a registered instance.",
+              };
+              return {
+                reply: "我已检查你的实例，准备写入备注。",
+                traces: [
+                  {
+                    id: "call_list_1",
+                    name: "list_instances",
+                    arguments: {},
+                    tier: "readOnly",
+                    status: "executed",
+                    summary: `{"count":${instances.length}}`,
+                  },
+                ],
+                pendingApprovals: [pendingCall],
+                continuation: {
+                  provider: config.assistantProvider,
+                  providerMessages: [],
+                  completedResults: [],
+                  pendingCalls: [pendingCall],
+                  round: 0,
+                },
+                model: config.assistantModel || "gpt-4o-mini",
+                provider: config.assistantProvider,
+              };
+            }
+            return {
+              reply: `当前共有 ${instances.length} 个实例。`,
+              traces: [
+                {
+                  id: "call_list_1",
+                  name: "list_instances",
+                  arguments: {},
+                  tier: "readOnly",
+                  status: "executed",
+                  summary: `{"count":${instances.length}}`,
+                },
+              ],
+              pendingApprovals: [],
+              continuation: null,
+              model: config.assistantModel || "gpt-4o-mini",
+              provider: config.assistantProvider,
             };
           }
           // These concrete query fixtures deliberately represent empty records.

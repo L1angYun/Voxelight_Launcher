@@ -92,8 +92,14 @@ pub fn expected(detail: impl Into<String>) -> AppError {
         "config.presetInvalid"
     } else if detail.starts_with(crate::modpacks::PLATFORM_REFUSED) {
         "modpack.platformUnavailable"
+    } else if detail.starts_with(crate::assistant::ASSISTANT_PROVIDER_ERROR) {
+        "assistant.providerError"
     } else {
         match detail.as_str() {
+            crate::assistant::ASSISTANT_API_KEY_REQUIRED => "assistant.apiKeyRequired",
+            crate::assistant::ASSISTANT_MODEL_REQUIRED => "assistant.modelRequired",
+            crate::assistant::ASSISTANT_INVALID_BASE_URL => "assistant.invalidBaseUrl",
+            crate::assistant::ASSISTANT_EMPTY_MESSAGE => "assistant.emptyMessage",
             STORAGE_STATE_CHANGED => "storage.stateChanged",
             "instance.exportPreviewChanged" => "instance.exportPreviewChanged",
             crate::modpacks::pack_update::UNMANAGED => "modpack.unmanaged",
@@ -239,7 +245,12 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             | "强调色需要为 #RRGGBB"
             | "特效级别仅支持精简或完全"
             | "强调色来源无效"
-            | "暂不支持所选界面语言" => "config.invalid",
+            | "暂不支持所选界面语言"
+            | "助手服务提供商无效"
+            | "助手权限级别无效"
+            | "MCP 端口需要在 1024–65535 之间"
+            | "模型名称无效"
+            | "API Key 格式无效" => "config.invalid",
             _ => "internal.unexpected",
         }
     };

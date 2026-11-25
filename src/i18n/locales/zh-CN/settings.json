@@ -27,6 +27,7 @@
     "game": "游戏",
     "java": "Java",
     "downloads": "下载",
+    "assistant": "助手与 MCP",
     "about": "关于"
   },
   "search": {
@@ -77,7 +78,12 @@
       "credentials": "代理凭据",
       "startupCheck": "启动检查",
       "updateChannel": "更新渠道",
-      "updateCheck": "更新检查"
+      "updateCheck": "更新检查",
+      "aiAssistant": "AI 助手",
+      "mcpServer": "MCP 服务",
+      "llmProvider": "大模型提供商",
+      "modelName": "模型名称",
+      "permissionTier": "工具权限"
     }
   },
   "generalDescription": "服务接入与可迁移的启动器预设。",
@@ -245,7 +251,53 @@
     "backgroundUpdated": "首页背景已更新。",
     "backgroundCleared": "已恢复默认首页背景。",
     "javaDetected": "发现 {{count}} 个 Java 环境。",
-    "javaNotFound": "没有找到 Java，请安装后指定路径。"
+    "javaNotFound": "没有找到 Java，请安装后指定路径。",
+    "assistantKeySaved": "助手 API Key 已加密保存。",
+    "assistantKeyCleared": "已清除保存的助手 API Key。",
+    "mcpStarted": "本地 MCP 服务已在 127.0.0.1:{{port}} 启动。",
+    "mcpStopped": "本地 MCP 服务已停止。",
+    "mcpTokenRotated": "MCP 访问令牌已轮换，请更新已连接客户端中的令牌。",
+    "mcpConfigCopied": "MCP 客户端配置 JSON 已复制到剪贴板。"
+  },
+  "assistant": {
+    "description": "使用你自己的 AI API Key 启动内置助手，或通过仅限本机的 MCP 服务向外部客户端开放启动器工具。",
+    "providerTitle": "AI 提供商与密钥",
+    "providerDescription": "仅在你主动向助手提问时发包，直接连向你配置的接口地址。",
+    "provider": "提供商",
+    "providers": {
+      "openai": "OpenAI 兼容接口",
+      "anthropic": "Anthropic"
+    },
+    "model": "模型名称",
+    "modelPlaceholder": "例如 gpt-4o-mini、claude-sonnet-4-20250514、deepseek-chat",
+    "baseUrl": "API 基础地址（可选）",
+    "baseUrlHint": "留空使用提供商默认 HTTPS 地址。远程接口必须使用 HTTPS；本机服务（如 Ollama 或 LM Studio）允许 http://127.0.0.1 或 http://localhost。",
+    "apiKey": "助手 API Key",
+    "apiKeyPlaceholder": "填写你自己的 API Key（本机回环接口可留空）",
+    "apiKeyHint": "通过 Windows DPAPI 按当前 Windows 用户加密保存，导出配置预设时不会包含。",
+    "permission": "工具权限",
+    "permissions": {
+      "readOnly": "只读",
+      "controlled": "受控",
+      "fullAccess": "完全访问"
+    },
+    "permissionHints": {
+      "readOnly": "只查看实例、版本、模组、日志、崩溃诊断、下载任务和服务端状态，不修改任何内容。",
+      "controlled": "只读工具自动执行；内置助手执行写入操作前会逐项请求你的确认；外部 MCP 客户端仍保持只读。",
+      "fullAccess": "允许内置助手及通过认证的本机 MCP 客户端执行精选写入工具（切换本地资源、基于已装版本创建实例、更新备注、正常停止运行中的游戏）。"
+    },
+    "openDialog": "打开内置助手（Ctrl+K）",
+    "mcpTitle": "本地 MCP 服务",
+    "mcpDescription": "每次启动默认关闭。仅监听 127.0.0.1，要求每次会话随机生成的 Bearer 令牌并校验回环 Host/Origin。",
+    "mcpPort": "MCP 端口（1024–65535）",
+    "mcpRunning": "运行中：127.0.0.1:{{port}}（仅限本机）。",
+    "mcpStopped": "已停止。",
+    "mcpEndpoint": "接口地址",
+    "mcpToken": "会话令牌",
+    "mcpStart": "启动 MCP 服务",
+    "mcpStop": "停止 MCP 服务",
+    "mcpCopyConfig": "复制 MCP 配置 JSON",
+    "mcpRotateToken": "轮换令牌"
   },
   "errors": {
     "proxy": {
@@ -273,6 +325,13 @@
       "minMemoryAboveMax": "初始内存不能大于最大内存。请调低初始内存，或调高最大内存。",
       "heapArguments": "请在内存设置里调整内存，并从自定义 JVM 参数中删除 -Xms、-Xmx 或 -XX:…HeapSize 参数。",
       "invalid": "部分设置无效，请检查输入后重试。"
+    },
+    "assistant": {
+      "apiKeyRequired": "请先在「设置 → 助手与 MCP」中保存你自己的 AI API Key。",
+      "modelRequired": "请先在「设置 → 助手与 MCP」中填写模型名称。",
+      "invalidBaseUrl": "助手 API 基础地址必须使用 HTTPS，或本机回环 HTTP（127.0.0.1 / localhost）。",
+      "providerError": "所配置的 AI 服务返回了错误。",
+      "emptyMessage": "发送前请输入消息内容。"
     }
   },
   "updates": {

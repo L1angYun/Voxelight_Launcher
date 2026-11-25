@@ -510,6 +510,48 @@ fn replace_metadata(value: &mut Instance, changes: &[(String, Value)]) -> Result
     Ok(())
 }
 
+pub(crate) async fn update_instance_notes_inner(
+    state: &LauncherState,
+    instance_id: &str,
+    notes: Option<String>,
+    category: Option<String>,
+) -> Result<Instance, String> {
+    if notes.is_none() && category.is_none() {
+        return Err("请至少提供备注或分类中的一项".into());
+    }
+    if let Some(ref cat) = category {
+        if cat.chars().count() > 64 || cat.chars().any(char::is_control) {
+            return Err("分类须少于 64 个可见字符".into());
+        }
+    }
+    if let Some(ref text) = notes {
+        if text.chars().count() > 4000 {
+            return Err("备注须少于 4000 个字符".into());
+        }
+    }
+    let _operation = state.operation.lock().await;
+    require_no_pending_restore(state, instance_id)?;
+    state.update(|data| {
+        let target = data
+            .instances
+            .iter_mut()
+            .find(|item| item.id == instance_id)
+            .ok_or_else(|| "实例不存在，请刷新实例列表".to_owned())?;
+        if let Some(cat) = category {
+            let trimmed = cat.trim();
+            target.category = if trimmed.is_empty() {
+                "normal".into()
+            } else {
+                trimmed.to_owned()
+            };
+        }
+        if let Some(text) = notes {
+            target.notes = text;
+        }
+        Ok(target.clone())
+    })
+}
+
 #[tauri::command]
 pub async fn update_instance(
     window: tauri::WebviewWindow,

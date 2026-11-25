@@ -58,7 +58,7 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Updates | Update checks on GitHub or Gitee, and updates from inside the launcher | ✅ |
 | Installer | Installer pages with the launcher's icon, colors, typeface and world scene | ✅ |
 | Installer | A dark installer theme to match the launcher's default theme | 🚧 |
-| Assistant | Built-in assistant using your own AI API key, also available over MCP | 🚧 |
+| Assistant | Built-in assistant using your own AI API key, also available over MCP | ✅ |
 
 ## Accounts and service keys
 
@@ -78,7 +78,7 @@ An **offline account** is enough for single-player and for servers that allow of
 | Game directory (versions, libraries, assets, `instances\`) | `%APPDATA%\.minecraft` by default; **Settings → Game** |
 
 - The default game directory is the official launcher's, so versions, libraries and assets are shared with it. Nothing is imported from other launchers.
-- Tokens, the saved CurseForge key and proxy credentials are encrypted with Windows DPAPI for your Windows user. Copy the data folder to another user or PC and you have to sign in and enter the CurseForge key and proxy credentials again.
+- Tokens, the saved CurseForge key, proxy credentials and the assistant API key are encrypted with Windows DPAPI for your Windows user. Copy the data folder to another user or PC and you have to sign in and enter those keys and credentials again.
 - Uninstalling keeps your data unless you tick **Delete the application data**. The game directory is never deleted.
 - `VOXELIGHT_LAUNCHER_DATA_DIR` and `VOXELIGHT_LAUNCHER_GAME_DIR` move the folders for test setups or a second profile; a game directory set this way is also saved in the settings.
 
@@ -96,6 +96,7 @@ No telemetry, analytics or crash reporting. The launcher connects only to:
 | Launcher updates | GitHub, Gitee |
 | Multiplayer | The servers you check; UDP 4445 for LAN discovery; STUN servers (`stun.cloudflare.com`, `stun.miwifi.com`, `stun.l.google.com`, `stun1.l.google.com`) only when you run a network check |
 | Skin preview | A skin URL you enter |
+| Built-in assistant & MCP | The AI provider endpoint you configure (on demand when you chat); optional localhost-only (`127.0.0.1`) MCP server off by default |
 
 - Every start fetches the version list. The update check also runs at every start by default; with the default Auto source it asks both GitHub and Gitee (**Settings → About**).
 - With an offline account or none, showing the default Steve or Alex can download an official Minecraft client once, if no installed one can be used.

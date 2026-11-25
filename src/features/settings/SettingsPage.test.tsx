@@ -196,6 +196,26 @@ beforeEach(() => {
     }
     if (name === "get_service_status") return { curseforgeConfigured: false };
     if (name === "set_service_secret") return Boolean(args?.secret);
+    if (name === "get_assistant_status") return {
+      apiKeyConfigured: false,
+      provider: mockLauncher.config.assistantProvider,
+      baseUrl: mockLauncher.config.assistantBaseUrl,
+      effectiveBaseUrl: "https://api.openai.com/v1",
+      model: mockLauncher.config.assistantModel,
+      permission: mockLauncher.config.assistantPermission,
+      loopbackEndpoint: false,
+      ready: false,
+      mcp: { running: false, port: mockLauncher.config.assistantMcpPort, url: null, tokenMasked: null },
+      tools: [],
+    };
+    if (name === "set_assistant_api_key") return Boolean(args?.secret);
+    if (name === "start_mcp_server") {
+      const port = Number(args?.port ?? mockLauncher.config.assistantMcpPort);
+      return { running: true, port, url: `http://127.0.0.1:${port}/mcp`, tokenMasked: "••••••••abcdef" };
+    }
+    if (name === "stop_mcp_server") return { running: false, port: mockLauncher.config.assistantMcpPort, url: null, tokenMasked: null };
+    if (name === "rotate_mcp_token") return { running: true, port: mockLauncher.config.assistantMcpPort, url: `http://127.0.0.1:${mockLauncher.config.assistantMcpPort}/mcp`, tokenMasked: "••••••••999999" };
+    if (name === "get_mcp_token") return "synthetic-mcp-token-abcdef";
     if (name === "detect_java") return [{ path: "C:\\SyntheticFixture\\java.exe", version: "21.0.1", major: 21 }];
     if (name === "set_launcher_background") return { ...mockLauncher.config, customBackground: args?.path ?? null };
     if (name === "export_launcher_config") return args?.path;
@@ -941,5 +961,33 @@ describe("Settings review request", () => {
     await click("General");
     await click("About");
     expect(document.activeElement?.textContent?.trim()).not.toBe("Check for updates");
+  });
+
+  it("configures assistant provider, encrypted API key, permission tier, and local MCP server", async () => {
+    await render();
+    await click("Assistant & MCP");
+    await select("Provider", "anthropic");
+    await fill("Model", "claude-sonnet-4-20250514");
+    await fill("Assistant API key", "sk-ant-synthetic-key");
+    await click("Save key");
+    expect(commandMock).toHaveBeenCalledWith("set_assistant_api_key", { secret: "sk-ant-synthetic-key" });
+    expect(container.textContent).toContain("Assistant API key saved with system encryption.");
+    await click("Controlled");
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      assistantProvider: "anthropic",
+      assistantModel: "claude-sonnet-4-20250514",
+      assistantPermission: "controlled",
+    }), { preserveAppearance: true });
+
+    await click("Start MCP server");
+    expect(commandMock).toHaveBeenCalledWith("start_mcp_server", { port: 25590 });
+    expect(container.textContent).toContain("127.0.0.1:25590/mcp");
+    await click("Rotate token");
+    expect(commandMock).toHaveBeenCalledWith("rotate_mcp_token");
+    expect(container.textContent).toContain("••••••••999999");
+    await click("Stop MCP server");
+    expect(commandMock).toHaveBeenCalledWith("stop_mcp_server");
+    expect(container.textContent).toContain("Stopped.");
   });
 });

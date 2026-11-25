@@ -185,3 +185,16 @@ description = "Allow the launcher native paths commands in the local main window
 commands.allow = [
   "choose_launcher_path",
 ]
+
+[[permission]]
+identifier = "launcher-assistant"
+description = "Allow the built-in assistant and local MCP server commands in the local main window."
+commands.allow = [
+  "get_assistant_status",
+  "set_assistant_api_key",
+  "assistant_chat",
+  "start_mcp_server",
+  "stop_mcp_server",
+  "rotate_mcp_token",
+  "get_mcp_token",
+]

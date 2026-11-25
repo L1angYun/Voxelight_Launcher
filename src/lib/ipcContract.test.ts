@@ -104,4 +104,24 @@ describe("Tauri IPC registration contract", () => {
     });
     expect(registered.has("get_system_appearance")).toBe(true);
   });
+
+  it("registers assistant and MCP commands only in the assistant permission family", () => {
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const families = permissions.split("[[permission]]");
+    for (const command of [
+      "get_assistant_status",
+      "set_assistant_api_key",
+      "assistant_chat",
+      "start_mcp_server",
+      "stop_mcp_server",
+      "rotate_mcp_token",
+      "get_mcp_token",
+    ]) {
+      expect(registered.has(command)).toBe(true);
+      expect(invoked.has(command)).toBe(true);
+      const allowed = families.filter((family) => family.includes(`"${command}"`));
+      expect(allowed).toHaveLength(1);
+      expect(allowed[0]).toContain('identifier = "launcher-assistant"');
+    }
+  });
 });

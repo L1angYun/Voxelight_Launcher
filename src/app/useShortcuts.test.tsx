@@ -35,14 +35,16 @@ const originalScrollTo = HTMLElement.prototype.scrollTo;
 
 function Harness({
   onNavigate,
+  onOpenAssistant,
   implemented = new Set(allPages),
   search = true,
 }: {
   onNavigate: (page: NavigationPage) => void;
+  onOpenAssistant?: () => void;
   implemented?: ReadonlySet<NavigationPage>;
   search?: boolean;
 }) {
-  const { helpOpen, setHelpOpen } = useShortcuts({ navigate: onNavigate, implemented });
+  const { helpOpen, setHelpOpen } = useShortcuts({ navigate: onNavigate, implemented, onOpenAssistant });
   return (
     <div>
       {helpOpen ? (
@@ -309,5 +311,24 @@ describe("useShortcuts", () => {
     const opened = document.querySelector<HTMLDialogElement>("dialog.vx-shortcuts-dialog");
     expect(opened?.open).toBe(true);
     expect(opened?.querySelector("h2")?.textContent).toBe("Keyboard shortcuts");
+  });
+
+  it("opens the built-in assistant with Ctrl+K (including physical KeyK) outside text fields", async () => {
+    const onOpenAssistant = vi.fn();
+    await render(<Harness onNavigate={() => {}} onOpenAssistant={onOpenAssistant} />);
+
+    const event = await press({ key: "k", ctrlKey: true });
+    expect(event.defaultPrevented).toBe(true);
+    expect(onOpenAssistant).toHaveBeenCalledTimes(1);
+
+    const cyrillic = await press({ key: "л", code: "KeyK", ctrlKey: true });
+    expect(cyrillic.defaultPrevented).toBe(true);
+    expect(onOpenAssistant).toHaveBeenCalledTimes(2);
+
+    const field = container.querySelector<HTMLInputElement>('input[aria-label="Text field"]')!;
+    field.focus();
+    const inText = await press({ key: "k", ctrlKey: true });
+    expect(inText.defaultPrevented).toBe(false);
+    expect(onOpenAssistant).toHaveBeenCalledTimes(2);
   });
 });

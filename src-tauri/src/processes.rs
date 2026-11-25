@@ -319,6 +319,19 @@ fn report_is_zh(language: &str, system_locale: impl FnOnce() -> String) -> bool 
     }
 }
 
+pub(crate) async fn stop_game_graceful(
+    registry: &GameRegistry,
+    game_id: &str,
+) -> Result<StopResult, String> {
+    let owner = registry.stop_handle(game_id)?;
+    let _single_request = owner
+        .authorization
+        .try_lock()
+        .map_err(|_| "正在处理此游戏的结束请求")?;
+    let status = owner.request(false).await?;
+    Ok(StopResult { status })
+}
+
 #[tauri::command]
 pub async fn stop_game(
     webview: tauri::WebviewWindow,
@@ -494,7 +507,7 @@ pub fn diagnose_instance(
     diagnose_instance_inner(state.inner().as_ref(), version_id, instance_id).map_err(expected)
 }
 
-fn diagnose_instance_inner(
+pub(crate) fn diagnose_instance_inner(
     state: &LauncherState,
     version_id: String,
     instance_id: Option<String>,
@@ -686,7 +699,7 @@ fn read_game_log_file(root: &Path) -> Result<GameLog, String> {
     })
 }
 
-fn read_game_log_inner(
+pub(crate) fn read_game_log_inner(
     state: &LauncherState,
     version_id: &str,
     instance_id: Option<&str>,

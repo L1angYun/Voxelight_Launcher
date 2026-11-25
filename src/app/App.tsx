@@ -30,6 +30,7 @@ import { ShortcutHelp } from "./ShortcutHelp";
 import { FirstRunTour } from "./FirstRunTour";
 import { FileDropProvider, useFileDrop, type DroppedFiles } from "./FileDropContext";
 import { CreateInstanceDialog } from "../features/library/CreateInstanceDialog";
+import { AssistantDialog } from "../features/assistant/AssistantDialog";
 import "./shell.css";
 
 const implementedPages = new Set<NavigationPage>(["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]);
@@ -64,6 +65,8 @@ export function AppShell() {
   const [navResetTick, setNavResetTick] = useState(0);
   // "View update" opens Settings → About for that one visit only.
   const [updateReview, setUpdateReview] = useState<{ tick: number; visit: number } | null>(null);
+  const [assistantSettingsFocus, setAssistantSettingsFocus] = useState<{ tick: number; visit: number } | null>(null);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [tourRequested, setTourRequested] = useState(false);
   const [homeImageShown, setHomeImageShown] = useState(false);
   const [droppedPackPath, setDroppedPackPath] = useState<string | null>(null);
@@ -92,7 +95,11 @@ export function AppShell() {
     });
   }
 
-  const shortcuts = useShortcuts({ navigate, implemented: implementedPages });
+  const shortcuts = useShortcuts({
+    navigate,
+    implemented: implementedPages,
+    onOpenAssistant: () => setAssistantOpen(true),
+  });
 
   const handleUnhandledDrop = (files: DroppedFiles) => {
     const key = files.mods.length > 0
@@ -160,7 +167,13 @@ export function AppShell() {
             {page === "multiplayer" ? <MultiplayerPage /> : null}
             {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
             {page === "accounts" ? <AccountsPage /> : null}
-            {page === "settings" ? <SettingsPage reviewUpdates={updateReview?.visit === visit ? updateReview.tick : 0} /> : null}
+            {page === "settings" ? (
+              <SettingsPage
+                reviewUpdates={updateReview?.visit === visit ? updateReview.tick : 0}
+                focusAssistant={assistantSettingsFocus?.visit === visit ? assistantSettingsFocus.tick : 0}
+                onOpenAssistant={() => setAssistantOpen(true)}
+              />
+            ) : null}
           </PageErrorBoundary>
           </PageStage>}
           </AnimatePresence>
@@ -174,6 +187,20 @@ export function AppShell() {
         canShowTour={bootstrapped}
       />
       <FirstRunTour reopen={tourRequested} onDismissed={() => setTourRequested(false)} />
+      {assistantOpen ? (
+        <AssistantDialog
+          open
+          onOpenChange={setAssistantOpen}
+          onConfigure={() => {
+            setAssistantSettingsFocus((current) => ({
+              tick: (current?.tick ?? 0) + 1,
+              visit: page === "settings" ? visit : visit + 1,
+            }));
+            navigate("settings");
+          }}
+          onMutated={reload}
+        />
+      ) : null}
       {droppedPackPath ? (
         <CreateInstanceDialog
           open

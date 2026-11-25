@@ -10,6 +10,7 @@
     "description": "这些快捷键在启动器的任意页面都可用。",
     "actions": {
       "goTo": "前往{{page}}",
+      "assistant": "打开内置助手",
       "search": "聚焦页面搜索框",
       "help": "显示键盘快捷键"
     },
@@ -144,7 +145,44 @@
     "update.cancelled": "已取消更新。",
     "update.sourceChanged": "更新来源已更改，请重新检查更新。",
     "update.notOffered": "没有可下载的更新，请先检查更新。",
-    "update.sourceInvalid": "更新来源无效。"
+    "update.sourceInvalid": "更新来源无效。",
+    "assistant.apiKeyRequired": "请先在「设置 → 助手与 MCP」中保存你自己的 AI API Key。",
+    "assistant.modelRequired": "请先在「设置 → 助手与 MCP」中填写模型名称。",
+    "assistant.invalidBaseUrl": "助手 API 基础地址必须使用 HTTPS，或本机回环 HTTP（127.0.0.1 / localhost）。",
+    "assistant.providerError": "所配置的 AI 服务返回了错误。",
+    "assistant.emptyMessage": "发送前请输入消息内容。"
+  },
+  "assistant": {
+    "title": "内置助手",
+    "description": "使用你自己的 AI API Key 查询实例、模组、日志、崩溃诊断、下载任务或托管服务端。",
+    "notConfigured": "尚未配置模型",
+    "configure": "前往配置",
+    "emptyReady": "输入关于当前启动器的问题，或点击下方的常用提问。",
+    "emptyUnconfigured": "请先在「设置 → 助手与 MCP」中配置提供商、模型和 API Key（或本机回环接口），然后再开始对话。",
+    "prompts": {
+      "instances": "汇总我当前的实例和已安装版本。",
+      "resources": "检查我的内存建议和最近的下载任务。",
+      "servers": "列出当前运行中的游戏和托管服务端。"
+    },
+    "roleUser": "你",
+    "roleAssistant": "助手",
+    "toolActivity": "启动器工具调用",
+    "traceStatus": {
+      "executed": "已执行",
+      "approved": "已批准",
+      "denied": "已拒绝",
+      "blocked": "已拦截",
+      "error": "失败"
+    },
+    "approvalTitle": "确认启动器写入操作",
+    "approvalDescription": "受控模式下，助手修改启动器状态前必须先由你明确批准。",
+    "approveAction": "批准并执行",
+    "denyAction": "拒绝",
+    "inputLabel": "发给助手的消息",
+    "inputPlaceholder": "询问实例、崩溃日志、模组或服务端…（回车发送）",
+    "inputUnconfiguredPlaceholder": "请先在「设置 → 助手与 MCP」中配置模型和 API Key…",
+    "clear": "清空",
+    "send": "发送"
   },
   "storage": {
     "fallbackTitle": "当前使用备用数据档",

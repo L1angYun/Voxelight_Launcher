@@ -55,6 +55,11 @@ export interface Config {
   checkForUpdates: boolean;
   updateSource: "auto" | "github" | "gitee";
   tourCompleted?: boolean;
+  assistantProvider: "openai" | "anthropic";
+  assistantBaseUrl: string;
+  assistantModel: string;
+  assistantPermission: "readOnly" | "controlled" | "fullAccess";
+  assistantMcpPort: number;
 }
 type AppearanceField = typeof appearanceFields[number];
 export const appearanceFields = [
@@ -229,6 +234,11 @@ export const defaults: Config = {
   checkForUpdates: true,
   updateSource: "auto",
   tourCompleted: false,
+  assistantProvider: "openai",
+  assistantBaseUrl: "",
+  assistantModel: "",
+  assistantPermission: "readOnly",
+  assistantMcpPort: 25590,
 };
 
 export interface ResourceProject {

@@ -1,4 +1,4 @@
-export type SettingsSectionId = "general" | "appearance" | "game" | "java" | "downloads" | "about";
+export type SettingsSectionId = "general" | "appearance" | "game" | "java" | "downloads" | "assistant" | "about";
 
 export interface SettingsEntry {
   /** The settings section that renders the label and its control. */
@@ -72,6 +72,11 @@ const keyword = {
   startupCheck: "settings:search.keywords.startupCheck",
   updateChannel: "settings:search.keywords.updateChannel",
   updateCheck: "settings:search.keywords.updateCheck",
+  aiAssistant: "settings:search.keywords.aiAssistant",
+  mcpServer: "settings:search.keywords.mcpServer",
+  llmProvider: "settings:search.keywords.llmProvider",
+  modelName: "settings:search.keywords.modelName",
+  permissionTier: "settings:search.keywords.permissionTier",
 } as const;
 
 /** Every user-facing setting or action, in the order the sections present them. */
@@ -116,6 +121,14 @@ export const settingsIndex: readonly SettingsEntry[] = [
   { section: "downloads", labelKey: "settings:proxy.username", keywords: [keyword.credentials], target: "downloads-proxy-username", fallbackTarget: "downloads-proxy-mode", waitForEnabled: true },
   { section: "downloads", labelKey: "settings:proxy.password", keywords: [keyword.credentials], target: "downloads-proxy-password", fallbackTarget: "downloads-proxy-mode", waitForEnabled: true },
   { section: "downloads", labelKey: "settings:proxy.saveCredentials", keywords: [keyword.credentials], target: "downloads-proxy-username", fallbackTarget: "downloads-proxy-mode", waitForEnabled: true },
+
+  { section: "assistant", labelKey: "settings:assistant.provider", keywords: [keyword.aiAssistant, keyword.llmProvider], target: "assistant-provider" },
+  { section: "assistant", labelKey: "settings:assistant.baseUrl", keywords: [keyword.aiAssistant, keyword.llmProvider], target: "assistant-base-url" },
+  { section: "assistant", labelKey: "settings:assistant.model", keywords: [keyword.aiAssistant, keyword.modelName], target: "assistant-model" },
+  { section: "assistant", labelKey: "settings:assistant.apiKey", keywords: [keyword.aiAssistant, keyword.apiKey], target: "assistant-api-key" },
+  { section: "assistant", labelKey: "settings:assistant.permission", keywords: [keyword.aiAssistant, keyword.permissionTier], target: "assistant-permission" },
+  { section: "assistant", labelKey: "settings:assistant.mcpPort", keywords: [keyword.mcpServer], target: "assistant-mcp-port" },
+  { section: "assistant", labelKey: "settings:assistant.mcpStart", keywords: [keyword.mcpServer], target: "assistant-mcp-actions" },
 
   { section: "about", labelKey: "settings:updates.checkOnStartup", keywords: [keyword.startupCheck], target: "about-update-check" },
   { section: "about", labelKey: "settings:updates.source", keywords: [keyword.updateChannel], target: "about-update-source" },

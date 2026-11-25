@@ -35,6 +35,7 @@ export function ShortcutHelp({
     ...(pages.some((item) => item.id === "settings")
       ? [{ keys: [ctrl, ","], label: goTo(t("navigation.settings")) }]
       : []),
+    { keys: [ctrl, "K"], label: t("shell:shortcuts.actions.assistant") },
     { keys: [ctrl, "F"], label: t("shell:shortcuts.actions.search") },
     { keys: ["?"], label: t("shell:shortcuts.actions.help") },
     { keys: [t("shell:shortcuts.keys.f1")], label: t("shell:shortcuts.actions.help") },

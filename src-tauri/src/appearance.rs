@@ -181,6 +181,10 @@ pub async fn import_launcher_config(
         // external image is not a native file grant. Keep the selected image.
         config.custom_background = previous.custom_background.clone();
     }
+    // An imported preset must never silently elevate assistant/MCP permissions.
+    if config.assistant_permission == "fullAccess" && previous.assistant_permission != "fullAccess" {
+        config.assistant_permission = previous.assistant_permission.clone();
+    }
     crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
     let config = crate::commands::save_approved_config(&state, config, Some(&previous)).map_err(expected)?;
     Ok(ImportedPreset { config, heap_arguments_removed })

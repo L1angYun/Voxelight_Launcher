@@ -5,13 +5,14 @@ import { createLauncherI18n, type LauncherI18n } from "../../i18n";
 import { searchSettings, settingsIndex, type SettingsSectionId } from "./settingsIndex";
 
 const locales = ["en-US", "zh-CN"] as const;
-const sectionIds: readonly SettingsSectionId[] = ["general", "appearance", "game", "java", "downloads", "about"];
+const sectionIds: readonly SettingsSectionId[] = ["general", "appearance", "game", "java", "downloads", "assistant", "about"];
 const sectionSources: Record<SettingsSectionId, string[]> = {
   general: ["./GeneralSettings.tsx"],
   appearance: ["./AppearanceSettings.tsx"],
   game: ["./GameSettings.tsx"],
   java: ["./JavaSettings.tsx"],
   downloads: ["./DownloadSettings.tsx", "./ProxySettings.tsx"],
+  assistant: ["./AssistantSettings.tsx"],
   about: ["./AboutSettings.tsx", "./UpdateSettings.tsx"],
 };
 

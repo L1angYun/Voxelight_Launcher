@@ -262,6 +262,9 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
     if !["official", "auto", "bmclapi"].contains(&config.download_source.as_str()) {
         return Err("下载源无效".into());
     }
+    config.assistant_base_url = config.assistant_base_url.trim().to_owned();
+    config.assistant_model = config.assistant_model.trim().to_owned();
+    crate::assistant::validate_config(&config)?;
     let saved = state.update(|data| {
         if let Some(approved) = approved_against {
             let approval_current = if preserve_appearance {

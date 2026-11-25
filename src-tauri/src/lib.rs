@@ -1,5 +1,6 @@
 #![recursion_limit = "512"]
 mod appearance;
+mod assistant;
 mod auth;
 mod auth_commands;
 mod auth_dto;
@@ -142,6 +143,7 @@ pub fn run() {
                 server_manager::ServerRegistry::default(),
             ));
             app.manage(path_grants::PathGrants::default());
+            app.manage(std::sync::Arc::new(assistant::McpService::default()));
             app.manage(std::sync::Arc::new(updates::UpdateService::default()));
             tauri::async_runtime::spawn_blocking(updates::sweep::sweep_on_startup);
             {
@@ -389,11 +391,21 @@ pub fn run() {
             appearance::set_launcher_background,
             appearance::export_launcher_config,
             appearance::import_launcher_config,
+            assistant::get_assistant_status,
+            assistant::set_assistant_api_key,
+            assistant::assistant_chat,
+            assistant::start_mcp_server,
+            assistant::stop_mcp_server,
+            assistant::rotate_mcp_token,
+            assistant::get_mcp_token,
             platform::get_system_appearance,
         ])
         .build(tauri::generate_context!())
         .map(|app| app.run(|handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(mcp) = handle.try_state::<std::sync::Arc<assistant::McpService>>() {
+                    mcp.stop();
+                }
                 if let Some(state) = handle.try_state::<std::sync::Arc<storage::LauncherState>>() {
                     state.control.unbind_events();
                 }

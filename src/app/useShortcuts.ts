@@ -27,6 +27,7 @@ function isVisible(element: HTMLElement): boolean {
 export interface UseShortcutsOptions {
   navigate: (page: NavigationPage) => void;
   implemented: ReadonlySet<NavigationPage>;
+  onOpenAssistant?: () => void;
 }
 
 export interface ShortcutsController {
@@ -62,13 +63,19 @@ function isFind(event: KeyboardEvent): boolean {
   return !event.shiftKey && (event.key.toLocaleLowerCase() === "f" || event.code === "KeyF");
 }
 
-export function useShortcuts({ navigate, implemented }: UseShortcutsOptions): ShortcutsController {
+function isAssistant(event: KeyboardEvent): boolean {
+  return !event.shiftKey && (event.key.toLocaleLowerCase() === "k" || event.code === "KeyK");
+}
+
+export function useShortcuts({ navigate, implemented, onOpenAssistant }: UseShortcutsOptions): ShortcutsController {
   const [helpOpen, setHelpOpen] = useState(false);
   const navigateRef = useRef(navigate);
   const implementedRef = useRef(implemented);
+  const assistantRef = useRef(onOpenAssistant);
   useEffect(() => {
     navigateRef.current = navigate;
     implementedRef.current = implemented;
+    assistantRef.current = onOpenAssistant;
   });
 
   useEffect(() => {
@@ -94,6 +101,12 @@ export function useShortcuts({ navigate, implemented }: UseShortcutsOptions): Sh
           if (textEntry || !pages.includes("settings")) return;
           event.preventDefault();
           navigateRef.current("settings");
+          return;
+        }
+        if (isAssistant(event)) {
+          if (textEntry || !assistantRef.current) return;
+          event.preventDefault();
+          assistantRef.current();
           return;
         }
         if (isFind(event)) {

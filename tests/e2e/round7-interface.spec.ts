@@ -156,3 +156,39 @@ test("instance settings changes an existing instance's loader while preserving t
   await expect(page.getByText("Minecraft 1.21.1 · Fabric 0.16.9", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("built-in assistant and local MCP server can be configured, started, and approved via Ctrl+K", async ({ page }) => {
+  await page.setViewportSize({ width: 1050, height: 720 });
+  await installLauncherFixture(page);
+  await page.goto("/?next-ui");
+
+  // Configure provider model, encrypted key, Controlled mode, and start local MCP in Settings → Assistant & MCP
+  await navigation(page).getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "助手与 MCP", exact: true }).click();
+  await page.getByRole("textbox", { name: "模型名称" }).fill("gpt-4o-mini");
+  await page.getByLabel("助手 API Key").fill("sk-synthetic-fixture-key");
+  await page.getByRole("button", { name: "保存密钥", exact: true }).click();
+  await expect(page.getByText("助手 API Key 已加密保存。")).toBeVisible();
+  await page.getByRole("button", { name: "受控", exact: true }).click();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await expect(page.getByText("其他设置已保存。")).toBeVisible();
+
+  await page.getByRole("button", { name: "启动 MCP 服务", exact: true }).click();
+  await expect(page.getByTestId("mcp-status-card")).toContainText("127.0.0.1:25590");
+  await expect(page.getByRole("button", { name: "复制 MCP 配置 JSON", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "停止 MCP 服务", exact: true }).click();
+  await expect(page.getByTestId("mcp-status-card")).toContainText("已停止");
+
+  // Open built-in assistant via Ctrl+K, run a controlled turn, approve write action
+  await page.locator("main").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+k");
+  const dialog = page.getByRole("dialog", { name: "内置助手" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("textbox", { name: "发给助手的消息" }).fill("给我的实例添加一条备注");
+  await dialog.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(dialog.getByText("确认启动器写入操作")).toBeVisible();
+  await expect(dialog.getByText("update_instance_notes")).toBeVisible();
+  await dialog.getByRole("button", { name: "批准并执行", exact: true }).click();
+  await expect(dialog.getByText("已更新实例备注。")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

@@ -217,9 +217,8 @@ pub(crate) fn memory_overview(
     }
 }
 
-#[tauri::command]
-pub(crate) async fn get_memory_overview(
-    state: tauri::State<'_, std::sync::Arc<crate::storage::LauncherState>>,
+pub(crate) async fn memory_overview_for_state(
+    state: &std::sync::Arc<crate::storage::LauncherState>,
     instance_id: Option<String>,
 ) -> Result<MemoryOverview, String> {
     let data = state.snapshot()?;
@@ -241,6 +240,14 @@ pub(crate) async fn get_memory_overview(
         };
         Ok(memory_overview(&data.config, instance, loader.as_deref(), mods, system_memory()))
     }).await.map_err(|error| format!("读取内存信息失败：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn get_memory_overview(
+    state: tauri::State<'_, std::sync::Arc<crate::storage::LauncherState>>,
+    instance_id: Option<String>,
+) -> Result<MemoryOverview, String> {
+    memory_overview_for_state(state.inner(), instance_id).await
 }
 
 pub(crate) fn effective_min(config: &Config, instance: Option<&Instance>) -> Option<u32> {

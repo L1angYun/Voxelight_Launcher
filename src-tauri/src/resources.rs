@@ -2124,6 +2124,68 @@ fn local_resource_without_metadata(
     }, metadata)))
 }
 
+pub(crate) async fn list_local_resources_for_state(
+    state: &Arc<LauncherState>,
+    version_id: String,
+    instance_id: Option<String>,
+    resource_type: String,
+) -> Result<Vec<LocalResource>, String> {
+    let kind = ResourceKind::parse(&resource_type)?;
+    let directory = resource_directory(
+        &state.snapshot()?,
+        &version_id,
+        instance_id.as_deref(),
+        kind,
+    )?;
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || list_local_resources_blocking(&state, &directory, kind))
+        .await
+        .map_err(|_| "资源目录读取任务意外中止")?
+}
+
+pub(crate) async fn toggle_resource_for_state(
+    state: &Arc<LauncherState>,
+    version_id: String,
+    instance_id: Option<String>,
+    resource_type: String,
+    file_name: String,
+) -> Result<LocalResource, String> {
+    let kind = ResourceKind::parse(&resource_type)?;
+    validate_id(&file_name)?;
+    let target = {
+        let _operation = state.operation.lock().await;
+        require_resource_stopped(state, &version_id, instance_id.as_deref())
+            .map_err(|error| error.detail.unwrap_or(error.code))?;
+        let directory = resource_directory(
+            &state.snapshot()?,
+            &version_id,
+            instance_id.as_deref(),
+            kind,
+        )?;
+        resource_transactions::require_no_pending(&directory)?;
+        reject_links(&directory)?;
+        let source = safe_join(&directory, &file_name)?;
+        let (resource, _) =
+            local_resource_without_metadata(source.clone(), kind)?.ok_or("请选择有效的资源文件")?;
+        let target_name = if resource.enabled {
+            format!("{file_name}.disabled")
+        } else {
+            file_name[..file_name.len() - 9].to_owned()
+        };
+        validate_id(&target_name)?;
+        let target = safe_join(&directory, &target_name)?;
+        if target.exists() {
+            return Err("目标文件名已存在，已保留两个文件。请先手动处理重名文件。".into());
+        }
+        fs::rename(&source, &target).map_err(|_| "切换资源状态失败，请检查文件是否被游戏占用")?;
+        target
+    };
+    tokio::task::spawn_blocking(move || local_resource(target, kind))
+        .await
+        .map_err(|_| "资源状态无法读取".to_owned())??
+        .ok_or_else(|| "资源状态无法读取".to_owned())
+}
+
 #[tauri::command]
 pub async fn list_local_resources(
     state: tauri::State<'_, Arc<LauncherState>>,

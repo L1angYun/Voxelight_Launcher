@@ -99,6 +99,7 @@
     "launcher-discover",
     "launcher-multiplayer",
     "launcher-updates",
-    "launcher-native-paths"
+    "launcher-native-paths",
+    "launcher-assistant"
   ]
 }

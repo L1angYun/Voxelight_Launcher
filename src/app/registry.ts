@@ -63,6 +63,7 @@ export const settingsSectionRegistry = createRegistry([
   { id: "game", labelKey: "settings.section.game" },
   { id: "java", labelKey: "settings.section.java" },
   { id: "downloads", labelKey: "settings.section.downloads" },
+  { id: "assistant", labelKey: "settings.section.assistant" },
   { id: "about", labelKey: "settings.section.about" },
 ] as const);
 

@@ -924,12 +924,11 @@ async fn install_jar(
     Ok(metadata)
 }
 
-#[tauri::command]
-pub fn list_managed_servers(
-    state: State<'_, Arc<LauncherState>>,
-    registry: State<'_, Arc<ServerRegistry>>,
+pub(crate) fn list_managed_servers_inner(
+    state: &LauncherState,
+    registry: &ServerRegistry,
 ) -> Result<Vec<ManagedServerInfo>, String> {
-    let root = servers_root(&state)?;
+    let root = servers_root(state)?;
     if !root.exists() {
         return Ok(Vec::new());
     }
@@ -944,16 +943,24 @@ pub fn list_managed_servers(
         if uuid::Uuid::parse_str(&id).is_err() {
             continue;
         }
-        let dir = server_directory(&state, &id)?;
+        let dir = server_directory(state, &id)?;
         if !dir.is_dir() {
             continue;
         }
         if let Ok(definition) = load_definition(&dir) {
-            result.push(server_info(&state, &registry, definition)?);
+            result.push(server_info(state, registry, definition)?);
         }
     }
     result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     Ok(result)
+}
+
+#[tauri::command]
+pub fn list_managed_servers(
+    state: State<'_, Arc<LauncherState>>,
+    registry: State<'_, Arc<ServerRegistry>>,
+) -> Result<Vec<ManagedServerInfo>, String> {
+    list_managed_servers_inner(&state, &registry)
 }
 #[tauri::command]
 pub async fn create_managed_server(
