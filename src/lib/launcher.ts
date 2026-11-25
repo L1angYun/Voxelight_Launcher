@@ -22,6 +22,21 @@ export interface MemoryOverview {
   modCount: number;
 }
 
+export interface DetectedProxy {
+  scheme: "http" | "https";
+  host: string;
+  port: number;
+  source: "windowsSystem" | "environment" | "localPort";
+  label: string;
+  url: string;
+}
+
+export interface LocalProxyReport {
+  systemProxy: DetectedProxy | null;
+  autoConfigUrl: string | null;
+  candidates: DetectedProxy[];
+}
+
 export interface Config {
   gameDirectory: string;
   javaPath: string;

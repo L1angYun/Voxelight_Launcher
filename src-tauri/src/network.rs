@@ -525,6 +525,289 @@ pub(crate) async fn test_proxy_connection(
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DetectedProxy {
+    pub(crate) scheme: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) source: String,
+    pub(crate) label: String,
+    pub(crate) url: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalProxyReport {
+    pub(crate) system_proxy: Option<DetectedProxy>,
+    pub(crate) auto_config_url: Option<String>,
+    pub(crate) candidates: Vec<DetectedProxy>,
+}
+
+const LOCAL_PROXY_PORTS: &[(u16, &str)] = &[
+    (7890, "Clash / Mihomo"),
+    (7897, "Clash Verge / Mihomo"),
+    (7891, "Clash"),
+    (10809, "v2rayN"),
+    (10808, "v2rayN / Xray"),
+    (2081, "sing-box / Nekoray"),
+    (20171, "v2rayA"),
+    (1081, "Shadowsocks"),
+    (1087, "Shadowsocks / Surge"),
+    (8118, "Privoxy"),
+    (8888, "Local HTTP proxy"),
+    (3128, "HTTP proxy"),
+];
+
+pub(crate) fn parse_proxy_uri(raw: &str) -> Option<Endpoint> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_owned()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let parsed = reqwest::Url::parse(&candidate).ok()?;
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default()?;
+    Endpoint::parse(scheme, host, port).ok()
+}
+
+pub(crate) fn parse_windows_proxy_server(raw: &str) -> Option<Endpoint> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.contains('=') {
+        return parse_proxy_uri(trimmed);
+    }
+    let mut https_entry: Option<&str> = None;
+    let mut http_entry: Option<&str> = None;
+    let mut fallback_entry: Option<&str> = None;
+    for part in trimmed.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some((proto, addr)) = part.split_once('=') {
+            match proto.trim().to_ascii_lowercase().as_str() {
+                "https" => https_entry = Some(addr.trim()),
+                "http" => http_entry = Some(addr.trim()),
+                _ => {}
+            }
+        } else if fallback_entry.is_none() {
+            fallback_entry = Some(part);
+        }
+    }
+    for entry in [https_entry, http_entry, fallback_entry].into_iter().flatten() {
+        if let Some(endpoint) = parse_proxy_uri(entry) {
+            return Some(endpoint);
+        }
+    }
+    None
+}
+
+pub(crate) fn sanitize_pac_url(raw: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(raw.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    let mut sanitized = format!("{}://{host}", parsed.scheme());
+    if let Some(port) = parsed.port() {
+        sanitized.push_str(&format!(":{port}"));
+    }
+    sanitized.push_str(parsed.path());
+    Some(sanitized)
+}
+
+fn detected_from_endpoint(endpoint: Endpoint, source: &str, label: &str) -> DetectedProxy {
+    let url = endpoint.url();
+    DetectedProxy {
+        scheme: endpoint.scheme,
+        host: endpoint.host,
+        port: endpoint.port,
+        source: source.into(),
+        label: label.into(),
+        url,
+    }
+}
+
+pub(crate) fn detect_env_proxies<F>(getenv: F) -> Vec<DetectedProxy>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut found = Vec::new();
+    for key in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        let Some(raw) = getenv(key) else { continue };
+        let Some(endpoint) = parse_proxy_uri(&raw) else { continue };
+        let item = detected_from_endpoint(endpoint, "environment", key);
+        if !found.iter().any(|existing: &DetectedProxy| existing.url == item.url) {
+            found.push(item);
+        }
+    }
+    found
+}
+
+#[cfg(windows)]
+fn read_windows_system_proxy() -> (Option<DetectedProxy>, Option<String>) {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct WinHttpCurrentUserIeProxyConfig {
+        f_auto_detect: i32,
+        lpsz_auto_config_url: *mut u16,
+        lpsz_proxy: *mut u16,
+        lpsz_proxy_bypass: *mut u16,
+    }
+
+    #[link(name = "winhttp")]
+    extern "system" {
+        fn WinHttpGetIEProxyConfigForCurrentUser(
+            p_proxy_config: *mut WinHttpCurrentUserIeProxyConfig,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalFree(hmem: *mut c_void) -> *mut c_void;
+    }
+
+    unsafe fn take_pwstr(ptr: *mut u16) -> Option<String> {
+        if ptr.is_null() {
+            return None;
+        }
+        let mut len = 0usize;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        let text = String::from_utf16_lossy(slice);
+        GlobalFree(ptr.cast());
+        Some(text)
+    }
+
+    let mut cfg = WinHttpCurrentUserIeProxyConfig {
+        f_auto_detect: 0,
+        lpsz_auto_config_url: std::ptr::null_mut(),
+        lpsz_proxy: std::ptr::null_mut(),
+        lpsz_proxy_bypass: std::ptr::null_mut(),
+    };
+    let ok = unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut cfg) };
+    if ok == 0 {
+        return (None, None);
+    }
+    let pac_raw = unsafe { take_pwstr(cfg.lpsz_auto_config_url) };
+    let proxy_raw = unsafe { take_pwstr(cfg.lpsz_proxy) };
+    let _bypass = unsafe { take_pwstr(cfg.lpsz_proxy_bypass) };
+
+    let system_proxy = proxy_raw
+        .as_deref()
+        .and_then(parse_windows_proxy_server)
+        .map(|endpoint| detected_from_endpoint(endpoint, "windowsSystem", "Windows"));
+    let auto_config_url = pac_raw.as_deref().and_then(sanitize_pac_url);
+    (system_proxy, auto_config_url)
+}
+
+#[cfg(not(windows))]
+fn read_windows_system_proxy() -> (Option<DetectedProxy>, Option<String>) {
+    (None, None)
+}
+
+pub(crate) async fn probe_local_http_proxy(port: u16) -> Option<Endpoint> {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let mut stream = tokio::time::timeout(
+        Duration::from_millis(180),
+        TcpStream::connect((Ipv4Addr::LOCALHOST, port)),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let request = b"HEAD http://127.0.0.1:1/ HTTP/1.1\r\nHost: 127.0.0.1:1\r\nProxy-Connection: close\r\nConnection: close\r\n\r\n";
+    tokio::time::timeout(Duration::from_millis(180), stream.write_all(request))
+        .await
+        .ok()?
+        .ok()?;
+    let mut buf = [0u8; 64];
+    let n = tokio::time::timeout(Duration::from_millis(220), stream.read(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    if n >= 7 && buf[..7].eq_ignore_ascii_case(b"HTTP/1.") {
+        Endpoint::parse("http", "127.0.0.1", port).ok()
+    } else {
+        None
+    }
+}
+
+pub(crate) async fn detect_local_proxies_inner(exclude_ports: &[u16]) -> LocalProxyReport {
+    let (system_proxy, auto_config_url) =
+        tokio::task::spawn_blocking(read_windows_system_proxy)
+            .await
+            .unwrap_or((None, None));
+    let env_proxies = detect_env_proxies(|key| std::env::var(key).ok());
+
+    let mut handles = Vec::new();
+    for &(port, label) in LOCAL_PROXY_PORTS {
+        if exclude_ports.contains(&port) {
+            continue;
+        }
+        handles.push((
+            label,
+            tokio::spawn(async move { probe_local_http_proxy(port).await }),
+        ));
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(sys) = &system_proxy {
+        candidates.push(sys.clone());
+    }
+    for env_proxy in env_proxies {
+        if !candidates.iter().any(|c| c.url == env_proxy.url) {
+            candidates.push(env_proxy);
+        }
+    }
+    for (label, handle) in handles {
+        if let Ok(Some(endpoint)) = handle.await {
+            let item = detected_from_endpoint(endpoint, "localPort", label);
+            if !candidates.iter().any(|c| c.url == item.url) {
+                candidates.push(item);
+            }
+        }
+    }
+
+    LocalProxyReport {
+        system_proxy,
+        auto_config_url,
+        candidates,
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn detect_local_proxies(
+    mcp: tauri::State<'_, crate::assistant::mcp::McpService>,
+) -> crate::errors::AppResult<LocalProxyReport> {
+    let mcp_status = mcp.status(0);
+    let exclude = if mcp_status.running {
+        vec![mcp_status.port]
+    } else {
+        Vec::new()
+    };
+    Ok(detect_local_proxies_inner(&exclude).await)
+}
+
 #[tauri::command]
 pub(crate) fn set_proxy_credentials(
     state: Shared<'_>,

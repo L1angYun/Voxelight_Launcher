@@ -213,6 +213,20 @@ beforeEach(() => {
       ],
     };
     if (name === "set_assistant_api_key") return Boolean(args?.secret);
+    if (name === "detect_local_proxies") return {
+      systemProxy: null,
+      autoConfigUrl: null,
+      candidates: [
+        {
+          scheme: "http",
+          host: "127.0.0.1",
+          port: 7897,
+          source: "localPort",
+          label: "Clash Verge / Mihomo",
+          url: "http://127.0.0.1:7897",
+        },
+      ],
+    };
     if (name === "reset_launcher_state") return { ...defaults, tourCompleted: false };
     if (name === "start_mcp_server") {
       const port = Number(args?.port ?? mockLauncher.config.assistantMcpPort);
@@ -1013,5 +1027,22 @@ describe("Settings review request", () => {
     expect(commandMock).toHaveBeenCalledWith("reset_launcher_state");
     expect(mockLauncher.reload).toHaveBeenCalled();
     expect(container.textContent).toContain("Launcher restored to its initial state.");
+  });
+
+  it("auto-detects local proxy listeners in Downloads settings and applies them with one click", async () => {
+    await render();
+    await click("Downloads");
+    await settleFrame();
+    expect(commandMock).toHaveBeenCalledWith("detect_local_proxies");
+    expect(container.textContent).toContain("http://127.0.0.1:7897");
+    expect(container.textContent).toContain("Clash Verge / Mihomo");
+    await click("Use");
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      proxyMode: "custom",
+      proxyScheme: "http",
+      proxyHost: "127.0.0.1",
+      proxyPort: 7897,
+    }), { preserveAppearance: true });
   });
 });

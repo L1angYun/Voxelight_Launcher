@@ -55,6 +55,13 @@
         "memoryTitle": "Memory allocation",
         "memorySummary": "{{total}} GiB RAM detected · automatic recommendation: {{recommended}} MB.",
         "memoryAuto": "Automatic memory allocation is active and adapts to your system RAM.",
+        "proxyTitle": "Network proxy",
+        "proxySystem": "Following Windows system proxy ({{url}}).",
+        "proxyLocalFound": "Detected local proxy {{url}} ({{label}}).",
+        "proxyCustom": "Will use custom proxy {{url}}.",
+        "proxyDirect": "Following system proxy (no proxy active; direct connection).",
+        "proxyUse": "Use proxy",
+        "proxyApplied": "Selected",
         "gameDir": "Game directory:",
         "sources": {
           "official": "Official",

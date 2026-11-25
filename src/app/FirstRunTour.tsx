@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
-import { Compass, Cpu, Download, FolderOpen, Layers, Library, RefreshCw, Settings, UserPlus } from "lucide-react";
+import { Compass, Cpu, Download, FolderOpen, Layers, Library, Radar, RefreshCw, Settings, UserPlus } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Segmented } from "../components/ui/Segmented";
 import { useMotionTier } from "../design/useMotionTier";
-import { command, desktop, type AppearancePatch, type Config, type JavaRuntime, type MemoryOverview } from "../lib/launcher";
+import {
+  command,
+  desktop,
+  type AppearancePatch,
+  type Config,
+  type DetectedProxy,
+  type JavaRuntime,
+  type LocalProxyReport,
+  type MemoryOverview,
+} from "../lib/launcher";
 import { useLauncher } from "./controller/LauncherProvider";
 import "./tour.css";
 
@@ -49,6 +58,7 @@ export function FirstRunTour({
   const [javaList, setJavaList] = useState<JavaRuntime[] | null>(null);
   const [javaBusy, setJavaBusy] = useState(false);
   const [memoryOverview, setMemoryOverview] = useState<MemoryOverview | null>(null);
+  const [proxyReport, setProxyReport] = useState<LocalProxyReport | null>(null);
   const [finishing, setFinishing] = useState(false);
 
   const cardRef = useRef<HTMLDivElement>(null);
@@ -176,16 +186,34 @@ export function FirstRunTour({
     }
   }
 
+  function adoptLocalProxy(proxy: DetectedProxy) {
+    const next = {
+      ...draftRef.current,
+      proxyMode: "custom",
+      proxyScheme: proxy.scheme,
+      proxyHost: proxy.host,
+      proxyPort: proxy.port,
+    };
+    draftRef.current = next;
+    setDraft(next);
+    otherPatchRef.current.proxyMode = "custom";
+    otherPatchRef.current.proxyScheme = proxy.scheme;
+    otherPatchRef.current.proxyHost = proxy.host;
+    otherPatchRef.current.proxyPort = proxy.port;
+  }
+
   const probeEnvironment = useCallback(async () => {
     if (!desktop) return;
     setJavaBusy(true);
     try {
-      const [javas, mem] = await Promise.all([
+      const [javas, mem, proxies] = await Promise.all([
         command<JavaRuntime[]>("detect_java").catch(() => null),
         command<MemoryOverview>("get_memory_overview").catch(() => null),
+        command<LocalProxyReport>("detect_local_proxies").catch(() => null),
       ]);
       if (javas) setJavaList(javas);
       if (mem) setMemoryOverview(mem);
+      if (proxies) setProxyReport(proxies);
     } finally {
       setJavaBusy(false);
     }
@@ -523,6 +551,42 @@ export function FirstRunTour({
                 </p>
               </div>
             </div>
+
+            {proxyReport ? (
+              <div className="vx-oobe__panel">
+                <div className="vx-oobe__panel-head">
+                  <span className="vx-oobe__label">
+                    <Radar size={14} aria-hidden="true" />
+                    {t("shell:tour.oobe.environment.proxyTitle")}
+                  </span>
+                  {!proxyReport.systemProxy && proxyReport.candidates[0] ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => adoptLocalProxy(proxyReport.candidates[0])}
+                    >
+                      {draft.proxyMode === "custom" && draft.proxyPort === proxyReport.candidates[0].port
+                        ? t("shell:tour.oobe.environment.proxyApplied")
+                        : t("shell:tour.oobe.environment.proxyUse")}
+                    </Button>
+                  ) : null}
+                </div>
+                <p className="vx-oobe__muted">
+                  {draft.proxyMode === "custom" && draft.proxyHost
+                    ? t("shell:tour.oobe.environment.proxyCustom", {
+                      url: `${draft.proxyScheme}://${draft.proxyHost}:${draft.proxyPort}`,
+                    })
+                    : proxyReport.systemProxy
+                      ? t("shell:tour.oobe.environment.proxySystem", { url: proxyReport.systemProxy.url })
+                      : proxyReport.candidates[0]
+                        ? t("shell:tour.oobe.environment.proxyLocalFound", {
+                          url: proxyReport.candidates[0].url,
+                          label: proxyReport.candidates[0].label,
+                        })
+                        : t("shell:tour.oobe.environment.proxyDirect")}
+                </p>
+              </div>
+            ) : null}
 
             {draft.gameDirectory ? (
               <div className="vx-oobe__path-row">

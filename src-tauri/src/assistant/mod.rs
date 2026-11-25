@@ -600,7 +600,8 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let (ctx, _root) = fixture_context();
-            assert_eq!(tools::catalog().len(), 38);
+            assert_eq!(tools::catalog().len(), 39);
+            assert!(tools::catalog().iter().any(|t| t.name == "detect_local_proxies"));
 
             // get_launcher_config exposes safe config without leaking secrets
             crate::secrets::save_service_secret(&ctx.state.data_dir, ASSISTANT_SECRET_KEY, "sk-lumen-secret")

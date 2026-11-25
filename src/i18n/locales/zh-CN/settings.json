@@ -75,6 +75,7 @@
       "proxyServer": "代理服务器",
       "gameProxy": "游戏网络代理",
       "proxyTest": "测试连接",
+      "proxyDetect": "自动检测本机代理",
       "credentials": "代理凭据",
       "startupCheck": "启动检查",
       "updateChannel": "更新渠道",
@@ -245,6 +246,16 @@
     },
     "javaDescription": "Java 只能继承 HTTP 代理。此设置只影响 HTTP 请求，不影响游戏服务器连接。Forge 和 NeoForge 安装器使用启动器的代理设置。",
     "test": "测试代理连接",
+    "detect": "检测本机代理",
+    "systemDetected": "当前系统代理：{{url}}",
+    "pacDetected": "系统自动代理脚本（PAC）：{{url}}",
+    "systemNone": "未检测到启用的系统代理（直连）。",
+    "applyDetected": "采用",
+    "sources": {
+      "windowsSystem": "Windows 系统代理",
+      "environment": "环境变量代理",
+      "localPort": "本机代理端口"
+    },
     "credentialStorage": "代理凭据单独保存在系统凭据库中。",
     "httpWarning": "使用 HTTP 代理时，代理凭据在发往代理的连接上不加密。",
     "saveEndpointFirst": "请先保存代理地址，再修改凭据。",
@@ -257,6 +268,8 @@
   },
   "notice": {
     "proxyConnected": "连接成功（{{latencyMs}} 毫秒）。",
+    "proxyDetected": "检测到 {{count}} 个本机或系统代理。",
+    "proxyNoneDetected": "未检测到启用的系统代理或本机代理端口。",
     "proxyCredentialsSaved": "代理凭据已保存。",
     "proxyCredentialsCleared": "代理凭据已清除。",
     "secretSaved": "CurseForge 密钥已加密保存。",

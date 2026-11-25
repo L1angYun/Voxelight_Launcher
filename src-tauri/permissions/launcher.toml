@@ -24,6 +24,7 @@ commands.allow = [
   "detect_java",
   "get_service_status",
   "test_proxy_connection",
+  "detect_local_proxies",
   "get_download_source_verdict",
   "set_proxy_credentials",
   "set_service_secret",

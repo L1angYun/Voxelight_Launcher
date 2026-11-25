@@ -36,7 +36,7 @@ describe("Tauri IPC registration contract", () => {
   it("registers proxy commands only in the launcher settings permission family", () => {
     const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
     const families = permissions.split(/\[\[permission\]\]/);
-    for (const command of ["test_proxy_connection", "set_proxy_credentials", "reset_launcher_state"]) {
+    for (const command of ["test_proxy_connection", "detect_local_proxies", "set_proxy_credentials", "reset_launcher_state"]) {
       expect(registered.has(command)).toBe(true);
       expect(invoked.has(command)).toBe(true);
       const allowed = families.filter((family) => family.includes(`"${command}"`));

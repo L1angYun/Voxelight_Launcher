@@ -575,6 +575,9 @@ export async function installLauncherFixture(
           if (name === "detect_java") {
             return [{ path: "C:\\SyntheticFixture\\java.exe", version: "21.0.5", major: 21 }];
           }
+          if (name === "detect_local_proxies") {
+            return { systemProxy: null, autoConfigUrl: null, candidates: [] };
+          }
           if (name === "get_memory_overview") {
             return { totalMb: 16384, availableMb: 10240, recommendedMb: 4096, effectiveMaxMb: 4096, mode: "auto" };
           }

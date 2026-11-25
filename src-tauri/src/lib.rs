@@ -316,6 +316,7 @@ pub fn run() {
             auth_commands::set_service_secret,
             auth_commands::get_service_status,
             network::test_proxy_connection,
+            network::detect_local_proxies,
             source_select::get_download_source_verdict,
             updates::check_launcher_update,
             updates::get_launcher_update_state,

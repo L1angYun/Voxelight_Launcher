@@ -55,6 +55,13 @@
         "memoryTitle": "内存分配",
         "memorySummary": "系统内存 {{total}} GiB · 自动建议分配 {{recommended}} MB。",
         "memoryAuto": "已启用内存自动分配，会根据系统可用内存动态建议合适大小。",
+        "proxyTitle": "本机代理",
+        "proxySystem": "已自动跟随系统代理（{{url}}）。",
+        "proxyLocalFound": "检测到本机代理 {{url}}（{{label}}）。",
+        "proxyCustom": "将使用自定义代理 {{url}}。",
+        "proxyDirect": "跟随系统代理（当前无系统代理，直连）。",
+        "proxyUse": "采用此代理",
+        "proxyApplied": "已选择",
         "gameDir": "游戏目录：",
         "sources": {
           "official": "仅官方源",

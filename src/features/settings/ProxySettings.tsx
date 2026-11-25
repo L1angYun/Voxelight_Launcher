@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Radar } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
-import { command, type Config } from "../../lib/launcher";
+import { command, desktop, type Config, type DetectedProxy, type LocalProxyReport } from "../../lib/launcher";
 import type { SettingsSectionProps } from "./types";
 
 function probeSettings(config: Config) {
@@ -109,8 +110,52 @@ function ProxyActions({ config, endpointSaved, onError, onNotice }: Pick<Setting
 
 export function ProxySettings({ config, savedConfig, onChange, onError, onNotice }: SettingsSectionProps & { savedConfig: Config }) {
   const { t } = useTranslation();
+  const [detected, setDetected] = useState<LocalProxyReport | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const mounted = useRef(true);
   const endpointKey = JSON.stringify(probeSettings(config));
   const endpointSaved = config.proxyMode === "custom" && endpointKey === JSON.stringify(probeSettings(savedConfig));
+
+  const detectLocal = useCallback(async (announce: boolean) => {
+    if (!desktop) return;
+    setDetecting(true);
+    try {
+      const report = await command<LocalProxyReport>("detect_local_proxies");
+      if (!mounted.current || !report) return;
+      setDetected(report);
+      if (announce) {
+        onNotice(
+          report.candidates.length > 0 ? "proxyDetected" : "proxyNoneDetected",
+          { count: report.candidates.length },
+        );
+      }
+    } catch (cause) {
+      if (announce && mounted.current) onError(cause);
+    } finally {
+      if (mounted.current) setDetecting(false);
+    }
+  }, [onError, onNotice]);
+
+  useEffect(() => {
+    mounted.current = true;
+    void detectLocal(false);
+    return () => { mounted.current = false; };
+  }, [detectLocal]);
+
+  function applyDetected(item: DetectedProxy) {
+    if (item.source === "windowsSystem" && config.proxyMode !== "system") {
+      onChange({ ...config, proxyMode: "system" });
+      return;
+    }
+    onChange({
+      ...config,
+      proxyMode: "custom",
+      proxyScheme: item.scheme,
+      proxyHost: item.host,
+      proxyPort: item.port,
+    });
+  }
+
   return (
     <section className="vx-settings-group">
       <h3>{t("settings:proxy.title")}</h3>
@@ -120,6 +165,48 @@ export function ProxySettings({ config, savedConfig, onChange, onError, onNotice
           onChange={(proxyMode) => onChange({ ...config, proxyMode })}
           options={["system", "none", "custom"].map((value) => ({ value, label: t(`settings:proxy.modes.${value}`) }))} />
       </label>
+
+      <div className="vx-proxy-detected" data-testid="proxy-detected-panel">
+        <div className="vx-proxy-detected__head">
+          <span role="status">
+            {detected?.systemProxy
+              ? t("settings:proxy.systemDetected", { url: detected.systemProxy.url })
+              : detected?.autoConfigUrl
+                ? t("settings:proxy.pacDetected", { url: detected.autoConfigUrl })
+                : t("settings:proxy.systemNone")}
+          </span>
+          <div data-settings-target="downloads-proxy-detect">
+            <Button
+              size="sm"
+              variant="secondary"
+              data-settings-primary=""
+              icon={<Radar size={14} />}
+              loading={detecting}
+              onClick={() => void detectLocal(true)}
+            >
+              {t("settings:proxy.detect")}
+            </Button>
+          </div>
+        </div>
+        {detected && detected.candidates.length > 0 ? (
+          <ul className="vx-proxy-detected__list">
+            {detected.candidates.map((item) => (
+              <li key={item.url} className="vx-proxy-detected__row">
+                <div className="vx-proxy-detected__info">
+                  <code>{item.url}</code>
+                  <small>
+                    {t(`settings:proxy.sources.${item.source}`)} · {item.label}
+                  </small>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => applyDetected(item)}>
+                  {t("settings:proxy.applyDetected")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
       {config.proxyMode === "custom" ? (
         <>
           <label data-settings-target="downloads-proxy-scheme">{t("settings:proxy.scheme")}

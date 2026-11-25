@@ -598,3 +598,66 @@ fn c7_system_follows_proxy_env_in_subprocess() {
         "{request}"
     );
 }
+
+#[test]
+fn local_proxy_parsers_strip_credentials_and_handle_windows_formats() {
+    assert_eq!(
+        parse_windows_proxy_server("127.0.0.1:7890").map(|e| e.url()),
+        Some("http://127.0.0.1:7890".into())
+    );
+    assert_eq!(
+        parse_windows_proxy_server("http=127.0.0.1:7890;https=127.0.0.1:7897;socks=127.0.0.1:7891")
+            .map(|e| e.url()),
+        Some("http://127.0.0.1:7897".into())
+    );
+    assert_eq!(
+        parse_proxy_uri("http://secret-user:secret-pass@127.0.0.1:8080/path").map(|e| e.url()),
+        Some("http://127.0.0.1:8080".into())
+    );
+    assert!(parse_proxy_uri("socks5://127.0.0.1:1080").is_none());
+    assert_eq!(
+        sanitize_pac_url("http://user:pass@127.0.0.1:7890/proxy.pac?token=secret"),
+        Some("http://127.0.0.1:7890/proxy.pac".into())
+    );
+    let env = detect_env_proxies(|key| match key {
+        "HTTPS_PROXY" => Some("http://user:pass@127.0.0.1:7897".into()),
+        "HTTP_PROXY" => Some("127.0.0.1:7890".into()),
+        _ => None,
+    });
+    assert_eq!(env.len(), 2);
+    assert_eq!(env[0].url, "http://127.0.0.1:7897");
+    assert!(!env[0].url.contains("secret") && !env[0].url.contains("user"));
+    assert_eq!(env[1].url, "http://127.0.0.1:7890");
+}
+
+#[test]
+fn probe_local_http_proxy_accepts_http_proxy_and_rejects_non_http_listener() {
+    let http_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let http_port = http_listener.local_addr().unwrap().port();
+    let http_worker = thread::spawn(move || {
+        let mut socket = accept_or_timeout(&http_listener);
+        let mut buf = [0u8; 256];
+        let _ = socket.read(&mut buf);
+        let _ = socket.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+    });
+
+    let non_http_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let non_http_port = non_http_listener.local_addr().unwrap().port();
+    let non_http_worker = thread::spawn(move || {
+        let mut socket = accept_or_timeout(&non_http_listener);
+        let mut buf = [0u8; 256];
+        let _ = socket.read(&mut buf);
+        let _ = socket.write_all(b"\x05\x00SOCKS");
+    });
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let detected = rt.block_on(probe_local_http_proxy(http_port));
+    let rejected = rt.block_on(probe_local_http_proxy(non_http_port));
+    http_worker.join().unwrap();
+    non_http_worker.join().unwrap();
+    assert_eq!(detected.map(|e| e.url()), Some(format!("http://127.0.0.1:{http_port}")));
+    assert!(rejected.is_none());
+}

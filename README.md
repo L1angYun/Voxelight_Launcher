@@ -106,7 +106,7 @@ No telemetry, analytics or crash reporting. The launcher connects only to:
 
 **Settings → Downloads → Download source**: **Official only** (default), **Automatic** (Mojang first, unless it fails or is clearly slower this session), or **BMCLAPI first**. BMCLAPI is a community mirror, not a Mojang service; it covers Mojang's files and part of Fabric, Forge, NeoForge and authlib-injector, and every mirrored file is still hash-checked.
 
-**Network proxy**: Follow system (default), Off, or Custom `http://` / `https://`; restart the launcher after changing it. **Game proxy mode** (default Follow system) lets Minecraft itself follow the system proxy, turn proxying off, or inherit the launcher's `http://` proxy, globally or per instance. Modrinth search and images such as project icons and skins are loaded by WebView2, which does not use the launcher's proxy setting.
+**Network proxy**: Follow system (default), Off, or Custom `http://` / `https://`, with automatic detection of Windows system proxies, environment proxy variables, and common local HTTP proxy ports; restart the launcher after changing it. **Game proxy mode** (default Follow system) lets Minecraft itself follow the system proxy, turn proxying off, or inherit the launcher's `http://` proxy, globally or per instance. Modrinth search and images such as project icons and skins are loaded by WebView2, which does not use the launcher's proxy setting.
 
 ## Limitations
 

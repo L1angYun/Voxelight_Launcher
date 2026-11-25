@@ -309,6 +309,13 @@ pub fn catalog() -> Vec<ToolSpec> {
             input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         },
 
+        ToolSpec {
+            name: "detect_local_proxies",
+            description: "Inspect the Windows system proxy, environment proxy variables, and local loopback HTTP proxy listeners (e.g. Clash/v2rayN) without reading credentials.",
+            tier: ToolTier::ReadOnly,
+            input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        },
+
         // ---- Controlled write tools (17) ----
         ToolSpec {
             name: "toggle_instance_resource",
@@ -947,6 +954,10 @@ pub async fn execute_tool(
                 }
             }
             Ok(value)
+        }
+        "detect_local_proxies" => {
+            let report = crate::network::detect_local_proxies_inner(&[]).await;
+            serde_json::to_value(&report).map_err(|error| ToolExecError::Failed(error.to_string()))
         }
         "search_modrinth" => {
             let query = require_string(args, "query")?;
