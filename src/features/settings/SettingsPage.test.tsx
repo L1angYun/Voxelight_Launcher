@@ -203,12 +203,17 @@ beforeEach(() => {
       effectiveBaseUrl: "https://api.openai.com/v1",
       model: mockLauncher.config.assistantModel,
       permission: mockLauncher.config.assistantPermission,
+      proactive: mockLauncher.config.assistantProactive,
       loopbackEndpoint: false,
       ready: false,
       mcp: { running: false, port: mockLauncher.config.assistantMcpPort, url: null, tokenMasked: null },
-      tools: [],
+      tools: [
+        { name: "list_instances", tier: "readOnly", description: "List registered instances." },
+        { name: "update_instance_notes", tier: "controlled", description: "Update instance notes." },
+      ],
     };
     if (name === "set_assistant_api_key") return Boolean(args?.secret);
+    if (name === "reset_launcher_state") return { ...defaults, tourCompleted: false };
     if (name === "start_mcp_server") {
       const port = Number(args?.port ?? mockLauncher.config.assistantMcpPort);
       return { running: true, port, url: `http://127.0.0.1:${port}/mcp`, tokenMasked: "••••••••abcdef" };
@@ -963,21 +968,25 @@ describe("Settings review request", () => {
     expect(document.activeElement?.textContent?.trim()).not.toBe("Check for updates");
   });
 
-  it("configures assistant provider, encrypted API key, permission tier, and local MCP server", async () => {
+  it("configures Lumen provider, encrypted API key, permission tier, proactive wake, and local MCP server", async () => {
     await render();
-    await click("Assistant & MCP");
+    await click("Lumen & MCP");
     await select("Provider", "anthropic");
     await fill("Model", "claude-sonnet-4-20250514");
-    await fill("Assistant API key", "sk-ant-synthetic-key");
+    await fill("Lumen API key", "sk-ant-synthetic-key");
     await click("Save key");
     expect(commandMock).toHaveBeenCalledWith("set_assistant_api_key", { secret: "sk-ant-synthetic-key" });
-    expect(container.textContent).toContain("Assistant API key saved with system encryption.");
+    expect(container.textContent).toContain("Lumen API key saved with system encryption.");
     await click("Controlled");
+    const proactive = container.querySelector<HTMLInputElement>('input[aria-label="Proactively wake Lumen on game crashes"]')!;
+    expect(proactive.checked).toBe(true);
+    await act(async () => proactive.click());
     await click("Save settings");
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
       assistantProvider: "anthropic",
       assistantModel: "claude-sonnet-4-20250514",
       assistantPermission: "controlled",
+      assistantProactive: false,
     }), { preserveAppearance: true });
 
     await click("Start MCP server");
@@ -989,5 +998,20 @@ describe("Settings review request", () => {
     await click("Stop MCP server");
     expect(commandMock).toHaveBeenCalledWith("stop_mcp_server");
     expect(container.textContent).toContain("Stopped.");
+  });
+
+  it("restores initial launcher state from Settings → General after confirmation", async () => {
+    await render();
+    await click("Restore initial state");
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!;
+    expect(dialog).not.toBeNull();
+    expect(dialog.textContent).toContain("Your Minecraft game directory");
+    const confirm = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+      (candidate) => candidate.textContent?.trim() === "Restore now",
+    )!;
+    await act(async () => confirm.click());
+    expect(commandMock).toHaveBeenCalledWith("reset_launcher_state");
+    expect(mockLauncher.reload).toHaveBeenCalled();
+    expect(container.textContent).toContain("Launcher restored to its initial state.");
   });
 });

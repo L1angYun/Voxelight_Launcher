@@ -549,6 +549,149 @@ fn detach_account(data: &mut Persisted, account_id: &str) -> Result<Vec<Account>
     Ok(data.accounts.clone())
 }
 
+pub(crate) async fn install_version_for_state(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+    version_id: String,
+) -> Result<InstallResult, String> {
+    let _guard = state
+        .operation
+        .try_lock()
+        .map_err(|_| "已有安装或启动准备任务运行，请等待完成".to_owned())?;
+    let task = state.control.begin_recorded(
+        "install",
+        &version_id,
+        &format!("Minecraft {version_id}"),
+        None,
+        crate::downloads::RetryRequest::Install { version_id: version_id.clone() },
+    )?;
+    let result = minecraft::install(state, app, &version_id).await;
+    state
+        .control
+        .finish(&task, result.as_ref().err().map(String::as_str));
+    match result {
+        Ok((result, _)) => Ok(result),
+        Err(error) => {
+            minecraft::log(app, state, "error", &error);
+            Err(error)
+        }
+    }
+}
+
+pub(crate) async fn launch_instance_for_state(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+    instance_id: &str,
+    server_address: Option<String>,
+) -> Result<LaunchResult, String> {
+    let snapshot = state.snapshot()?;
+    let instance = snapshot
+        .instances
+        .iter()
+        .find(|item| item.id == instance_id)
+        .cloned()
+        .ok_or_else(|| "实例不存在，请刷新实例列表".to_owned())?;
+    let account = snapshot
+        .accounts
+        .iter()
+        .find(|item| item.is_selected)
+        .or_else(|| snapshot.accounts.first())
+        .cloned()
+        .ok_or_else(|| "请先在角色页面添加并选择一个玩家账号".to_owned())?;
+    let task_id = state
+        .control
+        .reserve_launch(&instance.version_id, Some(instance.id.clone()))?;
+    match minecraft::launch(
+        state.clone(),
+        app.clone(),
+        task_id.clone(),
+        instance.version_id,
+        Some(instance.id),
+        Some(account.id),
+        server_address,
+    )
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            state.control.cancel(&task_id);
+            minecraft::log(app, state, "error", &error);
+            Err(error)
+        }
+    }
+}
+
+/// Restores all launcher preferences, registrations, encrypted secrets, and task history
+/// back to factory defaults (including re-enabling the first-run welcome OOBE).
+/// Never deletes the Minecraft game directory, worlds, saves, mods, backups, or server files.
+pub(crate) async fn reset_launcher_state_inner(
+    state: &Arc<LauncherState>,
+    auth: &crate::auth::AuthService,
+    servers: &crate::server_manager::ServerRegistry,
+    mcp: &crate::assistant::McpService,
+) -> Result<Config, String> {
+    let _operation = state
+        .operation
+        .try_lock()
+        .map_err(|_| "已有安装或启动准备任务运行，请等待完成后修改配置".to_owned())?;
+    if !state.games.snapshot()?.is_empty() {
+        return Err("有游戏正在运行，请先退出游戏后再还原初始状态。".into());
+    }
+    if servers.any_running() {
+        return Err("有托管服务端正在运行，请先停止服务端后再还原初始状态。".into());
+    }
+    let snapshot = state.snapshot()?;
+    let shared_for_clear = state.clone();
+    let old_game_dir = snapshot.config.game_directory.clone();
+    tokio::task::spawn_blocking(move || {
+        let game_root = crate::processes::configured_game_root(Path::new(&old_game_dir)).ok();
+        let stores = crate::parts::startup_stores(&shared_for_clear.data_dir, game_root.as_deref());
+        shared_for_clear.control.clear_all_history(&stores)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    mcp.stop();
+    let account_ids: Vec<String> = snapshot
+        .accounts
+        .iter()
+        .map(|account| account.id.clone())
+        .collect();
+    auth.clear_all_credentials(&account_ids)?;
+    crate::secrets::save_service_secret(&state.data_dir, "curseforge", "")?;
+    crate::secrets::save_service_secret(
+        &state.data_dir,
+        crate::assistant::ASSISTANT_SECRET_KEY,
+        "",
+    )?;
+    let _ = crate::network::forget_current_credentials(&state.data_dir, &snapshot.config);
+
+    let fresh = Config::default();
+    let saved = state.update(|data| {
+        data.config = fresh.clone();
+        data.accounts.clear();
+        data.instances.clear();
+        data.pending_credential_removals.clear();
+        data.update_highest_seen = None;
+        Ok(data.config.clone())
+    })?;
+    state.control.set_limit(saved.download_limit_kib);
+    state.control.set_concurrency(saved.download_concurrency);
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn reset_launcher_state(
+    state: Shared<'_>,
+    auth: State<'_, Arc<crate::auth::AuthService>>,
+    servers: State<'_, Arc<crate::server_manager::ServerRegistry>>,
+    mcp: State<'_, Arc<crate::assistant::McpService>>,
+) -> AppResult<Config> {
+    reset_launcher_state_inner(&state, &auth, &servers, &mcp)
+        .await
+        .map_err(expected)
+}
+
 #[tauri::command]
 pub async fn install_version(
     app: AppHandle,

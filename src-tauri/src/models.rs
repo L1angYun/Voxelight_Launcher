@@ -55,6 +55,8 @@ pub struct Config {
     pub assistant_permission: String,
     /// Localhost TCP port for the opt-in MCP server (127.0.0.1 only).
     pub assistant_mcp_port: u16,
+    /// Proactively wake Lumen on crashes and failures (only applies once Lumen is configured).
+    pub assistant_proactive: bool,
 }
 
 impl Default for Config {
@@ -105,6 +107,7 @@ impl Default for Config {
             assistant_model: String::new(),
             assistant_permission: "readOnly".into(),
             assistant_mcp_port: 25590,
+            assistant_proactive: true,
         }
     }
 }

@@ -225,6 +225,8 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             "已有安装或启动准备任务运行，请等待完成后修改配置" => {
                 "config.busy"
             }
+            "有游戏正在运行，请先退出游戏后再还原初始状态。" => "update.gameRunning",
+            "有托管服务端正在运行，请先停止服务端后再还原初始状态。" => "update.serverRunning",
             "背景图片需要本地绝对路径"
             | "请选择不超过 12 MB 的背景图片"
             | "PNG 图片不完整"

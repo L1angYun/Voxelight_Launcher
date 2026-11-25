@@ -10,7 +10,7 @@
     "description": "These shortcuts work anywhere in the launcher.",
     "actions": {
       "goTo": "Go to {{page}}",
-      "assistant": "Open built-in assistant",
+      "assistant": "Open Lumen",
       "search": "Focus the page search",
       "help": "Show keyboard shortcuts"
     },
@@ -20,14 +20,57 @@
     }
   },
   "tour": {
-    "title": "Quick tour",
+    "title": "Welcome to Voxelight",
     "step": "{{current}} of {{total}}",
     "announcement": "Step {{current}} of {{total}}: {{title}}. {{body}}",
     "back": "Back",
     "next": "Next",
-    "finish": "Finish",
+    "finish": "Start using Voxelight",
     "skip": "Skip",
-    "showAgain": "Show the tour again",
+    "showAgain": "Open welcome setup",
+    "oobe": {
+      "welcome": {
+        "title": "Shape your Voxelight space",
+        "body": "Choose your language, theme, and live 3D world style. Changes preview immediately behind this card."
+      },
+      "account": {
+        "title": "Player identity",
+        "body": "Add an offline player now to jump in quickly, or sign in with Microsoft or Authlib anytime on Players.",
+        "existing": "Ready players",
+        "none": "No player added yet.",
+        "offlineLabel": "Quick offline player",
+        "offlinePlaceholder": "3–16 letters, numbers, or _",
+        "addOffline": "Add player",
+        "added": "Added offline player {{name}}.",
+        "invalidName": "Enter 3–16 letters, numbers, or underscores.",
+        "onlineHint": "You can sign in with Microsoft or third-party Authlib servers anytime from the Players page."
+      },
+      "environment": {
+        "title": "Runtime & downloads",
+        "body": "Choose your preferred download source and inspect Java and automatic memory readiness.",
+        "javaTitle": "Java runtime",
+        "javaFound": "Found {{count}} Java runtime(s) (up to Java {{major}}).",
+        "javaNone": "No local Java detected yet — Voxelight can prepare the matching official runtime automatically.",
+        "redetect": "Re-scan",
+        "memoryTitle": "Memory allocation",
+        "memorySummary": "{{total}} GiB RAM detected · automatic recommendation: {{recommended}} MB.",
+        "memoryAuto": "Automatic memory allocation is active and adapts to your system RAM.",
+        "gameDir": "Game directory:",
+        "sources": {
+          "official": "Official",
+          "auto": "Auto",
+          "bmclapi": "BMCLAPI"
+        }
+      },
+      "ready": {
+        "title": "Everything is ready",
+        "body": "Here is where everything lives in Voxelight. You can reopen this welcome setup anytime from F1."
+      },
+      "languages": {
+        "zhCN": "简体中文",
+        "enUS": "English"
+      }
+    },
     "steps": {
       "library": { "title": "Library", "body": "Your instances and versions." },
       "discover": { "title": "Discover", "body": "Find mods, modpacks and more." },
@@ -146,26 +189,27 @@
     "update.sourceChanged": "The update source changed. Check for updates again.",
     "update.notOffered": "There is no update to download. Check for updates first.",
     "update.sourceInvalid": "The update source is not valid.",
-    "assistant.apiKeyRequired": "Save your own AI API key in Settings → Assistant & MCP first.",
-    "assistant.modelRequired": "Enter a model name in Settings → Assistant & MCP first.",
-    "assistant.invalidBaseUrl": "The assistant API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
+    "assistant.apiKeyRequired": "Save your own AI API key in Settings → Lumen & MCP first.",
+    "assistant.modelRequired": "Enter a model name in Settings → Lumen & MCP first.",
+    "assistant.invalidBaseUrl": "The Lumen API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
     "assistant.providerError": "The configured AI service returned an error.",
     "assistant.emptyMessage": "Enter a message before sending."
   },
   "assistant": {
-    "title": "Built-in assistant",
-    "description": "Ask about your instances, mods, logs, crash reports, downloads, or managed servers using your own AI API key.",
+    "title": "Lumen",
+    "description": "Voxelight's built-in assistant for diagnosing crashes, managing instances, mods, worlds, downloads, and servers with your own AI API key.",
     "notConfigured": "Model not configured",
     "configure": "Configure",
-    "emptyReady": "Ask a question about your launcher setup, or pick a starter prompt below.",
-    "emptyUnconfigured": "Configure a provider, model, and API key (or a local loopback endpoint) in Settings → Assistant & MCP to start chatting.",
+    "toolCount": "{{count}} tools",
+    "emptyReady": "Ask Lumen about your launcher setup, or pick a starter prompt below.",
+    "emptyUnconfigured": "Configure a provider, model, and API key (or a local loopback endpoint) in Settings → Lumen & MCP to enable Lumen.",
     "prompts": {
       "instances": "Summarize my instances and installed versions.",
       "resources": "Check my memory setup and any recent download tasks.",
       "servers": "List my running games and managed servers."
     },
     "roleUser": "You",
-    "roleAssistant": "Assistant",
+    "roleAssistant": "Lumen",
     "toolActivity": "Launcher tool calls",
     "traceStatus": {
       "executed": "ran",
@@ -174,15 +218,28 @@
       "blocked": "blocked",
       "error": "failed"
     },
-    "approvalTitle": "Approve launcher action",
-    "approvalDescription": "Controlled mode requires your confirmation before the assistant modifies launcher state.",
+    "approvalTitle": "Approve Lumen action",
+    "approvalDescription": "Controlled mode requires your confirmation before Lumen modifies launcher state.",
     "approveAction": "Approve & run",
     "denyAction": "Deny",
-    "inputLabel": "Message for the assistant",
-    "inputPlaceholder": "Ask about instances, crash logs, mods, or servers… (Enter to send)",
-    "inputUnconfiguredPlaceholder": "Configure a model and API key in Settings → Assistant & MCP first…",
+    "inputLabel": "Message for Lumen",
+    "inputPlaceholder": "Ask Lumen about instances, crash logs, mods, downloads, or servers… (Enter to send)",
+    "inputUnconfiguredPlaceholder": "Configure a model and API key in Settings → Lumen & MCP first…",
     "clear": "Clear",
-    "send": "Send"
+    "send": "Send",
+    "wake": {
+      "crashReason": "Lumen woke automatically: {{target}} exited abnormally (exit code {{code}}).",
+      "crashPrompt": "{{target}} just exited abnormally with exit code {{code}}. Please diagnose the crash logs and recent errors, explain the likely root cause, and suggest the safest fix.",
+      "askLogs": "Ask Lumen to analyze",
+      "logReason": "Analyzing logs and crash diagnostics for {{target}}.",
+      "logPrompt": "Please inspect the crash diagnosis and recent error logs for {{target}}, summarize the cause, and recommend next steps.",
+      "askDownloads": "Ask Lumen to troubleshoot",
+      "downloadsReason": "Investigating {{count}} failed download task(s).",
+      "downloadsPrompt": "I have {{count}} failed download task(s). Please inspect my download tasks and download source settings, explain why they failed, and suggest whether to retry or switch source.",
+      "askNetwork": "Ask Lumen for NAT advice",
+      "networkReason": "Reviewing NAT and direct-connect reachability.",
+      "networkPrompt": "My network environment check reported {{natType}} / restricted direct-connect reachability. Please run or review my network check and suggest practical options for hosting or joining Minecraft multiplayer."
+    }
   },
   "storage": {
     "fallbackTitle": "Using a fallback data profile",

@@ -27,7 +27,7 @@
     "game": "游戏",
     "java": "Java",
     "downloads": "下载",
-    "assistant": "助手与 MCP",
+    "assistant": "Lumen 与 MCP",
     "about": "关于"
   },
   "search": {
@@ -79,11 +79,13 @@
       "startupCheck": "启动检查",
       "updateChannel": "更新渠道",
       "updateCheck": "更新检查",
-      "aiAssistant": "AI 助手",
+      "aiAssistant": "Lumen AI 助手",
       "mcpServer": "MCP 服务",
       "llmProvider": "大模型提供商",
       "modelName": "模型名称",
-      "permissionTier": "工具权限"
+      "permissionTier": "工具权限",
+      "proactiveWake": "崩溃主动唤醒诊断",
+      "factoryReset": "恢复出厂初始状态"
     }
   },
   "generalDescription": "服务接入与可迁移的启动器预设。",
@@ -108,6 +110,20 @@
     "description": "导出或导入启动器设置，不包含账号、登录令牌或平台密钥。",
     "export": "导出设置预设",
     "import": "导入设置预设"
+  },
+  "resetLauncher": {
+    "title": "还原为初始状态",
+    "description": "将 Voxelight 恢复到首次启动时的初始状态：重置所有设置、清除账号与加密密钥以及启动器记录，不会删除你的 Minecraft 游戏文件。",
+    "action": "还原为初始状态",
+    "confirmTitle": "确定要将启动器还原为初始状态吗？",
+    "confirmDescription": "此操作无法撤销。请确认将被清除的内容与硬盘上保留的文件。",
+    "confirmAction": "确认还原",
+    "willResetTitle": "将被重置或清除：",
+    "willResetConfig": "全部启动器设置恢复为跟随系统的默认值，并重新开启首次引导。",
+    "willResetAccounts": "已登录的所有账号与加密登录令牌将被移除。",
+    "willResetSecrets": "已保存的 CurseForge Key、Lumen API Key 和代理凭据将被清除。",
+    "willResetRegistry": "实例注册列表、下载历史记录与本地 MCP 服务将被重置或停止。",
+    "preservedNote": "你的 Minecraft 游戏目录、世界存档、模组、资源包、实例备份和托管服务端文件均不会被删除。"
   },
   "appearanceDescription": "语言与外观立即预览，保存后长期生效。",
   "fields": {
@@ -252,17 +268,18 @@
     "backgroundCleared": "已恢复默认首页背景。",
     "javaDetected": "发现 {{count}} 个 Java 环境。",
     "javaNotFound": "没有找到 Java，请安装后指定路径。",
-    "assistantKeySaved": "助手 API Key 已加密保存。",
-    "assistantKeyCleared": "已清除保存的助手 API Key。",
+    "assistantKeySaved": "Lumen API Key 已加密保存。",
+    "assistantKeyCleared": "已清除保存的 Lumen API Key。",
+    "launcherReset": "启动器已还原为初始状态，你的 Minecraft 游戏文件未被删除。",
     "mcpStarted": "本地 MCP 服务已在 127.0.0.1:{{port}} 启动。",
     "mcpStopped": "本地 MCP 服务已停止。",
     "mcpTokenRotated": "MCP 访问令牌已轮换，请更新已连接客户端中的令牌。",
     "mcpConfigCopied": "MCP 客户端配置 JSON 已复制到剪贴板。"
   },
   "assistant": {
-    "description": "使用你自己的 AI API Key 启动内置助手，或通过仅限本机的 MCP 服务向外部客户端开放启动器工具。",
-    "providerTitle": "AI 提供商与密钥",
-    "providerDescription": "仅在你主动向助手提问时发包，直接连向你配置的接口地址。",
+    "description": "使用你自己的 AI API Key 配置 Lumen，或通过仅限本机的 MCP 服务开放启动器工具。在完成配置之前，Lumen 不会出现在启动器的任何其他位置。",
+    "providerTitle": "Lumen 提供商与密钥",
+    "providerDescription": "仅在你主动与 Lumen 对话或触发诊断唤醒时发包，直接连向你配置的接口地址。",
     "provider": "提供商",
     "providers": {
       "openai": "OpenAI 兼容接口",
@@ -272,7 +289,7 @@
     "modelPlaceholder": "例如 gpt-4o-mini、claude-sonnet-4-20250514、deepseek-chat",
     "baseUrl": "API 基础地址（可选）",
     "baseUrlHint": "留空使用提供商默认 HTTPS 地址。远程接口必须使用 HTTPS；本机服务（如 Ollama 或 LM Studio）允许 http://127.0.0.1 或 http://localhost。",
-    "apiKey": "助手 API Key",
+    "apiKey": "Lumen API Key",
     "apiKeyPlaceholder": "填写你自己的 API Key（本机回环接口可留空）",
     "apiKeyHint": "通过 Windows DPAPI 按当前 Windows 用户加密保存，导出配置预设时不会包含。",
     "permission": "工具权限",
@@ -282,11 +299,14 @@
       "fullAccess": "完全访问"
     },
     "permissionHints": {
-      "readOnly": "只查看实例、版本、模组、日志、崩溃诊断、下载任务和服务端状态，不修改任何内容。",
-      "controlled": "只读工具自动执行；内置助手执行写入操作前会逐项请求你的确认；外部 MCP 客户端仍保持只读。",
-      "fullAccess": "允许内置助手及通过认证的本机 MCP 客户端执行精选写入工具（切换本地资源、基于已装版本创建实例、更新备注、正常停止运行中的游戏）。"
+      "readOnly": "只查看实例、版本、模组、世界存档、日志、崩溃诊断、下载任务、Java、网络环境和托管服务端，不修改任何内容。",
+      "controlled": "只读工具自动执行；Lumen 执行写入操作前会逐项请求你的确认；外部 MCP 客户端仍保持只读。",
+      "fullAccess": "允许 Lumen 及通过认证的本机 MCP 客户端执行全部精选启动器工具（安装版本/模组、创建/克隆/备份实例、调整安全设置、管理下载、启停游戏与服务端等）。"
     },
-    "openDialog": "打开内置助手（Ctrl+K）",
+    "toolSummary": "已开放精选工具集：共 {{total}} 项启动器工具（{{readOnly}} 项只读、{{controlled}} 项受控写入）。绝不暴露任意 Shell 命令、越界路径或任何密钥读取。",
+    "proactive": "游戏异常崩溃时主动唤醒 Lumen",
+    "proactiveDescription": "仅在已配置 Lumen 时生效：当游戏非正常退出时自动带崩溃上下文唤醒 Lumen，并在日志报错、下载失败和受限 NAT 场景提供快捷求助入口。",
+    "openDialog": "打开 Lumen（Ctrl+K）",
     "mcpTitle": "本地 MCP 服务",
     "mcpDescription": "每次启动默认关闭。仅监听 127.0.0.1，要求每次会话随机生成的 Bearer 令牌并校验回环 Host/Origin。",
     "mcpPort": "MCP 端口（1024–65535）",
@@ -327,9 +347,9 @@
       "invalid": "部分设置无效，请检查输入后重试。"
     },
     "assistant": {
-      "apiKeyRequired": "请先在「设置 → 助手与 MCP」中保存你自己的 AI API Key。",
-      "modelRequired": "请先在「设置 → 助手与 MCP」中填写模型名称。",
-      "invalidBaseUrl": "助手 API 基础地址必须使用 HTTPS，或本机回环 HTTP（127.0.0.1 / localhost）。",
+      "apiKeyRequired": "请先在「设置 → Lumen 与 MCP」中保存你自己的 AI API Key。",
+      "modelRequired": "请先在「设置 → Lumen 与 MCP」中填写模型名称。",
+      "invalidBaseUrl": "Lumen API 基础地址必须使用 HTTPS，或本机回环 HTTP（127.0.0.1 / localhost）。",
       "providerError": "所配置的 AI 服务返回了错误。",
       "emptyMessage": "发送前请输入消息内容。"
     }

@@ -132,6 +132,7 @@ export async function installLauncherFixture(
       assistantBaseUrl: "",
       assistantModel: "",
       assistantPermission: "readOnly",
+      assistantProactive: true,
       assistantMcpPort: 25590,
     };
     let assistantApiKeyConfigured = false;
@@ -525,6 +526,72 @@ export async function installLauncherFixture(
           if (name === "set_tour_completed") {
             config.tourCompleted = args?.completed === true;
             return { ...config };
+          }
+          if (name === "reset_launcher_state") {
+            Object.assign(config, {
+              javaPath: "",
+              maxMemoryMb: 4096,
+              jvmArguments: "",
+              versionIsolation: true,
+              theme: "system",
+              downloadConcurrency: 6,
+              microsoftClientId: "",
+              proxyMode: "system",
+              proxyScheme: "http",
+              proxyHost: "",
+              proxyPort: 0,
+              gameProxyMode: "system",
+              downloadLimitKib: 0,
+              downloadSource: "official",
+              screenWidth: 1280,
+              screenHeight: 720,
+              language: "system",
+              accentColor: "#b4f17a",
+              effects: "full",
+              worldScene: "horizon",
+              worldMaterial: "lattice",
+              accentSource: "system",
+              soundEnabled: false,
+              customBackground: null,
+              javaAutoDownload: true,
+              defaultSkin: "steve",
+              checkForUpdates: true,
+              updateSource: "auto",
+              tourCompleted: false,
+              assistantProvider: "openai",
+              assistantBaseUrl: "",
+              assistantModel: "",
+              assistantPermission: "readOnly",
+              assistantProactive: true,
+              assistantMcpPort: 25590,
+            });
+            accounts.length = 0;
+            instances.length = 0;
+            downloadTasks.length = 0;
+            assistantApiKeyConfigured = false;
+            mcpRunning = false;
+            return { ...config };
+          }
+          if (name === "detect_java") {
+            return [{ path: "C:\\SyntheticFixture\\java.exe", version: "21.0.5", major: 21 }];
+          }
+          if (name === "get_memory_overview") {
+            return { totalMb: 16384, availableMb: 10240, recommendedMb: 4096, effectiveMaxMb: 4096, mode: "auto" };
+          }
+          if (name === "add_offline_account") {
+            const username = String(args?.username ?? "Player");
+            const added = {
+              id: `offline-${accounts.length + 1}`,
+              username,
+              uuid: "44444444444444444444444444444444",
+              type: "offline",
+              isSelected: true,
+              skinUrl: null,
+              skinModel: "classic",
+            };
+            for (const a of accounts) a.isSelected = false;
+            accounts.push(added);
+            return structuredClone(added);
           }
           if (name === "list_versions")
             return {
@@ -951,6 +1018,7 @@ export async function installLauncherFixture(
               effectiveBaseUrl,
               model: config.assistantModel,
               permission: config.assistantPermission,
+              proactive: config.assistantProactive,
               loopbackEndpoint,
               ready: Boolean(config.assistantModel.trim()) && (assistantApiKeyConfigured || loopbackEndpoint),
               mcp: {
@@ -959,7 +1027,10 @@ export async function installLauncherFixture(
                 url: mcpRunning ? `http://127.0.0.1:${mcpPort}/mcp` : null,
                 tokenMasked: mcpRunning ? `••••••••${mcpToken.slice(-6)}` : null,
               },
-              tools: [],
+              tools: [
+                { name: "list_instances", tier: "readOnly", description: "List registered instances." },
+                { name: "update_instance_notes", tier: "controlled", description: "Update instance notes." },
+              ],
             };
           }
           if (name === "set_assistant_api_key") {

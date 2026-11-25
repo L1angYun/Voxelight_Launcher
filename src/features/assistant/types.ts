@@ -21,6 +21,7 @@ export interface AssistantStatus {
   effectiveBaseUrl: string;
   model: string;
   permission: AssistantPermission;
+  proactive: boolean;
   loopbackEndpoint: boolean;
   ready: boolean;
   mcp: McpStatus;

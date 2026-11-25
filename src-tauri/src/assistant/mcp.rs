@@ -511,7 +511,7 @@ fn dispatch_jsonrpc(
                 }
             },
             "serverInfo": {
-                "name": "voxelight-launcher",
+                "name": "voxelight-lumen",
                 "version": env!("CARGO_PKG_VERSION"),
             }
         }),

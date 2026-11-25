@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Send, Settings, Trash2, X } from "lucide-react";
+import { Check, Send, Settings, Sparkles, Trash2, X } from "lucide-react";
 import { command } from "../../lib/launcher";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
+import type { LumenWakeRequest } from "./LumenContext";
 import type {
   AssistantStatus,
   AssistantTurnResponse,
@@ -25,11 +26,15 @@ export function AssistantDialog({
   onOpenChange,
   onConfigure,
   onMutated,
+  wakeRequest,
+  onConsumeWake,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfigure: () => void;
   onMutated: () => Promise<void>;
+  wakeRequest?: LumenWakeRequest | null;
+  onConsumeWake?: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const [status, setStatus] = useState<AssistantStatus | null>(null);
@@ -39,6 +44,10 @@ export function AssistantDialog({
   const [error, setError] = useState<LauncherError | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<PendingToolCall[]>([]);
   const [continuation, setContinuation] = useState<PendingContinuation | null>(null);
+  const [wakeReason, setWakeReason] = useState<string | null>(null);
+  const entriesRef = useRef<TranscriptEntry[]>(entries);
+  entriesRef.current = entries;
+  const handledWakeId = useRef<number>(0);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -50,7 +59,11 @@ export function AssistantDialog({
   }, []);
 
   useEffect(() => {
-    if (open) void loadStatus();
+    if (open) {
+      void loadStatus();
+    } else {
+      setWakeReason(null);
+    }
   }, [open, loadStatus]);
 
   function errorMessage(cause: LauncherError): string {
@@ -68,7 +81,7 @@ export function AssistantDialog({
     return cause.detail || t("common:errors.internalUnexpected");
   }
 
-  function applyResponse(response: AssistantTurnResponse) {
+  const applyResponse = useCallback((response: AssistantTurnResponse) => {
     const assistantText = response.reply.trim();
     if (assistantText || response.traces.length > 0) {
       setEntries((current) => [
@@ -86,18 +99,20 @@ export function AssistantDialog({
     if (response.traces.some((item) => item.tier === "controlled" && (item.status === "approved" || item.status === "executed"))) {
       void onMutated();
     }
-  }
+  }, [onMutated]);
 
-  async function sendPrompt(rawPrompt: string) {
+  const sendPrompt = useCallback(async (rawPrompt: string) => {
     const content = rawPrompt.trim();
-    if (!content || busy || pendingApprovals.length > 0) return;
+    if (!content) return;
     setError(null);
+    const currentEntries = entriesRef.current;
     const nextUser: TranscriptEntry = {
-      id: `user-${Date.now()}-${entries.length}`,
+      id: `user-${Date.now()}-${currentEntries.length}`,
       role: "user",
       content,
     };
-    const nextEntries = [...entries, nextUser];
+    const nextEntries = [...currentEntries, nextUser];
+    entriesRef.current = nextEntries;
     setEntries(nextEntries);
     setInput("");
     setBusy(true);
@@ -114,7 +129,22 @@ export function AssistantDialog({
     } finally {
       setBusy(false);
     }
-  }
+  }, [applyResponse]);
+
+  useEffect(() => {
+    if (!open || !wakeRequest || handledWakeId.current === wakeRequest.id) return;
+    if (!status?.ready) return;
+    handledWakeId.current = wakeRequest.id;
+    setWakeReason(wakeRequest.reason ?? null);
+    onConsumeWake?.();
+    if (wakeRequest.prompt) {
+      if (wakeRequest.autoSend && !busy && pendingApprovals.length === 0) {
+        void sendPrompt(wakeRequest.prompt);
+      } else {
+        setInput(wakeRequest.prompt);
+      }
+    }
+  }, [open, wakeRequest, status?.ready, busy, pendingApprovals.length, onConsumeWake, sendPrompt]);
 
   async function resolveApprovals(approve: boolean) {
     if (!continuation || busy) return;
@@ -143,21 +173,25 @@ export function AssistantDialog({
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (busy || pendingApprovals.length > 0) return;
     void sendPrompt(input);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
+      if (busy || pendingApprovals.length > 0) return;
       void sendPrompt(input);
     }
   }
 
   function clearConversation() {
+    entriesRef.current = [];
     setEntries([]);
     setPendingApprovals([]);
     setContinuation(null);
     setError(null);
+    setWakeReason(null);
   }
 
   const quickPrompts = [
@@ -195,6 +229,11 @@ export function AssistantDialog({
               </span>
             )}
             <span className="vx-assistant-pill">{permissionLabel}</span>
+            {status?.tools && status.tools.length > 0 ? (
+              <span className="vx-assistant-pill">
+                {t("shell:assistant.toolCount", { count: status.tools.length })}
+              </span>
+            ) : null}
           </div>
           <Button
             variant="ghost"
@@ -207,6 +246,13 @@ export function AssistantDialog({
             {t("shell:assistant.configure")}
           </Button>
         </div>
+
+        {wakeReason ? (
+          <div className="vx-assistant-wake" role="status" data-testid="lumen-wake-banner">
+            <Sparkles size={14} aria-hidden="true" />
+            <span>{wakeReason}</span>
+          </div>
+        ) : null}
 
         <div className="vx-assistant-transcript" aria-live="polite">
           {entries.length === 0 ? (

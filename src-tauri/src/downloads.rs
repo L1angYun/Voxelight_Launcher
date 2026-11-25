@@ -779,6 +779,28 @@ impl DownloadControl {
         }
     }
 
+    /// Removes all finished task history when idle (used by factory reset).
+    pub(crate) fn clear_all_history(&self, stores: &[crate::parts::PartStore]) -> Result<ClearUnfinishedResult, String> {
+        let mut refusal: Option<&'static str> = None;
+        let tasks = self.mutate(true, |state| {
+            if state.jobs.iter().any(|job| matches!(job.status.as_str(), "running" | "queued" | "paused")) {
+                refusal = Some(BUSY);
+                return None;
+            }
+            let before = state.jobs.len();
+            state.jobs.clear();
+            Some(before)
+        });
+        match (tasks, refusal) {
+            (Some(tasks), _) => {
+                let bytes = crate::parts::remove_unreferenced(stores);
+                Ok(ClearUnfinishedResult { tasks, bytes })
+            }
+            (None, Some(reason)) => Err(reason.into()),
+            (None, None) => Err("下载任务状态异常".into()),
+        }
+    }
+
     /// Runs a queued task when its turn comes: behind the operation lock,
     /// with cancel honoured while it waits, and its result recorded.
     pub(crate) async fn run_queued<T, F, Fut>(&self, operation: &tokio::sync::Mutex<()>, id: &str, run: F) -> Option<Result<T, String>>
@@ -1270,6 +1292,34 @@ pub async fn retry_download_task(
     let (id, request) = state.control.queue_retry(&task_id).map_err(expected)?;
     spawn_retry(app, state.inner().clone(), id.clone(), request);
     Ok(id)
+}
+
+pub(crate) async fn retry_failed_downloads_for_state(
+    app: AppHandle,
+    state: &Arc<LauncherState>,
+) -> Result<RetryFailedResult, String> {
+    let plan = state.control.queue_failed_retries()?;
+    let ids = plan.queued.iter().map(|(id, _)| id.clone()).collect();
+    for (id, request) in plan.queued {
+        spawn_retry(app.clone(), state.clone(), id, request);
+    }
+    Ok(RetryFailedResult { ids, skipped: plan.skipped })
+}
+
+pub(crate) async fn clear_unfinished_downloads_for_state(
+    state: &Arc<LauncherState>,
+) -> Result<ClearUnfinishedResult, String> {
+    let shared = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let game_root = shared
+            .snapshot()
+            .ok()
+            .and_then(|snapshot| crate::processes::configured_game_root(Path::new(&snapshot.config.game_directory)).ok());
+        let stores = crate::parts::startup_stores(&shared.data_dir, game_root.as_deref());
+        shared.control.clear_unfinished(&stores)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Retries every failed task that can still run, in history order. The new

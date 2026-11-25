@@ -366,6 +366,17 @@ pub(crate) fn forget_abandoned_credentials(
         .map_err(|_| Error::InvalidCredentials)
 }
 
+pub(crate) fn forget_current_credentials(
+    data_dir: &std::path::Path,
+    config: &crate::models::Config,
+) -> Result<(), Error> {
+    let Some(endpoint) = draft_endpoint(config) else {
+        return Ok(());
+    };
+    crate::secrets::save_service_secret(data_dir, &endpoint.credential_key(), "")
+        .map_err(|_| Error::InvalidCredentials)
+}
+
 /// `proxy.authentication` when a request failed because the proxy wants
 /// credentials (an expired password, say); other failures keep their message.
 pub(crate) fn proxy_auth_code(error: &reqwest::Error) -> Option<String> {

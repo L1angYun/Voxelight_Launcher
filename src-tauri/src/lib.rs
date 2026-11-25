@@ -274,6 +274,7 @@ pub fn run() {
             commands::save_config,
             commands::set_tour_completed,
             commands::save_appearance_config,
+            commands::reset_launcher_state,
             commands::list_versions,
             commands::scan_versions,
             commands::detect_java,

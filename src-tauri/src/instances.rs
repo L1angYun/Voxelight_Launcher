@@ -762,6 +762,197 @@ pub(crate) fn apply_instance_loader_update(
     })
 }
 
+pub(crate) async fn update_instance_safe_settings(
+    state: &LauncherState,
+    instance_id: &str,
+    name: Option<String>,
+    category: Option<String>,
+    notes: Option<String>,
+    memory_mode: Option<String>,
+    max_memory_mb: Option<u32>,
+    min_memory_mb: Option<u32>,
+    clear_min_memory: bool,
+    screen_width: Option<u32>,
+    screen_height: Option<u32>,
+    game_proxy_mode: Option<String>,
+    reset_runtime: bool,
+) -> Result<Instance, String> {
+    let _operation = state.operation.lock().await;
+    require_no_pending_restore(state, instance_id)?;
+    let current = instance(&state.snapshot()?, instance_id)?;
+    let mut changes = runtime_memory_changes(
+        reset_runtime,
+        max_memory_mb,
+        memory_mode,
+        min_memory_mb,
+        clear_min_memory,
+    )?;
+    if let Some(mode) = game_proxy_mode {
+        let value = if mode == "default" {
+            Value::Null
+        } else {
+            let config = state.snapshot()?.config;
+            crate::network::Settings::from_config(&config)
+                .and_then(|proxy| proxy.validate_game_save(&mode))
+                .map_err(|error| error.code().to_owned())?;
+            json!(mode)
+        };
+        changes.push(("gameProxyMode".into(), value));
+    }
+    let global = state.snapshot()?.config;
+    let mut candidate = current.clone();
+    replace_metadata(&mut candidate, &changes)?;
+    crate::memory::validate_instance_memory(&global, &current, &candidate)?;
+    for (field, value, minimum) in [
+        ("screenWidth", screen_width, 320),
+        ("screenHeight", screen_height, 240),
+    ] {
+        if let Some(value) = value {
+            if !(minimum..=16384).contains(&value) {
+                return Err("实例窗口尺寸超出范围".into());
+            }
+            changes.push((field.into(), json!(value)));
+        }
+    }
+    if let Some(name) = name {
+        validate_name(&name)?;
+        changes.push(("name".into(), json!(name.trim())));
+    }
+    if let Some(category) = category {
+        if category.chars().count() > 64 || category.chars().any(char::is_control) {
+            return Err("分类须少于 64 个可见字符".into());
+        }
+        changes.push(("category".into(), json!(category.trim())));
+    }
+    if let Some(notes) = notes {
+        if notes.chars().count() > 4000 {
+            return Err("备注须少于 4000 个字符".into());
+        }
+        changes.push(("notes".into(), json!(notes)));
+    }
+    state.update(|data| {
+        let value = data
+            .instances
+            .iter_mut()
+            .find(|item| item.id == instance_id)
+            .ok_or_else(|| "实例不存在，请刷新实例列表".to_owned())?;
+        replace_metadata(value, &changes)?;
+        Ok(value.clone())
+    })
+}
+
+pub(crate) async fn change_instance_loader_for_state(
+    app: &tauri::AppHandle,
+    state: &Arc<LauncherState>,
+    instance_id: &str,
+    loader: &str,
+    loader_version: Option<String>,
+) -> Result<Instance, String> {
+    let target_loader = normalize_target_loader(loader)?;
+    let _operation = state
+        .operation
+        .try_lock()
+        .map_err(|_| "已有安装或启动准备任务运行".to_owned())?;
+    require_no_pending_restore(state, instance_id)?;
+    let current = instance(&state.snapshot()?, instance_id)?;
+    crate::resources::require_target_stopped(state, &current.version_id, Some(instance_id))
+        .map_err(|error| error.detail.unwrap_or(error.code))?;
+    crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
+    let game_version = resolve_instance_game_version(state, &current)?;
+    let requested_version = loader_version.unwrap_or_default().trim().to_owned();
+    if target_loader != "vanilla" && !requested_version.is_empty() && requested_version != "latest" {
+        validate_id(&requested_version)?;
+    }
+    let task = state.control.begin_with_display(
+        "loader",
+        &game_version,
+        &format!("更换实例加载器 {}", current.name),
+        &current.name,
+    )?;
+    let install_result: Result<(String, String, String), String> = if target_loader == "vanilla" {
+        crate::minecraft::install(state, app, &game_version)
+            .await
+            .map(|_| (game_version.clone(), "vanilla".to_owned(), String::new()))
+    } else {
+        crate::loaders::install_loader_inner(
+            state,
+            app,
+            &target_loader,
+            &game_version,
+            &requested_version,
+        )
+        .await
+        .map(|installed| (installed.version_id, installed.loader, installed.loader_version))
+    };
+    state
+        .control
+        .finish(&task, install_result.as_ref().err().map(String::as_str));
+    let (new_version_id, new_loader, new_loader_version) = install_result?;
+    apply_instance_loader_update(
+        state,
+        instance_id,
+        &new_version_id,
+        &new_loader,
+        &new_loader_version,
+    )
+}
+
+pub(crate) async fn clone_instance_for_state(
+    state: &Arc<LauncherState>,
+    instance_id: String,
+    name: String,
+) -> Result<Instance, String> {
+    validate_name(&name)?;
+    let _operation = state.operation.lock().await;
+    let task = state.control.begin_with_display("clone", &instance_id, &name, &name)?;
+    let arc = state.clone();
+    let result = tokio::task::spawn_blocking(move || clone_inner(&arc, &instance_id, &name))
+        .await
+        .unwrap_or_else(|e| Err(format!("克隆任务异常：{e}")));
+    state
+        .control
+        .finish(&task, result.as_ref().err().map(String::as_str));
+    result
+}
+
+pub(crate) async fn backup_instance_for_state(
+    state: &Arc<LauncherState>,
+    instance_id: String,
+) -> Result<InstanceBackup, String> {
+    let _operation = state.operation.lock().await;
+    let value = instance(&state.snapshot()?, &instance_id)?;
+    let task = state.control.begin_with_display("backup", &instance_id, &value.name, &value.name)?;
+    let arc = state.clone();
+    let result = tokio::task::spawn_blocking(move || backup_inner(&arc, &value))
+        .await
+        .unwrap_or_else(|e| Err(format!("备份任务异常：{e}")));
+    state
+        .control
+        .finish(&task, result.as_ref().err().map(String::as_str));
+    result
+}
+
+pub(crate) fn list_instance_backups_for_state(
+    state: &LauncherState,
+    instance_id: &str,
+) -> Result<BackupHistory, String> {
+    let data = state.snapshot()?;
+    let current = instance(&data, instance_id)?;
+    let folder = backup_folder(state, instance_id)?;
+    let mut history = backup_history(&folder, instance_id)?;
+    let resolved = crate::minecraft::game_directory(&data.config, &current.version_id, Some(&current));
+    let live = resolved.as_deref().unwrap_or_else(|_| Path::new(&current.game_directory));
+    history.recovery = match read_intent(&folder) {
+        Ok(Some(intent)) => Some(intent_paths(&intent, &current, live).map_or_else(
+            |_| RecoveryPaths::current(live).of(intent.kind),
+            |paths| paths.locations(&intent),
+        )),
+        Err(_) => Some(RecoveryPaths::current(live)),
+        Ok(None) => None,
+    };
+    Ok(history)
+}
+
 #[tauri::command]
 pub async fn change_instance_loader(
     app: tauri::AppHandle,

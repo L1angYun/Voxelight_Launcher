@@ -53,12 +53,12 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows theme, language, accent color and accessibility settings by default | ✅ |
 | Interface | Lower memory use, such as unloading the 3D world in Lite mode | ✅ |
 | Interface | Instance icons by loader and version type | ✅ |
-| Interface | Keyboard shortcuts, settings search and a first-run tour | ✅ |
+| Interface | Keyboard shortcuts, settings search, first-run welcome setup (OOBE) and factory reset | ✅ |
 | Interface | Custom home background | ✅ |
 | Updates | Update checks on GitHub or Gitee, and updates from inside the launcher | ✅ |
 | Installer | Installer pages with the launcher's icon, colors, typeface and world scene | ✅ |
 | Installer | Follow Windows dark and light theme in the installer | 🚧 |
-| Assistant | Built-in assistant using your own AI API key, also available over MCP | ✅ |
+| Assistant | **Lumen** — built-in BYO-API assistant (38 curated launcher tools, completely hidden until configured, proactive crash wake-up) and localhost-only MCP server | ✅ |
 
 ## Accounts and service keys
 
@@ -96,7 +96,7 @@ No telemetry, analytics or crash reporting. The launcher connects only to:
 | Launcher updates | GitHub, Gitee |
 | Multiplayer | The servers you check; UDP 4445 for LAN discovery; STUN servers (`stun.cloudflare.com`, `stun.miwifi.com`, `stun.l.google.com`, `stun1.l.google.com`) only when you run a network check |
 | Skin preview | A skin URL you enter |
-| Built-in assistant & MCP | The AI provider endpoint you configure (on demand when you chat); optional localhost-only (`127.0.0.1`) MCP server off by default |
+| Lumen & MCP | The AI provider endpoint you configure (only when configured and invoked); optional localhost-only (`127.0.0.1`) MCP server off by default |
 
 - Every start fetches the version list. The update check also runs at every start by default; with the default Auto source it asks both GitHub and Gitee (**Settings → About**).
 - With an offline account or none, showing the default Steve or Alex can download an official Minecraft client once, if no installed one can be used.

@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
+import { Compass, Cpu, Download, FolderOpen, Layers, Library, RefreshCw, Settings, UserPlus } from "lucide-react";
 import { Button } from "../components/ui/Button";
+import { Segmented } from "../components/ui/Segmented";
 import { useMotionTier } from "../design/useMotionTier";
+import { command, desktop, type AppearancePatch, type Config, type JavaRuntime, type MemoryOverview } from "../lib/launcher";
 import { useLauncher } from "./controller/LauncherProvider";
 import "./tour.css";
 
-const steps = [
-  { anchor: "library", titleKey: "shell:tour.steps.library.title", bodyKey: "shell:tour.steps.library.body" },
-  { anchor: "discover", titleKey: "shell:tour.steps.discover.title", bodyKey: "shell:tour.steps.discover.body" },
-  { anchor: "downloads", titleKey: "shell:tour.steps.downloads.title", bodyKey: "shell:tour.steps.downloads.body" },
-  { anchor: "settings", titleKey: "shell:tour.steps.settings.title", bodyKey: "shell:tour.steps.settings.body" },
+const oobeSteps = [
+  { id: "welcome", titleKey: "shell:tour.oobe.welcome.title", bodyKey: "shell:tour.oobe.welcome.body" },
+  { id: "account", titleKey: "shell:tour.oobe.account.title", bodyKey: "shell:tour.oobe.account.body" },
+  { id: "environment", titleKey: "shell:tour.oobe.environment.title", bodyKey: "shell:tour.oobe.environment.body" },
+  { id: "ready", titleKey: "shell:tour.oobe.ready.title", bodyKey: "shell:tour.oobe.ready.body" },
+] as const;
+
+const orientationItems = [
+  { id: "library", icon: Library, titleKey: "shell:tour.steps.library.title", bodyKey: "shell:tour.steps.library.body" },
+  { id: "discover", icon: Compass, titleKey: "shell:tour.steps.discover.title", bodyKey: "shell:tour.steps.discover.body" },
+  { id: "downloads", icon: Download, titleKey: "shell:tour.steps.downloads.title", bodyKey: "shell:tour.steps.downloads.body" },
+  { id: "settings", icon: Settings, titleKey: "shell:tour.steps.settings.title", bodyKey: "shell:tour.steps.settings.body" },
 ] as const;
 
 function focusable(card: HTMLElement): HTMLElement[] {
@@ -26,24 +36,48 @@ export function FirstRunTour({
   reopen?: boolean;
   onDismissed?: () => void;
 }) {
-  const { t } = useTranslation();
-  const { bootstrapped, config, setTourCompleted } = useLauncher();
+  const { t, i18n } = useTranslation();
+  const { bootstrapped, config, data, setConfig, saveConfig, setTourCompleted, reload } = useLauncher();
   const { tier } = useMotionTier();
   const [step, setStep] = useState(0);
   const [dismissed, setDismissed] = useState(false);
+  const [draft, setDraft] = useState<Config>(config);
+  const [offlineName, setOfflineName] = useState("");
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountNotice, setAccountNotice] = useState("");
+  const [accountError, setAccountError] = useState("");
+  const [javaList, setJavaList] = useState<JavaRuntime[] | null>(null);
+  const [javaBusy, setJavaBusy] = useState(false);
+  const [memoryOverview, setMemoryOverview] = useState<MemoryOverview | null>(null);
+  const [finishing, setFinishing] = useState(false);
+
   const cardRef = useRef<HTMLDivElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
   const closing = useRef(false);
   const focusNextAfterBack = useRef(false);
+  const initialConfigRef = useRef<Config>(config);
+  const draftRef = useRef<Config>(config);
+  const appearancePatchRef = useRef<AppearancePatch>({});
+  const otherPatchRef = useRef<Partial<Config>>({});
+  const prevTourCompleted = useRef(config.tourCompleted);
   const bodyId = useId();
   const visible = bootstrapped && !dismissed && (reopen || !config.tourCompleted);
-  const current = steps[step];
-  const last = step === steps.length - 1;
-  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const current = oobeSteps[step];
+  const last = step === oobeSteps.length - 1;
+  const accounts = data?.accounts ?? [];
 
-  const complete = useCallback(() => {
+  const revertPreview = useCallback(() => {
+    if (Object.keys(appearancePatchRef.current).length > 0) {
+      setConfig?.(initialConfigRef.current);
+      appearancePatchRef.current = {};
+    }
+    otherPatchRef.current = {};
+  }, [setConfig]);
+
+  const skip = useCallback(() => {
     if (closing.current) return;
     closing.current = true;
+    revertPreview();
     setDismissed(true);
     onDismissed?.();
     try {
@@ -55,35 +89,148 @@ export function FirstRunTour({
     } catch {
       // A synchronous save failure also leaves the tour closed for this session.
     }
-  }, [onDismissed, setTourCompleted]);
-  const completeRef = useRef(complete);
-  completeRef.current = complete;
+  }, [onDismissed, revertPreview, setTourCompleted]);
+
+  const finish = useCallback(async () => {
+    if (closing.current) return;
+    closing.current = true;
+    setFinishing(true);
+    const appearancePatch = { ...appearancePatchRef.current };
+    const otherPatch = { ...otherPatchRef.current };
+    appearancePatchRef.current = {};
+    otherPatchRef.current = {};
+    let base = initialConfigRef.current;
+    try {
+      if (Object.keys(appearancePatch).length > 0) {
+        base = await saveConfig({ ...base, ...appearancePatch }, { appearancePatch });
+      }
+      if (Object.keys(otherPatch).length > 0) {
+        base = await saveConfig({ ...base, ...otherPatch }, { preserveAppearance: true });
+      }
+    } catch {
+      // If saving preferences fails (e.g. an operation is running), still allow completing setup.
+      setConfig?.(initialConfigRef.current);
+    } finally {
+      setFinishing(false);
+    }
+    setDismissed(true);
+    onDismissed?.();
+    try {
+      void setTourCompleted(true).catch(() => {});
+    } catch {
+      // Leave closed for this session.
+    }
+  }, [onDismissed, saveConfig, setConfig, setTourCompleted]);
+
+  const skipRef = useRef(skip);
+  skipRef.current = skip;
+
   const goBack = () => {
     if (step === 0) return;
     focusNextAfterBack.current = step === 1;
     setStep(step - 1);
   };
 
+  function previewAppearance<K extends keyof AppearancePatch>(key: K, value: NonNullable<AppearancePatch[K]>) {
+    const next = { ...draftRef.current, [key]: value };
+    draftRef.current = next;
+    setDraft(next);
+    if (Object.is(initialConfigRef.current[key], value)) {
+      delete appearancePatchRef.current[key];
+    } else {
+      appearancePatchRef.current[key] = value;
+    }
+    setConfig?.(next);
+  }
+
+  function setDownloadSource(source: Config["downloadSource"]) {
+    const next = { ...draftRef.current, downloadSource: source };
+    draftRef.current = next;
+    setDraft(next);
+    if (initialConfigRef.current.downloadSource === source) {
+      delete otherPatchRef.current.downloadSource;
+    } else {
+      otherPatchRef.current.downloadSource = source;
+    }
+  }
+
+  async function addOfflinePlayer() {
+    const trimmed = offlineName.trim();
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(trimmed)) {
+      setAccountError(t("shell:tour.oobe.account.invalidName"));
+      setAccountNotice("");
+      return;
+    }
+    setAccountBusy(true);
+    setAccountError("");
+    setAccountNotice("");
+    try {
+      await command("add_offline_account", { username: trimmed });
+      setOfflineName("");
+      setAccountNotice(t("shell:tour.oobe.account.added", { name: trimmed }));
+      await reload?.();
+    } catch {
+      setAccountError(t("shell:tour.oobe.account.invalidName"));
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  const probeEnvironment = useCallback(async () => {
+    if (!desktop) return;
+    setJavaBusy(true);
+    try {
+      const [javas, mem] = await Promise.all([
+        command<JavaRuntime[]>("detect_java").catch(() => null),
+        command<MemoryOverview>("get_memory_overview").catch(() => null),
+      ]);
+      if (javas) setJavaList(javas);
+      if (mem) setMemoryOverview(mem);
+    } finally {
+      setJavaBusy(false);
+    }
+  }, []);
+
   useLayoutEffect(() => {
     if (reopen) setDismissed(false);
   }, [reopen]);
 
+  // Re-open OOBE immediately when factory reset sets tourCompleted back to false.
   useLayoutEffect(() => {
-    if (visible) setStep(0);
+    if (prevTourCompleted.current && !config.tourCompleted) {
+      setDismissed(false);
+    }
+    prevTourCompleted.current = config.tourCompleted;
+  }, [config.tourCompleted]);
+
+  useLayoutEffect(() => {
+    if (!visible) return;
+    setStep(0);
+    initialConfigRef.current = config;
+    draftRef.current = config;
+    appearancePatchRef.current = {};
+    otherPatchRef.current = {};
+    setDraft(config);
+    setAccountNotice("");
+    setAccountError("");
+    setOfflineName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- snapshot once when OOBE becomes visible
   }, [visible]);
+
+  useEffect(() => {
+    if (visible && step === 2 && javaList === null && desktop) {
+      void probeEnvironment();
+    }
+  }, [visible, step, javaList, probeEnvironment]);
 
   useLayoutEffect(() => {
     if (!visible) return;
     closing.current = false;
     const focusCard = () => {
-      const current = cardRef.current;
-      if (current?.isConnected) current.focus({ preventScroll: true });
+      const card = cardRef.current;
+      if (card?.isConnected) card.focus({ preventScroll: true });
     };
     focusCard();
-    // "Show the tour again" closes the shortcut help dialog in a passive
-    // effect of the same commit, and that close restores focus to the help's
-    // trigger. The tour is not a native dialog, so focus the card once the
-    // dialog's close event has run (including its own focus restore).
     const closingDialog = document.querySelector<HTMLDialogElement>("dialog[open]");
     const finishDialogClose = () => {
       if (document.querySelector("dialog[open]")) return;
@@ -96,8 +243,6 @@ export function FirstRunTour({
     };
   }, [visible]);
 
-  // Back becomes disabled on step 1. Native focus fixup then drops focus to
-  // the body, so hand it to the primary action instead.
   useLayoutEffect(() => {
     if (!focusNextAfterBack.current) return;
     focusNextAfterBack.current = false;
@@ -110,7 +255,7 @@ export function FirstRunTour({
       if (event.defaultPrevented) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        completeRef.current();
+        skipRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -142,34 +287,12 @@ export function FirstRunTour({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [visible]);
 
-  const place = useCallback(() => {
-    const card = cardRef.current;
-    const anchor = document.querySelector<HTMLElement>(`[data-tour-anchor="${current.anchor}"]`);
-    const rect = anchor?.getBoundingClientRect();
-    const width = card?.offsetWidth || 340;
-    const height = card?.offsetHeight || 220;
-    const margin = 12;
-    if (!anchor || !rect || rect.width <= 0 || rect.height <= 0
-      || window.innerWidth < width + margin * 2 || window.innerHeight < height + margin * 2) {
-      setPosition(null);
-      return;
-    }
-    const left = Math.min(
-      Math.max(rect.left + rect.width / 2 - width / 2, margin),
-      Math.max(margin, window.innerWidth - width - margin),
-    );
-    const top = rect.bottom + 14;
-    setPosition(top + height <= window.innerHeight - margin ? { left, top } : null);
-  }, [current.anchor]);
-
-  useLayoutEffect(() => {
-    if (!visible) return;
-    place();
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  }, [place, visible]);
-
   if (!visible) return null;
+
+  const gb = new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 1 });
+  const highestJava = javaList && javaList.length > 0
+    ? Math.max(...javaList.map((item) => item.major))
+    : null;
 
   return (
     <div className="vx-tour">
@@ -181,10 +304,9 @@ export function FirstRunTour({
         aria-describedby={bodyId}
         tabIndex={-1}
         data-motion-tier={tier}
-        data-position={position ? "anchored" : "centred"}
+        data-position="centred"
         data-tour-step={step + 1}
-        data-tour-total={steps.length}
-        style={position ? { left: position.left, top: position.top } : undefined}
+        data-tour-total={oobeSteps.length}
         initial={tier === "none" ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: tier === "none" ? 0 : 0.18 }}
@@ -192,23 +314,252 @@ export function FirstRunTour({
         <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
           {t("shell:tour.announcement", {
             current: step + 1,
-            total: steps.length,
+            total: oobeSteps.length,
             title: t(current.titleKey),
             body: t(current.bodyKey),
           })}
         </span>
+
         <div className="vx-tour__head">
-          <span className="vx-tour__count">{t("shell:tour.step", { current: step + 1, total: steps.length })}</span>
-          <Button variant="ghost" size="sm" onClick={complete}>{t("shell:tour.skip")}</Button>
+          <div className="vx-oobe__brand">
+            <span className="vx-oobe__dot" aria-hidden="true" />
+            <span className="vx-oobe__wordmark">{t("shell:brand.name")}</span>
+            <span className="vx-tour__count">
+              {t("shell:tour.step", { current: step + 1, total: oobeSteps.length })}
+            </span>
+          </div>
+          <Button variant="ghost" size="sm" onClick={skip}>{t("shell:tour.skip")}</Button>
         </div>
-        <h2 className="vx-tour__heading">{t(current.titleKey)}</h2>
-        <p className="vx-tour__body" id={bodyId}>{t(current.bodyKey)}</p>
+
+        <div className="vx-oobe__rail" aria-hidden="true">
+          {oobeSteps.map((item, index) => (
+            <span
+              key={item.id}
+              className="vx-oobe__rail-segment"
+              data-state={index < step ? "done" : index === step ? "active" : "pending"}
+            />
+          ))}
+        </div>
+
+        <div className="vx-oobe__header">
+          <h2 className="vx-tour__heading">{t(current.titleKey)}</h2>
+          <p className="vx-tour__body" id={bodyId}>{t(current.bodyKey)}</p>
+        </div>
+
+        {step === 0 ? (
+          <div className="vx-oobe__grid">
+            <div className="vx-oobe__field">
+              <span className="vx-oobe__label">{t("settings:fields.language")}</span>
+              <Segmented
+                semantic="toggle"
+                label={t("settings:fields.language")}
+                value={draft.language}
+                onChange={(value) => previewAppearance("language", value as Config["language"])}
+                options={[
+                  { value: "system", label: t("settings:language.system") },
+                  { value: "zh-CN", label: t("shell:tour.oobe.languages.zhCN") },
+                  { value: "en-US", label: t("shell:tour.oobe.languages.enUS") },
+                ]}
+              />
+            </div>
+
+            <div className="vx-oobe__field">
+              <span className="vx-oobe__label">{t("settings:fields.theme")}</span>
+              <Segmented
+                semantic="toggle"
+                label={t("settings:fields.theme")}
+                value={draft.theme}
+                onChange={(value) => previewAppearance("theme", value as Config["theme"])}
+                options={[
+                  { value: "system", label: t("settings:theme.system") },
+                  { value: "dark", label: t("settings:theme.dark") },
+                  { value: "light", label: t("settings:theme.light") },
+                ]}
+              />
+            </div>
+
+            <div className="vx-oobe__field">
+              <span className="vx-oobe__label">{t("settings:fields.worldScene")}</span>
+              <Segmented
+                semantic="toggle"
+                label={t("settings:fields.worldScene")}
+                value={draft.worldScene}
+                onChange={(value) => previewAppearance("worldScene", value as Config["worldScene"])}
+                options={[
+                  { value: "horizon", label: t("settings:worldScene.horizon") },
+                  { value: "massif", label: t("settings:worldScene.massif") },
+                ]}
+              />
+            </div>
+
+            <div className="vx-oobe__field">
+              <span className="vx-oobe__label">{t("settings:fields.worldMaterial")}</span>
+              <Segmented
+                semantic="toggle"
+                label={t("settings:fields.worldMaterial")}
+                value={draft.worldMaterial}
+                onChange={(value) => previewAppearance("worldMaterial", value as Config["worldMaterial"])}
+                options={[
+                  { value: "lattice", label: t("settings:worldMaterial.lattice") },
+                  { value: "solid", label: t("settings:worldMaterial.solid") },
+                ]}
+              />
+            </div>
+
+            <div className="vx-oobe__field vx-oobe__field--wide">
+              <span className="vx-oobe__label">{t("settings:fields.effects")}</span>
+              <Segmented
+                semantic="toggle"
+                label={t("settings:fields.effects")}
+                value={draft.effects}
+                onChange={(value) => previewAppearance("effects", value as Config["effects"])}
+                options={[
+                  { value: "full", label: t("settings:effects.full") },
+                  { value: "lite", label: t("settings:effects.lite") },
+                ]}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {step === 1 ? (
+          <div className="vx-oobe__stack">
+            <div className="vx-oobe__panel">
+              <span className="vx-oobe__label">{t("shell:tour.oobe.account.existing")}</span>
+              {accounts.length > 0 ? (
+                <div className="vx-oobe__chips">
+                  {accounts.map((account) => (
+                    <span key={account.id} className="vx-oobe__chip">
+                      {account.username}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="vx-oobe__muted">{t("shell:tour.oobe.account.none")}</p>
+              )}
+            </div>
+
+            <div className="vx-oobe__field">
+              <span className="vx-oobe__label">{t("shell:tour.oobe.account.offlineLabel")}</span>
+              <div className="vx-oobe__inline-form">
+                <input
+                  aria-label={t("shell:tour.oobe.account.offlineLabel")}
+                  placeholder={t("shell:tour.oobe.account.offlinePlaceholder")}
+                  value={offlineName}
+                  maxLength={16}
+                  onChange={(event) => setOfflineName(event.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  icon={<UserPlus size={14} />}
+                  loading={accountBusy}
+                  disabled={!offlineName.trim()}
+                  onClick={() => void addOfflinePlayer()}
+                >
+                  {t("shell:tour.oobe.account.addOffline")}
+                </Button>
+              </div>
+              {accountNotice ? <p className="vx-oobe__status" role="status">{accountNotice}</p> : null}
+              {accountError ? <p className="vx-oobe__error" role="alert">{accountError}</p> : null}
+            </div>
+
+            <p className="vx-oobe__muted">{t("shell:tour.oobe.account.onlineHint")}</p>
+          </div>
+        ) : null}
+
+        {step === 2 ? (
+          <div className="vx-oobe__stack">
+            <div className="vx-oobe__field">
+              <span className="vx-oobe__label">{t("settings:fields.downloadSource")}</span>
+              <Segmented
+                semantic="toggle"
+                label={t("settings:fields.downloadSource")}
+                value={draft.downloadSource}
+                onChange={(value) => setDownloadSource(value as Config["downloadSource"])}
+                options={[
+                  { value: "official", label: t("shell:tour.oobe.environment.sources.official") },
+                  { value: "auto", label: t("shell:tour.oobe.environment.sources.auto") },
+                  { value: "bmclapi", label: t("shell:tour.oobe.environment.sources.bmclapi") },
+                ]}
+              />
+            </div>
+
+            <div className="vx-oobe__env-grid">
+              <div className="vx-oobe__panel">
+                <div className="vx-oobe__panel-head">
+                  <span className="vx-oobe__label">
+                    <Cpu size={14} aria-hidden="true" />
+                    {t("shell:tour.oobe.environment.javaTitle")}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={<RefreshCw size={13} />}
+                    loading={javaBusy}
+                    onClick={() => void probeEnvironment()}
+                  >
+                    {t("shell:tour.oobe.environment.redetect")}
+                  </Button>
+                </div>
+                <p className="vx-oobe__muted">
+                  {javaList && javaList.length > 0 && highestJava
+                    ? t("shell:tour.oobe.environment.javaFound", { count: javaList.length, major: highestJava })
+                    : t("shell:tour.oobe.environment.javaNone")}
+                </p>
+              </div>
+
+              <div className="vx-oobe__panel">
+                <span className="vx-oobe__label">
+                  <Layers size={14} aria-hidden="true" />
+                  {t("shell:tour.oobe.environment.memoryTitle")}
+                </span>
+                <p className="vx-oobe__muted">
+                  {memoryOverview && memoryOverview.totalMb != null
+                    ? t("shell:tour.oobe.environment.memorySummary", {
+                      total: gb.format(memoryOverview.totalMb / 1024),
+                      recommended: memoryOverview.recommendedMb,
+                    })
+                    : t("shell:tour.oobe.environment.memoryAuto")}
+                </p>
+              </div>
+            </div>
+
+            {draft.gameDirectory ? (
+              <div className="vx-oobe__path-row">
+                <FolderOpen size={14} aria-hidden="true" />
+                <span>{t("shell:tour.oobe.environment.gameDir")}</span>
+                <code>{draft.gameDirectory}</code>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {step === 3 ? (
+          <div className="vx-oobe__map">
+            {orientationItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <article key={item.id} className="vx-oobe__map-card">
+                  <div className="vx-oobe__map-head">
+                    <Icon size={16} aria-hidden="true" />
+                    <h3>{t(item.titleKey)}</h3>
+                  </div>
+                  <p>{t(item.bodyKey)}</p>
+                </article>
+              );
+            })}
+          </div>
+        ) : null}
+
         <div className="vx-tour__actions">
-          <Button variant="ghost" disabled={step === 0} onClick={goBack}>{t("shell:tour.back")}</Button>
+          <Button variant="ghost" disabled={step === 0 || finishing} onClick={goBack}>
+            {t("shell:tour.back")}
+          </Button>
           <Button
             ref={nextRef}
             variant="primary"
-            onClick={last ? complete : () => setStep(step + 1)}
+            loading={finishing}
+            onClick={last ? () => void finish() : () => setStep(step + 1)}
           >
             {last ? t("shell:tour.finish") : t("shell:tour.next")}
           </Button>

@@ -31,6 +31,7 @@ import { FirstRunTour } from "./FirstRunTour";
 import { FileDropProvider, useFileDrop, type DroppedFiles } from "./FileDropContext";
 import { CreateInstanceDialog } from "../features/library/CreateInstanceDialog";
 import { AssistantDialog } from "../features/assistant/AssistantDialog";
+import { LumenProvider, useLumen } from "../features/assistant/LumenContext";
 import "./shell.css";
 
 const implementedPages = new Set<NavigationPage>(["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]);
@@ -66,7 +67,6 @@ export function AppShell() {
   // "View update" opens Settings → About for that one visit only.
   const [updateReview, setUpdateReview] = useState<{ tick: number; visit: number } | null>(null);
   const [assistantSettingsFocus, setAssistantSettingsFocus] = useState<{ tick: number; visit: number } | null>(null);
-  const [assistantOpen, setAssistantOpen] = useState(false);
   const [tourRequested, setTourRequested] = useState(false);
   const [homeImageShown, setHomeImageShown] = useState(false);
   const [droppedPackPath, setDroppedPackPath] = useState<string | null>(null);
@@ -74,6 +74,7 @@ export function AppShell() {
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
   const { bootstrapped, bootstrapFailed, data, reload, run, selectInstance, selectVersion, activeAccount, accountAppearance, config, preparing, progress, running, gamePid } = useLauncher();
+  const lumen = useLumen();
   const world = useMemo(() => deriveWorldState({ preparing, progress, running, gamePid }), [preparing, progress, running, gamePid]);
   const { effects, reducedMotion, highContrast } = useAppearance();
   const { notify } = useToast();
@@ -98,7 +99,7 @@ export function AppShell() {
   const shortcuts = useShortcuts({
     navigate,
     implemented: implementedPages,
-    onOpenAssistant: () => setAssistantOpen(true),
+    onOpenAssistant: lumen.configured ? () => lumen.openLumen() : undefined,
   });
 
   const handleUnhandledDrop = (files: DroppedFiles) => {
@@ -171,7 +172,7 @@ export function AppShell() {
               <SettingsPage
                 reviewUpdates={updateReview?.visit === visit ? updateReview.tick : 0}
                 focusAssistant={assistantSettingsFocus?.visit === visit ? assistantSettingsFocus.tick : 0}
-                onOpenAssistant={() => setAssistantOpen(true)}
+                onOpenAssistant={lumen.configured ? () => lumen.openLumen() : undefined}
               />
             ) : null}
           </PageErrorBoundary>
@@ -185,13 +186,15 @@ export function AppShell() {
         onShowTour={() => setTourRequested(true)}
         implemented={implementedPages}
         canShowTour={bootstrapped}
+        showAssistant={lumen.configured}
       />
       <FirstRunTour reopen={tourRequested} onDismissed={() => setTourRequested(false)} />
-      {assistantOpen ? (
+      {lumen.configured && lumen.open ? (
         <AssistantDialog
           open
-          onOpenChange={setAssistantOpen}
+          onOpenChange={(next) => { if (!next) lumen.closeLumen(); }}
           onConfigure={() => {
+            lumen.closeLumen();
             setAssistantSettingsFocus((current) => ({
               tick: (current?.tick ?? 0) + 1,
               visit: page === "settings" ? visit : visit + 1,
@@ -199,6 +202,8 @@ export function AppShell() {
             navigate("settings");
           }}
           onMutated={reload}
+          wakeRequest={lumen.wakeRequest}
+          onConsumeWake={lumen.consumeWakeRequest}
         />
       ) : null}
       {droppedPackPath ? (
@@ -246,7 +251,13 @@ function GlobalPackDropHandler({
 export function App() {
   return (
     <AppProviders>
-      <ToastProvider><LauncherUpdateProvider><AppShell /></LauncherUpdateProvider></ToastProvider>
+      <ToastProvider>
+        <LauncherUpdateProvider>
+          <LumenProvider>
+            <AppShell />
+          </LumenProvider>
+        </LauncherUpdateProvider>
+      </ToastProvider>
     </AppProviders>
   );
 }

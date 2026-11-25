@@ -468,6 +468,71 @@ fn world_info(saves: &Path, folder: &str) -> Result<World, String> {
     Ok(world)
 }
 
+pub(crate) async fn list_worlds_for_state(
+    state: &Arc<LauncherState>,
+    version_id: String,
+    instance_id: Option<String>,
+) -> Result<Vec<World>, String> {
+    let root = game_root(state, &version_id, instance_id.as_deref())?;
+    tokio::task::spawn_blocking(move || {
+        let saves = safe_join(&root, "saves")?;
+        if !saves.exists() {
+            return Ok(Vec::new());
+        }
+        let mut result = Vec::new();
+        for entry in fs::read_dir(&saves).map_err(|e| e.to_string())?.take(2000) {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".world-import-")
+                || !entry.file_type().map_err(|e| e.to_string())?.is_dir()
+            {
+                continue;
+            }
+            let path = safe_join(&saves, &name)?;
+            if !safe_join(&path, "level.dat")?.is_file() {
+                continue;
+            }
+            result.push(world_info(&saves, &name)?);
+        }
+        result.sort_by(|a, b| b.last_played.cmp(&a.last_played).then(a.name.cmp(&b.name)));
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub(crate) async fn list_world_datapacks_for_state(
+    state: &Arc<LauncherState>,
+    version_id: String,
+    instance_id: Option<String>,
+    world_folder: String,
+) -> Result<Vec<WorldDatapack>, String> {
+    let root = game_root(state, &version_id, instance_id.as_deref())?;
+    tokio::task::spawn_blocking(move || list_world_datapacks_in_root(&root, &world_folder))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub(crate) async fn toggle_world_datapack_for_state(
+    state: &Arc<LauncherState>,
+    version_id: String,
+    instance_id: Option<String>,
+    world_folder: String,
+    file_name: String,
+) -> Result<WorldDatapack, String> {
+    let _guard = state.operation.lock().await;
+    let root = game_root(state, &version_id, instance_id.as_deref())?;
+    let root = stopped_game_root(state, &root, instance_id.as_deref())?;
+    if let Some(id) = instance_id.as_deref() {
+        instances::require_no_pending_restore(state, id)?;
+    }
+    tokio::task::spawn_blocking(move || {
+        toggle_world_datapack_in_root(&root, &world_folder, &file_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn list_worlds(
     state: State<'_, Arc<LauncherState>>,

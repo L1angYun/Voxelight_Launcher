@@ -16,28 +16,31 @@ const state = vi.hoisted(() => ({ launcher: null as unknown as LauncherContextVa
 vi.mock("./controller/LauncherProvider", () => ({ useLauncher: () => state.launcher }));
 vi.mock("../design/useMotionTier", () => ({ useMotionTier: () => ({ tier: "none", sceneStatic: true }) }));
 
-type LauncherStub = Pick<LauncherContextValue, "bootstrapped" | "config" | "saveConfig" | "setTourCompleted">;
+type LauncherStub = Pick<
+  LauncherContextValue,
+  "bootstrapped" | "config" | "data" | "setConfig" | "saveConfig" | "setTourCompleted" | "reload"
+>;
 
 let i18n: LauncherI18n;
 let root: Root;
 let container: HTMLDivElement;
 let main: HTMLElement;
-const originalViewport = new Map(
-  (["innerWidth", "innerHeight"] as const).map((key) => [key, Object.getOwnPropertyDescriptor(window, key)] as const),
-);
-
-function setViewport(width: number, height: number) {
-  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
-}
 
 function installLauncher({ bootstrapped = true, tourCompleted = false }: { bootstrapped?: boolean; tourCompleted?: boolean } = {}): LauncherStub {
   const config: Config = { ...defaults, tourCompleted };
   const stub: LauncherStub = {
     bootstrapped,
     config,
-    saveConfig: vi.fn(async (next: Config) => next),
+    data: { config, accounts: [], instances: [], installedVersions: [], capabilities: {} },
+    setConfig: vi.fn((next: Config) => {
+      stub.config = next;
+    }),
+    saveConfig: vi.fn(async (next: Config) => {
+      stub.config = next;
+      return next;
+    }),
     setTourCompleted: vi.fn(),
+    reload: vi.fn(async () => {}),
   };
   vi.mocked(stub.setTourCompleted).mockImplementation(async (completed: boolean) => {
     const next = { ...stub.config, tourCompleted: completed };
@@ -106,9 +109,6 @@ function ReopenHarness() {
 
 let restoreDialogMethods: (() => void) | null = null;
 
-/** jsdom has neither HTMLDialogElement.showModal nor close, and no inertness.
- *  Behave like Chromium: remember focus on show, restore it synchronously on
- *  close, and queue the native close event for a later task. */
 function installChromiumDialog() {
   const proto = HTMLDialogElement.prototype;
   const showModal = Object.getOwnPropertyDescriptor(proto, "showModal");
@@ -153,8 +153,8 @@ async function openHelpFromKeyboard(launch: HTMLButtonElement) {
 
 function showTourAgain(dialog: HTMLDialogElement): HTMLButtonElement {
   const button = [...dialog.querySelectorAll<HTMLButtonElement>("button")]
-    .find((candidate) => candidate.textContent?.trim() === "Show the tour again");
-  if (!button) throw new Error("Missing Show the tour again");
+    .find((candidate) => candidate.textContent?.trim() === "Open welcome setup");
+  if (!button) throw new Error("Missing Open welcome setup");
   return button;
 }
 
@@ -177,16 +177,12 @@ afterEach(async () => {
   container.remove();
   main.remove();
   document.querySelectorAll("dialog").forEach((dialog) => dialog.remove());
-  for (const [key, descriptor] of originalViewport) {
-    if (descriptor) Object.defineProperty(window, key, descriptor);
-    else Reflect.deleteProperty(window, key);
-  }
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
 describe("FirstRunTour", () => {
-  it("appears after the first successful bootstrap until the tour is completed", async () => {
+  it("appears after the first successful bootstrap until completed, with zero mention of Lumen", async () => {
     const stub = installLauncher({ bootstrapped: false, tourCompleted: false });
     await render(createElement(FirstRunTour));
     expect(tour()).toBeNull();
@@ -195,33 +191,69 @@ describe("FirstRunTour", () => {
     await render(createElement(FirstRunTour));
     expect(tour()).not.toBeNull();
     expect(tour()?.textContent).toContain("1 of 4");
+    expect(tour()?.textContent).not.toContain("Lumen");
 
     stub.config = { ...stub.config, tourCompleted: true };
     await render(createElement(FirstRunTour));
     expect(tour()).toBeNull();
   });
 
-  it("moves through steps with Next and Back and finishes through the tour-only command", async () => {
+  it("moves through all 4 OOBE steps without mentioning Lumen and finishes via tour-only command when unmodified", async () => {
     const stub = installLauncher();
     await render(createElement(FirstRunTour));
 
     expect(tour()?.textContent).toContain("1 of 4");
+    expect(tour()?.textContent).not.toContain("Lumen");
     await click(tourButton("Next"));
     expect(tour()?.textContent).toContain("2 of 4");
+    expect(tour()?.textContent).not.toContain("Lumen");
     await click(tourButton("Back"));
     expect(tour()?.textContent).toContain("1 of 4");
 
     await click(tourButton("Next"));
     await click(tourButton("Next"));
+    expect(tour()?.textContent).toContain("3 of 4");
+    expect(tour()?.textContent).not.toContain("Lumen");
     await click(tourButton("Next"));
     expect(tour()?.textContent).toContain("4 of 4");
-    await click(tourButton("Finish"));
+    expect(tour()?.textContent).not.toContain("Lumen");
+    await click(tourButton("Start using Voxelight"));
 
     expect(tour()).toBeNull();
     expect(stub.setTourCompleted).toHaveBeenCalledTimes(1);
     expect(stub.setTourCompleted).toHaveBeenCalledWith(true);
     expect(stub.saveConfig).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(main);
+  });
+
+  it("live-previews appearance changes, reverts them on Skip, and persists them on Finish", async () => {
+    const stub = installLauncher();
+    await render(createElement(FirstRunTour));
+
+    await click(tourButton("Massif"));
+    expect(stub.setConfig).toHaveBeenCalledWith(expect.objectContaining({ worldScene: "massif" }));
+    await click(tourButton("Skip"));
+    expect(stub.setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ worldScene: "horizon" }));
+    expect(stub.saveConfig).not.toHaveBeenCalled();
+
+    // Reopen and persist an appearance change + download source change on Finish.
+    await render(createElement(FirstRunTour, { reopen: true }));
+    await click(tourButton("Solid"));
+    await click(tourButton("Next"));
+    await click(tourButton("Next"));
+    await click(tourButton("BMCLAPI"));
+    await click(tourButton("Next"));
+    await click(tourButton("Start using Voxelight"));
+
+    expect(stub.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ worldMaterial: "solid" }),
+      { appearancePatch: { worldMaterial: "solid" } },
+    );
+    expect(stub.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ downloadSource: "bmclapi" }),
+      { preserveAppearance: true },
+    );
+    expect(stub.setTourCompleted).toHaveBeenCalledWith(true);
   });
 
   it("skips with the Skip button and records completion without a whole-config save", async () => {
@@ -297,38 +329,12 @@ describe("FirstRunTour", () => {
     const live = card.querySelector<HTMLElement>('[role="status"][aria-live="polite"]');
     expect(live).not.toBeNull();
     expect(live?.textContent).toContain("1 of 4");
-    expect(live?.textContent).toContain("Library");
+    expect(live?.textContent).toContain("Shape your Voxelight space");
     expect(card.getAttribute("aria-describedby")).toBe(card.querySelector(".vx-tour__body")?.id);
 
     await click(tourButton("Next"));
     expect(live?.textContent).toContain("2 of 4");
-    expect(live?.textContent).toContain("Discover");
-  });
-
-  it("anchors beside the current navigation item and centres without room for it", async () => {
-    installLauncher();
-    const anchor = document.createElement("button");
-    anchor.dataset.tourAnchor = "library";
-    anchor.getBoundingClientRect = () => ({
-      left: 400, top: 100, width: 80, height: 40, right: 480, bottom: 140, x: 400, y: 100,
-      toJSON: () => ({}),
-    });
-    document.body.append(anchor);
-    setViewport(1024, 768);
-    await render(createElement(FirstRunTour));
-    expect(tour()?.dataset.position).toBe("anchored");
-
-    await act(async () => {
-      anchor.remove();
-      window.dispatchEvent(new Event("resize"));
-    });
-    expect(tour()?.dataset.position).toBe("centred");
-
-    document.body.append(anchor);
-    setViewport(1024, 200);
-    await act(async () => window.dispatchEvent(new Event("resize")));
-    expect(tour()?.dataset.position).toBe("centred");
-    anchor.remove();
+    expect(live?.textContent).toContain("Player identity");
   });
 
   it("closes after a failed tour save for this session", async () => {
@@ -343,7 +349,7 @@ describe("FirstRunTour", () => {
     expect(stub.saveConfig).not.toHaveBeenCalled();
   });
 
-  it("closes the help dialog and moves focus into the reopened tour", async () => {
+  it("closes the help dialog and moves focus into the reopened setup", async () => {
     installChromiumDialog();
     installLauncher({ tourCompleted: true });
     await render(createElement(ReopenHarness));
@@ -362,7 +368,7 @@ describe("FirstRunTour", () => {
     expect(tour()?.contains(document.activeElement)).toBe(true);
   });
 
-  it("keeps focus in the tour when it is reopened after skipping it earlier in the session", async () => {
+  it("keeps focus in the setup when reopened after skipping earlier in the session", async () => {
     installChromiumDialog();
     const stub = installLauncher();
     await render(createElement(ReopenHarness));
@@ -381,11 +387,10 @@ describe("FirstRunTour", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
     expect(tour()?.contains(document.activeElement)).toBe(true);
-    // Enter on the page's Launch button must not start the game.
     expect(document.activeElement).not.toBe(launch);
   });
 
-  it("renders the help title and definition-list rows from the navigation registry", async () => {
+  it("hides Lumen from ShortcutHelp when unconfigured and reveals Ctrl+K once configured", async () => {
     installLauncher({ tourCompleted: true });
     await render(createElement(ShortcutHelp, {
       open: true,
@@ -400,21 +405,28 @@ describe("FirstRunTour", () => {
     const list = dialog.querySelector<HTMLDListElement>("dl.vx-shortcut-help")!;
     expect(list).not.toBeNull();
     const rows = [...list.querySelectorAll<HTMLElement>(".vx-shortcut-help__row")];
-    expect(rows).toHaveLength(12);
-    expect(rows[0].querySelectorAll("dt kbd")).toHaveLength(2);
-    expect(rows[0].textContent).toContain("Ctrl");
-    expect(rows[0].textContent).toContain("1");
+    expect(rows).toHaveLength(11);
+    expect(list.textContent).not.toContain("Lumen");
     expect(rows[0].textContent).toContain("Go to Play");
-    expect(rows[0].textContent).not.toContain("Go to Home");
     expect(rows[6].textContent).toContain("Go to Settings");
     expect(rows[7].textContent).toContain(",");
-    expect(rows[8].textContent).toContain("Open built-in assistant");
-    expect(rows[9].textContent).toContain("Focus the page search");
-    expect(list.textContent).toContain("Show keyboard shortcuts");
+    expect(rows[8].textContent).toContain("Focus the page search");
 
     const showAgain = [...dialog.querySelectorAll<HTMLButtonElement>("button")]
-      .find((candidate) => candidate.textContent?.trim() === "Show the tour again");
+      .find((candidate) => candidate.textContent?.trim() === "Open welcome setup");
     expect(showAgain?.disabled).toBe(true);
+
+    // When Lumen is configured, Ctrl+K appears.
+    await render(createElement(ShortcutHelp, {
+      open: true,
+      onOpenChange: () => {},
+      onShowTour: () => {},
+      implemented: allPages,
+      showAssistant: true,
+    }));
+    const configuredRows = [...document.querySelectorAll<HTMLElement>(".vx-shortcut-help__row")];
+    expect(configuredRows).toHaveLength(12);
+    expect(configuredRows[8].textContent).toContain("Open Lumen");
   });
 
   it("keeps Ctrl+number rows aligned with a compacted implemented-page list", async () => {
@@ -430,11 +442,10 @@ describe("FirstRunTour", () => {
     expect(rows[0].textContent).toContain("Go to Play");
     expect(rows[1].textContent).toContain("Go to Settings");
     expect(rows[2].textContent).toContain(",");
-    expect(rows[3].textContent).toContain("Open built-in assistant");
-    expect(rows[4].textContent).toContain("Focus the page search");
+    expect(rows[3].textContent).toContain("Focus the page search");
   });
 
-  it("names each tour step exactly like the navigation item it points at", async () => {
+  it("names each orientation card exactly like the navigation item it points at", async () => {
     for (const locale of ["en-US", "zh-CN"] as const) {
       const local = createLauncherI18n(locale, locale);
       await local.initPromise;

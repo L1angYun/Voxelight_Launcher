@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
-import { Download, KeyRound, Upload } from "lucide-react";
-import { command } from "../../lib/launcher";
+import { Download, KeyRound, RotateCcw, Upload } from "lucide-react";
+import { command, type Config } from "../../lib/launcher";
 import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
+import { useLumen } from "../assistant/LumenContext";
 import type { SettingsSectionProps } from "./types";
 
 export function GeneralSettings({ config, onChange, onPersisted, onError, onNotice }: SettingsSectionProps) {
   const { t } = useTranslation();
+  const lumen = useLumen();
   const [key, setKey] = useState("");
   const [configured, setConfigured] = useState(false);
   const [builtin, setBuiltin] = useState(false);
   const [curseforgeBuiltin, setCurseforgeBuiltin] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -108,6 +113,71 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
           <Button variant="secondary" data-settings-target="general-import-preset" icon={<Upload size={15} />} onClick={() => void preset("import")}>{t("settings:preset.import")}</Button>
         </div>
       </section>
+
+      <section className="vx-settings-group">
+        <h3><RotateCcw size={17} />{t("settings:resetLauncher.title")}</h3>
+        <p>{t("settings:resetLauncher.description")}</p>
+        <div className="vx-action-row" data-settings-target="general-reset-launcher">
+          <Button
+            variant="secondary"
+            tone="danger"
+            data-settings-primary=""
+            icon={<RotateCcw size={15} />}
+            onClick={() => setConfirmResetOpen(true)}
+          >
+            {t("settings:resetLauncher.action")}
+          </Button>
+        </div>
+      </section>
+
+      {confirmResetOpen ? (
+        <Dialog
+          open
+          onOpenChange={setConfirmResetOpen}
+          title={t("settings:resetLauncher.confirmTitle")}
+          description={t("settings:resetLauncher.confirmDescription")}
+          closeLabel={t("common:a11y.closeDialog")}
+          footer={
+            <>
+              <Button variant="ghost" disabled={resetting} onClick={() => setConfirmResetOpen(false)}>
+                {t("common:actions.cancel")}
+              </Button>
+              <Button
+                variant="primary"
+                tone="danger"
+                loading={resetting}
+                onClick={async () => {
+                  setResetting(true);
+                  try {
+                    const fresh = await command<Config>("reset_launcher_state");
+                    await lumen.refreshStatus();
+                    await onPersisted(fresh);
+                    setConfirmResetOpen(false);
+                    onNotice("launcherReset");
+                  } catch (cause) {
+                    onError(cause);
+                  } finally {
+                    setResetting(false);
+                  }
+                }}
+              >
+                {t("settings:resetLauncher.confirmAction")}
+              </Button>
+            </>
+          }
+        >
+          <div className="vx-reset-confirm">
+            <p>{t("settings:resetLauncher.willResetTitle")}</p>
+            <ul>
+              <li>{t("settings:resetLauncher.willResetConfig")}</li>
+              <li>{t("settings:resetLauncher.willResetAccounts")}</li>
+              <li>{t("settings:resetLauncher.willResetSecrets")}</li>
+              <li>{t("settings:resetLauncher.willResetRegistry")}</li>
+            </ul>
+            <p className="vx-reset-confirm__safe">{t("settings:resetLauncher.preservedNote")}</p>
+          </div>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

@@ -1137,6 +1137,18 @@ impl AuthService {
         Ok(())
     }
 
+    pub(crate) fn clear_all_credentials(&self, account_ids: &[String]) -> Result<(), String> {
+        let mut guard = self
+            .secret_mutation_lock
+            .lock()
+            .map_err(|_| "凭据更新锁异常")?;
+        for account_id in account_ids {
+            self.secrets.remove(&format!("account:{account_id}"))?;
+        }
+        guard.generations.clear();
+        Ok(())
+    }
+
     /// Metadata is removed and the cleanup ID is committed before the credential
     /// is touched. The queued ID survives a crash or a temporarily locked file.
     pub(crate) fn remove_account_transaction<T>(

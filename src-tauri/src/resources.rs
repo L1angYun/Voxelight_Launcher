@@ -1810,6 +1810,93 @@ async fn select_modrinth_install_version(
     Ok(version)
 }
 
+pub(crate) async fn search_modrinth_for_state(
+    state: &LauncherState,
+    query: &str,
+    project_type: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    limit: usize,
+) -> Result<Value, String> {
+    if !matches!(project_type, "mod" | "resourcepack" | "shader" | "modpack") {
+        return Err("不支持的资源类型".into());
+    }
+    let mut facets: Vec<Vec<String>> = vec![vec![format!("project_type:{project_type}")]];
+    if let Some(version) = game_version.map(str::trim).filter(|v| !v.is_empty()) {
+        facets.push(vec![format!("versions:{version}")]);
+    }
+    if project_type == "mod" {
+        if let Some(l) = loader
+            .map(str::trim)
+            .filter(|v| matches!(*v, "fabric" | "forge" | "neoforge" | "quilt"))
+        {
+            facets.push(vec![format!("categories:{l}")]);
+        }
+    }
+    let facets_json = serde_json::to_string(&facets).map_err(|e| e.to_string())?;
+    let limit_str = limit.clamp(1, 20).to_string();
+    let api = client(state, false)?;
+    let query_params = [
+        ("query".to_owned(), query.to_owned()),
+        ("limit".to_owned(), limit_str),
+        ("index".to_owned(), "relevance".to_owned()),
+        ("facets".to_owned(), facets_json),
+    ];
+    let body: Value = api_json(&api, "search", &query_params).await?;
+    let hits: Vec<Value> = body["hits"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|hit| {
+            serde_json::json!({
+                "projectId": hit["project_id"],
+                "slug": hit["slug"],
+                "title": hit["title"],
+                "description": hit["description"],
+                "author": hit["author"],
+                "downloads": hit["downloads"],
+                "projectType": hit["project_type"],
+                "versions": hit["versions"],
+                "categories": hit["categories"],
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "count": hits.len(), "hits": hits }))
+}
+
+pub(crate) async fn install_modrinth_for_state(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+    project_id: String,
+    version_id: String,
+    instance_id: String,
+    resource_type: String,
+    resource_version_id: Option<String>,
+) -> Result<ResourceInstall, String> {
+    let request = ResourceRequest {
+        source: ResourceSource::Modrinth,
+        project_id,
+        resource_type,
+        target: ReservedTarget::Existing {
+            version_id,
+            instance_id: Some(instance_id),
+            file_id: None,
+            resource_version_id,
+        },
+    };
+    let task_id = state.control.reserve_resource(request.clone())?;
+    match run_resource_request(state, Some(app), &task_id, request).await {
+        Ok(outcome) => outcome
+            .installed()
+            .map_err(|error| error.detail.unwrap_or(error.code)),
+        Err(error) => {
+            state.control.cancel(&task_id);
+            Err(error.detail.unwrap_or(error.code))
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn install_resource(
     app: AppHandle,

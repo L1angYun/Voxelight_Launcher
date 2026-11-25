@@ -28,10 +28,14 @@ function statusFixture(overrides: Partial<AssistantStatus> = {}): AssistantStatu
     effectiveBaseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
     permission: "controlled",
+    proactive: true,
     loopbackEndpoint: false,
     ready: true,
     mcp: { running: false, port: 25590, url: null, tokenMasked: null },
-    tools: [],
+    tools: [
+      { name: "list_instances", tier: "readOnly", description: "List registered instances." },
+      { name: "update_instance_notes", tier: "controlled", description: "Update instance notes." },
+    ],
     ...overrides,
   };
 }
@@ -40,6 +44,8 @@ async function renderDialog(props: {
   onOpenChange?: (open: boolean) => void;
   onConfigure?: () => void;
   onMutated?: () => Promise<void>;
+  wakeRequest?: { id: number; reason?: string; prompt?: string; autoSend?: boolean } | null;
+  onConsumeWake?: () => void;
 } = {}) {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
@@ -53,6 +59,8 @@ async function renderDialog(props: {
           onOpenChange: props.onOpenChange ?? vi.fn(),
           onConfigure: props.onConfigure ?? vi.fn(),
           onMutated: props.onMutated ?? vi.fn(async () => {}),
+          wakeRequest: props.wakeRequest ?? null,
+          onConsumeWake: props.onConsumeWake,
         }),
       ),
     );
@@ -165,7 +173,7 @@ describe("AssistantDialog", () => {
     });
 
     await renderDialog({ onMutated });
-    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message for the assistant"]')!;
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message for Lumen"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
         textarea,
@@ -176,7 +184,7 @@ describe("AssistantDialog", () => {
     await act(async () => buttonByText("Send").click());
 
     expect(document.body.textContent).toContain("list_instances");
-    expect(document.body.textContent).toContain("Approve launcher action");
+    expect(document.body.textContent).toContain("Approve Lumen action");
     expect(document.body.textContent).toContain("update_instance_notes");
     expect(onMutated).not.toHaveBeenCalled();
 
@@ -191,7 +199,40 @@ describe("AssistantDialog", () => {
     expect(onMutated).toHaveBeenCalledTimes(1);
   });
 
-  it("renders localized assistant errors cleanly", async () => {
+  it("displays proactive wake banner and auto-sends crash diagnostic prompt once", async () => {
+    const onConsumeWake = vi.fn();
+    commandMock.mockImplementation(async (name) => {
+      if (name === "get_assistant_status") return statusFixture();
+      if (name === "assistant_chat") {
+        return {
+          reply: "Crash caused by missing Fabric API dependency.",
+          traces: [],
+          pendingApprovals: [],
+          continuation: null,
+          model: "gpt-4o-mini",
+          provider: "openai",
+        } satisfies AssistantTurnResponse;
+      }
+      return null;
+    });
+    await renderDialog({
+      wakeRequest: {
+        id: 1,
+        reason: "Lumen woke automatically: Modded 1.21 exited abnormally (exit code 1).",
+        prompt: "Diagnose the crash for Modded 1.21",
+        autoSend: true,
+      },
+      onConsumeWake,
+    });
+    expect(document.querySelector('[data-testid="lumen-wake-banner"]')?.textContent).toContain("exit code 1");
+    expect(onConsumeWake).toHaveBeenCalledTimes(1);
+    expect(commandMock).toHaveBeenCalledWith("assistant_chat", {
+      request: { messages: [{ role: "user", content: "Diagnose the crash for Modded 1.21" }] },
+    });
+    expect(document.body.textContent).toContain("Crash caused by missing Fabric API dependency.");
+  });
+
+  it("renders localized Lumen errors cleanly", async () => {
     commandMock.mockImplementation(async (name) => {
       if (name === "get_assistant_status") return statusFixture();
       if (name === "assistant_chat") throw new LauncherError("assistant.apiKeyRequired");
@@ -200,7 +241,7 @@ describe("AssistantDialog", () => {
     await renderDialog();
     await act(async () => buttonByText("Summarize my instances and installed versions.").click());
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-      "Save your own AI API key in Settings → Assistant & MCP first.",
+      "Save your own AI API key in Settings → Lumen & MCP first.",
     );
   });
 });

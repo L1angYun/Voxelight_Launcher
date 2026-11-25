@@ -20,6 +20,7 @@ commands.allow = [
   "save_config",
   "set_tour_completed",
   "save_appearance_config",
+  "reset_launcher_state",
   "detect_java",
   "get_service_status",
   "test_proxy_connection",

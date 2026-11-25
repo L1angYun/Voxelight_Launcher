@@ -10,7 +10,7 @@
     "description": "这些快捷键在启动器的任意页面都可用。",
     "actions": {
       "goTo": "前往{{page}}",
-      "assistant": "打开内置助手",
+      "assistant": "打开 Lumen",
       "search": "聚焦页面搜索框",
       "help": "显示键盘快捷键"
     },
@@ -20,14 +20,57 @@
     }
   },
   "tour": {
-    "title": "快速导览",
+    "title": "欢迎使用 Voxelight",
     "step": "第 {{current}} 步，共 {{total}} 步",
     "announcement": "第 {{current}} 步，共 {{total}} 步：{{title}}。{{body}}",
     "back": "上一步",
     "next": "下一步",
-    "finish": "完成",
+    "finish": "开始使用 Voxelight",
     "skip": "跳过",
-    "showAgain": "再次查看导览",
+    "showAgain": "重新打开首次引导",
+    "oobe": {
+      "welcome": {
+        "title": "塑造你的 Voxelight 空间",
+        "body": "选择界面语言、主题与实时三维世界风格，背景中的场景会即时响应你的切换。"
+      },
+      "account": {
+        "title": "玩家身份",
+        "body": "现在即可添加一个离线角色快速开玩；微软正版与外置认证账号也可随时在「角色」页登录。",
+        "existing": "已准备的角色",
+        "none": "尚未添加玩家角色。",
+        "offlineLabel": "快速创建离线角色",
+        "offlinePlaceholder": "3–16 位字母、数字或下划线",
+        "addOffline": "添加角色",
+        "added": "已添加离线角色 {{name}}。",
+        "invalidName": "请输入 3–16 位字母、数字或下划线。",
+        "onlineHint": "微软正版与第三方 Authlib 登录随时可在「角色」页完成。"
+      },
+      "environment": {
+        "title": "运行环境与下载",
+        "body": "选择偏好的下载源，并确认本机 Java 与内存自动分配已就绪。",
+        "javaTitle": "Java 运行环境",
+        "javaFound": "已检测到 {{count}} 个 Java 环境（最高 Java {{major}}）。",
+        "javaNone": "暂未检测到本地 Java——启动游戏时 Voxelight 会自动准备匹配的官方运行时。",
+        "redetect": "重新检测",
+        "memoryTitle": "内存分配",
+        "memorySummary": "系统内存 {{total}} GiB · 自动建议分配 {{recommended}} MB。",
+        "memoryAuto": "已启用内存自动分配，会根据系统可用内存动态建议合适大小。",
+        "gameDir": "游戏目录：",
+        "sources": {
+          "official": "仅官方源",
+          "auto": "自动测速",
+          "bmclapi": "BMCLAPI"
+        }
+      },
+      "ready": {
+        "title": "一切准备就绪",
+        "body": "这里是 Voxelight 的四个核心区域；随时可按 F1 再次打开此引导。"
+      },
+      "languages": {
+        "zhCN": "简体中文",
+        "enUS": "English"
+      }
+    },
     "steps": {
       "library": { "title": "游戏库", "body": "你的实例和版本都在这里。" },
       "discover": { "title": "探索", "body": "查找模组、整合包等更多内容。" },
@@ -146,26 +189,27 @@
     "update.sourceChanged": "更新来源已更改，请重新检查更新。",
     "update.notOffered": "没有可下载的更新，请先检查更新。",
     "update.sourceInvalid": "更新来源无效。",
-    "assistant.apiKeyRequired": "请先在「设置 → 助手与 MCP」中保存你自己的 AI API Key。",
-    "assistant.modelRequired": "请先在「设置 → 助手与 MCP」中填写模型名称。",
-    "assistant.invalidBaseUrl": "助手 API 基础地址必须使用 HTTPS，或本机回环 HTTP（127.0.0.1 / localhost）。",
+    "assistant.apiKeyRequired": "请先在「设置 → Lumen 与 MCP」中保存你自己的 AI API Key。",
+    "assistant.modelRequired": "请先在「设置 → Lumen 与 MCP」中填写模型名称。",
+    "assistant.invalidBaseUrl": "Lumen API 基础地址必须使用 HTTPS，或本机回环 HTTP（127.0.0.1 / localhost）。",
     "assistant.providerError": "所配置的 AI 服务返回了错误。",
     "assistant.emptyMessage": "发送前请输入消息内容。"
   },
   "assistant": {
-    "title": "内置助手",
-    "description": "使用你自己的 AI API Key 查询实例、模组、日志、崩溃诊断、下载任务或托管服务端。",
+    "title": "Lumen",
+    "description": "Voxelight 内置助手，使用你自己的 AI API Key 诊断崩溃、管理实例、模组、世界存档、下载任务与托管服务端。",
     "notConfigured": "尚未配置模型",
     "configure": "前往配置",
-    "emptyReady": "输入关于当前启动器的问题，或点击下方的常用提问。",
-    "emptyUnconfigured": "请先在「设置 → 助手与 MCP」中配置提供商、模型和 API Key（或本机回环接口），然后再开始对话。",
+    "toolCount": "{{count}} 项工具",
+    "emptyReady": "向 Lumen 询问关于当前启动器的问题，或点击下方的常用提问。",
+    "emptyUnconfigured": "请先在「设置 → Lumen 与 MCP」中配置提供商、模型和 API Key（或本机回环接口），然后再启用 Lumen。",
     "prompts": {
       "instances": "汇总我当前的实例和已安装版本。",
       "resources": "检查我的内存建议和最近的下载任务。",
       "servers": "列出当前运行中的游戏和托管服务端。"
     },
     "roleUser": "你",
-    "roleAssistant": "助手",
+    "roleAssistant": "Lumen",
     "toolActivity": "启动器工具调用",
     "traceStatus": {
       "executed": "已执行",
@@ -174,15 +218,28 @@
       "blocked": "已拦截",
       "error": "失败"
     },
-    "approvalTitle": "确认启动器写入操作",
-    "approvalDescription": "受控模式下，助手修改启动器状态前必须先由你明确批准。",
+    "approvalTitle": "确认 Lumen 写入操作",
+    "approvalDescription": "受控模式下，Lumen 修改启动器状态前必须先由你明确批准。",
     "approveAction": "批准并执行",
     "denyAction": "拒绝",
-    "inputLabel": "发给助手的消息",
-    "inputPlaceholder": "询问实例、崩溃日志、模组或服务端…（回车发送）",
-    "inputUnconfiguredPlaceholder": "请先在「设置 → 助手与 MCP」中配置模型和 API Key…",
+    "inputLabel": "发给 Lumen 的消息",
+    "inputPlaceholder": "向 Lumen 询问实例、崩溃日志、模组、下载或服务端…（回车发送）",
+    "inputUnconfiguredPlaceholder": "请先在「设置 → Lumen 与 MCP」中配置模型和 API Key…",
     "clear": "清空",
-    "send": "发送"
+    "send": "发送",
+    "wake": {
+      "crashReason": "Lumen 已自动唤醒：{{target}} 异常退出（退出码 {{code}}）。",
+      "crashPrompt": "{{target}} 刚刚异常退出（退出码 {{code}}）。请帮我检查崩溃诊断与最新日志，分析最可能的原因并给出最稳妥的修复建议。",
+      "askLogs": "让 Lumen 分析日志",
+      "logReason": "正在分析 {{target}} 的日志与崩溃诊断。",
+      "logPrompt": "请检查 {{target}} 的崩溃诊断与近期错误日志，总结原因并给出下一步修复建议。",
+      "askDownloads": "让 Lumen 排查失败下载",
+      "downloadsReason": "正在排查 {{count}} 项失败的下载任务。",
+      "downloadsPrompt": "当前有 {{count}} 项下载任务失败。请查看我的下载任务列表和下载源设置，说明失败原因并建议重试或切换下载源。",
+      "askNetwork": "向 Lumen 询问联机建议",
+      "networkReason": "正在评估当前 NAT 与直连可达性。",
+      "networkPrompt": "我的网络检测结果显示为 {{natType}} / 直连受限。请结合网络检测结果，给出适合我的 Minecraft 联机开服或直连建议。"
+    }
   },
   "storage": {
     "fallbackTitle": "当前使用备用数据档",

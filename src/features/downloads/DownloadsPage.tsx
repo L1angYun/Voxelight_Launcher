@@ -1,18 +1,20 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Activity, Download, History, RefreshCw } from "lucide-react";
+import { Activity, Download, History, RefreshCw, Sparkles } from "lucide-react";
 import { EmptyState } from "../../components/ui/Feedback";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { Button } from "../../components/ui/Button";
 import { Segmented } from "../../components/ui/Segmented";
 import { formatBytes } from "../../i18n/format";
+import { useLumen } from "../assistant/LumenContext";
 import { TaskList } from "./TaskList";
 import type { DownloadTasksModel } from "./useDownloadTasks";
 import "./downloads.css";
 
 export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   const { t, i18n } = useTranslation();
+  const lumen = useLumen();
   const {
     tasks, active, history, rates, busyTaskId, bulkBusy, loading, error,
     act, retryFailed, clearUnfinished, refresh,
@@ -21,6 +23,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   const [historyLimit, setHistoryLimit] = useState(30);
   const [notice, setNotice] = useState("");
   const filteredHistory = historyFilter === "all" ? history : history.filter(task => task.status === historyFilter);
+  const failedCount = history.filter(task => task.status === "failed").length;
   const retryableFailed = history.filter(task => task.status === "failed" && task.retryable).length;
   const clearable = history.filter(task => task.status === "failed" || task.status === "cancelled").length;
   const busy = loading || busyTaskId !== null || bulkBusy;
@@ -129,6 +132,20 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
                   onClick={() => void retryAllFailed()}>{t("downloads:retryFailed")}</Button> : null}
                 {clearable > 0 ? <Button size="sm" variant="secondary" disabled={busy}
                   onClick={() => void clearFailedAndCancelled()}>{t("downloads:clearUnfinished")}</Button> : null}
+                {lumen.configured && failedCount > 0 ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<Sparkles size={14} />}
+                    onClick={() => lumen.openLumen({
+                      reason: t("shell:assistant.wake.downloadsReason", { count: failedCount }),
+                      prompt: t("shell:assistant.wake.downloadsPrompt", { count: failedCount }),
+                      autoSend: true,
+                    })}
+                  >
+                    {t("shell:assistant.wake.askDownloads")}
+                  </Button>
+                ) : null}
               </div>
               <span
                 aria-label={t("downloads:historyCount", {

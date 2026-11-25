@@ -223,6 +223,39 @@ fn write_servers(target: &ServerTarget<'_>, file: &ServerFile) -> Result<[u8; 32
     fs::rename(temp, path).map_err(|e| e.to_string())?;
     Ok(target.snapshot(Some(&bytes)))
 }
+pub(crate) fn list_servers_for_state(
+    state: &LauncherState,
+    version_id: &str,
+    instance_id: Option<&str>,
+) -> Result<Vec<ServerEntry>, String> {
+    let target = target(state, version_id, instance_id)?;
+    let file = read_servers(&target)?;
+    Ok(entries(&file.root, &file.snapshot))
+}
+
+pub(crate) async fn save_server_for_state(
+    state: &LauncherState,
+    version_id: &str,
+    instance_id: Option<&str>,
+    name: String,
+    address: String,
+    hide_address: bool,
+) -> Result<Vec<ServerEntry>, String> {
+    let _guard = state.operation.lock().await;
+    let target = target(state, version_id, instance_id)?;
+    save_server_inner(
+        &target,
+        ServerInput {
+            name,
+            address,
+            hide_address,
+        },
+        None,
+        None,
+    )
+    .map_err(|error| error.detail.unwrap_or(error.code))
+}
+
 #[tauri::command]
 pub fn list_servers(
     state: State<'_, Arc<LauncherState>>,

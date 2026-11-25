@@ -77,6 +77,8 @@ const keyword = {
   llmProvider: "settings:search.keywords.llmProvider",
   modelName: "settings:search.keywords.modelName",
   permissionTier: "settings:search.keywords.permissionTier",
+  proactiveWake: "settings:search.keywords.proactiveWake",
+  factoryReset: "settings:search.keywords.factoryReset",
 } as const;
 
 /** Every user-facing setting or action, in the order the sections present them. */
@@ -85,6 +87,7 @@ export const settingsIndex: readonly SettingsEntry[] = [
   { section: "general", labelKey: "settings:service.curseforgeKey", keywords: [keyword.apiKey, keyword.curseforge], target: "general-curseforge-key" },
   { section: "general", labelKey: "settings:preset.export", keywords: [keyword.preset, keyword.backup], target: "general-export-preset" },
   { section: "general", labelKey: "settings:preset.import", keywords: [keyword.preset, keyword.backup], target: "general-import-preset" },
+  { section: "general", labelKey: "settings:resetLauncher.action", keywords: [keyword.factoryReset], target: "general-reset-launcher" },
 
   { section: "appearance", labelKey: "settings:fields.theme", keywords: [keyword.darkMode, keyword.themeMode], target: "appearance-theme" },
   { section: "appearance", labelKey: "settings:fields.language", keywords: [keyword.locale], target: "appearance-language" },
@@ -127,6 +130,7 @@ export const settingsIndex: readonly SettingsEntry[] = [
   { section: "assistant", labelKey: "settings:assistant.model", keywords: [keyword.aiAssistant, keyword.modelName], target: "assistant-model" },
   { section: "assistant", labelKey: "settings:assistant.apiKey", keywords: [keyword.aiAssistant, keyword.apiKey], target: "assistant-api-key" },
   { section: "assistant", labelKey: "settings:assistant.permission", keywords: [keyword.aiAssistant, keyword.permissionTier], target: "assistant-permission" },
+  { section: "assistant", labelKey: "settings:assistant.proactive", keywords: [keyword.aiAssistant, keyword.proactiveWake], target: "assistant-proactive" },
   { section: "assistant", labelKey: "settings:assistant.mcpPort", keywords: [keyword.mcpServer], target: "assistant-mcp-port" },
   { section: "assistant", labelKey: "settings:assistant.mcpStart", keywords: [keyword.mcpServer], target: "assistant-mcp-actions" },
 

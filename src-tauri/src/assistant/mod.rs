@@ -33,6 +33,7 @@ pub struct AssistantStatus {
     pub effective_base_url: String,
     pub model: String,
     pub permission: String,
+    pub proactive: bool,
     pub loopback_endpoint: bool,
     pub ready: bool,
     pub mcp: McpStatus,
@@ -120,6 +121,7 @@ fn build_status(state: &LauncherState, mcp: &McpService) -> Result<AssistantStat
         permission: tools::PermissionTier::parse(&config.assistant_permission)
             .as_str()
             .to_owned(),
+        proactive: config.assistant_proactive,
         loopback_endpoint,
         ready,
         mcp: mcp.status(config.assistant_mcp_port),
@@ -151,6 +153,7 @@ pub fn set_assistant_api_key(
 
 #[tauri::command]
 pub async fn assistant_chat(
+    app: tauri::AppHandle,
     state: State<'_, Arc<LauncherState>>,
     games: State<'_, Arc<GameRegistry>>,
     servers: State<'_, Arc<ServerRegistry>>,
@@ -160,12 +163,14 @@ pub async fn assistant_chat(
         state: state.inner().clone(),
         games: games.inner().clone(),
         servers: servers.inner().clone(),
+        app: Some(app),
     };
     llm::run_turn(&ctx, request).await.map_err(expected)
 }
 
 #[tauri::command]
 pub async fn start_mcp_server(
+    app: tauri::AppHandle,
     state: State<'_, Arc<LauncherState>>,
     games: State<'_, Arc<GameRegistry>>,
     servers: State<'_, Arc<ServerRegistry>>,
@@ -181,6 +186,7 @@ pub async fn start_mcp_server(
         state: state.inner().clone(),
         games: games.inner().clone(),
         servers: servers.inner().clone(),
+        app: Some(app),
     };
     mcp.start(ctx, target_port, tokio::runtime::Handle::current())
         .map_err(expected)
@@ -268,6 +274,7 @@ mod tests {
                 state,
                 games,
                 servers,
+                app: None,
             },
             root,
         )
@@ -502,7 +509,7 @@ mod tests {
         );
         assert_eq!(status, 200);
         let init: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(init["result"]["serverInfo"]["name"], "voxelight-launcher");
+        assert_eq!(init["result"]["serverInfo"]["name"], "voxelight-lumen");
 
         // tools/list in readOnly exposes read-only tools only
         let (status, body) = raw_http_post(
@@ -585,5 +592,117 @@ mod tests {
         assert_eq!(decoded.assistant_provider, "openai");
         assert_eq!(decoded.assistant_permission, "readOnly");
         assert_eq!(decoded.assistant_mcp_port, 25590);
+        assert!(decoded.assistant_proactive);
+    }
+
+    #[test]
+    fn u7_lumen_expanded_tools_and_factory_reset_preserve_game_files() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (ctx, _root) = fixture_context();
+            assert_eq!(tools::catalog().len(), 38);
+
+            // get_launcher_config exposes safe config without leaking secrets
+            crate::secrets::save_service_secret(&ctx.state.data_dir, ASSISTANT_SECRET_KEY, "sk-lumen-secret")
+                .unwrap();
+            crate::secrets::save_service_secret(&ctx.state.data_dir, "curseforge", "cf-secret")
+                .unwrap();
+            let cfg = tools::execute_tool(
+                &ctx,
+                "get_launcher_config",
+                &json!({}),
+                tools::PermissionTier::ReadOnly,
+                false,
+            )
+            .await
+            .unwrap();
+            assert!(!cfg.to_string().contains("sk-lumen-secret"));
+            assert!(!cfg.to_string().contains("cf-secret"));
+            assert_eq!(cfg["assistantPermission"], "readOnly");
+
+            // save_multiplayer_server + list_multiplayer_servers roundtrip
+            let saved = tools::execute_tool(
+                &ctx,
+                "save_multiplayer_server",
+                &json!({ "instanceId": "inst-1", "name": "Voxel SMP", "address": "play.example.org:25565" }),
+                tools::PermissionTier::Controlled,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved["count"], 1);
+            let listed = tools::execute_tool(
+                &ctx,
+                "list_multiplayer_servers",
+                &json!({ "instanceId": "inst-1" }),
+                tools::PermissionTier::ReadOnly,
+                false,
+            )
+            .await
+            .unwrap();
+            assert_eq!(listed["count"], 1);
+            assert_eq!(listed["servers"][0]["name"], "Voxel SMP");
+
+            // update_instance_settings updates memory/window cleanly
+            let updated = tools::execute_tool(
+                &ctx,
+                "update_instance_settings",
+                &json!({ "instanceId": "inst-1", "screenWidth": 1600, "screenHeight": 900, "notes": "Lumen tuned" }),
+                tools::PermissionTier::Controlled,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(updated["screenWidth"], 1600);
+            assert_eq!(updated["notes"], "Lumen tuned");
+
+            // Factory reset refuses while a managed server is running
+            let auth = crate::auth::AuthService::new(
+                ctx.state.data_dir.clone(),
+                &ctx.state.snapshot().unwrap().config,
+            );
+            let mcp = McpService::default();
+            let started_mcp = mcp
+                .start(ctx.clone(), 0, tokio::runtime::Handle::current())
+                .unwrap();
+            assert!(started_mcp.running);
+            ctx.servers.fixture_alive("srv-live");
+            assert!(crate::commands::reset_launcher_state_inner(&ctx.state, &auth, &ctx.servers, &mcp)
+                .await
+                .is_err());
+
+            // With no running servers/games, factory reset restores defaults, clears secrets & stops MCP,
+            // while preserving instance game files on disk.
+            let clean_servers = ServerRegistry::default();
+            let inst_mod = std::path::PathBuf::from(
+                &ctx.state.snapshot().unwrap().instances[0].game_directory,
+            )
+            .join("mods/sodium.jar");
+            assert!(inst_mod.is_file());
+
+            let reset_cfg = crate::commands::reset_launcher_state_inner(
+                &ctx.state,
+                &auth,
+                &clean_servers,
+                &mcp,
+            )
+            .await
+            .unwrap();
+            assert!(!reset_cfg.tour_completed);
+            assert_eq!(reset_cfg.theme, "system");
+            assert_eq!(reset_cfg.game_proxy_mode, "system");
+            assert_eq!(reset_cfg.assistant_model, "");
+            assert!(!mcp.status(25590).running);
+            let snap = ctx.state.snapshot().unwrap();
+            assert!(snap.accounts.is_empty());
+            assert!(snap.instances.is_empty());
+            assert!(crate::secrets::load_service_secret(&ctx.state.data_dir, ASSISTANT_SECRET_KEY)
+                .unwrap()
+                .is_none());
+            assert!(crate::secrets::load_service_secret(&ctx.state.data_dir, "curseforge")
+                .unwrap()
+                .is_none());
+            assert!(inst_mod.is_file(), "game files on disk must never be deleted");
+        });
     }
 }

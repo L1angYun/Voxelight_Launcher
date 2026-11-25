@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Sparkles } from "lucide-react";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { command } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
+import { useLumen } from "../assistant/LumenContext";
 import { normalizeError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
@@ -17,6 +19,7 @@ const GAME_LOG_REFRESH_MS = 3000;
 export function InstanceLogs({ versionId, instanceId }: { versionId: string; instanceId?: string }) {
   const { t } = useTranslation();
   const { logs, run, running = [] } = useLauncher();
+  const lumen = useLumen();
   const [result, setResult] = useState<Diagnosis | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -128,6 +131,19 @@ export function InstanceLogs({ versionId, instanceId }: { versionId: string; ins
         <Button variant="secondary" disabled={busy} onClick={() => void analyze()}>{busy ? t("common:status.loading") : t("library:analyze")}</Button>
         {result ? <Button variant="ghost" onClick={() => void exportReport()}>{t("library:exportDiagnostics")}</Button> : null}
         <Button variant="ghost" onClick={() => void run("logs.open", () => command("open_folder", { kind: "logs" }))}>{t("library:openLogs")}</Button>
+        {lumen.configured && (Boolean(result && result.kind !== "empty") || counts.error > 0) ? (
+          <Button
+            variant="ghost"
+            icon={<Sparkles size={14} />}
+            onClick={() => lumen.openLumen({
+              reason: t("shell:assistant.wake.logReason", { target: instanceId ?? versionId }),
+              prompt: t("shell:assistant.wake.logPrompt", { target: instanceId ?? versionId }),
+              autoSend: true,
+            })}
+          >
+            {t("shell:assistant.wake.askLogs")}
+          </Button>
+        ) : null}
       </div>
       {error ? <p role="alert">{errorText(error, t)}</p> : null}
       {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}

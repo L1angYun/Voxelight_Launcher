@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Activity, Check, Copy, Globe, Info, ShieldAlert, ShieldCheck, Wifi } from "lucide-react";
+import { Activity, Check, Copy, Globe, Info, ShieldAlert, ShieldCheck, Sparkles, Wifi } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
 import { formatDate } from "../../i18n/format";
+import { useLumen } from "../assistant/LumenContext";
 import type { useMultiplayer } from "./useMultiplayer";
 
 function formatDirectAddress(ip: string, port: number, ipv6: boolean): string {
@@ -12,9 +13,13 @@ function formatDirectAddress(ip: string, port: number, ipv6: boolean): string {
 
 export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMultiplayer> }) {
   const { t, i18n } = useTranslation();
+  const lumen = useLumen();
   const { networkReport: report, networkBusy, runNetworkCheck, currentManaged } = model;
   const [portInput, setPortInput] = useState(() => String(currentManaged?.settings.port ?? 25565));
   const [copiedTarget, setCopiedTarget] = useState<string>("");
+  const needsNatHelp = Boolean(
+    report && (report.cgnatSuspected || report.natType === "addressPortDependent" || report.natType === "unreachable"),
+  );
 
   const parsedPort = Number(portInput);
   const validPort = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? parsedPort : 25565;
@@ -49,6 +54,19 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
           >
             {report ? t("multiplayer:network.rerunCheck") : t("multiplayer:network.runCheck")}
           </Button>
+          {lumen.configured && needsNatHelp && report ? (
+            <Button
+              variant="ghost"
+              icon={<Sparkles size={14} />}
+              onClick={() => lumen.openLumen({
+                reason: t("shell:assistant.wake.networkReason"),
+                prompt: t("shell:assistant.wake.networkPrompt", { natType: report.natType }),
+                autoSend: true,
+              })}
+            >
+              {t("shell:assistant.wake.askNetwork")}
+            </Button>
+          ) : null}
         </div>
       </div>
 

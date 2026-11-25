@@ -11,12 +11,13 @@ function navigation(page: Page) {
   return page.getByRole("navigation", { name: "主导航" });
 }
 
-test("the first-run tour shows once, can be skipped, and is saved on its own", async ({ page }) => {
+test("the first-run OOBE shows once with live preview, hides Lumen, can be skipped, and saves on its own", async ({ page }) => {
   await page.setViewportSize({ width: 1050, height: 720 });
   await installLauncherFixture(page, { tourCompleted: false });
   await page.goto("/?next-ui");
-  const tour = page.getByRole("dialog", { name: "快速导览" });
+  const tour = page.getByRole("dialog", { name: "欢迎使用 Voxelight" });
   await expect(tour).toBeVisible();
+  await expect(tour).not.toContainText("Lumen");
   const box = (await tour.boundingBox())!;
   expect(box.x >= 0 && box.y >= 0 && box.x + box.width <= 1050 && box.y + box.height <= 720).toBe(true);
   await page.keyboard.press("Escape");
@@ -157,18 +158,31 @@ test("instance settings changes an existing instance's loader while preserving t
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("built-in assistant and local MCP server can be configured, started, and approved via Ctrl+K", async ({ page }) => {
+test("Lumen stays invisible until configured, wakes proactively on crash, and factory reset restores initial state", async ({ page }) => {
   await page.setViewportSize({ width: 1050, height: 720 });
   await installLauncherFixture(page);
   await page.goto("/?next-ui");
+  const emit = (event: string, payload: unknown) =>
+    page.evaluate(([name, data]) => (window as unknown as { __VX_EMIT__: (e: string, p: unknown) => void }).__VX_EMIT__(name, data), [event, payload] as const);
 
-  // Configure provider model, encrypted key, Controlled mode, and start local MCP in Settings → Assistant & MCP
+  // 1. Before configuring Lumen: Ctrl+K does nothing and F1 shortcut help does not mention Lumen.
+  await page.locator("main").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+k");
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  await page.keyboard.press("F1");
+  const helpDialog = page.locator("dialog.vx-shortcuts-dialog[open]");
+  await expect(helpDialog).toBeVisible();
+  await expect(helpDialog).not.toContainText("Lumen");
+  await page.keyboard.press("Escape");
+  await expect(helpDialog).toHaveCount(0);
+
+  // 2. Configure Lumen model, encrypted key, Controlled mode, and verify local MCP in Settings → Lumen & MCP.
   await navigation(page).getByRole("button", { name: "设置", exact: true }).click();
-  await page.getByRole("button", { name: "助手与 MCP", exact: true }).click();
+  await page.getByRole("button", { name: "Lumen 与 MCP", exact: true }).click();
   await page.getByRole("textbox", { name: "模型名称" }).fill("gpt-4o-mini");
-  await page.getByLabel("助手 API Key").fill("sk-synthetic-fixture-key");
+  await page.getByLabel("Lumen API Key").fill("sk-synthetic-fixture-key");
   await page.getByRole("button", { name: "保存密钥", exact: true }).click();
-  await expect(page.getByText("助手 API Key 已加密保存。")).toBeVisible();
+  await expect(page.getByText("Lumen API Key 已加密保存。")).toBeVisible();
   await page.getByRole("button", { name: "受控", exact: true }).click();
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await expect(page.getByText("其他设置已保存。")).toBeVisible();
@@ -179,16 +193,41 @@ test("built-in assistant and local MCP server can be configured, started, and ap
   await page.getByRole("button", { name: "停止 MCP 服务", exact: true }).click();
   await expect(page.getByTestId("mcp-status-card")).toContainText("已停止");
 
-  // Open built-in assistant via Ctrl+K, run a controlled turn, approve write action
+  // 3. Once configured: Ctrl+K opens Lumen and Controlled-mode approval executes.
   await page.locator("main").click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("Control+k");
-  const dialog = page.getByRole("dialog", { name: "内置助手" });
+  const dialog = page.getByRole("dialog", { name: "Lumen" });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("textbox", { name: "发给助手的消息" }).fill("给我的实例添加一条备注");
+  await dialog.getByRole("textbox", { name: "发给 Lumen 的消息" }).fill("给我的实例添加一条备注");
   await dialog.getByRole("button", { name: "发送", exact: true }).click();
-  await expect(dialog.getByText("确认启动器写入操作")).toBeVisible();
+  await expect(dialog.getByText("确认 Lumen 写入操作")).toBeVisible();
   await expect(dialog.getByText("update_instance_notes")).toBeVisible();
   await dialog.getByRole("button", { name: "批准并执行", exact: true }).click();
   await expect(dialog.getByText("已更新实例备注。")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+
+  // 4. Proactive crash wake-up: non-zero game exit wakes Lumen automatically with crash banner.
+  await emit("launcher://game-exit", { gameId: "fixture-crash-1", pid: 4321, code: 1 });
+  const woken = page.getByRole("dialog", { name: "Lumen" });
+  await expect(woken).toBeVisible();
+  await expect(woken.getByTestId("lumen-wake-banner")).toContainText("退出码 1");
+  await page.keyboard.press("Escape");
+  await expect(woken).toHaveCount(0);
+
+  // 5. Factory reset in Settings → General restores initial state, re-opens OOBE, and hides Lumen again.
+  await page.getByRole("button", { name: "通用", exact: true }).click();
+  await page.getByRole("button", { name: "还原为初始状态", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "确定要将启动器还原为初始状态吗？" });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "确认还原", exact: true }).click();
+  await expect(confirm).toHaveCount(0);
+  const oobe = page.getByRole("dialog", { name: "欢迎使用 Voxelight" });
+  await expect(oobe).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(oobe).toHaveCount(0);
+  await page.locator("main").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+k");
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

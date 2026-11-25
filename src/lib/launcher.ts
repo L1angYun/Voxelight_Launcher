@@ -60,6 +60,7 @@ export interface Config {
   assistantModel: string;
   assistantPermission: "readOnly" | "controlled" | "fullAccess";
   assistantMcpPort: number;
+  assistantProactive: boolean;
 }
 type AppearanceField = typeof appearanceFields[number];
 export const appearanceFields = [
@@ -239,6 +240,7 @@ export const defaults: Config = {
   assistantModel: "",
   assistantPermission: "readOnly",
   assistantMcpPort: 25590,
+  assistantProactive: true,
 };
 
 export interface ResourceProject {

@@ -27,7 +27,7 @@
     "game": "Game",
     "java": "Java",
     "downloads": "Downloads",
-    "assistant": "Assistant & MCP",
+    "assistant": "Lumen & MCP",
     "about": "About"
   },
   "search": {
@@ -80,11 +80,13 @@
       "startupCheck": "Startup check",
       "updateChannel": "Update channel",
       "updateCheck": "Update check",
-      "aiAssistant": "AI assistant",
+      "aiAssistant": "Lumen AI assistant",
       "mcpServer": "MCP server",
       "llmProvider": "LLM provider",
       "modelName": "Model name",
-      "permissionTier": "Tool permissions"
+      "permissionTier": "Tool permissions",
+      "proactiveWake": "Proactive wake crash diagnostics",
+      "factoryReset": "Factory reset initial state"
     }
   },
   "generalDescription": "Service credentials and portable launcher presets.",
@@ -109,6 +111,20 @@
     "description": "Export or import launcher settings. Accounts, login tokens, and service keys are never included.",
     "export": "Export preset",
     "import": "Import preset"
+  },
+  "resetLauncher": {
+    "title": "Restore initial state",
+    "description": "Reset Voxelight back to a fresh setup, clearing saved settings, accounts, encrypted keys, and launcher records without deleting your Minecraft files.",
+    "action": "Restore initial state",
+    "confirmTitle": "Restore launcher to initial state?",
+    "confirmDescription": "This cannot be undone. Review what will be reset and what stays on disk.",
+    "confirmAction": "Restore now",
+    "willResetTitle": "Will be cleared or reset:",
+    "willResetConfig": "All launcher settings return to system-following defaults, and welcome setup re-enables.",
+    "willResetAccounts": "All signed-in accounts and encrypted login tokens are removed.",
+    "willResetSecrets": "Saved CurseForge key, Lumen API key, and proxy credentials are erased.",
+    "willResetRegistry": "Instance registrations, download history, and the local MCP server are cleared.",
+    "preservedNote": "Your Minecraft game directory, worlds, mods, resource packs, backups, and managed server files on disk are never deleted."
   },
   "appearanceDescription": "Language and appearance preview immediately. Save to keep them.",
   "fields": {
@@ -254,17 +270,18 @@
     "javaDetected_one": "Found {{count}} Java environment.",
     "javaDetected_other": "Found {{count}} Java environments.",
     "javaNotFound": "No Java environment found. Install one or enter its path.",
-    "assistantKeySaved": "Assistant API key saved with system encryption.",
-    "assistantKeyCleared": "Saved assistant API key cleared.",
+    "assistantKeySaved": "Lumen API key saved with system encryption.",
+    "assistantKeyCleared": "Saved Lumen API key cleared.",
+    "launcherReset": "Launcher restored to its initial state. Your Minecraft game files were not deleted.",
     "mcpStarted": "Local MCP server started on 127.0.0.1:{{port}}.",
     "mcpStopped": "Local MCP server stopped.",
     "mcpTokenRotated": "MCP access token rotated. Update connected clients with the new token.",
     "mcpConfigCopied": "MCP client configuration copied to clipboard."
   },
   "assistant": {
-    "description": "Use your own AI API key inside the launcher, or expose launcher tools over a localhost-only MCP server.",
-    "providerTitle": "AI provider and key",
-    "providerDescription": "Requests are sent only when you ask the assistant a question, directly to the endpoint you configure.",
+    "description": "Configure Lumen with your own AI API key, or expose launcher tools over a localhost-only MCP server. Until configured, Lumen stays completely hidden everywhere else.",
+    "providerTitle": "Lumen AI provider and key",
+    "providerDescription": "Requests are sent only when you talk to Lumen or approve a wake-up, directly to the endpoint you configure.",
     "provider": "Provider",
     "providers": {
       "openai": "OpenAI-compatible",
@@ -274,7 +291,7 @@
     "modelPlaceholder": "e.g. gpt-4o-mini, claude-sonnet-4-20250514, deepseek-chat",
     "baseUrl": "API base URL (optional)",
     "baseUrlHint": "Leave empty for the provider's default HTTPS endpoint. Use HTTPS for remote endpoints, or http://127.0.0.1 / http://localhost for local servers such as Ollama or LM Studio.",
-    "apiKey": "Assistant API key",
+    "apiKey": "Lumen API key",
     "apiKeyPlaceholder": "Enter your own API key (optional for local loopback endpoints)",
     "apiKeyHint": "Encrypted with Windows DPAPI for your Windows user and never exported in presets.",
     "permission": "Tool permissions",
@@ -284,11 +301,14 @@
       "fullAccess": "Full access"
     },
     "permissionHints": {
-      "readOnly": "Inspect instances, versions, mods, logs, crash diagnostics, downloads, and servers without changing anything.",
-      "controlled": "Read-only tools run immediately. Write actions in the built-in assistant always ask for your confirmation; external MCP clients stay read-only.",
-      "fullAccess": "Allows both the built-in assistant and authenticated local MCP clients to run curated launcher write tools (toggle resources, create instances from installed versions, update notes, gracefully stop games)."
+      "readOnly": "Inspect instances, versions, mods, worlds, logs, crash diagnostics, downloads, Java runtimes, network diagnostics, and managed servers without changing anything.",
+      "controlled": "Read-only tools run immediately. Write actions in Lumen always ask for your confirmation; external MCP clients stay read-only.",
+      "fullAccess": "Allows both Lumen and authenticated local MCP clients to run all curated launcher tools (installing versions/mods, creating/cloning/backing up instances, tuning settings, managing downloads, launching/stopping games and servers)."
     },
-    "openDialog": "Open built-in assistant (Ctrl+K)",
+    "toolSummary": "Curated toolset: {{total}} launcher tools ({{readOnly}} read-only, {{controlled}} controlled write). Arbitrary shell commands, paths outside launcher directories, and secret reads are never exposed.",
+    "proactive": "Proactively wake Lumen on game crashes",
+    "proactiveDescription": "When Lumen is configured, automatically open it with crash context if a game exits abnormally, and show contextual help shortcuts on errors.",
+    "openDialog": "Open Lumen (Ctrl+K)",
     "mcpTitle": "Local MCP server",
     "mcpDescription": "Off by default on every start. Binds strictly to 127.0.0.1 and requires a per-session Bearer token with loopback Host/Origin checks.",
     "mcpPort": "MCP port (1024–65535)",
@@ -329,9 +349,9 @@
       "invalid": "Some settings are invalid. Review the highlighted values and try again."
     },
     "assistant": {
-      "apiKeyRequired": "Save your own AI API key in Settings → Assistant & MCP first.",
-      "modelRequired": "Enter a model name in Settings → Assistant & MCP first.",
-      "invalidBaseUrl": "The assistant API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
+      "apiKeyRequired": "Save your own AI API key in Settings → Lumen & MCP first.",
+      "modelRequired": "Enter a model name in Settings → Lumen & MCP first.",
+      "invalidBaseUrl": "The Lumen API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
       "providerError": "The configured AI service returned an error.",
       "emptyMessage": "Enter a message before sending."
     }

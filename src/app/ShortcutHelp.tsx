@@ -16,12 +16,14 @@ export function ShortcutHelp({
   onShowTour,
   implemented,
   canShowTour = true,
+  showAssistant = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onShowTour: () => void;
   implemented: ReadonlySet<NavigationPage>;
   canShowTour?: boolean;
+  showAssistant?: boolean;
 }) {
   const { t } = useTranslation();
   const ctrl = t("shell:shortcuts.keys.ctrl");
@@ -35,7 +37,9 @@ export function ShortcutHelp({
     ...(pages.some((item) => item.id === "settings")
       ? [{ keys: [ctrl, ","], label: goTo(t("navigation.settings")) }]
       : []),
-    { keys: [ctrl, "K"], label: t("shell:shortcuts.actions.assistant") },
+    ...(showAssistant
+      ? [{ keys: [ctrl, "K"], label: t("shell:shortcuts.actions.assistant") }]
+      : []),
     { keys: [ctrl, "F"], label: t("shell:shortcuts.actions.search") },
     { keys: ["?"], label: t("shell:shortcuts.actions.help") },
     { keys: [t("shell:shortcuts.keys.f1")], label: t("shell:shortcuts.actions.help") },

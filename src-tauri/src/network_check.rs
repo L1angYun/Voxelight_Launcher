@@ -545,7 +545,7 @@ fn assemble_report(
     }
 }
 
-fn run_network_check_blocking(custom_proxy_enabled: bool) -> NetworkCheckReport {
+pub(crate) fn run_network_check_blocking(custom_proxy_enabled: bool) -> NetworkCheckReport {
     let local_v4 = detect_local_ipv4();
     let local_v6 = detect_local_ipv6();
     let ((local_port_v4, v4_obs, v4_hosts), (_local_port_v6, v6_obs, v6_hosts)) =

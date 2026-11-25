@@ -5,7 +5,8 @@ import { command } from "../../lib/launcher";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
-import type { AssistantPermission, AssistantProvider, AssistantStatus, McpStatus } from "../assistant/types";
+import { useLumen } from "../assistant/LumenContext";
+import type { AssistantPermission, AssistantProvider, AssistantStatus, McpStatus, ToolSummary } from "../assistant/types";
 import type { SettingsSectionProps } from "./types";
 
 export function AssistantSettings({
@@ -16,8 +17,11 @@ export function AssistantSettings({
   onOpenAssistant,
 }: SettingsSectionProps & { onOpenAssistant?: () => void }) {
   const { t } = useTranslation();
+  const lumen = useLumen();
   const [apiKey, setApiKey] = useState("");
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [tools, setTools] = useState<ToolSummary[]>([]);
   const [mcp, setMcp] = useState<McpStatus>({
     running: false,
     port: config.assistantMcpPort || 25590,
@@ -31,6 +35,8 @@ export function AssistantSettings({
     try {
       const status = await command<AssistantStatus>("get_assistant_status");
       setApiKeyConfigured(status.apiKeyConfigured);
+      setReady(Boolean(status.ready));
+      setTools(status.tools ?? []);
       setMcp(status.mcp);
     } catch (cause) {
       onError(cause);
@@ -46,6 +52,8 @@ export function AssistantSettings({
     try {
       const configured = await command<boolean>("set_assistant_api_key", { secret });
       setApiKeyConfigured(configured);
+      await loadStatus();
+      void lumen.refreshStatus();
       if (secret.trim()) {
         setApiKey("");
         onNotice("assistantKeySaved");
@@ -94,7 +102,7 @@ export function AssistantSettings({
       const snippet = JSON.stringify(
         {
           mcpServers: {
-            voxelight: {
+            "voxelight-lumen": {
               type: "http",
               url: mcp.url,
               headers: {
@@ -116,6 +124,9 @@ export function AssistantSettings({
   const baseUrlPlaceholder = config.assistantProvider === "anthropic"
     ? "https://api.anthropic.com"
     : "https://api.openai.com/v1";
+  const readOnlyCount = tools.filter((item) => item.tier === "readOnly").length;
+  const controlledCount = tools.filter((item) => item.tier === "controlled").length;
+  const lumenActive = ready || lumen.configured;
 
   return (
     <div className="vx-settings-section">
@@ -214,8 +225,30 @@ export function AssistantSettings({
           />
         </label>
         <p>{t(`settings:assistant.permissionHints.${config.assistantPermission}`)}</p>
+        {tools.length > 0 ? (
+          <p>
+            {t("settings:assistant.toolSummary", {
+              total: tools.length,
+              readOnly: readOnlyCount,
+              controlled: controlledCount,
+            })}
+          </p>
+        ) : null}
 
-        {onOpenAssistant ? (
+        <label className="vx-settings-check" data-settings-target="assistant-proactive">
+          <input
+            type="checkbox"
+            aria-label={t("settings:assistant.proactive")}
+            checked={config.assistantProactive}
+            onChange={(event) => onChange({ ...config, assistantProactive: event.target.checked })}
+          />
+          <span>
+            {t("settings:assistant.proactive")}
+            <small>{t("settings:assistant.proactiveDescription")}</small>
+          </span>
+        </label>
+
+        {lumenActive && onOpenAssistant ? (
           <div className="vx-action-row">
             <Button variant="secondary" icon={<Bot size={15} />} onClick={onOpenAssistant}>
               {t("settings:assistant.openDialog")}
