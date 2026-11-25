@@ -112,7 +112,7 @@ test("review D3: create tabs use the smaller natural minimum and loader height a
   await expect(choice).toContainText("0.16.9");
   await expect(choice).toBeDisabled();
   await expect(page.locator(".vx-listbox-popover:popover-open")).toHaveCount(0);
-  await dialog.getByRole("button", { name: "NeoForge", exact: true }).focus();
+  await dialog.getByRole("button", { name: "OptiFine", exact: true }).focus();
   await page.keyboard.press("Tab");
   await expect(dialog.locator('[id$="-create-instance-name"]')).toBeFocused();
   await choice.evaluate(element => (element as HTMLElement).focus());

@@ -665,8 +665,8 @@ pub async fn update_instance(
 fn normalize_target_loader(loader: &str) -> Result<String, String> {
     let normalized = loader.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "vanilla" | "fabric" | "quilt" | "forge" | "neoforge" => Ok(normalized),
-        _ => Err("不支持的加载器；请选择原版、Fabric、Quilt、Forge 或 NeoForge".into()),
+        "vanilla" | "fabric" | "quilt" | "forge" | "neoforge" | "optifine" => Ok(normalized),
+        _ => Err("不支持的加载器；请选择原版、Fabric、Quilt、Forge、NeoForge 或 OptiFine".into()),
     }
 }
 
@@ -689,7 +689,7 @@ pub(crate) fn resolve_instance_game_version(
     Err("无法确定此实例的基础 Minecraft 版本，请先确认对应版本配置文件存在".into())
 }
 
-fn apply_instance_loader_update(
+pub(crate) fn apply_instance_loader_update(
     state: &LauncherState,
     instance_id: &str,
     new_version_id: &str,

@@ -56,7 +56,8 @@ describe("glyphLoader", () => {
     { input: "neoforge", expected: "neoforge" },
     { input: "NeoForge", expected: "neoforge" },
     { input: "liteloader", expected: "unknown" },
-    { input: "optifine", expected: "unknown" },
+    { input: "optifine", expected: "optifine" },
+    { input: "OptiFine", expected: "optifine" },
     { input: "unknown", expected: "unknown" },
   ])("classifies $input as $expected", ({ input, expected }) => {
     expect(glyphLoader(input as string | null | undefined)).toBe(expected);
@@ -73,6 +74,7 @@ describe("glyphLoaderForVersionDirectory", () => {
     { id: "forge-1.20.1-47.2.0", expected: "forge" },
     { id: "neoforge-21.1.77", expected: "neoforge" },
     { id: "1.21.1-neoforge-21.1.77", expected: "neoforge" },
+    { id: "1.20.4-OptiFine_HD_U_I7", expected: "optifine" },
     { id: "fabric-1.21.1", expected: "vanilla" },
   ])("classifies version directory $id as $expected", ({ id, expected }) => {
     expect(glyphLoaderForVersionDirectory(id)).toBe(expected);

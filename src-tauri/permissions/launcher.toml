@@ -61,6 +61,7 @@ commands.allow = [
   "scan_versions",
   "list_loader_versions",
   "install_loader",
+  "install_optifine_installer",
   "install_java",
   "install_version",
   "reserve_launch_task",

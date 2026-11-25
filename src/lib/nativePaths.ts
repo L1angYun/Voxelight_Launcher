@@ -4,7 +4,7 @@ export type LauncherPathUse =
   | "gameDirectory" | "java" | "instanceIcon" | "skin" | "background"
   | "presetRead" | "presetWrite" | "localResources" | "datapack" | "worldRead" | "worldWrite"
   | "packRead" | "packWrite" | "instanceArchive" | "diagnostics"
-  | "serverJar" | "serverFolder";
+  | "serverJar" | "serverFolder" | "optifineInstaller";
 
 export function pickLauncherPaths(purpose: LauncherPathUse, suggestedName?: string) {
   return command<string[] | null>("choose_launcher_path", { purpose, suggestedName });

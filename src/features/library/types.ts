@@ -3,7 +3,7 @@ import type { Instance } from "../../lib/launcher";
 export type InstanceTab = "overview" | "content" | "worlds" | "logs" | "settings";
 export type ResourceKind = "mod" | "resourcepack" | "shader";
 export type ResourceView = "files" | "updates" | "history";
-export type Loader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge";
+export type Loader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge" | "optifine";
 
 export interface LocalModMetadata {
   loader: "fabric" | "quilt" | "forge" | "neoforge" | "legacyForge";

@@ -43,7 +43,7 @@ test('H10 every custom command is classified and privileged file access checks a
    assert.equal(new Set(allowed).size,allowed.length);
    assert.deepEqual([...allowed].sort(),[...registered].sort());
    assert.ok(!capabilities.includes('dialog:allow-open') && !capabilities.includes('dialog:allow-save'));
-   const usage=[['auth_commands','upload_account_skin','Skin'],['appearance','set_launcher_background','Background'],['appearance','export_launcher_config','PresetWrite'],['appearance','import_launcher_config','PresetRead'],['instances','export_instance_zip','InstanceArchive'],['content','backup_world','WorldWrite'],['content','import_world','WorldRead'],['modpacks','import_modpack','PackRead'],['modpacks','export_modrinth_modpack','PackWrite'],['processes','export_diagnostics','Diagnostics']];
+   const usage=[['auth_commands','upload_account_skin','Skin'],['appearance','set_launcher_background','Background'],['appearance','export_launcher_config','PresetWrite'],['appearance','import_launcher_config','PresetRead'],['instances','export_instance_zip','InstanceArchive'],['content','backup_world','WorldWrite'],['content','import_world','WorldRead'],['modpacks','import_modpack','PackRead'],['modpacks','export_modrinth_modpack','PackWrite'],['processes','export_diagnostics','Diagnostics'],['loaders','install_optifine_installer','OptifineInstaller']];
    for(const [file,command,purpose] of usage){
       const source=read(`src-tauri/src/${file}.rs`).split(`fn ${command}(`)[1];
       assert.ok(new RegExp(`grants\\s*\\.\\s*consume\\(\\s*PathUse::${purpose}\\s*,`).test(source?.slice(0,1100) ?? ''), `${command} must consume native ${purpose} authority before work`);

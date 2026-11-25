@@ -531,6 +531,22 @@ export async function installLauncherFixture(
             return resourceContext(String(args?.versionId ?? ""), args?.instanceId as string | undefined);
           if (name === "list_loader_versions")
             return [{ id: "0.16.9", stable: true, recommended: true }];
+          if (name === "install_optifine_installer") {
+            const id = String(args?.instanceId ?? "");
+            const versionId = "1.21.1-OptiFine_HD_U_J1";
+            if (!installedVersions.some((v) => v.id === versionId)) {
+              installedVersions.push({ id: versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
+            }
+            if (id) {
+              const target = instances.find((item) => item.id === id);
+              if (target) {
+                target.loader = "optifine";
+                target.loaderVersion = "HD_U_J1";
+                target.versionId = versionId;
+              }
+            }
+            return { versionId, loader: "optifine", loaderVersion: "HD_U_J1" };
+          }
           if (name === "change_instance_loader") {
             const id = String(args?.instanceId ?? "");
             const targetLoader = String(args?.loader ?? "vanilla");

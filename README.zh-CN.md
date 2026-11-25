@@ -24,7 +24,7 @@ _截图来自 0.5.0，当前界面已有变化。_
 | --- | --- | --- |
 | 版本 | 所有正式版和快照，可搭配 Fabric、Quilt、Forge 或 NeoForge | ✅ |
 | 版本 | 版本列表分为正式版、快照、远古版（Beta/Alpha）和愚人节版，可搜索、排序，显示发布日期 | ✅ |
-| 版本 | OptiFine | 🚧 |
+| 版本 | OptiFine | ✅ |
 | 版本 | 更换已有实例的加载器 | ✅ |
 | Java | 自动查找已安装的 Java，缺少所需版本时下载 Mojang 官方运行时；内存自动或手动分配 | ✅ |
 | 实例 | 每个实例有独立的文件夹，Java、内存、JVM 参数、窗口大小和游戏代理可单独设置或沿用全局 | ✅ |
@@ -89,7 +89,7 @@ _截图来自 0.5.0，当前界面已有变化。_
 | 用途 | 服务 |
 | --- | --- |
 | 游戏文件、版本列表、Java | Mojang；下载源允许时也用 BMCLAPI |
-| 加载器 | Fabric、Quilt、Forge、NeoForge 的服务器；允许时部分走 BMCLAPI |
+| 加载器 | Fabric、Quilt、Forge、NeoForge 的服务器；OptiFine 支持本地安装器 JAR，允许时也可走 BMCLAPI；其余加载器允许时部分走 BMCLAPI |
 | Microsoft 账号 | Microsoft、Xbox Live、Minecraft 服务 |
 | 第三方认证账号 | 你填写的服务器；`authlib-injector.yushi.moe` |
 | 资源和整合包 | Modrinth、CurseForge；整合包里列出的文件也可能来自 GitHub 或 GitLab |

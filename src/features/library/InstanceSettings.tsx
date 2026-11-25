@@ -12,7 +12,7 @@ import type { Loader, LoaderVersion } from "./types";
 
 function normalizeLoader(value?: string): Loader {
   const lower = (value ?? "").trim().toLowerCase();
-  if (lower === "fabric" || lower === "quilt" || lower === "forge" || lower === "neoforge") return lower;
+  if (lower === "fabric" || lower === "quilt" || lower === "forge" || lower === "neoforge" || lower === "optifine") return lower;
   return "vanilla";
 }
 
@@ -121,6 +121,22 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     quilt: "Quilt",
     forge: "Forge",
     neoforge: "NeoForge",
+    optifine: "OptiFine",
+  };
+
+  const importOptifineForInstance = () => {
+    if (busy) return;
+    void run("instance.loader", async () => {
+      const path = await pickLauncherPath("optifineInstaller");
+      if (!path) return;
+      await command("install_optifine_installer", {
+        path,
+        expectedGameVersion: baseGameVersion || undefined,
+        instanceId: instance.id,
+      });
+      setNotice("loaderChanged");
+      await onChanged();
+    });
   };
 
   const applyLoaderChange = () => {
@@ -205,7 +221,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
           label={t("library:loader")}
           value={targetLoader}
           onChange={setTargetLoader}
-          options={(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => ({
+          options={(["vanilla", "fabric", "quilt", "forge", "neoforge", "optifine"] as const).map((value) => ({
             value,
             label: loaderNames[value],
           }))}
@@ -239,6 +255,11 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
           <Button type="button" variant="secondary" disabled={!canApplyLoader} loading={busy === "instance.loader"} onClick={applyLoaderChange}>
             {t("library:loaderChange.apply")}
           </Button>
+          {targetLoader === "optifine" ? (
+            <Button type="button" variant="ghost" disabled={Boolean(busy)} onClick={importOptifineForInstance}>
+              {t("library:optifineImportJar")}
+            </Button>
+          ) : null}
         </div>
       </section>
       <section className="vx-detail-section">

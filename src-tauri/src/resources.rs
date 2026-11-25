@@ -646,6 +646,7 @@ pub(crate) fn detect_loader(json: &Value) -> Option<&'static str> {
         Some("quilt") => return Some("quilt"),
         Some("forge") => return Some("forge"),
         Some("neoforge") => return Some("neoforge"),
+        Some("optifine") => return Some("optifine"),
         _ => {}
     }
     let names = json
@@ -676,6 +677,8 @@ pub(crate) fn detect_loader(json: &Value) -> Option<&'static str> {
         Some("fabric")
     } else if names.contains("net.minecraftforge:") || main.contains("minecraftforge") {
         Some("forge")
+    } else if names.contains("optifine:optifine:") {
+        Some("optifine")
     } else {
         None
     }

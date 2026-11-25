@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 pub enum PathUse {
     GameDirectory, Java, InstanceIcon, Skin, Background, PresetRead, PresetWrite,
     LocalResources, Datapack, WorldRead, WorldWrite, PackRead, PackWrite, InstanceArchive, Diagnostics,
-    ServerJar, ServerFolder,
+    ServerJar, ServerFolder, OptifineInstaller,
 }
 
 impl PathUse {
@@ -28,7 +28,7 @@ impl PathUse {
             Self::PackRead => &["mrpack", "zip"],
             Self::PackWrite => &["mrpack"],
             Self::Diagnostics => &["txt"],
-            Self::ServerJar => &["jar"],
+            Self::ServerJar | Self::OptifineInstaller => &["jar"],
         }
     }
 
@@ -59,6 +59,7 @@ impl PathUse {
             Self::Diagnostics => "导出诊断报告 / Export diagnostic report",
             Self::ServerJar => "选择服务端 JAR / Choose server JAR",
             Self::ServerFolder => "选择服务端文件夹 / Choose server folder",
+            Self::OptifineInstaller => "选择 OptiFine 安装器 JAR / Choose OptiFine installer JAR",
         }
     }
 

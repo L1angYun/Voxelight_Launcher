@@ -135,4 +135,27 @@ describe("InstanceSettings memory fields", () => {
       loaderVersion: null,
     });
   });
+
+  it("imports a local OptiFine installer JAR for the current instance", async () => {
+    const { pickLauncherPath } = await import("../../lib/nativePaths");
+    vi.mocked(pickLauncherPath).mockResolvedValue("C:\\SyntheticFixture\\OptiFine_1.20.1_HD_U_I6.jar");
+    commandMock.mockImplementation(async (name) => {
+      if (name === "get_resource_context") return { gameVersion: "1.20.1", loader: "forge" };
+      if (name === "list_loader_versions") return [];
+      if (name === "install_optifine_installer") return { versionId: "1.20.1-OptiFine_HD_U_I6", loader: "optifine", loaderVersion: "HD_U_I6" };
+      return null;
+    });
+
+    await render({ ...base, versionId: "1.20.1", loader: "vanilla", loaderVersion: "" });
+    const ofBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "OptiFine")!;
+    await act(async () => ofBtn.click());
+    const importBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Import OptiFine installer JAR…")!;
+    await act(async () => importBtn.click());
+    expect(pickLauncherPath).toHaveBeenCalledWith("optifineInstaller");
+    expect(commandMock).toHaveBeenCalledWith("install_optifine_installer", {
+      path: "C:\\SyntheticFixture\\OptiFine_1.20.1_HD_U_I6.jar",
+      expectedGameVersion: "1.20.1",
+      instanceId: "fixture",
+    });
+  });
 });

@@ -95,7 +95,7 @@ export function CreateInstanceDialog({
     [data.installedVersions]);
   const searching = versionQuery.trim() !== "";
   const manifestChoices = allVersions.length > 0;
-  const names: Record<Loader, string> = { vanilla: t("library:vanilla"), fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge" };
+  const names: Record<Loader, string> = { vanilla: t("library:vanilla"), fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge", optifine: "OptiFine" };
   const loaderReady = loaderResponseKey === loaderKey && !loaderLoading && loaderFailure !== loaderKey;
   // Keep the mounted control's previous text during its collapse; it remains inert and cannot submit.
   const displayLoaderChoice = loaderReady || loader === "vanilla";
@@ -217,6 +217,31 @@ export function CreateInstanceDialog({
     });
   }
 
+  async function importOptifineJar() {
+    if (busy) return;
+    setError("");
+    await run("instance.install", async () => {
+      const path = await pickLauncherPath("optifineInstaller");
+      if (!path) return;
+      const installed = await command<LoaderResult>("install_optifine_installer", {
+        path,
+        expectedGameVersion: chosenVersion || undefined,
+      });
+      let instance: Instance | undefined;
+      if (instanceName.trim()) {
+        instance = await command<Instance>("create_instance", {
+          name: instanceName.trim(),
+          versionId: installed.versionId,
+        });
+      }
+      await reload();
+      if (instance) selectInstance(instance.id);
+      else selectVersion(installed.versionId);
+      await onInstalled(installed.versionId, instance?.id);
+      onOpenChange(false);
+    });
+  }
+
   async function importPack(useDropped = false) {
     setError("");
     await run("instance.import", async () => {
@@ -324,7 +349,7 @@ export function CreateInstanceDialog({
           <div className="vx-create-loader-group">
           <Field label={t("library:loader")}>
             <Segmented semantic="toggle" label={t("library:loader")} value={loader} onChange={setLoader}
-              options={(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => ({ value, label: value === "vanilla" ? t("library:vanilla") : value === "neoforge" ? "NeoForge" : value[0].toUpperCase() + value.slice(1) }))} />
+              options={(["vanilla", "fabric", "quilt", "forge", "neoforge", "optifine"] as const).map((value) => ({ value, label: names[value] }))} />
           </Field>
           <div className="vx-create-loader-slot" data-expanded={loader !== "vanilla"}
             inert={loader === "vanilla" || !isOpen || undefined} aria-hidden={loader === "vanilla" || !isOpen || undefined}>
@@ -337,6 +362,10 @@ export function CreateInstanceDialog({
           {loader !== "vanilla" && (loaderFailure === loaderKey || loaderReady && !loaderVersions.length) ? <div className="vx-action-row">
             {loaderFailure === loaderKey ? <span role="alert">{t("library:createMetadata.failedLoader", { loader: names[loader] })}</span> : null}
             {retry(() => retryLoader(value => value + 1))}</div> : null}
+          {loader === "optifine" ? <div className="vx-action-row">
+            <Button type="button" size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => void importOptifineJar()}>{t("library:optifineImportJar")}</Button>
+            <small className="vx-muted">{t("library:optifineHint")}</small>
+          </div> : null}
           </div>
           </div>
           </div>

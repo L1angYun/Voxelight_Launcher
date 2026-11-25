@@ -322,6 +322,7 @@ pub fn run() {
             network::set_proxy_credentials,
             loaders::list_loader_versions,
             loaders::install_loader,
+            loaders::install_optifine_installer,
             downloads::reserve_launch_task,
             resources::reserve_resource_task,
             downloads::list_download_tasks,

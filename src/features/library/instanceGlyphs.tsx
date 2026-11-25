@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { APRIL_FOOLS_IDS } from "./versionCatalog";
 
-export type GlyphLoader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge" | "unknown";
+export type GlyphLoader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge" | "optifine" | "unknown";
 export type GlyphVersion = "release" | "snapshot" | "old";
 
 /** Loader families, independent of their display casing and version suffix. */
@@ -20,6 +20,8 @@ export function glyphLoader(loader: string | null | undefined): GlyphLoader {
       return "forge";
     case "neoforge":
       return "neoforge";
+    case "optifine":
+      return "optifine";
     default:
       return "unknown";
   }
@@ -35,6 +37,7 @@ export function glyphLoaderForVersionDirectory(versionId: string): GlyphLoader {
   if (id.startsWith("quilt-loader-")) return "quilt";
   if (id.startsWith("neoforge-") || id.includes("-neoforge-")) return "neoforge";
   if (id.startsWith("forge-") || id.includes("-forge-")) return "forge";
+  if (id.includes("-optifine_") || id.includes("-optifine-")) return "optifine";
   return "vanilla";
 }
 
@@ -168,6 +171,24 @@ const MOTIFS: Record<GlyphLoader, readonly string[]> = {
     "....kcccccck....",
     "...kkkkkkkkkk...",
     "................",
+    "................",
+  ],
+  optifine: [
+    "................",
+    "................",
+    "................",
+    "................",
+    "....kkkkkkkk....",
+    "...kllllllllk...",
+    "..klccccccccsk..",
+    "..klccaaaaccsk..",
+    "..klccaaaaccsk..",
+    "..klccccccccsk..",
+    "...kssssssssk...",
+    "....kkkkkkkk....",
+    ".....kbbbbk.....",
+    "....kbbbbbbk....",
+    "...kkkkkkkkkk...",
     "................",
   ],
   unknown: [

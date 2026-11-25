@@ -17,7 +17,7 @@ import type { Loader, LoaderVersion } from "../library/types";
 import { errorText } from "../library/utils";
 import type { ResourceCreateRequest, ResourceTargetFlow, TargetRow } from "./types";
 
-const loaderNames: Record<Loader, string> = { vanilla: "Vanilla", fabric: "Fabric", neoforge: "NeoForge", forge: "Forge", quilt: "Quilt" };
+const loaderNames: Record<Loader, string> = { vanilla: "Vanilla", fabric: "Fabric", neoforge: "NeoForge", forge: "Forge", quilt: "Quilt", optifine: "OptiFine" };
 const rowKey = (row: TargetRow) => row.instanceId ? "instance:" + row.instanceId : "version:" + row.versionId;
 
 export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCancel, onCreateInstance, onDownloads }: {
