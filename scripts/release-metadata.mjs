@@ -14,21 +14,25 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const STABLE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+export const PRERELEASE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(?:alpha|beta|rc)\.(?:[1-9][0-9]*)$/;
 /** The launcher refuses larger installers (updates::MAX_INSTALLER_BYTES). */
 export const MAX_INSTALLER_BYTES = 512 * 1024 * 1024;
 export const installerName = (version) => `VoxelightLauncher-${version}-x64-setup.exe`;
 /** The name Tauri gives the NSIS installer (the product name contains a space). */
 export const tauriOutputName = (version) => `Voxelight Launcher_${version}_x64-setup.exe`;
 
-/** package.json, Cargo.toml and tauri.conf.json must name the same stable version. */
-export function projectVersion(root) {
+/** package.json, Cargo.toml and tauri.conf.json must name the same version. */
+export function projectVersion(root, { allowPrerelease = false } = {}) {
   const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
   const cargo = /^version = "([^"]+)"$/m.exec(readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8"))?.[1];
   const tauri = JSON.parse(readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8")).version;
   if (!pkg || pkg !== cargo || pkg !== tauri) {
     throw new Error(`Version fields disagree: package.json ${pkg}, Cargo.toml ${cargo}, tauri.conf.json ${tauri}.`);
   }
-  if (!STABLE.test(pkg)) throw new Error(`Version ${pkg} is not a stable three-part version.`);
+  const valid = STABLE.test(pkg) || (allowPrerelease && PRERELEASE.test(pkg));
+  if (!valid) {
+    throw new Error(`Version ${pkg} is not a stable three-part version.`);
+  }
   return pkg;
 }
 
@@ -70,8 +74,12 @@ export function writeNew(file, bytes) {
 }
 
 /** Copies the installer under its fixed name and writes update.json from the copied bytes. */
-export function writeMetadata({ root, installer, out }) {
-  const version = projectVersion(root);
+export function writeMetadata({ root, installer, out, prerelease = false }) {
+  const version = projectVersion(root, { allowPrerelease: prerelease });
+  const isPrerelease = PRERELEASE.test(version);
+  if (prerelease && !isPrerelease) {
+    throw new Error(`--prerelease requires a pre-release version such as 0.7.0-beta.1, got ${version}.`);
+  }
   if (!installer || !out) throw new Error("--installer and --out are required.");
   const source = path.resolve(installer);
   const output = path.resolve(out);
@@ -95,7 +103,7 @@ export function writeMetadata({ root, installer, out }) {
   const manifest = {
     tag_name: `v${version}`,
     draft: false,
-    prerelease: false,
+    prerelease: isPrerelease,
     assets: [{ name: installerName(version), size: bytes.length, digest: `sha256:${digest}` }],
   };
   const manifestPath = path.join(output, "update.json");
@@ -115,7 +123,12 @@ function argument(name) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const result = writeMetadata({ root, installer: argument("--installer"), out: argument("--out") });
+    const result = writeMetadata({
+      root,
+      installer: argument("--installer"),
+      out: argument("--out"),
+      prerelease: process.argv.includes("--prerelease"),
+    });
     console.log(`installer: ${result.installer}`);
     console.log(`update.json: ${result.manifest}`);
     console.log(`SHA256: ${result.sha256}`);

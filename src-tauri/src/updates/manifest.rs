@@ -29,6 +29,29 @@ pub(crate) fn display_version((major, minor, patch): Version) -> String {
     format!("{major}.{minor}.{patch}")
 }
 
+/// Parses the running launcher's own SemVer string: either a stable
+/// `MAJOR.MINOR.PATCH` or a pre-release `MAJOR.MINOR.PATCH-(alpha|beta|rc).N`.
+/// Returns `(base_version, is_prerelease)`.
+pub(crate) fn parse_running_version(text: &str) -> Option<(Version, bool)> {
+    if text.is_empty() || text.len() > 64 {
+        return None;
+    }
+    if let Some(stable) = parse_version(text) {
+        return Some((stable, false));
+    }
+    let (base, pre) = text.split_once('-')?;
+    let version = parse_version(base)?;
+    let (channel, num) = pre.split_once('.')?;
+    if !matches!(channel, "alpha" | "beta" | "rc") {
+        return None;
+    }
+    let valid_num = !num.is_empty()
+        && num.bytes().all(|byte| byte.is_ascii_digit())
+        && !num.starts_with('0')
+        && num.parse::<u64>().ok().is_some_and(|n| n >= 1);
+    valid_num.then_some((version, true))
+}
+
 const MAX_DEPTH: usize = 8;
 
 /// JSON that rejects duplicate keys (serde_json keeps the last one) and

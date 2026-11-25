@@ -96,16 +96,25 @@ npm run tauri -- build --no-bundle --no-sign --debug -- --locked
 
 `source:check` 只需要 Node。`npm test` 需要 Git 历史，只能在代码仓库里运行。
 
+## 版本管理与版本号规范
+
+Voxelight Launcher 遵循 [语义化版本 2.0.0（SemVer）](https://semver.org/lang/zh-CN/)：
+
+- **正式版（`MAJOR.MINOR.PATCH`）**：例如 `0.7.0`、`1.0.0`，对应 Git 标签 `v0.7.0`，在 GitHub / Gitee 以正式发布（`prerelease: false`）推送，启动器内置自动更新器会自动检测并提供升级。
+- **预发布版（`MAJOR.MINOR.PATCH-(alpha|beta|rc).N`）**：例如 `0.7.0-beta.1`、`0.7.0-rc.1`，对应 Git 标签 `v0.7.0-beta.1`，在 GitHub / Gitee 显式勾选为 Pre-release（`prerelease: true`）。正式版用户不会被自动推送预发布版；而运行预发布版的用户在对应正式版（如 `0.7.0`）发布后会自动收到正式版升级提示。
+- **多文件版本号同步**：仓库中的 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 与 `licenses/dependency-inventory.json` 必须保持完全一致。日常通过 `npm run version:check`（已纳入 `npm run check`）自动校验，切版本时使用 `npm run version:set -- <版本号>` 原子同步六处文件。
+- **变更记录**：开发期间把用户可见变更维护在 `CHANGELOG.md` 的 `[Unreleased]` 小节，切标签发布时整理为对应版本号与日期。
+
 ## 发布
 
-1. 在 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 和 `licenses/dependency-inventory.json` 中写入版本号，然后生成安装程序。
+1. 运行 `npm run version:set -- <版本>`（预发布如 `0.7.0-beta.1`，正式版如 `0.7.0`），整理 `CHANGELOG.md`，运行 `npm run version:check` 校验一致后构建安装程序。
 2. 签名（可选）：`scripts\build.ps1 -PrepareSigning`（只要可执行文件时加 `-NoBundle`）在新文件夹里重新构建，并写出签名回执。然后运行 `scripts\desktop.ps1 -Action sign -CertificateThumbprint <指纹> -SigningReceipt <回执>`，用当前用户证书存储里的证书签名（不用 PFX 文件和密码），通过 `timestamp.digicert.com` 加时间戳。它为独立的可执行文件和安装程序签名，安装程序里打包的那份可执行文件不签名。回执里的文件有变化就要重新构建。
-3. `node scripts/release-metadata.mjs --installer "<路径>\Voxelight Launcher_<版本>_x64-setup.exe" --out releases\<版本>-installer` 把安装程序复制为 `VoxelightLauncher-<版本>-x64-setup.exe`，并据此写出 `update.json`。
+3. `node scripts/release-metadata.mjs --installer "<路径>\Voxelight Launcher_<版本>_x64-setup.exe" --out releases\<版本>-installer`（预发布构建加 `--prerelease`）把安装程序复制为 `VoxelightLauncher-<版本>-x64-setup.exe`，并据此写出 `update.json`。
 4. 在同一个代码目录运行 `npm run source:package`。
-5. `node scripts/prepare-release-assets.mjs --version <版本> --installer releases\<版本>-installer\VoxelightLauncher-<版本>-x64-setup.exe --source releases\<版本>\VoxelightLauncher-<版本>-source.zip --out releases\<版本>-assets`。
-6. 把这四个文件上传到 `v<版本>` 的 GitHub 发布和 Gitee 发布：先传安装程序、源码包和 `SHA256SUMS.txt`，最后传 `update.json`。
+5. `node scripts/prepare-release-assets.mjs --version <版本> --installer releases\<版本>-installer\VoxelightLauncher-<版本>-x64-setup.exe --source releases\<版本>\VoxelightLauncher-<版本>-source.zip --out releases\<版本>-assets`（预发布构建加 `--prerelease`）。
+6. 把这四个文件上传到 `v<版本>` 的 GitHub 发布和 Gitee 发布（`-alpha`/`-beta`/`-rc` 勾选为预发布）：先传安装程序、源码包和 `SHA256SUMS.txt`，最后传 `update.json`。
 
-`release-metadata.mjs` 和 `prepare-release-assets.mjs` 从不上传、签名或运行任何东西。启动器只提供正式版本，安装程序必须保持固定名称，且小于 512 MiB。
+`release-metadata.mjs` 和 `prepare-release-assets.mjs` 从不上传、签名或运行任何东西。内置自动更新器只推送正式版本，安装程序必须保持固定名称，且小于 512 MiB。
 
 ## 冒烟测试
 

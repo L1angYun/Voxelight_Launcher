@@ -2,122 +2,78 @@
 
 English | [简体中文](README.zh-CN.md)
 
-An open-source launcher for Minecraft: Java Edition on 64-bit Windows, built with Rust, Tauri 2 and React. GPL-3.0-only. Unofficial: not affiliated with or endorsed by Mojang or Microsoft.
+An open-source launcher for Minecraft: Java Edition on 64-bit Windows, built with Rust, Tauri 2, and React. Licensed under GPL-3.0-only. Unofficial: not affiliated with or endorsed by Mojang or Microsoft.
 
 ![Voxelight Launcher home page](docs/images/home-0.5.0.png)
 
-_Screenshot from 0.5.0; the current interface looks different._
+_Screenshot from 0.5.0; the interface has evolved since._
 
 ## Download
 
-Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://github.com/L1angYun/Voxelight_Launcher/releases) or the [Gitee mirror](https://gitee.com/liangyun_Liu/Voxelight_Launcher/releases) (same files).
+Download `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://github.com/L1angYun/Voxelight_Launcher/releases) or the [Gitee mirror](https://gitee.com/liangyun_Liu/Voxelight_Launcher/releases) (identical binaries and `SHA256SUMS.txt`).
 
-- Installs for the current user, without administrator rights, by default to `%LOCALAPPDATA%\Voxelight Launcher`. Installs the WebView2 runtime if it is missing.
-- **Releases come with a built-in Microsoft Client ID and CurseForge API key**, so Microsoft sign-in and CurseForge work without any setup. A build from source has neither; see [Accounts and service keys](#accounts-and-service-keys).
-- Updates install from **Settings → About → Download and update**, after the installer's size and SHA-256 are checked. Older versions are never installed over newer ones.
+- Installs per-user with no administrator privileges (default: `%LOCALAPPDATA%\Voxelight Launcher`), and installs WebView2 if missing.
+- **Official releases bundle a Microsoft Client ID and CurseForge API key**, so Microsoft sign-in and CurseForge work out of the box. Source builds include neither; see [Accounts and service keys](#accounts-and-service-keys).
+- Stable updates can be verified (size + SHA-256) and installed in-app from **Settings → About**, with downgrade protection. Pre-release builds (`-alpha.N`, `-beta.N`, `-rc.N`) are published explicitly as pre-releases and automatically upgrade to the corresponding stable release once published.
 
-## Features
+## Highlights
 
-✅ available · 🚧 planned. Planned items are updated as they are done.
-
-| Area | Feature | Status |
-| --- | --- | --- |
-| Versions | Every release and snapshot, with Fabric, Quilt, Forge or NeoForge | ✅ |
-| Versions | Version list grouped into releases, snapshots, Beta & Alpha and April Fools versions, with search, sorting and release dates | ✅ |
-| Versions | OptiFine | ✅ |
-| Versions | Change the loader of an existing instance | ✅ |
-| Java | Finds installed Java; downloads Mojang's runtime when a version needs another; automatic or manual memory | ✅ |
-| Instances | Own folder per instance, with its own or the global Java, memory, JVM arguments, window size and game proxy | ✅ |
-| Instances | Backup and restore, copy, export as a personal backup or a Modrinth `.mrpack` | ✅ |
-| Instances | Worlds: import and back up as ZIP; screenshots | ✅ |
-| Instances | Data packs per world | ✅ |
-| Instances | Crash-log analysis and diagnostic report | ✅ |
-| Instances | Game logs per instance, with search and level filters | ✅ |
-| Content | Search and install mods, resource packs, shaders and modpacks from Modrinth and CurseForge | ✅ |
-| Content | Modrinth installs bring required dependencies; update checks with rollback | ✅ |
-| Content | Search, filter, sort and batch enable or disable local mods and packs | ✅ |
-| Content | Batch delete of local mods and packs | ✅ |
-| Content | In a project's version list, show how many of your instances each version fits | ✅ |
-| Content | Drag-and-drop import of mods, modpacks and skins | ✅ |
-| Modpacks | Import a `.mrpack` or CurseForge ZIP, or install online | ✅ |
-| Modpacks | Update online-installed packs: a plan of every change, your edits kept, automatic backup | ✅ |
-| Modpacks | Import MultiMC and MCBBS packs | ✅ |
-| Downloads | One task page with pause, resume, cancel and retry | ✅ |
-| Downloads | Resumable and multi-connection downloads; game files, Java, mods and modpacks checked against their published hashes; Official or BMCLAPI source; proxy | ✅ |
-| Downloads | Retry all, and clear unfinished downloads | ✅ |
-| Accounts | Microsoft, offline and Authlib accounts; skin upload and cape for Microsoft accounts | ✅ |
-| Multiplayer | Server list, status, LAN worlds, direct join; local vanilla servers with a console | ✅ |
-| Multiplayer | Import third-party server software, such as Spigot, Paper or Fabric, as a JAR or an existing server folder, and run it as a managed server | ✅ |
-| Multiplayer | Import Forge and NeoForge servers that start only from an arguments file (Forge 1.17+ without a shim JAR, NeoForge) | ✅ |
-| Multiplayer | Network check: IPv4 and IPv6, NAT type, and advice for direct connections | ✅ |
-| Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows theme, language, accent color and accessibility settings by default | ✅ |
-| Interface | Lower memory use, such as unloading the 3D world in Lite mode | ✅ |
-| Interface | Instance icons by loader and version type | ✅ |
-| Interface | Keyboard shortcuts, settings search, first-run welcome setup (OOBE) and factory reset | ✅ |
-| Interface | Custom home background | ✅ |
-| Updates | Update checks on GitHub or Gitee, and updates from inside the launcher | ✅ |
-| Installer | Installer pages with the launcher's icon, colors, typeface and world scene | ✅ |
-| Installer | Follow Windows dark and light theme in the installer | 🚧 |
-| Assistant | **Lumen** — built-in BYO-API assistant (38 curated launcher tools, completely hidden until configured, proactive crash wake-up) and localhost-only MCP server | ✅ |
+- **Versions & Loaders** — Every release, snapshot, Beta/Alpha, and April Fools version; Fabric, Quilt, Forge, NeoForge, and OptiFine (local installer JAR or mirror); switch loaders on an existing instance without losing worlds or mods.
+- **Instances & Content** — Isolated folders with per-instance Java, automatic or manual memory, JVM arguments, window size, and game proxy; backup/restore, clone, personal archive or Modrinth `.mrpack` export; world import/backup, per-world data packs, screenshots, live searchable game logs, and crash diagnostics.
+- **Mod & Modpack Ecosystem** — Search and install mods, resource packs, shaders, and modpacks from Modrinth (with required dependencies and transactional rollback) and CurseForge; import `.mrpack`, CurseForge, MultiMC / Prism, and MCBBS packs; online modpack updates with diff plans and automatic backups; drag-and-drop import for mods, packs, and skins; batch enable/disable/delete for local resources.
+- **Downloads & Proxy** — Unified resumable, hash-verified download queue with pause, resume, cancel, retry-all, and unfinished cleanup; Official, Automatic latency-measured, or BMCLAPI source; system proxy by default with automatic detection of Windows system proxies, environment variables, and common local HTTP proxy ports.
+- **Accounts & Multiplayer** — Microsoft device-code login (with 3D skin preview, upload, and cape selection), offline accounts, and Authlib-injector; server list with status ping, LAN discovery, direct join, IPv4/IPv6 & NAT network diagnostics, and local managed servers (vanilla download or imported Paper/Spigot/Fabric/Forge/NeoForge JARs and `win_args.txt` folders) with console.
+- **Interface & Localization** — Available in **7 languages** (Simplified Chinese, Traditional Chinese, English, Japanese, Korean, Russian, Spanish), following Windows theme, language, accent color, and accessibility preferences by default; Dark/Light themes, Full/Lite effects (unloads 3D world in Lite mode), interactive first-run welcome setup (OOBE), custom home background, keyboard shortcuts, settings search, and one-click factory reset (never deletes Minecraft files).
+- **Lumen & Local MCP (Opt-in)** — Optional built-in assistant (**Lumen**) using your own OpenAI-compatible or Anthropic API key (or local loopback Ollama/LM Studio) with tiered permissions, proactive crash diagnosis, and an opt-in `127.0.0.1` MCP server. Completely invisible everywhere outside **Settings → Lumen & MCP** until configured.
 
 ## Accounts and service keys
 
-**Microsoft sign-in** uses the device-code flow: the launcher shows a code, you enter it on Microsoft's page, and the launcher never sees your password. The flow runs under a Microsoft app registration (a Client ID) that Mojang has to approve for the Minecraft Java API.
-
-**CurseForge** needs an API key for search, installs and update checks. Modrinth needs no key.
-
-Releases include both. To use your own instead, or in a build from source, enter them in **Settings → General → Service connections**. Your own Client ID must be a public-client registration that allows the device-code flow for personal accounts and has passed Mojang's review; don't reuse another launcher's.
-
-An **offline account** is enough for single-player and for servers that allow offline players. An **Authlib** password goes only to that server and is not saved.
+- **Microsoft sign-in** uses the OAuth device-code flow; the launcher never sees your password.
+- **CurseForge** requires an API key for search, downloads, and update checks; **Modrinth** requires no key.
+- Releases bundle both. In a source build, or to use your own credentials, configure them in **Settings → General → Service connections**.
+- **Offline accounts** work for single-player and offline-mode servers. **Authlib** passwords are sent only to the server you enter and are never saved.
 
 ## Your data
 
-| | Location |
+| Data | Location |
 | --- | --- |
 | Launcher data (settings, accounts, logs, Java runtimes, backups, servers, caches) | `%LOCALAPPDATA%\dev.voxelight.launcher` |
-| Game directory (versions, libraries, assets, `instances\`) | `%APPDATA%\.minecraft` by default; **Settings → Game** |
+| Game directory (versions, libraries, assets, `instances\`) | `%APPDATA%\.minecraft` by default (**Settings → Game**) |
 
-- The default game directory is the official launcher's, so versions, libraries and assets are shared with it. Nothing is imported from other launchers.
-- Tokens, the saved CurseForge key, proxy credentials and the assistant API key are encrypted with Windows DPAPI for your Windows user. Copy the data folder to another user or PC and you have to sign in and enter those keys and credentials again.
-- Uninstalling keeps your data unless you tick **Delete the application data**. The game directory is never deleted.
-- `VOXELIGHT_LAUNCHER_DATA_DIR` and `VOXELIGHT_LAUNCHER_GAME_DIR` move the folders for test setups or a second profile; a game directory set this way is also saved in the settings.
+- Tokens, the CurseForge key, proxy credentials, and the Lumen API key are encrypted per Windows user via **Windows DPAPI** and excluded from exported presets.
+- Uninstalling keeps launcher data unless you opt in to delete it; factory reset (**Settings → General → Restore initial state**) and uninstalling **never delete your Minecraft game directory, worlds, mods, backups, or server files**.
+- `VOXELIGHT_LAUNCHER_DATA_DIR` and `VOXELIGHT_LAUNCHER_GAME_DIR` override these paths for secondary profiles or testing.
 
 ## Network
 
-No telemetry, analytics or crash reporting. The launcher connects only to:
+No telemetry, analytics, or crash reporting. Network requests go only to:
 
-| For | Hosts |
+| Purpose | Hosts |
 | --- | --- |
-| Game files, version list, Java | Mojang; BMCLAPI if the download source allows |
-| Loaders | Fabric, Quilt, Forge and NeoForge servers; OptiFine via local installer JAR or BMCLAPI if allowed; partly BMCLAPI if allowed |
-| Microsoft accounts | Microsoft, Xbox Live and Minecraft services |
-| Authlib accounts | The server you entered; `authlib-injector.yushi.moe` |
-| Content and modpacks | Modrinth, CurseForge; files listed in a modpack can also come from GitHub or GitLab |
+| Game files, version list, Java | Mojang; BMCLAPI when enabled in download source |
+| Loaders | Fabric, Quilt, Forge, NeoForge; OptiFine via local JAR or BMCLAPI if enabled |
+| Microsoft / Authlib accounts | Microsoft, Xbox Live, Minecraft services; your Authlib server & `authlib-injector.yushi.moe` |
+| Content & modpacks | Modrinth, CurseForge; modpack external links (e.g. GitHub/GitLab) |
 | Launcher updates | GitHub, Gitee |
-| Multiplayer | The servers you check; UDP 4445 for LAN discovery; STUN servers (`stun.cloudflare.com`, `stun.miwifi.com`, `stun.l.google.com`, `stun1.l.google.com`) only when you run a network check |
-| Skin preview | A skin URL you enter |
-| Lumen & MCP | The AI provider endpoint you configure (only when configured and invoked); optional localhost-only (`127.0.0.1`) MCP server off by default |
-
-- Every start fetches the version list. The update check also runs at every start by default; with the default Auto source it asks both GitHub and Gitee (**Settings → About**).
-- With an offline account or none, showing the default Steve or Alex can download an official Minecraft client once, if no installed one can be used.
-- Installing from Modrinth, checking content for updates and exporting a Modrinth pack send hashes of local files, not their names, to Modrinth; update checks also send CurseForge fingerprints if a key is available.
+| Multiplayer | Configured game servers; UDP 4445 (LAN); public STUN servers only when running a network check |
+| Lumen & MCP | Only your configured AI endpoint when enabled and invoked; local MCP binds strictly to `127.0.0.1` and starts off |
 
 ## Download sources and proxy
 
-**Settings → Downloads → Download source**: **Official only** (default), **Automatic** (Mojang first, unless it fails or is clearly slower this session), or **BMCLAPI first**. BMCLAPI is a community mirror, not a Mojang service; it covers Mojang's files and part of Fabric, Forge, NeoForge and authlib-injector, and every mirrored file is still hash-checked.
+- **Download source** (**Settings → Downloads**): **Official only** (default), **Automatic** (official first unless unavailable or clearly slower this session), or **BMCLAPI first**. Mirrored files are still verified against official hashes.
+- **Network proxy**: Follow system (default), Off, or Custom `http://` / `https://`, with automatic detection of Windows system proxies, environment variables, and common local HTTP proxy ports. **Game proxy mode** defaults to Follow system and can be overridden per instance.
 
-**Network proxy**: Follow system (default), Off, or Custom `http://` / `https://`, with automatic detection of Windows system proxies, environment proxy variables, and common local HTTP proxy ports; restart the launcher after changing it. **Game proxy mode** (default Follow system) lets Minecraft itself follow the system proxy, turn proxying off, or inherit the launcher's `http://` proxy, globally or per instance. Modrinth search and images such as project icons and skins are loaded by WebView2, which does not use the launcher's proxy setting.
+## Known limitations
 
-## Limitations
-
-- Windows x64 and Java Edition only.
-- Shader packs need a shader loader such as Iris, installed as a mod.
-- The built-in server download is vanilla only; other server software can be imported, including Forge and NeoForge servers that start from `win_args.txt`. CurseForge installs don't fetch dependencies.
-- Closing the window quits the launcher; unfinished installs can be retried from **Downloads**.
+- Windows x64 and Minecraft: Java Edition only.
+- Shader packs require a shader loader mod such as Iris.
+- Built-in server download provides vanilla servers; modded/plugin servers can be imported as a JAR or folder (including `win_args.txt` Forge/NeoForge servers). CurseForge resource installs do not auto-resolve dependencies.
+- The Windows NSIS installer currently uses a fixed dark visual style rather than adapting dynamically to the Windows light/dark theme.
+- Closing the window exits the launcher; interrupted downloads can be resumed or retried from **Downloads**.
 
 ## Building from source
 
-Windows, Node.js 22.13.0+ on 22.x or 24.0.0+, Rust 1.90+ (MSVC), Visual Studio C++ build tools with the Windows SDK, WebView2, Git.
+Requires Windows x64, Node.js 22.13.0+ (22.x) or 24.0.0+, Rust 1.90+ (MSVC), Visual Studio C++ build tools + Windows SDK, WebView2, and Git.
 
 ```powershell
 npm ci
@@ -125,11 +81,11 @@ npm run desktop:dev      # run in development
 npm run desktop:build    # build the installer
 ```
 
-A build from source has no built-in Client ID or CurseForge key unless you set them at build time. Tests, release steps and details: [docs/development.md](docs/development.md).
+Versioning conventions, testing, source packaging, and release steps: [docs/development.md](docs/development.md) · [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[GPL-3.0-only](LICENSE); see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Third-party licenses are in [licenses/](licenses/). The MiSans typeface is Xiaomi's, under its own license. Steve and Alex textures are not included; the launcher reads them from an official, hash-checked Minecraft client.
+[GPL-3.0-only](LICENSE); see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Third-party licenses live in [licenses/](licenses/). The MiSans typeface is provided under Xiaomi's license. Default Steve/Alex textures are read from a verified official Minecraft client rather than bundled.
 
 Minecraft is a trademark of Mojang and Microsoft.
 

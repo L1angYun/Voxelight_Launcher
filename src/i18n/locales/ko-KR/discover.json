@@ -1,0 +1,85 @@
+{
+  "title": "탐색",
+  "subtitle": "현재 인스턴스와 호환되는 콘텐츠를 찾습니다.",
+  "search": "리소스 검색",
+  "searchPlaceholder": "모드, 리소스 팩, 셰이더 또는 모드팩 검색…",
+  "source": "소스",
+  "typeLabel": "콘텐츠 유형",
+  "type": {
+    "mod": "모드",
+    "resourcepack": "리소스 팩",
+    "shader": "셰이더",
+    "modpack": "모드팩"
+  },
+  "target": "설치 대상",
+  "versionDirectory": "버전 디렉터리 사용",
+  "details": "자세히 보기",
+  "install": "설치",
+  "installVersion": "{{version}} 버전 설치",
+  "installVersionNotice": "다른 버전을 설치하면 기존에 설치된 버전이 교체될 수 있습니다. 필수 종속성은 별도로 처리됩니다.",
+  "noResults": "리소스를 찾을 수 없습니다",
+  "noResultsDescription": "다른 검색어나 콘텐츠 유형을 선택해 보세요.",
+  "noDescription": "이 프로젝트에 제공된 설명이 없습니다.",
+  "authorUnknown": "알 수 없는 제작자",
+  "versions": "호환 버전",
+  "noVersions": "현재 인스턴스와 호환되는 버전이 없습니다",
+  "fits": {
+    "count": "인스턴스 {{count}}개와 호환",
+    "none": "호환되는 인스턴스 없음",
+    "more": " 외 {{count}}개",
+    "onlyMine": "내 인스턴스에 맞는 버전만 표시",
+    "empty": "내 인스턴스와 호환되는 버전이 없습니다."
+  },
+  "dependencies": "종속성",
+  "noDependencies": "이 프로젝트에 선언된 종속성이 없습니다",
+  "dependency": {
+    "required": "필수",
+    "optional": "선택",
+    "incompatible": "비호환",
+    "embedded": "내장됨",
+    "unknown": "알 수 없는 관계"
+  },
+  "external": "프로젝트 페이지 열기",
+  "installTarget": {
+    "newInstance": "새 인스턴스",
+    "title": "설치 위치 선택 · {{title}}",
+    "compatible": "호환되는 위치",
+    "incompatible": "호환되지 않음({{count}})",
+    "installInto": "{{name}}에 설치",
+    "createAndInstall": "만들고 설치",
+    "gameVersion": "게임 버전",
+    "loaderVersion": "로더 버전",
+    "name": "인스턴스 이름",
+    "recommended": "권장",
+    "summary": "{{loader}} {{loaderVersion}} 및 Minecraft {{gameVersion}} 설치 후 {{title}} 및 필수 종속성을 설치합니다.",
+    "noLoaderVersions": "이 게임 버전에 사용할 수 있는 로더 버전이 없습니다. 다른 게임 버전을 선택하세요.",
+    "shaderWarning": "셰이더를 사용하려면 Iris 또는 OptiFine 같은 호환 렌더링 로더가 필요합니다. 별도로 설치해야 하며 Iris는 자동으로 설치되지 않습니다.",
+    "creating": "인스턴스를 만들고 리소스를 설치하는 중…",
+    "downloads": "다운로드에서 보기",
+    "cancel": "설치 취소",
+    "curseforge": "먼저 호환되는 인스턴스를 만든 뒤 해당 인스턴스를 선택해 이 CurseForge 프로젝트를 설치하세요.",
+    "reason": {
+      "vanilla": "바닐라는 모드를 불러올 수 없음",
+      "loaderMismatch": "호환되지 않는 로더",
+      "gameVersionMismatch": "호환되지 않는 게임 버전",
+      "running": "인스턴스 실행 중",
+      "metadataMissing": "버전 정보를 읽을 수 없음"
+    },
+    "unsupported": {
+      "datapack": "데이터 팩은 월드의 datapacks 폴더에 설치해야 하며 아직 지원되지 않습니다",
+      "noSupportedLoader": "이 프로젝트에는 Fabric, NeoForge, Forge 또는 Quilt 버전이 없습니다",
+      "noVersions": "다운로드 가능한 버전이 없습니다",
+      "curseforgeRequiredDependencies": "이 CurseForge 파일에는 다른 리소스가 필요합니다. 호환되는 인스턴스에 종속성을 먼저 설치한 뒤 이 파일을 설치하세요.",
+      "noPinnedCreationLoader": "이 파일은 새 인스턴스에서 사용할 수 있는 로더를 지원하지 않습니다.",
+      "noReleaseVersions": "이 프로젝트에는 설치 가능한 정식 게임 버전이 없습니다.",
+      "manifestUnavailable": "게임 버전 목록을 일시적으로 불러올 수 없어 새 인스턴스를 제안할 수 없습니다."
+    }
+  },
+  "notice": {
+    "resourceInstalled": "리소스가 설치되었습니다.",
+    "instanceInstalled": "인스턴스 설치가 완료되었습니다.",
+    "resourceInstalledNew": "새 인스턴스에 리소스가 설치되었습니다."
+  },
+  "importCurseforgeZip": "대신 CurseForge ZIP 가져오기",
+  "curseforgeZipRequired": "CurseForge 모드팩 ZIP 파일을 선택하세요."
+}

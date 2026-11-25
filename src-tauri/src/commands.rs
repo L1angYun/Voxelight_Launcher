@@ -330,7 +330,11 @@ fn validate_visual_preferences(config: &Config) -> Result<(), String> {
     if !["voxelight", "system", "custom"].contains(&config.accent_source.as_str()) {
         return Err("强调色来源无效".into());
     }
-    if !["system", "zh-CN", "en-US"].contains(&config.language.as_str()) {
+    if ![
+        "system", "zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "ru-RU", "es-ES",
+    ]
+    .contains(&config.language.as_str())
+    {
         return Err("暂不支持所选界面语言".into());
     }
     Ok(())

@@ -21,7 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import { createHash } from "node:crypto";
-import { assertEmptyOutput, assertNoLinks, installerName, MAX_INSTALLER_BYTES, STABLE, writeNew } from "./release-metadata.mjs";
+import { assertEmptyOutput, assertNoLinks, installerName, MAX_INSTALLER_BYTES, PRERELEASE, STABLE, writeNew } from "./release-metadata.mjs";
 
 export const MAX_MANIFEST_BYTES = 64 * 1024;
 export const MAX_SOURCE_BYTES = 512 * 1024 * 1024;
@@ -111,10 +111,15 @@ function exactKeys(value, keys, what) {
 }
 
 /** The manifest must describe `installer` exactly (name, size and SHA-256). */
-export function checkManifest(manifest, version, installer) {
+export function checkManifest(manifest, version, installer, { prerelease = false } = {}) {
   exactKeys(manifest, ["tag_name", "draft", "prerelease", "assets"], "update.json");
-  if (manifest.tag_name !== `v${version}` || manifest.draft !== false || manifest.prerelease !== false) {
-    throw new Error("update.json must describe the requested stable, published version.");
+  const expectedPrerelease = prerelease && PRERELEASE.test(version);
+  if (manifest.tag_name !== `v${version}` || manifest.draft !== false || manifest.prerelease !== expectedPrerelease) {
+    throw new Error(
+      expectedPrerelease
+        ? "update.json must describe the requested pre-release version."
+        : "update.json must describe the requested stable, published version.",
+    );
   }
   if (!Array.isArray(manifest.assets) || manifest.assets.length !== 1) {
     throw new Error("update.json must list exactly one installer.");
@@ -192,8 +197,9 @@ function readInput(input, limit) {
  * bytes (exactly those that were hashed and checked) and re-reads each staged
  * file. Returns the four staged files and the upload order.
  */
-export function prepare({ version, installer, source, out }) {
-  if (typeof version !== "string" || !STABLE.test(version)) {
+export function prepare({ version, installer, source, out, prerelease = false }) {
+  const valid = typeof version === "string" && (STABLE.test(version) || (prerelease && PRERELEASE.test(version)));
+  if (!valid) {
     throw new Error("Version must be a stable three-part version such as 0.7.0.");
   }
   if (!installer || !source || !out) throw new Error("--installer, --source and --out are required.");
@@ -216,7 +222,7 @@ export function prepare({ version, installer, source, out }) {
   }
   const inputs = selected.map((input) => readInput(input, input.limit));
   const [installerFile, sourceFile, manifestFile] = inputs;
-  checkManifest(strictJson(manifestFile.bytes), version, installerFile);
+  checkManifest(strictJson(manifestFile.bytes), version, installerFile, { prerelease });
   checkZip(sourceFile.bytes);
 
   assertEmptyOutput(output);
@@ -264,6 +270,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       installer: argument("--installer"),
       source: argument("--source"),
       out: argument("--out"),
+      prerelease: process.argv.includes("--prerelease"),
     });
     for (const file of result.files) console.log(`${file.sha256}  ${file.size}  ${file.path}`);
     console.log(`Upload the same files to the GitHub and Gitee release v${result.version}, in this order: ${result.uploadOrder.join(", ")}.`);

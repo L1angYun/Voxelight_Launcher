@@ -1,0 +1,174 @@
+{
+  "title": "角色",
+  "subtitle": "管理帳號、線上外觀與本機預覽。",
+  "listTitle": "帳號",
+  "addAccount": "新增帳號",
+  "loginTitle": "新增帳號",
+  "loginDescription": "選擇登入方式，或建立離線帳號。",
+  "loginMethods": "登入方式",
+  "avatar": "{{name}} 的角色頭像",
+  "fields": {
+    "playerName": "角色名稱",
+    "authlibApiUrl": "認證服務 API 網址",
+    "usernameOrEmail": "使用者名稱或電子郵件",
+    "password": "密碼",
+    "onlineSkinUrl": "線上造型 URL",
+    "importLocalPng": "匯入本機 PNG"
+  },
+  "credentialNotice": "登入權杖僅儲存在系統加密認證中，本機預覽檔案不會因此頁操作而上傳。",
+  "method": {
+    "microsoft": "Microsoft",
+    "offline": "離線帳號",
+    "authlib": "第三方認證"
+  },
+  "type": {
+    "microsoft": "Microsoft 正版",
+    "authlib": "第三方認證",
+    "offline": "離線帳號",
+    "unknown": "帳號"
+  },
+  "actions": {
+    "current": "目前帳號 {{name}}",
+    "select": "選擇 {{name}}",
+    "refresh": "重新整理 {{name}} 的工作階段",
+    "remove": "移除 {{name}}",
+    "retryAppearance": "重試帳號外觀",
+    "retryDefault": "重試預設角色"
+  },
+  "empty": {
+    "title": "還沒有帳號",
+    "description": "新增離線帳號，或登入帳號以管理線上外觀。"
+  },
+  "microsoft": {
+    "description": "在 Microsoft 官方頁面完成授權，啟動器不會收集你的 Microsoft 密碼。",
+    "clientId": "本專案的 Microsoft Client ID",
+    "clientIdHelp": "請使用自己註冊的公開用戶端應用程式，為個人帳號開啟裝置代碼登入，並確認 Xbox / Minecraft 服務權限，切勿借用其他啟動器的 Client ID。",
+    "builtinActive": "正在使用內建 Microsoft 應用程式。",
+    "customOverride": "使用自訂 Client ID",
+    "clientIdOptional": "自訂 Microsoft Client ID（選填）",
+    "customActive": "正在使用已儲存的自訂 Microsoft Client ID。",
+    "useBuiltin": "還原內建",
+    "saveClientId": "儲存 Client ID",
+    "start": "開始 Microsoft 登入",
+    "deviceInstruction": "在 Microsoft 官方頁面輸入以下代碼：",
+    "openVerification": "開啟 Microsoft 授權頁面",
+    "waiting": "等待授權 · 剩餘 {{minutes}}:{{seconds}} · 每 {{interval}} 秒檢查",
+    "cancel": "取消此次授權"
+  },
+  "offline": {
+    "description": "用於本機遊戲及允許離線身分的伺服器；正版驗證伺服器仍需要擁有遊戲的帳號。",
+    "name": "角色名稱",
+    "namePlaceholder": "3–16 位英文字母、數字或底線",
+    "submit": "新增離線帳號"
+  },
+  "authlib": {
+    "description": "填寫你信任的 Authlib / Yggdrasil API 根網址。密碼僅傳送至此 HTTPS 服務，不會儲存至啟動器設定中。",
+    "server": "認證服務 API 網址",
+    "username": "使用者名稱或電子郵件",
+    "password": "密碼",
+    "submit": "登入第三方帳號",
+    "chooseProfile": "請選擇此次登入的角色：",
+    "cancelProfile": "取消角色選擇"
+  },
+  "appearance": {
+    "title": "外觀",
+    "refresh": "重新整理外觀",
+    "customSkin": "自訂造型",
+    "defaultSkin": "預設造型",
+    "uploadModel": "上傳造型的模型",
+    "upload": "上傳正版造型",
+    "droppedSkinReady": "已拖入造型預覽：{{name}}",
+    "uploadDroppedSkin": "上傳至 Microsoft 帳號",
+    "reset": "還原預設造型",
+    "cape": "正版披風",
+    "noCape": "不顯示披風",
+    "noCapes": "此帳號沒有可用披風。",
+    "authlibReadonly": "此處僅顯示第三方角色外觀，修改造型請前往對應認證服務。"
+  },
+  "preview": {
+    "source": "預覽來源",
+    "account": "帳號外觀",
+    "local": "本機預覽",
+    "canvasLabel": "可互動的 Minecraft 角色預覽",
+    "unavailable": "3D 預覽暫時無法使用，請重試或更換預覽來源。",
+    "loading": "正在讀取帳號外觀…",
+    "noAccountSkin": "尚未取得目前帳號的造型",
+    "localNotice": "僅供本機預覽 · 不會修改帳號外觀",
+    "accountNotice": "線上帳號來源 · 只有明確執行操作才會變更",
+    "import": "匯入 PNG",
+    "resetView": "重設視角",
+    "restoreDefault": "還原預設預覽",
+    "loadUrl": "載入網址",
+    "model": "預覽模型",
+    "animation": "人物動畫",
+    "autoRotate": "自動旋轉",
+    "reducedMotion": "已遵循系統「減少動態效果」設定，自動動畫與旋轉已暫停，仍可手動調整視角。",
+    "urlSource": "線上 URL 造型"
+  },
+  "model": {
+    "auto": "自動辨識",
+    "classic": "經典（寬臂）",
+    "slim": "纖細（細臂）"
+  },
+  "animation": {
+    "idle": "待機",
+    "walk": "步行",
+    "run": "奔跑",
+    "none": "靜止"
+  },
+  "default": {
+    "title": "預設預覽角色",
+    "description": "僅在沒有帳號外觀或本機匯入時使用。Steve / Alex 來自已驗證用戶端。",
+    "sourceVersion": "來源：已驗證的 Minecraft {{version}} 用戶端。",
+    "fallback": "預設角色暫時無法使用，可重試或匯入本機預覽。",
+    "steve": {
+      "name": "Steve",
+      "description": "經典模型 · 已驗證用戶端"
+    },
+    "alex": {
+      "name": "Alex",
+      "description": "纖細模型 · 已驗證用戶端"
+    }
+  },
+  "notice": {
+    "sessionRefreshed": "{{name}} 的工作階段已重新整理。",
+    "clientIdSaved": "Client ID 已儲存，可以開始 Microsoft 登入。",
+    "builtinRestored": "已還原使用內建 Microsoft 應用程式。",
+    "loginCancelled": "登入已取消。",
+    "skinUpdated": "正版造型已更新。",
+    "skinReset": "已還原預設正版造型。",
+    "capeShown": "披風已切換。",
+    "capeHidden": "披風已隱藏。",
+    "defaultSaved": "預設預覽角色已儲存。"
+  },
+  "errors": {
+    "preview": {
+      "fileInvalid": "請選擇小於 16 MB 的 PNG 本機預覽造型。",
+      "urlInvalid": "請輸入完整的 http:// 或 https:// PNG 造型網址。"
+    },
+    "auth": {
+      "sessionChanged": "此帳號已被移除或重新登入。請重新選擇帳號後再試。",
+      "credentialCleanupPending": "帳號已移除，但未能清除已儲存的登入認證資訊。啟動器將於下次開啟時重試。",
+      "credentialRecoveryFailed": "無法復原已儲存的帳號認證資訊。請重新登入。",
+      "profileUnavailable": "暫時無法讀取此帳號的外觀，請檢查工作階段後重試。",
+      "deviceExpired": "裝置代碼已過期，請重新開始 Microsoft 登入。",
+      "invalidResponse": "認證服務回傳的資訊不完整，未新增帳號，請重試。",
+      "clientIdRequired": "請先填寫並儲存本專案的 Microsoft Client ID。",
+      "clientRejected": "Microsoft 拒絕了此應用程式的 Client ID。請在應用程式註冊中開啟「允許公開用戶端流程」，並支援個人 Microsoft 帳號，然後重試。",
+      "appNotApproved": "Microsoft 帳號已登入成功，但此應用程式尚未通過 Mojang 的 Minecraft API 審核（Invalid app registration）。請提交 Minecraft Java API 審核，或使用已獲准的 Client ID。",
+      "rateLimited": "認證請求過於頻繁，請稍後重新開始 Microsoft 登入。",
+      "minecraftExchangeFailed": "Minecraft 登入交換失敗，請稍後重試，或使用另一個已獲准的 Client ID。",
+      "xboxFailed": "Xbox 認證失敗，請檢查 Xbox 帳號設定後重試。",
+      "offlineNameInvalid": "角色名稱須為 3–16 位英文字母、數字或底線。",
+      "credentialsRequired": "請輸入第三方認證服務的使用者名稱和密碼。",
+      "microsoftRequired": "此操作僅適用於 Microsoft 正版帳號。",
+      "sessionExpired": "登入工作階段已過期或取消，請重新開始。",
+      "credentialsRejected": "使用者名稱、密碼或工作階段未通過驗證，請檢查後重試。",
+      "serverInvalid": "請輸入最終的 HTTPS 認證 API 根網址，不要包含認證資訊、查詢參數或片段。"
+    },
+    "skin": {
+      "fileInvalid": "請選擇有效且不超過 1 MB 的 64×64 或 64×32 PNG 造型，高解析度材質僅供本機預覽。",
+      "modelInvalid": "上傳造型時請選擇經典或纖細模型。"
+    }
+  }
+}

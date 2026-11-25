@@ -9,6 +9,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = {
     ".gitignore",
+    "CHANGELOG.md",
     "index.html",
     "LICENSE",
     "NOTICE",
@@ -52,7 +53,12 @@ REQUIRED = ROOT_FILES | {f"src-tauri/{name}" for name in TAURI_FILES} | {
     "src/main.tsx",
     "src/app/App.tsx",
     "src/i18n/locales/zh-CN/settings.json",
+    "src/i18n/locales/zh-TW/settings.json",
     "src/i18n/locales/en-US/settings.json",
+    "src/i18n/locales/ja-JP/settings.json",
+    "src/i18n/locales/ko-KR/settings.json",
+    "src/i18n/locales/ru-RU/settings.json",
+    "src/i18n/locales/es-ES/settings.json",
     "public/fonts/Doto-Black.woff2",
     "public/fonts/MiSans-Regular.woff2",
     "public/fonts/MiSans-Semibold.woff2",

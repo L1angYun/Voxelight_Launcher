@@ -1,0 +1,42 @@
+{
+  "actions": {
+    "launch": "Iniciar juego",
+    "cancel": "Cancelar",
+    "save": "Guardar",
+    "close": "Cerrar",
+    "retry": "Reintentar",
+    "back": "Atrás",
+    "pause": "Pausar",
+    "resume": "Reanudar",
+    "minimize": "Minimizar",
+    "maximize": "Maximizar",
+    "restore": "Restaurar",
+    "search": "Buscar",
+    "manage": "Gestionar"
+  },
+  "navigation": {
+    "home": "Jugar",
+    "library": "Biblioteca",
+    "discover": "Explorar",
+    "multiplayer": "Multijugador",
+    "downloads": "Descargas",
+    "accounts": "Jugadores",
+    "settings": "Ajustes"
+  },
+  "status": {
+    "loading": "Cargando…"
+  },
+  "errors": {
+    "bootstrapFailed": "No se pudieron cargar los datos del iniciador. Puedes volver a intentarlo.",
+    "internalUnexpected": "Algo salió mal. Abre el diagnóstico para ver más detalles.",
+    "missing": "No se puede mostrar este contenido.",
+    "desktopRequired": "Usa la aplicación de escritorio para esta acción."
+  },
+  "units": {},
+  "a11y": {
+    "dismissNotification": "Descartar notificación",
+    "mainNavigation": "Navegación principal",
+    "windowControls": "Controles de ventana",
+    "closeDialog": "Cerrar diálogo"
+  }
+}

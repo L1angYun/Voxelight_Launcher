@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { Compass, Cpu, Download, FolderOpen, Layers, Library, Radar, RefreshCw, Settings, UserPlus } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Segmented } from "../components/ui/Segmented";
+import { Select } from "../components/ui/Select";
+import { LOCALE_LABELS, SUPPORTED_LOCALES } from "../i18n";
 import { useMotionTier } from "../design/useMotionTier";
 import {
   command,
@@ -378,15 +380,13 @@ export function FirstRunTour({
           <div className="vx-oobe__grid">
             <div className="vx-oobe__field">
               <span className="vx-oobe__label">{t("settings:fields.language")}</span>
-              <Segmented
-                semantic="toggle"
-                label={t("settings:fields.language")}
+              <Select
+                aria-label={t("settings:fields.language")}
                 value={draft.language}
                 onChange={(value) => previewAppearance("language", value as Config["language"])}
                 options={[
                   { value: "system", label: t("settings:language.system") },
-                  { value: "zh-CN", label: t("shell:tour.oobe.languages.zhCN") },
-                  { value: "en-US", label: t("shell:tour.oobe.languages.enUS") },
+                  ...SUPPORTED_LOCALES.map((code) => ({ value: code, label: LOCALE_LABELS[code] })),
                 ]}
               />
             </div>

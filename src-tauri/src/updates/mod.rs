@@ -15,7 +15,7 @@ pub(crate) mod sweep;
 use crate::errors::AppResult;
 use crate::storage::LauncherState;
 use futures_util::{FutureExt, StreamExt};
-use manifest::{display_version, parse_version, Release, Version};
+use manifest::{display_version, parse_running_version, parse_version, Release, Version};
 use serde::Serialize;
 use sources::{Request, Response, Transport};
 use std::sync::Arc;
@@ -78,7 +78,19 @@ pub(crate) fn installer_name(version: Version) -> String {
 }
 
 pub(crate) fn current_version() -> Version {
-    parse_version(env!("CARGO_PKG_VERSION")).expect("the crate version is a stable three-part version")
+    parse_running_version(env!("CARGO_PKG_VERSION"))
+        .expect("the crate version is a valid SemVer stable or pre-release version")
+        .0
+}
+
+pub(crate) fn current_is_prerelease() -> bool {
+    parse_running_version(env!("CARGO_PKG_VERSION"))
+        .expect("the crate version is a valid SemVer stable or pre-release version")
+        .1
+}
+
+pub(crate) fn current_version_string() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
 }
 
 /// The GitHub REST version HSR pins and tested its parser against.
@@ -203,7 +215,7 @@ pub(crate) struct UpdateView {
 
 fn view(release: &Release, offer: checker::Offer) -> UpdateView {
     UpdateView {
-        current_version: display_version(current_version()),
+        current_version: current_version_string(),
         latest_version: display_version(release.version),
         status: match offer {
             checker::Offer::Newer => "newer",
@@ -231,7 +243,7 @@ pub(crate) async fn check_with(
     service.forget_check();
     let release = checker::check(transport, preference, &service.rate_limit, now).await?;
     let seen = state.snapshot()?.update_highest_seen.as_deref().and_then(parse_version);
-    let offer = checker::classify(&release, current_version(), seen);
+    let offer = checker::classify_for_running(&release, current_version(), current_is_prerelease(), seen);
     if offer != checker::Offer::Stale && seen.is_none_or(|seen| release.version > seen) {
         let highest = display_version(release.version);
         state.update(|data| {
@@ -438,7 +450,7 @@ pub(crate) fn state_with(
         Err(_) => Some("update.tasksRunning"),
         Ok(_) => install::busy_reason(activity(state, service, servers)?),
     };
-    Ok(UpdateState { current_version: display_version(current_version()), check, download, staged, busy })
+    Ok(UpdateState { current_version: current_version_string(), check, download, staged, busy })
 }
 
 /// What the backend still holds for this session, for a window that reloads.

@@ -478,7 +478,7 @@ test("staged files are created, never written over", () => {
 });
 
 test("the checkout's three version fields agree, so release-metadata can name the build", () => {
-  const version = projectVersion(root);
+  const version = projectVersion(root, { allowPrerelease: true });
   assert.equal(version, JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version);
 });
 

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { createLauncherI18n, resolveLocale } from "./index";
+import { createLauncherI18n, resolveLocale, SUPPORTED_LOCALES } from "./index";
 import { formatBytes, formatDate, formatNumber } from "./format";
 
 function localeKeys(path: string): string[] {
@@ -22,8 +22,16 @@ describe("launcher i18n", () => {
   it("maps system and unsupported locales to supported languages", () => {
     expect(resolveLocale("system", "zh-SG")).toBe("zh-CN");
     expect(resolveLocale("system", "zh-Hans-CN")).toBe("zh-CN");
+    expect(resolveLocale("system", "zh-TW")).toBe("zh-TW");
+    expect(resolveLocale("system", "zh-HK")).toBe("zh-TW");
+    expect(resolveLocale("system", "zh-Hant")).toBe("zh-TW");
+    expect(resolveLocale("system", "ja-JP")).toBe("ja-JP");
+    expect(resolveLocale("system", "ko-KR")).toBe("ko-KR");
+    expect(resolveLocale("system", "ru-RU")).toBe("ru-RU");
+    expect(resolveLocale("system", "es-MX")).toBe("es-ES");
     expect(resolveLocale("system", "fr-FR")).toBe("en-US");
     expect(resolveLocale("en-US", "zh-CN")).toBe("en-US");
+    expect(resolveLocale("ja-JP", "zh-CN")).toBe("ja-JP");
   });
 
   it("loads bundled translations without a network request and falls back safely", async () => {
@@ -31,20 +39,27 @@ describe("launcher i18n", () => {
     vi.stubGlobal("fetch", fetchMock);
     const chinese = createLauncherI18n("system", "zh-CN");
     const english = createLauncherI18n("system", "fr-FR");
-    await Promise.all([chinese.initPromise, english.initPromise]);
+    const japanese = createLauncherI18n("system", "ja-JP");
+    const traditional = createLauncherI18n("system", "zh-TW");
+    await Promise.all([chinese.initPromise, english.initPromise, japanese.initPromise, traditional.initPromise]);
     expect(chinese.language).toBe("zh-CN");
     expect(english.language).toBe("en-US");
+    expect(japanese.language).toBe("ja-JP");
+    expect(traditional.language).toBe("zh-TW");
     expect(chinese.t("actions.launch")).toBe("启动游戏");
     expect(english.t("actions.launch")).toBe("Launch game");
+    expect(japanese.t("actions.launch")).not.toBe("actions.launch");
+    expect(traditional.t("actions.launch")).not.toBe("actions.launch");
     expect(english.t("missing.key")).not.toBe("missing.key");
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 
-  it("keeps both locale key sets identical", () => {
-    expect(localeKeys("./locales/zh-CN/common.json")).toEqual(
-      localeKeys("./locales/en-US/common.json"),
-    );
+  it("keeps all supported locale key sets identical in common", () => {
+    const reference = localeKeys("./locales/en-US/common.json");
+    for (const locale of SUPPORTED_LOCALES) {
+      expect(localeKeys(`./locales/${locale}/common.json`), locale).toEqual(reference);
+    }
   });
 
   it("formats numbers, dates, and bytes with the requested locale", () => {

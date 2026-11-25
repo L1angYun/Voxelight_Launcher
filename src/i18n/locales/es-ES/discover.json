@@ -1,0 +1,86 @@
+{
+  "title": "Explorar",
+  "subtitle": "Encuentra contenido compatible con la instancia actual.",
+  "search": "Buscar recursos",
+  "searchPlaceholder": "Buscar mods, paquetes de recursos, shaders o modpacks…",
+  "source": "Fuente",
+  "typeLabel": "Tipo de contenido",
+  "type": {
+    "mod": "Mod",
+    "resourcepack": "Paquete de recursos",
+    "shader": "Shader",
+    "modpack": "Modpack"
+  },
+  "target": "Instalar en",
+  "versionDirectory": "Usar directorio de versión",
+  "details": "Ver detalles",
+  "install": "Instalar",
+  "installVersion": "Instalar versión {{version}}",
+  "installVersionNotice": "Instalar otra versión puede reemplazar la instalada. Las dependencias obligatorias se resuelven por separado.",
+  "noResults": "No se encontraron recursos",
+  "noResultsDescription": "Prueba con otra palabra clave o tipo de contenido.",
+  "noDescription": "Este proyecto no tiene descripción.",
+  "authorUnknown": "Autor desconocido",
+  "versions": "Versiones compatibles",
+  "noVersions": "No hay versiones compatibles para la instancia actual",
+  "fits": {
+    "count_one": "Compatible con {{count}} instancia",
+    "count_other": "Compatible con {{count}} instancias",
+    "none": "Sin instancias compatibles",
+    "more": " y {{count}} más",
+    "onlyMine": "Solo versiones para mis instancias",
+    "empty": "Ninguna versión es compatible con tus instancias."
+  },
+  "dependencies": "Dependencias",
+  "noDependencies": "Este proyecto no declara dependencias",
+  "dependency": {
+    "required": "Obligatoria",
+    "optional": "Opcional",
+    "incompatible": "Incompatible",
+    "embedded": "Integrada",
+    "unknown": "Relación desconocida"
+  },
+  "external": "Abrir página del proyecto",
+  "installTarget": {
+    "newInstance": "Nueva instancia",
+    "title": "Elegir destino de instalación · {{title}}",
+    "compatible": "Destinos compatibles",
+    "incompatible": "Incompatibles ({{count}})",
+    "installInto": "Instalar en {{name}}",
+    "createAndInstall": "Crear e instalar",
+    "gameVersion": "Versión del juego",
+    "loaderVersion": "Versión del cargador",
+    "name": "Nombre de la instancia",
+    "recommended": "Recomendada",
+    "summary": "Instalar {{loader}} {{loaderVersion}} y Minecraft {{gameVersion}}, y después {{title}} junto con sus dependencias obligatorias.",
+    "noLoaderVersions": "No hay versiones de cargador disponibles para esta versión del juego. Elige otra versión.",
+    "shaderWarning": "Los shaders necesitan un cargador de renderizado compatible, como Iris u OptiFine. Instálalo por separado; Iris no se instalará automáticamente.",
+    "creating": "Creando la instancia e instalando el recurso…",
+    "downloads": "Ver en Descargas",
+    "cancel": "Cancelar instalación",
+    "curseforge": "Crea una instancia compatible y selecciónala para instalar este proyecto de CurseForge.",
+    "reason": {
+      "vanilla": "Vanilla no puede cargar mods",
+      "loaderMismatch": "Cargador incompatible",
+      "gameVersionMismatch": "Versión del juego incompatible",
+      "running": "La instancia está en ejecución",
+      "metadataMissing": "Información de versión no disponible"
+    },
+    "unsupported": {
+      "datapack": "Los paquetes de datos van en la carpeta datapacks de un mundo y aún no son compatibles aquí",
+      "noSupportedLoader": "Este proyecto no tiene versiones para Fabric, NeoForge, Forge ni Quilt",
+      "noVersions": "No hay versiones descargables",
+      "curseforgeRequiredDependencies": "Este archivo de CurseForge requiere otros recursos. Instala primero sus dependencias en una instancia compatible y luego instala este archivo.",
+      "noPinnedCreationLoader": "Este archivo no es compatible con ningún cargador disponible para nuevas instancias.",
+      "noReleaseVersions": "Este proyecto no tiene ninguna versión de lanzamiento instalable.",
+      "manifestUnavailable": "El manifiesto de versiones del juego no está disponible temporalmente, así que no se puede sugerir una nueva instancia."
+    }
+  },
+  "notice": {
+    "resourceInstalled": "Recurso instalado.",
+    "instanceInstalled": "Instancia instalada.",
+    "resourceInstalledNew": "Recurso instalado en la nueva instancia."
+  },
+  "importCurseforgeZip": "Importar un ZIP de CurseForge en su lugar",
+  "curseforgeZipRequired": "Elige un archivo ZIP de modpack de CurseForge."
+}

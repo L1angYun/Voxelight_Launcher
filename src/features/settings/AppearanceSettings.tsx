@@ -6,6 +6,7 @@ import { command, type Config } from "../../lib/launcher";
 import { useAppearance } from "../../app/AppearanceProvider";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
+import { LOCALE_LABELS, SUPPORTED_LOCALES } from "../../i18n";
 import type { SettingsSectionProps } from "./types";
 import { useWorldAvailability } from "../../components/world/worldAvailability";
 
@@ -65,8 +66,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
               onChange={(v) => onChange({ ...config, language: v })}
               options={[
                 { value: "system", label: t("settings:language.system") },
-                { value: "zh-CN", label: "简体中文" },
-                { value: "en-US", label: "English" },
+                ...SUPPORTED_LOCALES.map((code) => ({ value: code, label: LOCALE_LABELS[code] })),
               ]}
             />
           </label>

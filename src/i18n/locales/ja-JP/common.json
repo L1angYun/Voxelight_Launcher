@@ -1,0 +1,42 @@
+{
+  "actions": {
+    "launch": "ゲームを起動",
+    "cancel": "キャンセル",
+    "save": "保存",
+    "close": "閉じる",
+    "retry": "再試行",
+    "back": "戻る",
+    "pause": "一時停止",
+    "resume": "再開",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "元のサイズに戻す",
+    "search": "検索",
+    "manage": "管理"
+  },
+  "navigation": {
+    "home": "プレイ",
+    "library": "ライブラリ",
+    "discover": "探索",
+    "multiplayer": "マルチプレイ",
+    "downloads": "ダウンロード",
+    "accounts": "プレイヤー",
+    "settings": "設定"
+  },
+  "status": {
+    "loading": "読み込み中…"
+  },
+  "errors": {
+    "bootstrapFailed": "ランチャーデータを読み込めませんでした。再試行できます。",
+    "internalUnexpected": "予期しないエラーが発生しました。詳細は診断情報を確認してください。",
+    "missing": "この内容を表示できません。",
+    "desktopRequired": "この操作にはデスクトップ版アプリが必要です。"
+  },
+  "units": {},
+  "a11y": {
+    "dismissNotification": "通知を閉じる",
+    "mainNavigation": "メインナビゲーション",
+    "windowControls": "ウィンドウ操作",
+    "closeDialog": "ダイアログを閉じる"
+  }
+}

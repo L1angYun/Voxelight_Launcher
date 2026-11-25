@@ -1,0 +1,42 @@
+{
+  "actions": {
+    "launch": "게임 실행",
+    "cancel": "취소",
+    "save": "저장",
+    "close": "닫기",
+    "retry": "다시 시도",
+    "back": "뒤로",
+    "pause": "일시정지",
+    "resume": "계속",
+    "minimize": "최소화",
+    "maximize": "최대화",
+    "restore": "복원",
+    "search": "검색",
+    "manage": "관리"
+  },
+  "navigation": {
+    "home": "플레이",
+    "library": "라이브러리",
+    "discover": "탐색",
+    "multiplayer": "멀티플레이",
+    "downloads": "다운로드",
+    "accounts": "플레이어",
+    "settings": "설정"
+  },
+  "status": {
+    "loading": "불러오는 중…"
+  },
+  "errors": {
+    "bootstrapFailed": "런처 데이터를 불러오지 못했습니다. 다시 시도할 수 있습니다.",
+    "internalUnexpected": "예기치 않은 문제가 발생했습니다. 자세한 내용은 진단을 열어 확인하세요.",
+    "missing": "이 콘텐츠를 표시할 수 없습니다.",
+    "desktopRequired": "이 작업은 데스크톱 앱에서 사용할 수 있습니다."
+  },
+  "units": {},
+  "a11y": {
+    "dismissNotification": "알림 닫기",
+    "mainNavigation": "기본 탐색",
+    "windowControls": "창 제어",
+    "closeDialog": "대화 상자 닫기"
+  }
+}

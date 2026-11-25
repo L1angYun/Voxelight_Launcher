@@ -127,7 +127,20 @@ fn version_parser_accepts_only_stable_three_part_versions() {
     }
     assert_eq!(parse_version(&format!("1.2.{}", "1".repeat(62))), None, "over 64 characters");
     assert_eq!(parse_version("1.2.99999999999999999999"), None, "overflow");
-    assert_eq!(current_version(), parse_version(env!("CARGO_PKG_VERSION")).unwrap());
+    assert_eq!(current_version(), parse_running_version(env!("CARGO_PKG_VERSION")).unwrap().0);
+
+    // Pre-release running builds parse cleanly and treat the matching stable release as newer.
+    assert_eq!(parse_running_version("0.7.0"), Some(((0, 7, 0), false)));
+    assert_eq!(parse_running_version("0.7.0-beta.1"), Some(((0, 7, 0), true)));
+    assert_eq!(parse_running_version("1.0.0-rc.2"), Some(((1, 0, 0), true)));
+    for bad in ["0.7.0-beta", "0.7.0-beta.0", "0.7.0-dev.1", "0.7.0-alpha.01"] {
+        assert_eq!(parse_running_version(bad), None, "{bad}");
+    }
+    let stable_070 = parse_release(&release_json("v0.7.0", SHA, 10), Source::GitHub, None).unwrap();
+    let stable_060 = parse_release(&release_json("v0.6.0", SHA, 10), Source::GitHub, None).unwrap();
+    assert_eq!(checker::classify_for_running(&stable_070, (0, 7, 0), true, None), Offer::Newer);
+    assert_eq!(checker::classify_for_running(&stable_060, (0, 7, 0), true, None), Offer::Current);
+    assert_eq!(checker::classify_for_running(&stable_070, (0, 7, 0), false, None), Offer::Current);
 }
 
 #[test]

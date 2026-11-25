@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createLauncherI18n, type LauncherI18n } from "../../i18n";
 import { searchSettings, settingsIndex, type SettingsSectionId } from "./settingsIndex";
 
-const locales = ["en-US", "zh-CN"] as const;
+const locales = ["en-US", "zh-CN", "zh-TW", "ja-JP", "ko-KR", "ru-RU", "es-ES"] as const;
 const sectionIds: readonly SettingsSectionId[] = ["general", "appearance", "game", "java", "downloads", "assistant", "about"];
 const sectionSources: Record<SettingsSectionId, string[]> = {
   general: ["./GeneralSettings.tsx"],

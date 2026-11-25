@@ -1,0 +1,42 @@
+{
+  "actions": {
+    "launch": "啟動遊戲",
+    "cancel": "取消",
+    "save": "儲存",
+    "close": "關閉",
+    "retry": "重試",
+    "back": "返回",
+    "pause": "暫停",
+    "resume": "繼續",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "還原",
+    "search": "搜尋",
+    "manage": "管理"
+  },
+  "navigation": {
+    "home": "開始",
+    "library": "遊戲庫",
+    "discover": "探索",
+    "multiplayer": "連線",
+    "downloads": "下載",
+    "accounts": "角色",
+    "settings": "設定"
+  },
+  "status": {
+    "loading": "載入中…"
+  },
+  "errors": {
+    "bootstrapFailed": "啟動器資料載入失敗，可以重試。",
+    "internalUnexpected": "發生未預期的錯誤，請檢視診斷資訊。",
+    "missing": "無法顯示此內容。",
+    "desktopRequired": "請使用桌面版執行此操作。"
+  },
+  "units": {},
+  "a11y": {
+    "dismissNotification": "關閉通知",
+    "mainNavigation": "主導覽",
+    "windowControls": "視窗控制",
+    "closeDialog": "關閉對話方塊"
+  }
+}

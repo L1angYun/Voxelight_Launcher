@@ -430,7 +430,7 @@ async function inspectArchive(root) {
   try { manifest = JSON.parse(readFileSync(manifestFile, "utf8")); }
   catch { fail(ARCHIVE_MANIFEST, "archive-manifest"); }
   if (manifest?.project !== "Voxelight Launcher" || manifest.license !== "GPL-3.0-only"
-    || typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+$/.test(manifest.version)
+    || typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/.test(manifest.version)
     || !Array.isArray(manifest.files)) fail(ARCHIVE_MANIFEST, "archive-manifest");
 
   const entries = new Map();

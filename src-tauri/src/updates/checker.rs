@@ -199,9 +199,21 @@ pub(crate) async fn check(
 /// version seen before counts as an update; a lower answer means a source is
 /// frozen on an old release.
 pub(crate) fn classify(release: &Release, current: Version, highest_seen: Option<Version>) -> Offer {
+    classify_for_running(release, current, false, highest_seen)
+}
+
+/// Classifies an offered stable release against the running build. Per SemVer
+/// 2.0.0, a pre-release build (e.g. `0.7.0-beta.1`) treats the matching stable
+/// release (`0.7.0`) as newer while never downgrading to an older release.
+pub(crate) fn classify_for_running(
+    release: &Release,
+    current: Version,
+    current_is_prerelease: bool,
+    highest_seen: Option<Version>,
+) -> Offer {
     if highest_seen.is_some_and(|seen| release.version < seen) {
         Offer::Stale
-    } else if release.version > current {
+    } else if release.version > current || (current_is_prerelease && release.version == current) {
         Offer::Newer
     } else {
         Offer::Current

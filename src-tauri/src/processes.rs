@@ -305,18 +305,36 @@ pub fn unregister(app: &AppHandle, state: &LauncherState, game_id: &str, code: O
 pub fn list_running_games(registry: State<'_, Arc<GameRegistry>>) -> Vec<RunningGame> {
     registry.list()
 }
+const SUPPORTED_REPORT_LOCALES: [&str; 7] = [
+    "zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "ru-RU", "es-ES",
+];
+
+fn interface_locale(config: &Config) -> &'static str {
+    report_locale(&config.language, || crate::platform::get_system_appearance().locale)
+}
+
 fn interface_is_zh(config: &Config) -> bool {
-    report_is_zh(&config.language, || crate::platform::get_system_appearance().locale)
+    matches!(interface_locale(config), "zh-CN" | "zh-TW")
 }
 
 /// Mirrors the frontend's resolveLocale: only "system" follows the OS, and an
 /// unknown value falls back to English like the interface does.
+fn report_locale(language: &str, system_locale: impl FnOnce() -> String) -> &'static str {
+    let resolved = if language == "system" {
+        system_locale()
+    } else {
+        language.to_owned()
+    };
+    SUPPORTED_REPORT_LOCALES
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == resolved.as_str())
+        .unwrap_or("en-US")
+}
+
+#[cfg(test)]
 fn report_is_zh(language: &str, system_locale: impl FnOnce() -> String) -> bool {
-    match language {
-        "zh-CN" => true,
-        "system" => system_locale() == "zh-CN",
-        _ => false,
-    }
+    report_locale(language, system_locale) == "zh-CN"
 }
 
 pub(crate) async fn stop_game_graceful(
@@ -755,32 +773,45 @@ fn diagnostic_export_text(
     generated_at: &str,
 ) -> Result<String, String> {
     let diagnosis = diagnose_instance_inner(state, version_id.to_owned(), instance_id.map(str::to_owned))?;
-    Ok(render_diagnostic_report(
+    Ok(render_diagnostic_report_for_locale(
         diagnosis.kind,
-        interface_is_zh(&state.snapshot()?.config),
+        interface_locale(&state.snapshot()?.config),
         version_id,
         instance_id,
         &diagnosis.excerpt,
         generated_at,
     ))
 }
-fn diagnostic_locale(zh: bool) -> &'static serde_json::Value {
-    static REPORT_LOCALES: std::sync::LazyLock<[serde_json::Value; 2]> = std::sync::LazyLock::new(|| {
+fn diagnostic_locale_by_code(locale: &str) -> &'static serde_json::Value {
+    static REPORT_LOCALES: std::sync::LazyLock<[serde_json::Value; 7]> = std::sync::LazyLock::new(|| {
         [
             include_str!("../../src/i18n/locales/zh-CN/library.json"),
+            include_str!("../../src/i18n/locales/zh-TW/library.json"),
             include_str!("../../src/i18n/locales/en-US/library.json"),
-        ].map(|raw| serde_json::from_str(raw).expect("bundled library locale is valid JSON"))
+            include_str!("../../src/i18n/locales/ja-JP/library.json"),
+            include_str!("../../src/i18n/locales/ko-KR/library.json"),
+            include_str!("../../src/i18n/locales/ru-RU/library.json"),
+            include_str!("../../src/i18n/locales/es-ES/library.json"),
+        ]
+        .map(|raw| serde_json::from_str(raw).expect("bundled library locale is valid JSON"))
     });
-    &REPORT_LOCALES[usize::from(!zh)]
+    let index = SUPPORTED_REPORT_LOCALES
+        .iter()
+        .position(|candidate| *candidate == locale)
+        .unwrap_or(2);
+    &REPORT_LOCALES[index]
 }
 
-fn diagnostic_translation(zh: bool, keys: &[&str]) -> Option<&'static str> {
-    fn lookup(zh: bool, keys: &[&str]) -> Option<&'static str> {
-        keys.iter().try_fold(diagnostic_locale(zh), |value, key| value.get(key))?.as_str()
+fn diagnostic_translation_for_locale(locale: &str, keys: &[&str]) -> Option<&'static str> {
+    fn lookup(locale: &str, keys: &[&str]) -> Option<&'static str> {
+        keys.iter()
+            .try_fold(diagnostic_locale_by_code(locale), |value, key| value.get(key))?
+            .as_str()
     }
-    lookup(zh, keys).or_else(|| lookup(true, keys))
+    lookup(locale, keys).or_else(|| lookup("en-US", keys))
 }
 
+#[cfg(test)]
 fn render_diagnostic_report(
     kind: DiagnosisKind,
     zh: bool,
@@ -789,10 +820,34 @@ fn render_diagnostic_report(
     excerpt: &str,
     now: &str,
 ) -> String {
-    let label = |key| diagnostic_translation(zh, &["diagnosticReport", key])
-        .expect("required diagnostic report label");
-    let diagnosis = |key| diagnostic_translation(zh, &["diagnosis", kind.locale_key(), key]);
-    let separator = if zh { "：" } else { ": " };
+    render_diagnostic_report_for_locale(
+        kind,
+        if zh { "zh-CN" } else { "en-US" },
+        version_id,
+        instance_id,
+        excerpt,
+        now,
+    )
+}
+
+fn render_diagnostic_report_for_locale(
+    kind: DiagnosisKind,
+    locale: &str,
+    version_id: &str,
+    instance_id: Option<&str>,
+    excerpt: &str,
+    now: &str,
+) -> String {
+    let label = |key| {
+        diagnostic_translation_for_locale(locale, &["diagnosticReport", key])
+            .expect("required diagnostic report label")
+    };
+    let diagnosis = |key| diagnostic_translation_for_locale(locale, &["diagnosis", kind.locale_key(), key]);
+    let separator = if matches!(locale, "zh-CN" | "zh-TW" | "ja-JP") {
+        "："
+    } else {
+        ": "
+    };
     let title = diagnosis("title").expect("required diagnosis title");
     let reason = diagnosis("reason").expect("required diagnosis reason");
     let mut suggestions = diagnosis("firstSuggestion").expect("required diagnosis suggestion").to_owned();
@@ -859,17 +914,17 @@ mod tests {
 
     #[test]
     fn diagnostic_report_locale_keys_cover_every_kind_without_relying_on_fallback() {
-        for zh in [true, false] {
-            let locale = super::diagnostic_locale(zh);
+        for code in super::SUPPORTED_REPORT_LOCALES {
+            let locale = super::diagnostic_locale_by_code(code);
             let translated = |value: &serde_json::Value| value.as_str().is_some_and(|s| !s.trim().is_empty());
             for key in ["title", "time", "version", "instance", "noInstance", "conclusion",
                         "reason", "suggestions", "excerpt"] {
-                assert!(translated(&locale["diagnosticReport"][key]), "{zh}/{key}");
+                assert!(translated(&locale["diagnosticReport"][key]), "{code}/{key}");
             }
             for (kind, key) in DIAGNOSIS_REPORTS {
                 assert_eq!(kind.locale_key(), key);
                 for field in ["title", "reason", "firstSuggestion"] {
-                    assert!(translated(&locale["diagnosis"][key][field]), "{zh}/{key}/{field}");
+                    assert!(translated(&locale["diagnosis"][key][field]), "{code}/{key}/{field}");
                 }
                 assert_eq!(translated(&locale["diagnosis"][key]["secondSuggestion"]), key != "empty");
             }

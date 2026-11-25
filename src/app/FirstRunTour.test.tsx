@@ -14,6 +14,12 @@ const allPages = new Set<NavigationPage>(["home", "library", "discover", "multip
 
 const state = vi.hoisted(() => ({ launcher: null as unknown as LauncherContextValue }));
 vi.mock("./controller/LauncherProvider", () => ({ useLauncher: () => state.launcher }));
+vi.mock("./AppearanceProvider", () => ({
+  useAppearance: () => ({ effects: "full", accentColor: "#b4f17a", resolvedTheme: "dark", reducedMotion: true, highContrast: false }),
+}));
+vi.mock("../visual/glass/GlassSystem", () => ({
+  GlassSurface: ({ children, className }: { children: ReactNode; className?: string }) => createElement("div", { className }, children),
+}));
 vi.mock("../design/useMotionTier", () => ({ useMotionTier: () => ({ tier: "none", sceneStatic: true }) }));
 
 type LauncherStub = Pick<
@@ -446,7 +452,7 @@ describe("FirstRunTour", () => {
   });
 
   it("names each orientation card exactly like the navigation item it points at", async () => {
-    for (const locale of ["en-US", "zh-CN"] as const) {
+    for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP", "ko-KR", "ru-RU", "es-ES"] as const) {
       const local = createLauncherI18n(locale, locale);
       await local.initPromise;
       for (const step of ["library", "discover", "downloads", "settings"] as const) {

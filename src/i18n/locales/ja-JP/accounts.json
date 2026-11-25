@@ -1,0 +1,174 @@
+{
+  "title": "プレイヤー",
+  "subtitle": "アカウント、オンライン外観、ローカルプレビューを管理します。",
+  "listTitle": "アカウント",
+  "addAccount": "アカウントを追加",
+  "loginTitle": "アカウントを追加",
+  "loginDescription": "サインイン方法を選ぶか、オフラインアカウントを作成します。",
+  "loginMethods": "サインイン方法",
+  "avatar": "{{name}} のプレイヤーアバター",
+  "fields": {
+    "playerName": "プレイヤー名",
+    "authlibApiUrl": "Authlib API URL",
+    "usernameOrEmail": "ユーザー名またはメールアドレス",
+    "password": "パスワード",
+    "onlineSkinUrl": "オンラインスキン URL",
+    "importLocalPng": "ローカル PNG をインポート"
+  },
+  "credentialNotice": "ログイントークンはシステム暗号化資格情報にのみ保存されます。ローカルプレビュー用ファイルがこのページからアップロードされることはありません。",
+  "method": {
+    "microsoft": "Microsoft",
+    "offline": "オフライン",
+    "authlib": "Authlib"
+  },
+  "type": {
+    "microsoft": "Microsoft",
+    "authlib": "Authlib",
+    "offline": "オフライン",
+    "unknown": "アカウント"
+  },
+  "actions": {
+    "current": "選択中：{{name}}",
+    "select": "{{name}} を選択",
+    "refresh": "{{name}} のセッションを更新",
+    "remove": "{{name}} を削除",
+    "retryAppearance": "外観を再取得",
+    "retryDefault": "デフォルトキャラクターを再試行"
+  },
+  "empty": {
+    "title": "アカウントがまだありません",
+    "description": "オフラインプレイヤーを追加するか、サインインしてオンライン外観を管理しましょう。"
+  },
+  "microsoft": {
+    "description": "Microsoft 公式ページで認証を行います。ランチャーが Microsoft のパスワードを取得することはありません。",
+    "clientId": "このプロジェクトの Microsoft Client ID",
+    "clientIdHelp": "ご自身で登録したパブリッククライアントアプリを使用し、個人アカウント向けデバイスコードフローを有効にして Xbox / Minecraft へのアクセスを確認してください。他のランチャーの Client ID を流用しないでください。",
+    "builtinActive": "内蔵の Microsoft アプリを使用しています。",
+    "customOverride": "カスタム Client ID を使用",
+    "clientIdOptional": "カスタム Microsoft Client ID（任意）",
+    "customActive": "保存済みのカスタム Microsoft Client ID を使用しています。",
+    "useBuiltin": "内蔵アプリに戻す",
+    "saveClientId": "Client ID を保存",
+    "start": "Microsoft ログインを開始",
+    "deviceInstruction": "Microsoft 公式ページで次のコードを入力してください：",
+    "openVerification": "Microsoft 認証ページを開く",
+    "waiting": "認証を待機中 · 残り {{minutes}}:{{seconds}} · {{interval}} 秒ごとに確認",
+    "cancel": "認証をキャンセル"
+  },
+  "offline": {
+    "description": "ローカルプレイやオフライン認証を許可するサーバーで使用します。オンラインモードのサーバーでは正規アカウントが必要です。",
+    "name": "プレイヤー名",
+    "namePlaceholder": "3〜16 文字の半角英数字またはアンダースコア",
+    "submit": "オフラインアカウントを追加"
+  },
+  "authlib": {
+    "description": "信頼できる Authlib / Yggdrasil API ルート URL を入力してください。パスワードはこの HTTPS サービスにのみ送信され、ランチャー設定には保存されません。",
+    "server": "認証 API URL",
+    "username": "ユーザー名またはメールアドレス",
+    "password": "パスワード",
+    "submit": "Authlib でサインイン",
+    "chooseProfile": "このログインで使用するプレイヤーを選択してください：",
+    "cancelProfile": "プレイヤー選択をキャンセル"
+  },
+  "appearance": {
+    "title": "外観",
+    "refresh": "外観を更新",
+    "customSkin": "カスタムスキン",
+    "defaultSkin": "デフォルトスキン",
+    "uploadModel": "アップロード時のモデル",
+    "upload": "スキンをアップロード",
+    "droppedSkinReady": "ドロップしたスキンをプレビュー中：{{name}}",
+    "uploadDroppedSkin": "Microsoft アカウントにアップロード",
+    "reset": "スキンをリセット",
+    "cape": "マント",
+    "noCape": "マントを非表示",
+    "noCapes": "このアカウントで利用できるマントはありません。",
+    "authlibReadonly": "ここでは外観は読み取り専用です。スキンの変更はご利用の Authlib サービスで行ってください。"
+  },
+  "preview": {
+    "source": "プレビュー元",
+    "account": "アカウントの外観",
+    "local": "ローカルプレビュー",
+    "canvasLabel": "操作可能な Minecraft キャラクタープレビュー",
+    "unavailable": "3D プレビューを利用できません。再試行するか別のプレビュー元を選んでください。",
+    "loading": "アカウントの外観を読み込み中…",
+    "noAccountSkin": "アカウントのスキンを取得できません",
+    "localNotice": "ローカルプレビュー専用 · アカウントは変更されません",
+    "accountNotice": "オンラインアカウントの外観 · 下の操作を実行した場合のみ変更されます",
+    "import": "PNG をインポート",
+    "resetView": "視点をリセット",
+    "restoreDefault": "デフォルトプレビューに戻す",
+    "loadUrl": "URL を読み込み",
+    "model": "プレビューモデル",
+    "animation": "アニメーション",
+    "autoRotate": "自動回転",
+    "reducedMotion": "システムの「視覚効果を減らす」設定が有効なため、自動アニメーションと回転を一時停止しています。手動での視点操作は引き続き利用できます。",
+    "urlSource": "オンライン URL スキン"
+  },
+  "model": {
+    "auto": "自動",
+    "classic": "クラシック · 標準腕",
+    "slim": "スリム · 細い腕"
+  },
+  "animation": {
+    "idle": "待機",
+    "walk": "歩行",
+    "run": "走行",
+    "none": "静止"
+  },
+  "default": {
+    "title": "デフォルトプレビューキャラクター",
+    "description": "アカウント外観やローカル画像が表示されていない場合のみ使用されます。Steve と Alex は検証済みゲームクライアントから取得されます。",
+    "sourceVersion": "取得元：検証済み Minecraft {{version}} クライアント。",
+    "fallback": "選択したデフォルトキャラクターを利用できません。再試行するかローカルプレビューをインポートしてください。",
+    "steve": {
+      "name": "Steve",
+      "description": "クラシック · 検証済みクライアント"
+    },
+    "alex": {
+      "name": "Alex",
+      "description": "スリム · 検証済みクライアント"
+    }
+  },
+  "notice": {
+    "sessionRefreshed": "{{name}} のセッションを更新しました。",
+    "clientIdSaved": "Client ID を保存しました。Microsoft ログインを開始できます。",
+    "builtinRestored": "内蔵 Microsoft アプリに戻しました。",
+    "loginCancelled": "認証をキャンセルしました。",
+    "skinUpdated": "Microsoft スキンを更新しました。",
+    "skinReset": "Microsoft スキンをデフォルトに戻しました。",
+    "capeShown": "マントを変更しました。",
+    "capeHidden": "マントを非表示にしました。",
+    "defaultSaved": "デフォルトプレビューキャラクターを保存しました。"
+  },
+  "errors": {
+    "preview": {
+      "fileInvalid": "ローカルプレビューには 16 MB 未満の PNG スキンを選択してください。",
+      "urlInvalid": "http:// または https:// で始まる完全な PNG スキン URL を入力してください。"
+    },
+    "auth": {
+      "sessionChanged": "このアカウントは削除されたか再サインインされました。現在のアカウントを選択し直して再試行してください。",
+      "credentialCleanupPending": "アカウントは削除されましたが、保存された認証情報を消去できませんでした。次回起動時に再試行します。",
+      "credentialRecoveryFailed": "保存された認証情報を復元できませんでした。もう一度サインインしてください。",
+      "profileUnavailable": "このアカウントの外観を読み込めませんでした。セッションを確認して再試行してください。",
+      "deviceExpired": "デバイスコードの有効期限が切れました。Microsoft ログインをやり直してください。",
+      "invalidResponse": "認証サービスからの応答が不完全でした。アカウントは追加されていません。再試行してください。",
+      "clientIdRequired": "先にこのプロジェクトの Microsoft Client ID を入力して保存してください。",
+      "clientRejected": "このアプリの Client ID が Microsoft によって拒否されました。アプリ登録でパブリッククライアントフローと個人用 Microsoft アカウントを有効にしてから再試行してください。",
+      "appNotApproved": "Microsoft ログインは成功しましたが、このアプリは Mojang の Minecraft API 審査を通過していません（Invalid app registration）。Minecraft Java API 審査を申請するか、承認済みの Client ID を使用してください。",
+      "rateLimited": "認証リクエストが多すぎます。少し待ってから Microsoft ログインをやり直してください。",
+      "minecraftExchangeFailed": "Minecraft のサインインを完了できませんでした。後ほど再試行するか、別の承認済み Client ID を使用してください。",
+      "xboxFailed": "Xbox 認証に失敗しました。Xbox アカウントの設定を確認して再試行してください。",
+      "offlineNameInvalid": "プレイヤー名は 3〜16 文字の半角英数字またはアンダースコアにしてください。",
+      "credentialsRequired": "Authlib のユーザー名とパスワードを入力してください。",
+      "microsoftRequired": "この操作は Microsoft アカウントでのみ利用できます。",
+      "sessionExpired": "ログインセッションの有効期限が切れたかキャンセルされました。最初からやり直してください。",
+      "credentialsRejected": "ユーザー名、パスワード、またはセッションが拒否されました。確認して再試行してください。",
+      "serverInvalid": "認証情報・クエリ・フラグメントを含まない最終的な HTTPS Authlib API ルート URL を入力してください。"
+    },
+    "skin": {
+      "fileInvalid": "1 MB 以下の有効な 64×64 または 64×32 PNG スキンを選択してください。高解像度テクスチャはローカルプレビュー専用です。",
+      "modelInvalid": "アップロードするスキンにはクラシックまたはスリムを選択してください。"
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "title": "探索",
+  "subtitle": "尋找與目前實例相容的內容。",
+  "search": "搜尋資源",
+  "searchPlaceholder": "搜尋模組、資源包、光影或整合包…",
+  "source": "來源",
+  "typeLabel": "內容類型",
+  "type": {
+    "mod": "模組",
+    "resourcepack": "資源包",
+    "shader": "光影",
+    "modpack": "整合包"
+  },
+  "target": "安裝至",
+  "versionDirectory": "使用版本目錄",
+  "details": "檢視詳情",
+  "install": "安裝",
+  "installVersion": "安裝版本 {{version}}",
+  "installVersionNotice": "安裝其他版本可能會取代現有版本。必要的前置相依項目仍會分開解析。",
+  "noResults": "找不到相關資源",
+  "noResultsDescription": "請嘗試其他關鍵字或切換資源類型。",
+  "noDescription": "此專案尚未提供描述。",
+  "authorUnknown": "作者未知",
+  "versions": "相容版本",
+  "noVersions": "目前實例沒有相容版本",
+  "fits": {
+    "count": "適用於 {{count}} 個實例",
+    "none": "適用於 0 個實例",
+    "more": "，另有 {{count}} 個",
+    "onlyMine": "僅顯示適用於我的實例的版本",
+    "empty": "沒有適用於你的實例的版本。"
+  },
+  "dependencies": "相依項目",
+  "noDependencies": "此專案未宣告相依項目",
+  "dependency": {
+    "required": "必要",
+    "optional": "選用",
+    "incompatible": "不相容",
+    "embedded": "內嵌",
+    "unknown": "未知關係"
+  },
+  "external": "開啟專案頁面",
+  "installTarget": {
+    "newInstance": "新建實例",
+    "title": "選擇安裝位置 · {{title}}",
+    "compatible": "相容的安裝位置",
+    "incompatible": "不相容 ({{count}})",
+    "installInto": "安裝至 {{name}}",
+    "createAndInstall": "建立並安裝",
+    "gameVersion": "遊戲版本",
+    "loaderVersion": "載入器版本",
+    "name": "實例名稱",
+    "recommended": "推薦",
+    "summary": "將安裝 {{loader}} {{loaderVersion}}、Minecraft {{gameVersion}}，然後安裝 {{title}} 及必要前置。",
+    "noLoaderVersions": "此遊戲版本沒有可安裝的載入器版本，請選擇其他遊戲版本。",
+    "shaderWarning": "光影需要相容的渲染載入器（如 Iris 或 OptiFine）。請自行安裝；此操作不會自動安裝 Iris。",
+    "creating": "正在建立實例並安裝資源…",
+    "downloads": "在下載中檢視",
+    "cancel": "取消安裝",
+    "curseforge": "請先建立相容的實例，再選擇該實例安裝此 CurseForge 專案。",
+    "reason": {
+      "vanilla": "原版，無法載入模組",
+      "loaderMismatch": "載入器不相容",
+      "gameVersionMismatch": "遊戲版本不相容",
+      "running": "實例正在執行",
+      "metadataMissing": "無法讀取版本資訊"
+    },
+    "unsupported": {
+      "datapack": "資料包需安裝至存檔的 datapacks 資料夾，暫不支援",
+      "noSupportedLoader": "此專案沒有 Fabric、NeoForge、Forge 或 Quilt 版本",
+      "noVersions": "沒有可下載版本",
+      "curseforgeRequiredDependencies": "此 CurseForge 檔案需要額外前置資源。請先在相容實例中安裝前置資源，再安裝此檔案。",
+      "noPinnedCreationLoader": "所選檔案不支援新建實例可用的載入器。",
+      "noReleaseVersions": "此專案沒有可安裝的正式版遊戲版本。",
+      "manifestUnavailable": "暫時無法取得遊戲版本清單，無法建議新實例。"
+    }
+  },
+  "notice": {
+    "resourceInstalled": "資源已安裝。",
+    "instanceInstalled": "實例已安裝完成。",
+    "resourceInstalledNew": "資源已安裝至新實例。"
+  },
+  "importCurseforgeZip": "改為匯入 CurseForge ZIP",
+  "curseforgeZipRequired": "請選擇 CurseForge 整合包 ZIP 檔案。"
+}

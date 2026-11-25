@@ -72,10 +72,6 @@
       "ready": {
         "title": "Everything is ready",
         "body": "Here is where everything lives in Voxelight. You can reopen this welcome setup anytime from F1."
-      },
-      "languages": {
-        "zhCN": "简体中文",
-        "enUS": "English"
       }
     },
     "steps": {

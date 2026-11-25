@@ -1,0 +1,174 @@
+{
+  "title": "Jugadores",
+  "subtitle": "Cuentas, apariencia en línea y vistas previas locales.",
+  "listTitle": "Cuentas",
+  "addAccount": "Añadir cuenta",
+  "loginTitle": "Añadir cuenta",
+  "loginDescription": "Elige cómo quieres iniciar sesión o jugar sin conexión.",
+  "loginMethods": "Método de inicio de sesión",
+  "avatar": "Avatar de {{name}}",
+  "fields": {
+    "playerName": "Nombre del jugador",
+    "authlibApiUrl": "URL de la API de Authlib",
+    "usernameOrEmail": "Usuario o correo",
+    "password": "Contraseña",
+    "onlineSkinUrl": "URL de skin en línea",
+    "importLocalPng": "Importar PNG local"
+  },
+  "credentialNotice": "Los tokens de inicio de sesión se guardan en credenciales cifradas por el sistema. Esta página nunca sube archivos de vista previa local.",
+  "method": {
+    "microsoft": "Microsoft",
+    "offline": "Sin conexión",
+    "authlib": "Authlib"
+  },
+  "type": {
+    "microsoft": "Microsoft",
+    "authlib": "Authlib",
+    "offline": "Sin conexión",
+    "unknown": "Cuenta"
+  },
+  "actions": {
+    "current": "{{name}} (actual)",
+    "select": "Seleccionar a {{name}}",
+    "refresh": "Actualizar sesión de {{name}}",
+    "remove": "Quitar a {{name}}",
+    "retryAppearance": "Reintentar apariencia",
+    "retryDefault": "Reintentar personaje predeterminado"
+  },
+  "empty": {
+    "title": "Aún no hay cuentas",
+    "description": "Añade un jugador sin conexión o inicia sesión para gestionar tu apariencia en línea."
+  },
+  "microsoft": {
+    "description": "Autoriza en la página oficial de Microsoft. El iniciador no recopila tu contraseña de Microsoft.",
+    "clientId": "Client ID de Microsoft para este proyecto",
+    "clientIdHelp": "Registra tu propia aplicación cliente pública, activa el flujo de código de dispositivo para cuentas personales y confirma el acceso a Xbox/Minecraft. No tomes prestado el Client ID de otro iniciador.",
+    "builtinActive": "Usando la aplicación integrada de Microsoft.",
+    "customOverride": "Usar un Client ID personalizado",
+    "clientIdOptional": "Client ID personalizado de Microsoft (opcional)",
+    "customActive": "Usando tu Client ID personalizado de Microsoft guardado.",
+    "useBuiltin": "Restaurar aplicación integrada",
+    "saveClientId": "Guardar Client ID",
+    "start": "Iniciar sesión con Microsoft",
+    "deviceInstruction": "Introduce este código en la página oficial de Microsoft:",
+    "openVerification": "Abrir autorización de Microsoft",
+    "waiting": "Esperando autorización · quedan {{minutes}}:{{seconds}} · consultando cada {{interval}} s",
+    "cancel": "Cancelar autorización"
+  },
+  "offline": {
+    "description": "Úsalo en partidas locales y servidores que permitan identidades sin conexión. Los servidores en modo en línea siguen requiriendo una cuenta con licencia.",
+    "name": "Nombre del jugador",
+    "namePlaceholder": "De 3 a 16 letras, números o guiones bajos",
+    "submit": "Añadir cuenta sin conexión"
+  },
+  "authlib": {
+    "description": "Usa una URL raíz de API Authlib/Yggdrasil de confianza. Tu contraseña solo se envía a ese servicio HTTPS y no se guarda en los ajustes del iniciador.",
+    "server": "URL de la API de autenticación",
+    "username": "Usuario o correo",
+    "password": "Contraseña",
+    "submit": "Iniciar sesión con Authlib",
+    "chooseProfile": "Elige el jugador para este inicio de sesión:",
+    "cancelProfile": "Cancelar selección de jugador"
+  },
+  "appearance": {
+    "title": "Apariencia",
+    "refresh": "Actualizar apariencia",
+    "customSkin": "Skin personalizada",
+    "defaultSkin": "Skin predeterminada",
+    "uploadModel": "Modelo de subida",
+    "upload": "Subir skin",
+    "droppedSkinReady": "Vista previa de skin soltada: {{name}}",
+    "uploadDroppedSkin": "Subir a cuenta de Microsoft",
+    "reset": "Restablecer skin",
+    "cape": "Capa",
+    "noCape": "Ocultar capa",
+    "noCapes": "No hay capas disponibles para esta cuenta.",
+    "authlibReadonly": "La apariencia es de solo lectura aquí. Gestiona la skin de este jugador en su servicio de Authlib."
+  },
+  "preview": {
+    "source": "Fuente de vista previa",
+    "account": "Apariencia de la cuenta",
+    "local": "Vista previa local",
+    "canvasLabel": "Vista previa interactiva del personaje de Minecraft",
+    "unavailable": "La vista previa 3D no está disponible. Reintenta o usa otra fuente de vista previa.",
+    "loading": "Cargando apariencia de la cuenta…",
+    "noAccountSkin": "No hay ninguna skin de cuenta disponible",
+    "localNotice": "Solo vista previa local · no modifica tu cuenta",
+    "accountNotice": "Fuente de cuenta en línea · los cambios abajo requieren confirmación explícita",
+    "import": "Importar PNG",
+    "resetView": "Restablecer vista",
+    "restoreDefault": "Restaurar vista predeterminada",
+    "loadUrl": "Cargar URL",
+    "model": "Modelo de vista previa",
+    "animation": "Animación",
+    "autoRotate": "Rotación automática",
+    "reducedMotion": "El movimiento reducido está activado. La animación y la rotación automáticas están pausadas; los controles manuales de cámara siguen activos.",
+    "urlSource": "Skin desde URL en línea"
+  },
+  "model": {
+    "auto": "Automático",
+    "classic": "Clásico · brazos anchos",
+    "slim": "Delgado · brazos estrechos"
+  },
+  "animation": {
+    "idle": "Reposo",
+    "walk": "Caminar",
+    "run": "Correr",
+    "none": "Quieto"
+  },
+  "default": {
+    "title": "Personaje predeterminado",
+    "description": "Solo se usa cuando no se muestra ninguna apariencia de cuenta ni importación local. Steve y Alex provienen de un cliente de juego verificado.",
+    "sourceVersion": "Origen: cliente verificado de Minecraft {{version}}.",
+    "fallback": "El personaje predeterminado seleccionado no está disponible. Reintenta o importa una vista previa local.",
+    "steve": {
+      "name": "Steve",
+      "description": "Clásico · cliente verificado"
+    },
+    "alex": {
+      "name": "Alex",
+      "description": "Delgado · cliente verificado"
+    }
+  },
+  "notice": {
+    "sessionRefreshed": "Se actualizó la sesión de {{name}}.",
+    "clientIdSaved": "Client ID guardado. Ya puedes iniciar sesión con Microsoft.",
+    "builtinRestored": "Se restauró la aplicación integrada de Microsoft.",
+    "loginCancelled": "Autorización cancelada.",
+    "skinUpdated": "Skin de Microsoft actualizada.",
+    "skinReset": "Skin de Microsoft restablecida a la predeterminada.",
+    "capeShown": "Capa cambiada.",
+    "capeHidden": "Capa oculta.",
+    "defaultSaved": "Personaje predeterminado guardado."
+  },
+  "errors": {
+    "preview": {
+      "fileInvalid": "Elige una skin PNG de menos de 16 MB para la vista previa local.",
+      "urlInvalid": "Introduce una URL completa http:// o https:// de una skin PNG."
+    },
+    "auth": {
+      "sessionChanged": "Esta cuenta se eliminó o volvió a iniciar sesión. Selecciona la cuenta actual y reintenta.",
+      "credentialCleanupPending": "Se eliminó la cuenta, pero no se pudieron borrar sus credenciales guardadas. El iniciador lo reintentará al reiniciarse.",
+      "credentialRecoveryFailed": "El iniciador no pudo restaurar las credenciales guardadas. Inicia sesión de nuevo.",
+      "profileUnavailable": "No pudimos cargar la apariencia de esta cuenta. Comprueba la sesión y reintenta.",
+      "deviceExpired": "El código de dispositivo caducó. Vuelve a iniciar sesión con Microsoft.",
+      "invalidResponse": "El servicio de autenticación devolvió una respuesta incompleta. No se añadió ninguna cuenta; inténtalo de nuevo.",
+      "clientIdRequired": "Introduce y guarda primero el Client ID de Microsoft de este proyecto.",
+      "clientRejected": "Microsoft rechazó el Client ID de esta aplicación. Activa los flujos de cliente público y las cuentas personales de Microsoft en el registro de la aplicación e inténtalo de nuevo.",
+      "appNotApproved": "Tu inicio de sesión de Microsoft funcionó, pero esta aplicación aún no ha pasado la revisión de la API de Minecraft de Mojang (Invalid app registration). Envía la solicitud de revisión de la API de Minecraft Java o usa un Client ID aprobado.",
+      "rateLimited": "Demasiadas solicitudes de autenticación. Espera un momento y vuelve a iniciar sesión con Microsoft.",
+      "minecraftExchangeFailed": "Minecraft no pudo completar el inicio de sesión. Inténtalo más tarde o usa otro Client ID aprobado.",
+      "xboxFailed": "Falló la autenticación de Xbox. Comprueba la configuración de tu cuenta de Xbox e inténtalo de nuevo.",
+      "offlineNameInvalid": "Usa de 3 a 16 letras, números o guiones bajos para el nombre del jugador.",
+      "credentialsRequired": "Introduce el usuario y la contraseña de Authlib.",
+      "microsoftRequired": "Esta acción solo está disponible para cuentas de Microsoft.",
+      "sessionExpired": "Esta sesión de inicio caducó o fue cancelada. Empieza de nuevo.",
+      "credentialsRejected": "Se rechazaron el usuario, la contraseña o la sesión. Revísalos e inténtalo de nuevo.",
+      "serverInvalid": "Introduce la URL raíz HTTPS final de la API de Authlib sin credenciales, parámetros de consulta ni fragmentos."
+    },
+    "skin": {
+      "fileInvalid": "Elige una skin PNG válida de 64×64 o 64×32 de hasta 1 MB. Las texturas de alta resolución son solo para vista previa local.",
+      "modelInvalid": "Elige Clásico o Delgado para la skin subida."
+    }
+  }
+}

@@ -7,8 +7,18 @@ import { collectTranslationUsage } from "./i18n-usage.mjs";
 const rootArgument = process.argv.indexOf("--root");
 const root = rootArgument >= 0 ? path.resolve(process.argv[rootArgument + 1]) : fileURLToPath(new URL("../", import.meta.url));
 const localeRoot = path.join(root, "src", "i18n", "locales");
-const locales = ["zh-CN", "en-US"];
+const requiredLocales = ["zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "ru-RU", "es-ES"];
+const discoveredLocales = fs.readdirSync(localeRoot, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+const locales = rootArgument >= 0 ? discoveredLocales : requiredLocales;
 const errors = [];
+if (rootArgument < 0) {
+  for (const locale of requiredLocales) {
+    if (!discoveredLocales.includes(locale)) errors.push(`Missing locale directory: ${locale}`);
+  }
+}
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -92,7 +102,12 @@ const allowedLiterals = new Set([
   "Modrinth",
   "CurseForge",
   "简体中文",
+  "繁體中文",
   "English",
+  "日本語",
+  "한국어",
+  "Русский",
+  "Español",
   "/s",
   "example.org:25565",
   "· Java",

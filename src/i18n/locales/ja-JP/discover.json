@@ -1,0 +1,85 @@
+{
+  "title": "探索",
+  "subtitle": "現在のインスタンスと互換性のあるコンテンツを探します。",
+  "search": "リソースを検索",
+  "searchPlaceholder": "MOD、リソースパック、シェーダー、MODパックを検索…",
+  "source": "ソース",
+  "typeLabel": "コンテンツの種類",
+  "type": {
+    "mod": "MOD",
+    "resourcepack": "リソースパック",
+    "shader": "シェーダー",
+    "modpack": "MODパック"
+  },
+  "target": "インストール先",
+  "versionDirectory": "バージョンディレクトリを使用",
+  "details": "詳細を見る",
+  "install": "インストール",
+  "installVersion": "バージョン {{version}} をインストール",
+  "installVersionNotice": "別バージョンをインストールすると既存バージョンが置き換わる場合があります。必須の依存関係は別途解決されます。",
+  "noResults": "リソースが見つかりませんでした",
+  "noResultsDescription": "別のキーワードやコンテンツの種類をお試しください。",
+  "noDescription": "このプロジェクトの説明はありません。",
+  "authorUnknown": "作者不明",
+  "versions": "互換バージョン",
+  "noVersions": "現在のインスタンスに対応するバージョンがありません",
+  "fits": {
+    "count": "{{count}} 件のインスタンスに適合",
+    "none": "適合するインスタンスなし",
+    "more": "、他 {{count}} 件",
+    "onlyMine": "自分のインスタンスに合うバージョンのみ表示",
+    "empty": "お使いのインスタンスに適合するバージョンはありません。"
+  },
+  "dependencies": "依存関係",
+  "noDependencies": "このプロジェクトに依存関係はありません",
+  "dependency": {
+    "required": "必須",
+    "optional": "任意",
+    "incompatible": "非互換",
+    "embedded": "同梱",
+    "unknown": "不明な関係"
+  },
+  "external": "プロジェクトページを開く",
+  "installTarget": {
+    "newInstance": "新規インスタンス",
+    "title": "インストール先を選択 · {{title}}",
+    "compatible": "互換性のあるインストール先",
+    "incompatible": "非互換 ({{count}})",
+    "installInto": "{{name}} にインストール",
+    "createAndInstall": "作成してインストール",
+    "gameVersion": "ゲームバージョン",
+    "loaderVersion": "ローダーバージョン",
+    "name": "インスタンス名",
+    "recommended": "推奨",
+    "summary": "{{loader}} {{loaderVersion}} と Minecraft {{gameVersion}} をインストールしたあと、{{title}} と必須の依存関係をインストールします。",
+    "noLoaderVersions": "このゲームバージョンで利用できるローダーバージョンがありません。別のゲームバージョンを選択してください。",
+    "shaderWarning": "シェーダーには Iris や OptiFine など対応する描画ローダーが必要です。別途インストールしてください（Iris は自動インストールされません）。",
+    "creating": "インスタンスを作成し、リソースをインストール中…",
+    "downloads": "ダウンロードで確認",
+    "cancel": "インストールをキャンセル",
+    "curseforge": "先に互換性のあるインスタンスを作成し、そのインスタンスを選択してこの CurseForge プロジェクトをインストールしてください。",
+    "reason": {
+      "vanilla": "バニラでは MOD を読み込めません",
+      "loaderMismatch": "ローダー非互換",
+      "gameVersionMismatch": "ゲームバージョン非互換",
+      "running": "インスタンス実行中",
+      "metadataMissing": "バージョン情報を取得できません"
+    },
+    "unsupported": {
+      "datapack": "データパックはワールドの datapacks フォルダ用であり、現在この機能では未対応です",
+      "noSupportedLoader": "このプロジェクトには Fabric、NeoForge、Forge、Quilt 向けのバージョンがありません",
+      "noVersions": "ダウンロード可能なバージョンがありません",
+      "curseforgeRequiredDependencies": "この CurseForge ファイルには他のリソースが必要です。先に互換性のあるインスタンスへ依存リソースをインストールしてから、このファイルをインストールしてください。",
+      "noPinnedCreationLoader": "このファイルは新規インスタンス作成で利用できるローダーに対応していません。",
+      "noReleaseVersions": "このプロジェクトにはインストール可能なリリース版のゲームバージョンがありません。",
+      "manifestUnavailable": "ゲームバージョンマニフェストを一時的に取得できないため、新規インスタンスを提案できません。"
+    }
+  },
+  "notice": {
+    "resourceInstalled": "リソースをインストールしました。",
+    "instanceInstalled": "インスタンスをインストールしました。",
+    "resourceInstalledNew": "新しいインスタンスにリソースをインストールしました。"
+  },
+  "importCurseforgeZip": "代わりに CurseForge ZIP をインポート",
+  "curseforgeZipRequired": "CurseForge MODパックの ZIP ファイルを選択してください。"
+}

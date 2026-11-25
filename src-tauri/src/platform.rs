@@ -23,11 +23,25 @@ impl Default for SystemAppearance {
 }
 
 fn resolve_system_locale(locale: &str) -> String {
-    let normalized = locale.to_ascii_lowercase();
-    if matches!(normalized.as_str(), "zh-hans" | "zh-cn" | "zh-sg")
+    let normalized = locale.trim().to_ascii_lowercase().replace('_', "-");
+    if matches!(
+        normalized.as_str(),
+        "zh-hant" | "zh-tw" | "zh-hk" | "zh-mo"
+    ) || normalized.starts_with("zh-hant-")
+    {
+        "zh-TW".into()
+    } else if matches!(normalized.as_str(), "zh" | "zh-hans" | "zh-cn" | "zh-sg")
         || normalized.starts_with("zh-hans-")
     {
         "zh-CN".into()
+    } else if normalized == "ja" || normalized.starts_with("ja-") {
+        "ja-JP".into()
+    } else if normalized == "ko" || normalized.starts_with("ko-") {
+        "ko-KR".into()
+    } else if normalized == "ru" || normalized.starts_with("ru-") {
+        "ru-RU".into()
+    } else if normalized == "es" || normalized.starts_with("es-") {
+        "es-ES".into()
     } else {
         "en-US".into()
     }
@@ -215,6 +229,13 @@ mod tests {
         assert_eq!(resolve_system_locale("zh-Hans"), "zh-CN");
         assert_eq!(resolve_system_locale("zh-CN"), "zh-CN");
         assert_eq!(resolve_system_locale("zh-SG"), "zh-CN");
+        assert_eq!(resolve_system_locale("zh-Hant"), "zh-TW");
+        assert_eq!(resolve_system_locale("zh-TW"), "zh-TW");
+        assert_eq!(resolve_system_locale("zh-HK"), "zh-TW");
+        assert_eq!(resolve_system_locale("ja-JP"), "ja-JP");
+        assert_eq!(resolve_system_locale("ko-KR"), "ko-KR");
+        assert_eq!(resolve_system_locale("ru-RU"), "ru-RU");
+        assert_eq!(resolve_system_locale("es-MX"), "es-ES");
         assert_eq!(resolve_system_locale("de-DE"), "en-US");
     }
 
@@ -230,7 +251,8 @@ mod tests {
         println!("{appearance:?}");
         assert!(appearance.accent_color.starts_with('#'));
         assert_eq!(appearance.accent_color.len(), 7);
-        assert!(["zh-CN", "en-US"].contains(&appearance.locale.as_str()));
+        assert!(["zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "ru-RU", "es-ES"]
+            .contains(&appearance.locale.as_str()));
     }
 
     #[test]

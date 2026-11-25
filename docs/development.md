@@ -96,16 +96,25 @@ npm run tauri -- build --no-bundle --no-sign --debug -- --locked
 
 `source:check` needs only Node. `npm test` needs Git history, so it runs only in a checkout.
 
+## Versioning & Release Policy
+
+Voxelight Launcher follows [Semantic Versioning 2.0.0](https://semver.org/):
+
+- **Stable releases (`MAJOR.MINOR.PATCH`)**: e.g. `0.7.0`, `1.0.0`, tagged `v0.7.0`. Distributed via GitHub Releases and Gitee Releases with `prerelease: false` and offered automatically by the in-app updater.
+- **Pre-releases (`MAJOR.MINOR.PATCH-(alpha|beta|rc).N`)**: e.g. `0.7.0-beta.1`, `0.7.0-rc.1`, tagged `v0.7.0-beta.1`. Published explicitly as a GitHub/Gitee Pre-release (`prerelease: true`) and never auto-pushed to users on stable releases. Users running a pre-release build automatically receive the upgrade offer when the corresponding stable release (`0.7.0`) is published.
+- **Version synchronization**: Every release manifest (`package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`, `licenses/dependency-inventory.json`) must declare the exact same SemVer string. Use `npm run version:check` (also part of `npm run check`) to verify and `npm run version:set -- <version>` to bump all six files atomically.
+- **Changelog**: Record user-visible changes under `CHANGELOG.md` (`[Unreleased]`) during development and move them under the version heading when cutting a tag.
+
 ## Releasing
 
-1. Set the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` and `licenses/dependency-inventory.json`, and build the installer.
+1. Run `npm run version:set -- <version>` (e.g. `0.7.0-beta.1` for a pre-release or `0.7.0` for stable), update `CHANGELOG.md`, verify `npm run version:check`, and build the installer.
 2. Optional signing: `scripts\build.ps1 -PrepareSigning` (with `-NoBundle` for the executable only) rebuilds into a fresh folder and writes a signing receipt. Then `scripts\desktop.ps1 -Action sign -CertificateThumbprint <thumbprint> -SigningReceipt <receipt>` signs with a certificate from the current user's store (no PFX or password) and timestamps through `timestamp.digicert.com`. It signs the standalone executable and the installer, not the copy inside the installer. Rebuild if a file in the receipt changes.
-3. `node scripts/release-metadata.mjs --installer "<path>\Voxelight Launcher_<version>_x64-setup.exe" --out releases\<version>-installer` copies the installer as `VoxelightLauncher-<version>-x64-setup.exe` and writes `update.json` from it.
+3. `node scripts/release-metadata.mjs --installer "<path>\Voxelight Launcher_<version>_x64-setup.exe" --out releases\<version>-installer` (add `--prerelease` for `-alpha.N` / `-beta.N` / `-rc.N` builds) copies the installer as `VoxelightLauncher-<version>-x64-setup.exe` and writes `update.json` from it.
 4. `npm run source:package` from the same checkout.
-5. `node scripts/prepare-release-assets.mjs --version <version> --installer releases\<version>-installer\VoxelightLauncher-<version>-x64-setup.exe --source releases\<version>\VoxelightLauncher-<version>-source.zip --out releases\<version>-assets`.
-6. Upload the four files to the GitHub and Gitee releases of `v<version>`: installer, source ZIP and `SHA256SUMS.txt` first, `update.json` last.
+5. `node scripts/prepare-release-assets.mjs --version <version> --installer releases\<version>-installer\VoxelightLauncher-<version>-x64-setup.exe --source releases\<version>\VoxelightLauncher-<version>-source.zip --out releases\<version>-assets` (add `--prerelease` for pre-releases).
+6. Upload the four files to the GitHub and Gitee releases of `v<version>` (mark as Pre-release for `-alpha`/`-beta`/`-rc` tags): installer, source ZIP and `SHA256SUMS.txt` first, `update.json` last.
 
-`release-metadata.mjs` and `prepare-release-assets.mjs` never upload, sign or run anything. The launcher only offers stable releases, and the installer must keep its fixed name and stay under 512 MiB.
+`release-metadata.mjs` and `prepare-release-assets.mjs` never upload, sign or run anything. The in-app auto-updater only offers stable releases, and the installer must keep its fixed name and stay under 512 MiB.
 
 ## Smoke tests
 
