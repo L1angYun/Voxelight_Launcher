@@ -11,6 +11,7 @@ import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { useResourceManager } from "./useInstanceContent";
+import { useFileDrop } from "../../app/FileDropContext";
 import { displayName, resourceCounts, visibleResources, type ResourceSort, type ResourceStateFilter } from "./localContentFilter";
 import { errorText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
@@ -56,7 +57,19 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
   const id = useId();
   const manager = useResourceManager(versionId, instanceId);
   const { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice, noticeParams,
-    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany, deleteMany } = manager;
+    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany, deleteMany, importPaths } = manager;
+  useFileDrop((dropped) => {
+    if (dropped.mods.length > 0) {
+      void importPaths(dropped.mods, "mod");
+      return true;
+    }
+    if (dropped.zips.length > 0) {
+      const targetKind = kind === "shader" ? "shader" : "resourcepack";
+      void importPaths(dropped.zips, targetKind);
+      return true;
+    }
+    return false;
+  }, { priority: 20, hintKey: "shell:drop.hintInstanceContent" });
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<ResourceStateFilter>("all");
   const [sort, setSort] = useState<ResourceSort>("name");

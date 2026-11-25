@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use crate::path_grants::{PathGrants, PathUse};
 use crate::{
     auth::{
@@ -177,6 +178,34 @@ pub async fn get_player_profile(
 ) -> AppResult<PlayerProfile> {
     auth.get_profile(&account_id).await.map_err(expected)
 }
+fn encode_skin_preview_file(path: &std::path::Path) -> AppResult<String> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    let metadata = std::fs::metadata(path).map_err(|e| expected(e.to_string()))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 16 * 1024 * 1024 {
+        return Err(crate::errors::AppError::new("preview.fileInvalid"));
+    }
+    let bytes = std::fs::read(path).map_err(|e| expected(e.to_string()))?;
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return Err(crate::errors::AppError::new("preview.fileInvalid"));
+    }
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+#[tauri::command]
+pub async fn read_skin_preview(
+    window: tauri::WebviewWindow,
+    grants: State<'_, PathGrants>,
+    path: String,
+) -> AppResult<String> {
+    let resolved = grants.peek(PathUse::Skin, &path, &window)?;
+    tokio::task::spawn_blocking(move || encode_skin_preview_file(&resolved))
+        .await
+        .map_err(|e| expected(e.to_string()))?
+}
+
 #[tauri::command]
 pub async fn upload_account_skin(
     window: tauri::WebviewWindow,
@@ -326,5 +355,24 @@ mod tests {
         let status = service_status(false, None, &custom, Some(BUILTIN));
         assert_eq!(status["microsoftOverride"], true);
         assert!(!serde_json::to_string(&status).unwrap().contains(USER));
+    }
+
+    #[test]
+    fn u3_skin_preview_validates_png_signature_and_encodes_data_url() {
+        let root = crate::instances::StagingDirectory::create(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let valid = root.path().join("valid.png");
+        let invalid = root.path().join("fake.png");
+        let empty = root.path().join("empty.png");
+        std::fs::write(&valid, b"\x89PNG\r\n\x1a\npayload").unwrap();
+        std::fs::write(&invalid, b"not a png").unwrap();
+        std::fs::write(&empty, b"").unwrap();
+        let url = encode_skin_preview_file(&valid).unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+        assert_eq!(encode_skin_preview_file(&invalid).unwrap_err().code, "preview.fileInvalid");
+        assert_eq!(encode_skin_preview_file(&empty).unwrap_err().code, "preview.fileInvalid");
     }
 }

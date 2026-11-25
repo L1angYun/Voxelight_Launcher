@@ -16,7 +16,8 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
   const appearance = useAppearance();
   const availability = useWorldAvailability();
   const materialNoticeId = useId();
-  const materialNotice = availability === "css" ? t("settings:worldMaterial.cssFallback")
+  const materialNotice = availability === "lite" ? t("settings:worldMaterial.liteUnloaded")
+    : availability === "css" ? t("settings:worldMaterial.cssFallback")
     : availability === "solid-only" && config.worldMaterial === "lattice" ? t("settings:worldMaterial.solidFallback") : "";
 
   async function background(path?: string) {

@@ -38,7 +38,7 @@ mod storage;
 mod updates;
 
 use std::{fs, path::Path};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 fn show_startup_error(message: &str) {
     eprintln!("[voxelight/fatal] {message}");
@@ -175,10 +175,41 @@ pub fn run() {
                     Some(path) => builder.data_directory(path.to_path_buf()),
                     None => builder,
                 };
-                builder
+                let window = builder
                     .build()
-                    .map(|_| ())
-                    .map_err(|error| format!("创建主窗口失败：{error}"))
+                    .map_err(|error| format!("创建主窗口失败：{error}"))?;
+                let handle = app.handle().clone();
+                let label = window.label().to_string();
+                let target = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::DragDrop(drop_event) = event {
+                        match drop_event {
+                            tauri::DragDropEvent::Enter { paths, .. } => {
+                                let _ = target.emit(
+                                    "launcher://file-drag",
+                                    serde_json::json!({ "active": true, "count": paths.len() }),
+                                );
+                            }
+                            tauri::DragDropEvent::Leave => {
+                                let _ = target.emit(
+                                    "launcher://file-drag",
+                                    serde_json::json!({ "active": false, "count": 0 }),
+                                );
+                            }
+                            tauri::DragDropEvent::Drop { paths, .. } => {
+                                let _ = target.emit(
+                                    "launcher://file-drag",
+                                    serde_json::json!({ "active": false, "count": 0 }),
+                                );
+                                let grants = handle.state::<path_grants::PathGrants>();
+                                let dropped = grants.grant_dropped(paths, &label);
+                                let _ = target.emit("launcher://file-drop", dropped);
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                Ok(())
             };
             let destroy_partial_window = || {
                 if let Some(window) = app.get_webview_window(&window_config.label) {
@@ -273,6 +304,7 @@ pub fn run() {
             auth_commands::select_authlib_profile,
             auth_commands::refresh_account,
             auth_commands::get_player_profile,
+            auth_commands::read_skin_preview,
             auth_commands::upload_account_skin,
             auth_commands::reset_account_skin,
             auth_commands::select_account_cape,

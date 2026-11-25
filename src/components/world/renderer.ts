@@ -31,7 +31,7 @@ export interface WorldRenderer {
   draw(frame: WorldFrame, dtSeconds: number): WorldDrawMetrics;
   /** Nonblocking completion check; never submits another frame. */
   pollFrameComplete(): boolean;
-  dispose(): void;
+  dispose(releaseContext?: boolean): void;
 }
 type Callbacks = { onLost(): void; onRestored(): void };
 interface TimerExtension { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number }
@@ -58,8 +58,11 @@ interface ParticleResources {
   simulation: Program; points: Program; side: number; read: number; initialized: boolean; wordKey: string;
 }
 interface SurfaceResources {
-  scope: ResourceScope; scene: Target; bloom: [Target, Target];
+  scope: ResourceScope; scene: Target;
   drawFramebuffer: WebGLFramebuffer; multisampled: boolean; width: number; height: number;
+}
+interface BloomResources {
+  scope: ResourceScope; targets: [Target, Target]; width: number; height: number;
 }
 interface CoreResources {
   scope: ResourceScope; empty: WebGLVertexArrayObject; cubes: WebGLVertexArrayObject;
@@ -67,6 +70,7 @@ interface CoreResources {
 }
 const SPAN = 160;
 const LATTICE_EPSILON = .01;
+const MAX_SURFACE_PIXELS = 2560 * 1440;
 const OFFSET: [number, number] = [0, -46];
 const SUN_LENGTH = Math.hypot(.72, .4, .16);
 const SUN: RGB = [.72 / SUN_LENGTH, .4 / SUN_LENGTH, .16 / SUN_LENGTH];
@@ -99,6 +103,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   const capabilities: { webgl2: true; floatTargets: boolean } = { webgl2: true, floatTargets: false };
   let palette = DEFAULT_PALETTE, tier = { ...DEFAULT_TIER };
   let core: CoreResources | null = null, field: FieldResources | null = null, surface: SurfaceResources | null = null;
+  let bloom: BloomResources | null = null;
   let particles: ParticleResources | null = null, actualMaterial: WorldMaterial = "solid";
   let lastSubmittedMaterial: WorldMaterial = "solid";
   let cssWidth = 2, cssHeight = 2, requestedDpr = 1;
@@ -244,8 +249,6 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     const scope = new ResourceScope();
     try {
       const scene = target(scope, width, height);
-      const bw = Math.max(1, width >> 2), bh = Math.max(1, height >> 2);
-      const bloom: [Target, Target] = [target(scope, bw, bh), target(scope, bw, bh)];
       const drawFramebuffer = sampleCount ? ownFramebuffer(scope) : scene.framebuffer;
       gl.bindFramebuffer(gl.FRAMEBUFFER, drawFramebuffer);
       if (sampleCount) {
@@ -258,13 +261,30 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, width, height);
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
       assertFramebuffer();
-      return { scope, scene, bloom, drawFramebuffer, multisampled: sampleCount > 0, width, height };
+      return { scope, scene, drawFramebuffer, multisampled: sampleCount > 0, width, height };
+    } catch (error) { scope.dispose(); throw error; }
+  }
+  function releaseBloom() {
+    bloom?.scope.dispose();
+    bloom = null;
+  }
+  function ensureBloom(sceneWidth: number, sceneHeight: number): BloomResources {
+    const bw = Math.max(1, sceneWidth >> 2), bh = Math.max(1, sceneHeight >> 2);
+    if (bloom && bloom.width === bw && bloom.height === bh) return bloom;
+    const scope = new ResourceScope();
+    try {
+      const targets: [Target, Target] = [target(scope, bw, bh), target(scope, bw, bh)];
+      releaseBloom();
+      bloom = { scope, targets, width: bw, height: bh };
+      return bloom;
     } catch (error) { scope.dispose(); throw error; }
   }
   function dimensions(): [number, number] {
     const maximum = Math.max(2, Math.min(Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)), Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE))));
     const dpr = Math.min(requestedDpr, tier.dprCap);
-    const scale = Math.min(dpr, maximum / cssWidth, maximum / cssHeight);
+    let scale = Math.min(dpr, maximum / cssWidth, maximum / cssHeight);
+    const area = (cssWidth * scale) * (cssHeight * scale);
+    if (area > MAX_SURFACE_PIXELS) scale *= Math.sqrt(MAX_SURFACE_PIXELS / area);
     return [Math.max(2, Math.round(cssWidth * scale)), Math.max(2, Math.round(cssHeight * scale))];
   }
   function allocateSurface(width: number, height: number) {
@@ -284,6 +304,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     if (nextField) { field?.scope.dispose(); field = nextField; }
     if (nextSurface) {
       surface?.scope.dispose(); surface = nextSurface;
+      releaseBloom();
       canvas.width = width; canvas.height = height;
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -307,7 +328,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   function releaseResources() {
     clearFrameFence(); pendingSimulationDt = 0;
     lastSubmittedMaterial = "solid";
-    clearQueries(); releaseParticles(); clearInteraction(); surface?.scope.dispose(); field?.scope.dispose(); core?.scope.dispose();
+    clearQueries(); releaseParticles(); releaseBloom(); clearInteraction(); surface?.scope.dispose(); field?.scope.dispose(); core?.scope.dispose();
     surface = null; field = null; core = null;
   }
   function rebuild() {
@@ -488,8 +509,10 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       gl.blitFramebuffer(0, 0, s.width, s.height, 0, 0, s.width, s.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     }
     const bloomAmount = palette.light ? 0 : frame.bloom;
+    let activeBloom: BloomResources | null = null;
     if (bloomAmount > 0) {
-      const [a, b] = s.bloom;
+      activeBloom = ensureBloom(s.width, s.height);
+      const [a, b] = activeBloom.targets;
       fullscreen(c.threshold, a.framebuffer, a.width, a.height); bind(c.threshold, "uTex", s.scene.texture); gl.drawArrays(gl.TRIANGLES, 0, 3);
       for (let index = 0; index < 4; index++) {
         const horizontal = index % 2 === 0, spread = 1 + (index >> 1);
@@ -497,9 +520,11 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
         bind(c.blur, "uTex", horizontal ? a.texture : b.texture);
         vector2(c.blur, "uDir", horizontal ? [spread / a.width, 0] : [0, spread / a.height]); gl.drawArrays(gl.TRIANGLES, 0, 3);
       }
+    } else if (bloom) {
+      releaseBloom();
     }
     fullscreen(c.composite, null, s.width, s.height);
-    bind(c.composite, "uTex", s.scene.texture); bind(c.composite, "uBloom", bloomAmount > 0 ? s.bloom[0].texture : s.scene.texture, 1);
+    bind(c.composite, "uTex", s.scene.texture); bind(c.composite, "uBloom", activeBloom ? activeBloom.targets[0].texture : s.scene.texture, 1);
     scalar(c.composite, "uAmt", bloomAmount); scalar(c.composite, "uFlash", animated && !palette.light ? frame.flash : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE0); gl.bindVertexArray(null);
@@ -571,11 +596,16 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       return { cpuMs: Math.max(0, performance.now() - started), gpuMs, submitted: valid, pointsSubmitted: pointsSubmitted && valid };
     },
     pollFrameComplete,
-    dispose() {
+    dispose(releaseContext = false) {
       if (disposed) return;
       disposed = true;
       canvas.removeEventListener("webglcontextlost", onContextLost); canvas.removeEventListener("webglcontextrestored", onContextRestored);
       releaseResources();
+      if (releaseContext) {
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+        canvas.width = 0;
+        canvas.height = 0;
+      }
     },
   };
 }

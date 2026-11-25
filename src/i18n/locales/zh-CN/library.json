@@ -216,6 +216,8 @@
   "installModpack": "安装整合包",
   "modpackVersion": "整合包版本",
   "includeOptional": "包含可选客户端文件",
+  "droppedPackReady": "已拖入整合包：{{name}}",
+  "chooseAnotherPack": "另选文件",
   "modpackUpdate": {
     "title": "整合包更新",
     "check": "检查整合包更新",

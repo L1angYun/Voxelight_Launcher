@@ -218,6 +218,8 @@
   "installModpack": "Install modpack",
   "modpackVersion": "Modpack version",
   "includeOptional": "Include optional client files",
+  "droppedPackReady": "Ready to import: {{name}}",
+  "chooseAnotherPack": "Choose another file",
   "modpackUpdate": {
     "title": "Modpack update",
     "check": "Check for modpack update",

@@ -74,7 +74,8 @@
   backdrop-filter: none;
   filter: none;
 }
-[data-glass-mode="fallback"] .vx-glass-canvas { visibility: hidden; }
+[data-glass-mode="fallback"] .vx-glass-canvas,
+[data-glass-mode="lite"] .vx-glass-canvas { visibility: hidden; }
 [data-glass-mode="fallback"] .vx-glass-surface::before,
 [data-glass-mode="fallback"] .vx-glass-surface::after { display: none; }
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {

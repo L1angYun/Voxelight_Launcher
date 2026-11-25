@@ -105,3 +105,38 @@ test("local resources can be deleted in a batch with confirmation and logs tab l
   await expect(page.getByRole("searchbox", { name: "搜索游戏日志" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("drag-and-drop imports mods in instance content, opens modpack import, and previews dropped skins", async ({ page }) => {
+  await page.setViewportSize({ width: 1050, height: 720 });
+  await installLauncherFixture(page);
+  await page.goto("/?next-ui");
+  const emit = (event: string, payload: unknown) =>
+    page.evaluate(([name, data]) => (window as unknown as { __VX_EMIT__: (e: string, p: unknown) => void }).__VX_EMIT__(name, data), [event, payload] as const);
+
+  // 1. Drag overlay appears and hides cleanly; dropping a .mrpack opens import dialog pre-filled.
+  await emit("launcher://file-drag", { active: true, count: 1 });
+  await expect(page.locator("[data-file-drop-overlay]")).toBeVisible();
+  await emit("launcher://file-drop", { mods: [], zips: [], modpacks: ["C:\\Downloads\\skyblock.mrpack"], skins: [], unsupported: 0 });
+  await expect(page.locator("[data-file-drop-overlay]")).toHaveCount(0);
+  const dialog = page.locator("dialog[open]");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/skyblock\.mrpack/)).toBeVisible();
+  await dialog.getByRole("button", { name: "导入整合包", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // 2. Dropping a .jar mod inside an instance's Content tab imports it as a mod.
+  await navigation(page).getByRole("button", { name: "游戏库", exact: true }).click();
+  await page.locator(".vx-instance-card").first().click();
+  await page.getByRole("tab", { name: "内容", exact: true }).click();
+  await emit("launcher://file-drop", { mods: ["C:\\Downloads\\sodium.jar"], zips: [], modpacks: [], skins: [], unsupported: 0 });
+  await expect(page.getByText("sodium.jar")).toBeVisible();
+
+  // 3. Dropping a .png skin on Players previews it via read_skin_preview.
+  await navigation(page).getByRole("button", { name: "角色", exact: true }).click();
+  await expect(page.locator(".vx-accounts-page")).toBeVisible();
+  await emit("launcher://file-drop", { mods: [], zips: [], modpacks: [], skins: ["C:\\Downloads\\hero.png"], unsupported: 0 });
+  await expect(page.getByText("hero.png", { exact: true })).toBeVisible();
+  await expect(page.getByText("已拖入皮肤预览：hero.png", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "上传至微软账号", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

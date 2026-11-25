@@ -70,4 +70,21 @@ describe("curvature image cache", () => {
       expect(curvatureMapImage({ ...shape, optics: { ...optics, [property]: .5 } })).not.toBe(resting);
     expect(encode).toHaveBeenCalledTimes(6);
   });
+
+  it("bounds cached curvature maps by byte budget and clears them on demand", async () => {
+    const { curvatureMapImage, curvatureMapCacheBytes, clearCurvatureMapCache, MAX_CURVATURE_CACHE_BYTES } = await import("./refractionImage");
+    const largeChunk = "A".repeat(1_200_000); // ~2.4 MB in UTF-16
+    let n = 0;
+    encode.mockImplementation(() => `data:image/png;base64,${++n}${largeChunk}`);
+    const first = curvatureMapImage({ ...shape, width: 10 });
+    expect(curvatureMapCacheBytes()).toBeLessThanOrEqual(MAX_CURVATURE_CACHE_BYTES);
+    expect(curvatureMapCacheBytes()).toBeGreaterThan(2_000_000);
+    const second = curvatureMapImage({ ...shape, width: 11 });
+    expect(second).not.toBe(first);
+    expect(curvatureMapCacheBytes()).toBeLessThanOrEqual(MAX_CURVATURE_CACHE_BYTES);
+    // The first entry was evicted to stay within the byte cap.
+    expect(curvatureMapImage({ ...shape, width: 10 })).not.toBe(first);
+    clearCurvatureMapCache();
+    expect(curvatureMapCacheBytes()).toBe(0);
+  });
 });

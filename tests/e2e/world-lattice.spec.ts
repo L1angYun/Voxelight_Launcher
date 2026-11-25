@@ -578,7 +578,7 @@ test("holding and dragging the home title preserves native text selection", asyn
   expect(errors).toEqual([]);
 });
 
-for (const mode of ["lite effects", "system reduced motion", "high contrast"] as const) {
+for (const mode of ["system reduced motion", "high contrast"] as const) {
   test(`${mode} keeps a real static world unchanged during pointer activity`, async ({ page }, testInfo) => {
     const errors: string[] = [];
     page.on("pageerror", error => errors.push(error.message));
@@ -586,7 +586,7 @@ for (const mode of ["lite effects", "system reduced motion", "high contrast"] as
       reducedMotion: mode === "system reduced motion" ? "reduce" : "no-preference",
       contrast: mode === "high contrast" ? "more" : "no-preference",
     });
-    await installLauncherFixture(page, { effects: mode === "lite effects" ? "lite" : "full" });
+    await installLauncherFixture(page, { effects: "full" });
     await observeWorldIntro(page);
     await page.goto("/");
     const scene = page.locator(".vx-global-scene");

@@ -159,6 +159,16 @@
     "primaryDirectory": "Primary data directory: {{path}}",
     "recoveryHelp": "Changes in this window are saved to the fallback profile. Fix the primary directory or upgrade the launcher, then close and reopen it."
   },
+  "drop": {
+    "title": "Drop files to import",
+    "hintGeneral": "Drop a .mrpack modpack here, mods inside an instance's Content tab, or a .png skin on Players.",
+    "hintModpack": "Drop a .mrpack or CurseForge .zip modpack to import as a new instance.",
+    "hintInstanceContent": "Drop .jar mods or .zip resource and shader packs to import into this instance.",
+    "hintSkin": "Drop a .png skin to preview it in 3D or upload it to a Microsoft account.",
+    "openInstanceForMods": "Open an instance's Content tab to drop .jar mods or .zip packs.",
+    "openAccountsForSkins": "Open the Players page to drop a .png skin.",
+    "unsupported": "Only .jar mods, .mrpack/.zip modpacks or packs, and .png skins can be dropped here."
+  },
   "external": {
     "openFailed": "The system could not open this link. Copy the address to open it in your browser.",
     "address": "Link address",

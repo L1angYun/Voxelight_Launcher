@@ -31,6 +31,8 @@ for (const [locale, label, selected] of [["en-US", "World material", "Lattice"],
     expect(control.textContent).toContain(selected);
     expect(control.getAttribute("aria-describedby")).toContain(status.id);
     expect(onChange).not.toHaveBeenCalled();
+    await act(async () => publishWorldAvailability("lite"));
+    expect(container.querySelector('[role="status"]')?.textContent).toMatch(/Lite|精简/i);
     await act(async () => publishWorldAvailability("available"));
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(control.textContent).toContain(selected);

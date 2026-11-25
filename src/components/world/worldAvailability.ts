@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { useSyncExternalStore } from "react";
 
-export type WorldAvailability = "unknown" | "available" | "solid-only" | "css";
+export type WorldAvailability = "unknown" | "available" | "solid-only" | "css" | "lite";
 let availability: WorldAvailability = "unknown";
 const listeners = new Set<() => void>();
 export function publishWorldAvailability(next: WorldAvailability) {

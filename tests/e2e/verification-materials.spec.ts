@@ -84,8 +84,11 @@ async function prepare(page: Page, theme: Theme, effects: Effects) {
     contentType: "application/json", body: JSON.stringify({ hits: [] }),
   }));
   await page.goto("/");
-  await page.waitForFunction(() => document.documentElement.dataset.worldIntro === "off"
-    && Number(document.querySelector<HTMLElement>(".world-scene")?.dataset.worldFrames) > 0);
+  await page.waitForFunction((mode) => {
+    const scene = document.querySelector<HTMLElement>(".world-scene");
+    if (document.documentElement.dataset.worldIntro !== "off" || !scene) return false;
+    return mode === "lite" ? scene.dataset.worldTier === "css" : Number(scene.dataset.worldFrames) > 0;
+  }, effects);
   await page.evaluate(() => document.fonts.ready);
   await page.locator('.vx-floating-nav [data-page="library"]').click();
   await page.waitForFunction(() => {

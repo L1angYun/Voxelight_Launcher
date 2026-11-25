@@ -568,7 +568,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     }
   }
   function fit() {
-    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    const ratio = Math.min(1.5, window.devicePixelRatio || 1);
     canvas.width = Math.max(1, Math.round(window.innerWidth * ratio));
     canvas.height = Math.max(1, Math.round(window.innerHeight * ratio));
     g.setTransform(ratio, 0, 0, ratio, 0, 0);

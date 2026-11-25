@@ -193,8 +193,13 @@ test("one world canvas serves full and lite modes while real data points remain 
     });
     await current.goto("/");
     await expect(current.locator(".vx-global-scene canvas")).toHaveCount(1);
-    await expect(current.locator(".world-scene__canvas")).toBeVisible();
-    await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", effects === "full" ? "animated" : "static");
+    if (effects === "full") {
+      await expect(current.locator(".world-scene__canvas")).toBeVisible();
+      await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", "animated");
+    } else {
+      await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", "css");
+      await expect(current.locator(".vx-global-scene")).toHaveAttribute("data-world-frames", "0");
+    }
     await expect(current.locator(".vx-recent-card .vx-lattice-frame")).toHaveCount(2);
     await expect(current.locator(".vx-lattice-frame__dot")).toHaveCount(0);
     await expect(current.locator('.vx-recent-card[aria-current="true"] .vx-lattice-frame[data-selected="true"]')).toBeVisible();

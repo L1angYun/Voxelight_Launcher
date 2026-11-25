@@ -227,7 +227,7 @@ it.each(["press", "prepare", "static", "pause", "hidden"])("lets %s immediately 
     await react.act(async () => document.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
     await frame(16);
   } else if (interrupt === "prepare") await render({ phase: "preparing", fraction: .37 });
-  else if (interrupt === "static") await render({ effects: "lite" });
+  else if (interrupt === "static") await render({ reducedMotion: true });
   else {
     const count = fake.draw.mock.calls.length;
     if (interrupt === "pause") await render({ paused: true });
@@ -244,4 +244,13 @@ it.each(["press", "prepare", "static", "pause", "hidden"])("lets %s immediately 
     });
   }
   expect(fake.draw.mock.calls.at(-1)![0].morph.toWord).toBe(false);
+});
+
+it("unloads the renderer and ends the intro immediately when switching to Lite effects", async () => {
+  await render(); await frame(0); await frame(700);
+  expect(document.documentElement.dataset.worldIntro).toBe("on");
+  await render({ effects: "lite" });
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+  expect(fake.dispose).toHaveBeenCalledTimes(1);
+  expect(frames.size).toBe(0);
 });

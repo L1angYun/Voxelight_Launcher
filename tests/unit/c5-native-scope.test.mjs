@@ -56,4 +56,6 @@ test('H10 every custom command is classified and privileged file access checks a
    assert.match(serverImport,/Self::Jar => PathUse::ServerJar,\s*Self::Folder => PathUse::ServerFolder,/);
    const contentSource=read('src-tauri/src/content.rs');
    assert.match(contentSource.split('fn import_world_datapacks(')[1].slice(0,800),/grants\s*\.\s*consume_datapacks\(/);
+   const authSource=read('src-tauri/src/auth_commands.rs');
+   assert.match(authSource.split('fn read_skin_preview(')[1].slice(0,400),/grants\s*\.\s*peek\(\s*PathUse::Skin\s*,/);
 });

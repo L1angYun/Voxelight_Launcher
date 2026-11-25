@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { command, type Instance, type RemoteVersion, type ResourceProject, type VersionManifest } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
+import { droppedFileName, useFileDrop } from "../../app/FileDropContext";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Field } from "../../components/ui/Field";
@@ -21,6 +22,7 @@ export function CreateInstanceDialog({
   onOpenChange,
   onInstalled,
   initialMode = "version",
+  initialPackPath = null,
   project,
   source,
 }: {
@@ -28,6 +30,7 @@ export function CreateInstanceDialog({
   onOpenChange: (open: boolean) => void;
   onInstalled: (versionId: string, instanceId?: string) => void | Promise<void>;
   initialMode?: "version" | "import";
+  initialPackPath?: string | null;
   project?: ResourceProject;
   source?: ResourceSource;
 }) {
@@ -35,6 +38,7 @@ export function CreateInstanceDialog({
   const modeId = useId();
   const { data, manifest: initialManifest, run, reload, selectInstance, selectVersion, busy } = useLauncher();
   const [creationMode, setMode] = useState<"version" | "import">(initialMode);
+  const [droppedPackPath, setDroppedPackPath] = useState<string | null>(initialPackPath);
   const packSource = source ?? "modrinth";
   const projectId = project?.project_id;
   const projectKey = projectId ? `${packSource}:${projectId}` : "";
@@ -121,14 +125,24 @@ export function CreateInstanceDialog({
 
   useEffect(() => {
     if (!isOpen) return;
-    setMode(initialMode);
+    setMode(initialPackPath ? "import" : initialMode);
+    setDroppedPackPath(initialPackPath ?? null);
     setInstanceName(projectName ?? "");
     setError("");
     // A reopened dialog starts without the last search; the type and order stay.
     setVersionQuery("");
     filters.current = { ...filters.current, query: "" };
     setGameVersion(current => current || firstShown(catalogVersions(manifest ?? initialManifest ?? undefined)));
-  }, [initialMode, isOpen, projectName]);
+  }, [initialMode, initialPackPath, isOpen, projectName]);
+
+  useFileDrop((dropped) => {
+    const candidate = dropped.modpacks[0] ?? (dropped.zips.length === 1 ? dropped.zips[0] : undefined);
+    if (!candidate) return false;
+    setMode("import");
+    setDroppedPackPath(candidate);
+    setError("");
+    return true;
+  }, { priority: 30, enabled: isOpen && !project, hintKey: "shell:drop.hintModpack" });
 
   useEffect(() => {
     const request = ++manifestGeneration.current;
@@ -203,11 +217,13 @@ export function CreateInstanceDialog({
     });
   }
 
-  async function importPack() {
+  async function importPack(useDropped = false) {
     setError("");
     await run("instance.import", async () => {
-      const path = await pickLauncherPath("packRead");
+      const preselected = useDropped ? droppedPackPath : null;
+      const path = preselected ?? (await pickLauncherPath("packRead"));
       if (!path) return;
+      if (preselected) setDroppedPackPath(null);
       if (project && packSource === "curseforge" && !/\.zip$/i.test(path)) { setError(t("discover:curseforgeZipRequired")); return; }
       const result = await command<PackResult>("import_modpack", {
         path,
@@ -263,7 +279,10 @@ export function CreateInstanceDialog({
           <Button variant="secondary" disabled={busy !== ""} onClick={() => void importPack()}>{t("discover:importCurseforgeZip")}</Button>
           <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={packInstallDisabled}>{t("library:installModpack")}</Button>
         </> : <Button variant="primary" type="submit" form={`${modeId}-create-modpack-form`} onClick={installModpack} disabled={packInstallDisabled}>{t("library:installModpack")}</Button>
-      ) : <Button variant="secondary" onClick={() => void importPack()}>{t("library:importPack")}</Button>}
+      ) : droppedPackPath ? <>
+        <Button variant="secondary" disabled={busy !== ""} onClick={() => void importPack(false)}>{t("library:chooseAnotherPack")}</Button>
+        <Button variant="primary" disabled={busy !== ""} onClick={() => void importPack(true)}>{t("library:importPack")}</Button>
+      </> : <Button variant="secondary" onClick={() => void importPack(false)}>{t("library:importPack")}</Button>}
     >
       {!projectName ? <Segmented semantic="tabs" label={t("library:createModes")} value={creationMode} onChange={setMode}
         idPrefix={`${modeId}-mode`} panelId={`${modeId}-panel`}
@@ -326,6 +345,12 @@ export function CreateInstanceDialog({
       ) : null}
       {mode === "import" ? (
         <div className="vx-form-stack">
+          {droppedPackPath ? (
+            <div className="vx-dropped-file-banner" role="status">
+              <strong>{t("library:droppedPackReady", { name: droppedFileName(droppedPackPath) })}</strong>
+              <Button variant="ghost" size="sm" onClick={() => setDroppedPackPath(null)}>{t("common:actions.cancel")}</Button>
+            </div>
+          ) : null}
           <Field label={t("library:instanceNameOptional")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
           <Field label={t("library:curseforgeKeyOptional")} htmlFor={`${modeId}-create-curseforge-key`}><input id={`${modeId}-create-curseforge-key`} type="password" autoComplete="off" value={curseforgeKey} onChange={(event) => setCurseforgeKey(event.target.value)} /></Field>
           <p className="vx-muted">{t("library:importHint")}</p>

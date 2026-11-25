@@ -1,7 +1,22 @@
 import { createCurvatureMap, type CurvatureGeometry } from "./geometry";
 
-const images = new Map<string, string>();
+export const MAX_CURVATURE_CACHE_BYTES = 4 * 1024 * 1024;
+const images = new Map<string, { value: string; bytes: number }>();
 const capacity = 32;
+let cachedBytes = 0;
+
+function imageBytes(value: string): number {
+  return value.length * 2;
+}
+
+export function clearCurvatureMapCache() {
+  images.clear();
+  cachedBytes = 0;
+}
+
+export function curvatureMapCacheBytes(): number {
+  return cachedBytes;
+}
 
 function curvatureMapKey(shape: CurvatureGeometry): string {
   const pose = shape.optics;
@@ -17,7 +32,7 @@ export function curvatureMapImage(shape: CurvatureGeometry): string | null {
   if (cached !== undefined) {
     images.delete(key);
     images.set(key, cached);
-    return cached;
+    return cached.value;
   }
   try {
     const map = createCurvatureMap(shape);
@@ -30,8 +45,18 @@ export function curvatureMapImage(shape: CurvatureGeometry): string | null {
     pixels.data.set(map.data);
     context.putImageData(pixels, 0, 0);
     const image = canvas.toDataURL("image/png");
-    images.set(key, image);
-    if (images.size > capacity) images.delete(images.keys().next().value!);
+    const bytes = imageBytes(image);
+    if (bytes <= MAX_CURVATURE_CACHE_BYTES) {
+      images.set(key, { value: image, bytes });
+      cachedBytes += bytes;
+      while (images.size > capacity || cachedBytes > MAX_CURVATURE_CACHE_BYTES) {
+        const oldestKey = images.keys().next().value;
+        if (oldestKey === undefined || oldestKey === key) break;
+        const oldest = images.get(oldestKey);
+        images.delete(oldestKey);
+        if (oldest) cachedBytes = Math.max(0, cachedBytes - oldest.bytes);
+      }
+    }
     return image;
   } catch {
     return null;
@@ -41,19 +66,21 @@ export function curvatureMapImage(shape: CurvatureGeometry): string | null {
 /** A surface owns one asynchronous encoder, one waiting pose and bounded URLs. */
 export function createLiveCurvatureMaps(onImage: (source: string, shape: CurvatureGeometry) => void) {
   type Request = { key: string; shape: CurvatureGeometry };
-  const cache = new Map<string, string>();
+  const cache = new Map<string, { url: string; bytes: number }>();
+  let cacheBytes = 0;
   let desired: Request | null = null;
   let encoding: Request | null = null;
   let published: string | null = null;
   let disposed = false;
 
   const trim = () => {
-    for (const [key, source] of cache) {
-      if (cache.size <= capacity) break;
+    for (const [key, entry] of cache) {
+      if (cache.size <= capacity && cacheBytes <= MAX_CURVATURE_CACHE_BYTES) break;
       // The currently displayed image remains valid until its replacement lands.
       if (key === published) continue;
       cache.delete(key);
-      URL.revokeObjectURL(source);
+      cacheBytes = Math.max(0, cacheBytes - entry.bytes);
+      URL.revokeObjectURL(entry.url);
     }
   };
   const publish = (request: Request, source: string) => {
@@ -67,7 +94,7 @@ export function createLiveCurvatureMaps(onImage: (source: string, shape: Curvatu
     const hit = cache.get(request.key);
     if (hit !== undefined) {
       cache.delete(request.key); cache.set(request.key, hit);
-      publish(request, hit);
+      publish(request, hit.url);
       return;
     }
     encoding = request;
@@ -78,7 +105,9 @@ export function createLiveCurvatureMaps(onImage: (source: string, shape: Curvatu
         let source: string | null = null;
         try { source = URL.createObjectURL(blob); } catch { /* Retain the last valid image. */ }
         if (source) {
-          cache.set(request.key, source);
+          const bytes = Math.max(0, blob.size);
+          cache.set(request.key, { url: source, bytes });
+          cacheBytes += bytes;
           // A newer requested/cached pose always wins over a late completion.
           if (desired?.key === request.key) publish(desired, source);
           trim();
@@ -128,13 +157,14 @@ export function createLiveCurvatureMaps(onImage: (source: string, shape: Curvatu
       const hit = cache.get(desired.key);
       if (hit !== undefined) {
         cache.delete(desired.key); cache.set(desired.key, hit);
-        publish(desired, hit);
+        publish(desired, hit.url);
       } else start();
     },
     dispose() {
       disposed = true; desired = null;
-      for (const source of cache.values()) URL.revokeObjectURL(source);
+      for (const entry of cache.values()) URL.revokeObjectURL(entry.url);
       cache.clear();
+      cacheBytes = 0;
     },
   };
 }

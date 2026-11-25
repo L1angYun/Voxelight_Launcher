@@ -32,6 +32,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   const [notice, setNotice] = useState("");
   const [noticeParams, setNoticeParams] = useState<Record<string, unknown> | undefined>(undefined);
   const generation = useRef(0);
+  const preservedNotice = useRef<string | null>(null);
 
   const selectionArgs = useCallback(() => ({ versionId, instanceId, resourceType: kind }), [instanceId, kind, versionId]);
   const report = useCallback((request: number, cause: unknown) => {
@@ -92,7 +93,9 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     setView("files");
     setBusy("");
     setError("");
-    setNotice("");
+    const carry = preservedNotice.current;
+    preservedNotice.current = null;
+    setNotice(carry ?? "");
     setNoticeParams(undefined);
     if (versionId && desktop) void refresh();
     return () => {
@@ -398,18 +401,22 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     }
   }, [busy, report, selectionArgs]);
 
-  const importFiles = useCallback(async () => {
-    if (!desktop || busy) return;
-    let paths: string[] | null = null;
-    try { paths = await pickLauncherPaths("localResources"); }
-    catch (cause) { setError(normalizeError(cause).code); return; }
-    if (!paths?.length) return;
+  const importPaths = useCallback(async (paths: string[], targetKind?: ResourceKind) => {
+    if (!desktop || busy || !paths.length) return;
+    const effectiveKind = targetKind ?? kind;
     const request = ++generation.current;
     setBusy("import");
     setError("");
+    setNotice("");
+    setNoticeParams(undefined);
     try {
-      await command("import_local_resources", { ...selectionArgs(), paths });
+      await command("import_local_resources", { versionId, instanceId, resourceType: effectiveKind, paths });
       if (request !== generation.current) return;
+      if (effectiveKind !== kind) {
+        preservedNotice.current = "resourceImported";
+        setKind(effectiveKind);
+        return;
+      }
       setNotice("resourceImported");
       await refresh();
     } catch (cause) {
@@ -417,12 +424,21 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     } finally {
       if (request === generation.current) setBusy("");
     }
-  }, [busy, kind, refresh, report, selectionArgs, t]);
+  }, [busy, instanceId, kind, refresh, report, setKind, versionId]);
+
+  const importFiles = useCallback(async () => {
+    if (!desktop || busy) return;
+    let paths: string[] | null = null;
+    try { paths = await pickLauncherPaths("localResources"); }
+    catch (cause) { setError(normalizeError(cause).code); return; }
+    if (!paths?.length) return;
+    await importPaths(paths);
+  }, [busy, importPaths]);
 
   return {
     kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice, noticeParams,
     selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany, deleteMany,
-    refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles,
+    refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles, importPaths,
   };
 }
 

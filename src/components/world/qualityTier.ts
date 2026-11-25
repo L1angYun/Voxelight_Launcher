@@ -9,8 +9,8 @@ export interface Tier {
   forceSolid: boolean;
 }
 export function selectTier(cap: { webgl2: boolean; floatTargets: boolean; effects: EffectsLevel; reducedMotion: boolean; highContrast: boolean }): Tier {
-  if (!cap.webgl2) return { kind: "css", particleSide: 0, grid: 110, dprCap: 1, forceSolid: true };
-  if (cap.effects === "lite" || cap.reducedMotion || cap.highContrast)
+  if (!cap.webgl2 || cap.effects === "lite") return { kind: "css", particleSide: 0, grid: 110, dprCap: 1, forceSolid: true };
+  if (cap.reducedMotion || cap.highContrast)
     return { kind: "static", particleSide: 0, grid: 110, dprCap: 1, forceSolid: true };
   return { kind: "animated", particleSide: cap.floatTargets ? 256 : 0, grid: 160, dprCap: 1.5, forceSolid: !cap.floatTargets };
 }

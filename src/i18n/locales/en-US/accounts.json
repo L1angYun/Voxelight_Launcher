@@ -77,6 +77,8 @@
     "defaultSkin": "Default skin",
     "uploadModel": "Upload model",
     "upload": "Upload skin",
+    "droppedSkinReady": "Dropped skin preview: {{name}}",
+    "uploadDroppedSkin": "Upload to Microsoft account",
     "reset": "Reset skin",
     "cape": "Cape",
     "noCape": "Hide cape",

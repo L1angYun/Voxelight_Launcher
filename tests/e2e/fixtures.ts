@@ -308,6 +308,7 @@ export async function installLauncherFixture(
         callbacks.get(callbackId)?.({ event, id, payload: structuredClone(payload) });
       }
     };
+    (window as unknown as { __VX_EMIT__?: (event: string, payload: unknown) => void }).__VX_EMIT__ = emit;
     const resourceTask = (id: string, project: string, status: DownloadTask["status"]): DownloadTask => ({
       id, kind: "resource", target: project, label: "合成安装资源", status, stage: "queued",
       completed: 0, total: 0, bytesCompleted: 0, bytesTotal: 0, message: "",
@@ -833,6 +834,34 @@ export async function installLauncherFixture(
             const deleted = files.filter(file => removeSet.has(file.fileName)).map(file => file.fileName);
             localResourceSets.set(key, files.filter(file => !removeSet.has(file.fileName)));
             return { deleted };
+          }
+          if (name === "import_local_resources") {
+            const key = localResourceKey(args);
+            const existing = localResourceSets.get(key) ?? [];
+            const paths = Array.isArray(args?.paths) ? args.paths.map(String) : [];
+            const added: LocalResource[] = paths.map((rawPath) => {
+              const fileName = rawPath.split(/[\\/]/).filter(Boolean).pop() ?? rawPath;
+              const nameOnly = fileName.replace(/\.(jar|zip)$/i, "");
+              return { name: nameOnly, fileName, path: rawPath, enabled: true, size: 4096, modifiedMs: Date.now() };
+            });
+            localResourceSets.set(key, [...existing, ...added]);
+            return added.map((item) => ({ fileName: item.fileName, path: item.path, sizeBytes: item.size }));
+          }
+          if (name === "import_modpack") {
+            const name = String(args?.name || "Dropped Pack");
+            const imported = {
+              ...instances[0],
+              id: `fixture-pack-${instances.length + 1}`,
+              name,
+              versionId: "1.21.1",
+              loader: "fabric",
+              loaderVersion: "0.16.10",
+            };
+            instances.push(imported);
+            return { instance: structuredClone(imported), warnings: [] };
+          }
+          if (name === "read_skin_preview") {
+            return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
           }
           // These concrete query fixtures deliberately represent empty records.
           if ([

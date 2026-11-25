@@ -471,6 +471,7 @@ describe("WebGL renderer boundary", () => {
 
   it("finishes the solid transition by releasing particles below the visible lattice boundary", () => {
     const t = mount({ float: true }); const r = t.renderer!;
+    r.draw({ ...frame(), lat: 0 }, .016);
     const baselineTextures = [...t.live].filter(handle => handle.kind === "texture").length;
     r.draw(frame(), .016);
     expect([...t.live].filter(handle => handle.kind === "texture")).toHaveLength(baselineTextures + 5);
@@ -601,7 +602,10 @@ describe("WebGL renderer boundary", () => {
     r.resize(800, 600, 1.5);
     r.draw(frame(), 0); // Compare submitted states, each owning exactly one frame fence.
     const count = t.live.size;
-    for (let i = 0; i < 5; i++) r.resize(900 + i, 620 + i, 1.5);
+    for (let i = 0; i < 5; i++) {
+      r.resize(900 + i, 620 + i, 1.5);
+      r.draw(frame(), 0);
+    }
     expect(t.live.size).toBe(count);
     r.setTier({ ...fullTier, grid: 110, dprCap: 1, particleSide: 160 });
     r.draw(frame(), 0);
@@ -682,5 +686,28 @@ describe("WebGL renderer boundary", () => {
     expect(r.draw(frame(), .016).gpuMs).toBe(2.5);
     expect([...t.live].filter(handle => handle.kind === "query")).toHaveLength(1);
     r.dispose(); expect(t.live.size).toBe(0);
+  });
+
+  it("caps oversized full-screen surfaces to the pixel budget and allocates bloom only when dark bloom is active", () => {
+    const t = mount(); const r = t.renderer!;
+    r.resize(3840, 2160, 1.5);
+    expect(t.canvas.width * t.canvas.height).toBeLessThanOrEqual(2560 * 1440 + 4096);
+    expect(t.canvas.width).toBeGreaterThan(2000);
+    // Light theme does not use bloom, so no bloom FBOs stay allocated.
+    r.setPalette({ light: true, ink: [1, 1, 1], point: [.2, .2, .2], accent: [.5, .6, .7], haze: [1, 1, 1] });
+    r.draw(frame(), 0);
+    const lightFbos = [...t.live].filter(handle => handle.kind === "framebuffer").length;
+    // Dark theme allocates the two bloom targets on demand.
+    r.setPalette({ light: false, ink: [0, 0, 0], point: [1, 1, 1], accent: [.5, .9, .5], haze: [.2, .2, .2] });
+    r.draw({ ...frame(), bloom: 0.4 }, 0);
+    const darkFbos = [...t.live].filter(handle => handle.kind === "framebuffer").length;
+    expect(darkFbos).toBe(lightFbos + 2);
+    // Returning to light theme releases those bloom targets immediately.
+    r.setPalette({ light: true, ink: [1, 1, 1], point: [.2, .2, .2], accent: [.5, .6, .7], haze: [1, 1, 1] });
+    r.draw(frame(), 0);
+    expect([...t.live].filter(handle => handle.kind === "framebuffer").length).toBe(lightFbos);
+    r.dispose(true);
+    expect(t.live.size).toBe(0);
+    expect([t.canvas.width, t.canvas.height]).toEqual([0, 0]);
   });
 });

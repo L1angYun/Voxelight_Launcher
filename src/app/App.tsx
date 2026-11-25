@@ -28,6 +28,8 @@ import { navigationRegistry } from "./registry";
 import { useShortcuts } from "./useShortcuts";
 import { ShortcutHelp } from "./ShortcutHelp";
 import { FirstRunTour } from "./FirstRunTour";
+import { FileDropProvider, useFileDrop, type DroppedFiles } from "./FileDropContext";
+import { CreateInstanceDialog } from "../features/library/CreateInstanceDialog";
 import "./shell.css";
 
 const implementedPages = new Set<NavigationPage>(["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]);
@@ -64,12 +66,14 @@ export function AppShell() {
   const [updateReview, setUpdateReview] = useState<{ tick: number; visit: number } | null>(null);
   const [tourRequested, setTourRequested] = useState(false);
   const [homeImageShown, setHomeImageShown] = useState(false);
+  const [droppedPackPath, setDroppedPackPath] = useState<string | null>(null);
   const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
-  const { bootstrapped, bootstrapFailed, data, reload, run, activeAccount, accountAppearance, config, preparing, progress, running, gamePid } = useLauncher();
+  const { bootstrapped, bootstrapFailed, data, reload, run, selectInstance, selectVersion, activeAccount, accountAppearance, config, preparing, progress, running, gamePid } = useLauncher();
   const world = useMemo(() => deriveWorldState({ preparing, progress, running, gamePid }), [preparing, progress, running, gamePid]);
   const { effects, reducedMotion, highContrast } = useAppearance();
+  const { notify } = useToast();
 
   function navigate(nextPage: NavigationPage, fixedDirection?: number) {
     if (nextPage === page) {
@@ -90,8 +94,21 @@ export function AppShell() {
 
   const shortcuts = useShortcuts({ navigate, implemented: implementedPages });
 
+  const handleUnhandledDrop = (files: DroppedFiles) => {
+    const key = files.mods.length > 0
+      ? "shell:drop.openInstanceForMods"
+      : files.skins.length > 0
+        ? "shell:drop.openAccountsForSkins"
+        : "shell:drop.unsupported";
+    notify({ id: "file-drop", message: t(key), kind: "info" });
+  };
+
   return (
-    <>
+    <FileDropProvider onUnhandled={handleUnhandledDrop}>
+      <GlobalPackDropHandler
+        page={page}
+        onModpack={(path) => setDroppedPackPath(path)}
+      />
       <LauncherNoticeBridge />
       <UpdateNoticeBridge onReview={() => {
         setUpdateReview(current => ({ tick: (current?.tick ?? 0) + 1, visit: page === "settings" ? visit : visit + 1 }));
@@ -157,8 +174,46 @@ export function AppShell() {
         canShowTour={bootstrapped}
       />
       <FirstRunTour reopen={tourRequested} onDismissed={() => setTourRequested(false)} />
-    </>
+      {droppedPackPath ? (
+        <CreateInstanceDialog
+          open
+          onOpenChange={(open) => { if (!open) setDroppedPackPath(null); }}
+          initialMode="import"
+          initialPackPath={droppedPackPath}
+          onInstalled={async (versionId, instanceId) => {
+            await reload();
+            if (instanceId) selectInstance(instanceId);
+            else selectVersion(versionId);
+            setDroppedPackPath(null);
+          }}
+        />
+      ) : null}
+    </FileDropProvider>
   );
+}
+
+function GlobalPackDropHandler({
+  page,
+  onModpack,
+}: {
+  page: NavigationPage;
+  onModpack: (path: string) => void;
+}) {
+  const hintKey = page === "home" || page === "library"
+    ? "shell:drop.hintModpack"
+    : "shell:drop.hintGeneral";
+  useFileDrop((dropped) => {
+    if (dropped.modpacks.length > 0) {
+      onModpack(dropped.modpacks[0]);
+      return true;
+    }
+    if (dropped.zips.length === 1 && (page === "home" || page === "library")) {
+      onModpack(dropped.zips[0]);
+      return true;
+    }
+    return false;
+  }, { priority: 0, hintKey });
+  return null;
 }
 
 export function App() {

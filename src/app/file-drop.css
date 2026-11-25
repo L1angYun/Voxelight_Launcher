@@ -1,0 +1,55 @@
+@layer features {
+  .vx-file-drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-6);
+    background: var(--bg-overlay);
+    pointer-events: none;
+  }
+
+  .vx-file-drop-overlay__card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    max-width: 28rem;
+    padding: var(--space-6) var(--space-8);
+    border: 2px dashed var(--accent);
+    border-radius: var(--radius-lg);
+    background: var(--surface-solid);
+    color: var(--text-primary);
+    text-align: center;
+    box-shadow: var(--shadow-dialog);
+  }
+
+  .vx-file-drop-overlay__card svg {
+    color: var(--accent);
+  }
+
+  .vx-file-drop-overlay__card span {
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .vx-dropped-file-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
+  }
+
+  .vx-dropped-file-banner strong {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+}

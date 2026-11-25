@@ -36,12 +36,24 @@ function palette(): WorldPalette {
 }
 
 export function WorldScene(props: WorldSceneProps) {
-  const hostRef = useRef<HTMLDivElement>(null), canvasRef = useRef<HTMLCanvasElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const current = useRef(props); current.current = props;
   const runtime = useRef<{ update(force?: boolean): void } | null>(null);
   useEffect(() => {
-    const host = hostRef.current, canvas = canvasRef.current;
-    if (!host || !canvas) return;
+    const host = hostRef.current;
+    if (!host) return;
+    const makeCanvas = () => {
+      const node = document.createElement("canvas");
+      node.className = "world-scene__canvas";
+      node.width = 0;
+      node.height = 0;
+      return node;
+    };
+    // Reuse an existing live canvas across StrictMode remounts so only one
+    // WebGL2 context is created; unloadRenderer swaps in a fresh canvas after
+    // explicit WEBGL_lose_context in Lite mode.
+    let activeCanvas = host.querySelector<HTMLCanvasElement>(":scope > canvas.world-scene__canvas") ?? makeCanvas();
+    if (!activeCanvas.parentNode) host.append(activeCanvas);
     const html = document.documentElement;
     const query = (text: string) => typeof window.matchMedia === "function" ? window.matchMedia(text) : null;
     const reduce = query("(prefers-reduced-motion: reduce)"), contrast = query("(prefers-contrast: more)"), forced = query("(forced-colors: active)"), fine = query("(any-pointer: fine)");
@@ -57,11 +69,12 @@ export function WorldScene(props: WorldSceneProps) {
       const cadence = sorted.length ? sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2 : 1000 / 60;
       return cadence * 1.25;
     };
-    let width = 1, height = 1, tier: Tier;
+    let width = 1, height = 1, tier: Tier = selectTier({ webgl2: false, floatTargets: false, effects: current.current.effects ?? "full", reducedMotion: false, highContrast: false });
     let lastLayoutKey = "", trackedAnchor: Element | null = null;
     let lastAnchorNdc: [number, number] = [.62, -.66];
     let previousPhase = current.current.phase;
     let renderer: WorldRenderer | null = null;
+    let unsupported = false;
     let submittedScene: WorldSceneId | "transition" | "unavailable" = "unavailable";
     let pointerBound = false;
     let introPending = false, introTimer: ReturnType<typeof setTimeout> | null = null;
@@ -115,12 +128,44 @@ export function WorldScene(props: WorldSceneProps) {
       host!.dataset.worldTier = lost || !renderer ? "css" : tier.kind;
       host!.dataset.worldGrid = String(tier.grid);
       host!.dataset.worldParticles = String(renderer?.material === "lattice" ? tier.particleSide ** 2 : 0);
-      host!.dataset.worldDpr = (canvas!.width / width).toFixed(3);
+      host!.dataset.worldDpr = renderer ? (activeCanvas.width / width).toFixed(3) : "0.000";
       host!.dataset.motion = tier?.kind === "animated" ? "full" : "reduced";
-      host!.dataset.paused = String(!permitted());
+      host!.dataset.paused = String(!permitted() || !renderer);
       lastFrame = frame;
-      publishWorldAvailability(lost || !renderer ? "css" : renderer.capabilities.floatTargets ? "available" : "solid-only");
+      const availability = current.current.effects === "lite" ? "lite"
+        : lost || !renderer ? "css"
+        : renderer.capabilities.floatTargets ? "available" : "solid-only";
+      publishWorldAvailability(availability);
       syncPointerBindings();
+    }
+    function unloadRenderer() {
+      if (!renderer) {
+        activeCanvas.width = 0;
+        activeCanvas.height = 0;
+        return;
+      }
+      renderer.dispose(true);
+      renderer = null;
+      lost = false;
+      gpuComplete = false;
+      needsSubmission = false;
+      downgrades = 0;
+      drawn = 0;
+      lastPalette = "";
+      submittedScene = "unavailable";
+      // Replace the released canvas with a clean one so switching back to Full
+      // can acquire a fresh WebGL2 context after WEBGL_lose_context.
+      const fresh = makeCanvas();
+      activeCanvas.replaceWith(fresh);
+      activeCanvas = fresh;
+    }
+    function ensureRenderer() {
+      if (renderer || unsupported || disposed) return;
+      try {
+        renderer = createWorldRenderer(activeCanvas, { onLost: fallback, onRestored: () => { if (!disposed) { lost = false; update(true); } } });
+      } catch { renderer = null; }
+      if (!renderer) unsupported = true;
+      else lastPalette = "";
     }
     function fallback() { lost = true; gpuComplete = false; introConsumed = true; submittedScene = "unavailable"; endIntro(); stop(); host!.dataset.worldTier = "css"; host!.dataset.worldScene = submittedScene; host!.dataset.worldSettled = "false"; host!.dataset.paused = "true"; publishWorldAvailability("css"); syncPointerBindings(); }
     function sample(source: "gpu" | "submission", costMs: number, elapsedMs: number) {
@@ -235,16 +280,30 @@ export function WorldScene(props: WorldSceneProps) {
     function update(force = false) {
       if (disposed) return;
       const input = current.current;
+      const effects = input.effects ?? "full";
       const reducedMotion = Boolean(input.reducedMotion || reduce?.matches || html.dataset.reducedMotion === "true");
       const highContrast = Boolean(contrast?.matches || forced?.matches || html.dataset.highContrast === "true");
       const nextPalette = palette(), paletteKey = JSON.stringify(nextPalette);
-      const key = JSON.stringify([input.phase, input.fraction, input.page, input.scene, input.material, input.paused, input.effects, reducedMotion, highContrast, document.hidden, visible, lost, Boolean(fine?.matches)]);
+      const key = JSON.stringify([input.phase, input.fraction, input.page, input.scene, input.material, input.paused, effects, reducedMotion, highContrast, document.hidden, visible, lost, Boolean(fine?.matches)]);
       if (!force && key === lastKey && paletteKey === lastPalette) return;
       const launchStarted = previousPhase === "idle" && input.phase === "preparing";
       previousPhase = input.phase;
       lastKey = key; stop(); needsSubmission = true; gpuComplete = false;
       if (!permitted()) introWordHoldUntil = null;
-      tier = selectTier({ webgl2: Boolean(renderer) && !lost, floatTargets: Boolean(renderer?.capabilities.floatTargets), effects: input.effects ?? "full", reducedMotion, highContrast });
+      if (effects === "lite") {
+        // Lite mode unloads the 3D WebGL renderer completely to save GPU/system memory.
+        unloadRenderer();
+        tier = selectTier({ webgl2: false, floatTargets: false, effects: "lite", reducedMotion, highContrast });
+        director.setInputs(requestedInputs());
+        director.snap();
+        introConsumed = true; endIntro();
+        lastPalette = paletteKey;
+        fit();
+        publish(director.step(0, performance.now()));
+        return;
+      }
+      ensureRenderer();
+      tier = selectTier({ webgl2: Boolean(renderer) && !lost, floatTargets: Boolean(renderer?.capabilities.floatTargets), effects, reducedMotion, highContrast });
       for (let index = 0; index < downgrades; index++) tier = nextTier(tier) ?? tier;
       budget = createFrameBudget(16.7);
       director.setInputs(requestedInputs());
@@ -260,9 +319,6 @@ export function WorldScene(props: WorldSceneProps) {
         start();
       } catch { fallback(); }
     }
-    try {
-      renderer = createWorldRenderer(canvas, { onLost: fallback, onRestored: () => { if (!disposed) { lost = false; update(true); } } });
-    } catch { renderer = null; }
     const ndc = (event: PointerEvent): [number, number] => {
       const rect = host.getBoundingClientRect();
       return [(event.clientX - rect.left) / width * 2 - 1, 1 - (event.clientY - rect.top) / height * 2];
@@ -331,7 +387,5 @@ export function WorldScene(props: WorldSceneProps) {
   }, []);
   useEffect(() => runtime.current?.update(), [props.phase, props.fraction, props.page, props.scene, props.material, props.paused, props.effects, props.reducedMotion]);
   return <div ref={hostRef} className={["world-scene", props.className].filter(Boolean).join(" ")} aria-hidden="true"
-    data-world-tier="css" data-world-scene="unavailable" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-world-settled="false" data-motion="reduced" data-paused={Boolean(props.paused)}>
-    <canvas ref={canvasRef} className="world-scene__canvas" />
-  </div>;
+    data-world-tier="css" data-world-scene="unavailable" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-world-settled="false" data-motion="reduced" data-paused={Boolean(props.paused)} />;
 }

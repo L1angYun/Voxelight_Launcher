@@ -1,6 +1,6 @@
 use crate::{errors::{AppError, AppResult}, instances::checked_absolute};
-use serde::Deserialize;
-use std::{collections::HashMap, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
+use serde::{Deserialize, Serialize};
+use std::{collections::{HashMap, HashSet}, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
 use tauri::{State, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, FilePath, MessageDialogButtons};
 use tokio::sync::oneshot;
@@ -89,8 +89,18 @@ impl PathUse {
 #[derive(Default)]
 pub struct PathGrants(Mutex<HashMap<(PathUse, PathBuf, String), Instant>>);
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedFiles {
+    pub mods: Vec<String>,
+    pub zips: Vec<String>,
+    pub modpacks: Vec<String>,
+    pub skins: Vec<String>,
+    pub unsupported: usize,
+}
+
 const LIFE: Duration = Duration::from_secs(300);
-const MAX_GRANTS: usize = 128;
+const MAX_GRANTS: usize = 256;
 
 impl PathGrants {
     fn insert_all(&self, purpose: PathUse, paths: &[PathBuf], window: &str, now: Instant) -> AppResult<()> {
@@ -166,6 +176,76 @@ impl PathGrants {
     pub(crate) fn consume_datapacks(&self, values: &[String], window: &WebviewWindow) -> AppResult<Vec<PathBuf>> {
         let paths = values.iter().map(String::as_str).collect::<Vec<_>>();
         self.consume_all(PathUse::Datapack, &paths, window.label(), Instant::now())
+    }
+
+    fn grant_dropped_at(&self, paths: &[PathBuf], window: &str, now: Instant) -> DroppedFiles {
+        let mut payload = DroppedFiles::default();
+        let mut mods = Vec::new();
+        let mut zips = Vec::new();
+        let mut modpacks = Vec::new();
+        let mut skins = Vec::new();
+        let mut seen = HashSet::new();
+        for (index, raw) in paths.iter().enumerate() {
+            if index >= 100 {
+                payload.unsupported += 1;
+                continue;
+            }
+            let Some(ext) = raw.extension().and_then(|value| value.to_str()) else {
+                payload.unsupported += 1;
+                continue;
+            };
+            if ext.eq_ignore_ascii_case("jar") {
+                match PathUse::LocalResources.resolve(raw) {
+                    Ok(resolved) if seen.insert((PathUse::LocalResources, resolved.clone())) => mods.push(resolved),
+                    Ok(_) => {}
+                    Err(_) => payload.unsupported += 1,
+                }
+            } else if ext.eq_ignore_ascii_case("mrpack") {
+                match PathUse::PackRead.resolve(raw) {
+                    Ok(resolved) if seen.insert((PathUse::PackRead, resolved.clone())) => modpacks.push(resolved),
+                    Ok(_) => {}
+                    Err(_) => payload.unsupported += 1,
+                }
+            } else if ext.eq_ignore_ascii_case("zip") {
+                match PathUse::LocalResources.resolve(raw) {
+                    Ok(resolved) if seen.insert((PathUse::LocalResources, resolved.clone())) => zips.push(resolved),
+                    Ok(_) => {}
+                    Err(_) => payload.unsupported += 1,
+                }
+            } else if ext.eq_ignore_ascii_case("png") {
+                match PathUse::Skin.resolve(raw) {
+                    Ok(resolved) if seen.insert((PathUse::Skin, resolved.clone())) => skins.push(resolved),
+                    Ok(_) => {}
+                    Err(_) => payload.unsupported += 1,
+                }
+            } else {
+                payload.unsupported += 1;
+            }
+        }
+        let grant_list = |purpose: PathUse, items: &[PathBuf]| -> Vec<String> {
+            if items.is_empty() || self.insert_all(purpose, items, window, now).is_err() {
+                return Vec::new();
+            }
+            items.iter().map(|path| crate::storage::display_profile_path(path)).collect()
+        };
+        let mut resource_items = Vec::with_capacity(mods.len() + zips.len());
+        resource_items.extend(mods.iter().cloned());
+        resource_items.extend(zips.iter().cloned());
+        if !resource_items.is_empty() && self.insert_all(PathUse::LocalResources, &resource_items, window, now).is_ok() {
+            payload.mods = mods.iter().map(|path| crate::storage::display_profile_path(path)).collect();
+            payload.zips = zips.iter().map(|path| crate::storage::display_profile_path(path)).collect();
+            // A single dropped .zip may be a CurseForge modpack dropped on Home/Library.
+            if zips.len() == 1 {
+                let _ = self.insert_all(PathUse::PackRead, &zips, window, now);
+            }
+        }
+        payload.modpacks = grant_list(PathUse::PackRead, &modpacks);
+        payload.skins = grant_list(PathUse::Skin, &skins);
+        payload
+    }
+
+    pub(crate) fn grant_dropped(&self, paths: &[PathBuf], window: &str) -> DroppedFiles {
+        self.grant_dropped_at(paths, window, Instant::now())
     }
 
     pub(crate) async fn choose_or_confirm(
@@ -359,5 +439,44 @@ mod tests {
         assert!(table.consume_all(PathUse::LocalResources, &[&display], "main", now).is_err());
         assert_eq!(table.consume_all(PathUse::Datapack, &[&display], "main", now).unwrap(), vec![resolved]);
         assert!(table.consume_all(PathUse::Datapack, &[&display], "main", now).is_err());
+    }
+
+    #[test]
+    fn u3_dropped_files_mint_scoped_grants_only_for_supported_regular_files() {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap();
+        let jar = root.path().join("sodium.jar");
+        let zip = root.path().join("pack.zip");
+        let mrpack = root.path().join("modpack.mrpack");
+        let png = root.path().join("skin.png");
+        let txt = root.path().join("readme.txt");
+        let dir = root.path().join("folder.zip");
+        fs::write(&jar, b"jar").unwrap();
+        fs::write(&zip, b"zip").unwrap();
+        fs::write(&mrpack, b"mrpack").unwrap();
+        fs::write(&png, b"png").unwrap();
+        fs::write(&txt, b"txt").unwrap();
+        fs::create_dir(&dir).unwrap();
+
+        let table = PathGrants::default();
+        let now = Instant::now();
+        let dropped = table.grant_dropped_at(&[jar.clone(), zip.clone(), mrpack.clone(), png.clone(), txt, dir], "main", now);
+        assert_eq!(dropped.mods.len(), 1);
+        assert_eq!(dropped.zips.len(), 1);
+        assert_eq!(dropped.modpacks.len(), 1);
+        assert_eq!(dropped.skins.len(), 1);
+        assert_eq!(dropped.unsupported, 2);
+
+        // Mods & zips are granted for LocalResources; single zip is also granted for PackRead.
+        assert!(table.consume_all(PathUse::LocalResources, &[&dropped.mods[0]], "main", now).is_ok());
+        assert!(table.consume_all(PathUse::PackRead, &[&dropped.zips[0]], "main", now).is_ok());
+        assert!(table.consume_all(PathUse::PackRead, &[&dropped.modpacks[0]], "main", now).is_ok());
+        // Skin can be peeked for preview and then consumed for upload.
+        assert!(table.peek_at(PathUse::Skin, &dropped.skins[0], "main", now).is_ok());
+        assert!(table.consume_all(PathUse::Skin, &[&dropped.skins[0]], "main", now).is_ok());
+        // Wrong window or purpose is refused.
+        assert!(table.peek_at(PathUse::Skin, &dropped.skins[0], "main", now).is_err());
     }
 }

@@ -159,6 +159,16 @@
     "primaryDirectory": "主数据目录：{{path}}",
     "recoveryHelp": "此窗口的更改会写入备用档。修复主数据目录或升级启动器后，关闭并重新打开应用。"
   },
+  "drop": {
+    "title": "拖放文件即可导入",
+    "hintGeneral": "此处可拖放 .mrpack 整合包；模组请拖放到实例的“内容”页，皮肤请拖放到“角色”页。",
+    "hintModpack": "拖放 .mrpack 或 CurseForge .zip 整合包，将其导入为新实例。",
+    "hintInstanceContent": "拖放 .jar 模组或 .zip 资源包 / 光影包，直接导入到当前实例。",
+    "hintSkin": "拖放 .png 皮肤即可 3D 预览，微软正版账号还可一键上传。",
+    "openInstanceForMods": "请先打开某个实例的“内容”标签页，再拖放 .jar 模组或 .zip 资源包。",
+    "openAccountsForSkins": "请切换到“角色”页面，再拖放 .png 皮肤文件。",
+    "unsupported": "此处仅支持拖放 .jar 模组、.mrpack / .zip 整合包或资源包，以及 .png 皮肤。"
+  },
   "external": {
     "openFailed": "系统无法打开此链接。可以复制地址后在浏览器中打开。",
     "address": "链接地址",

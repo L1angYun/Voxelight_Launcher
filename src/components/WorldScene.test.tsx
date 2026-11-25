@@ -60,13 +60,34 @@ it("falls back to CSS without WebGL2 and keeps one inert canvas", async () => {
   expect(scene().dataset.worldTier).toBe("css"); expect(scene().getAttribute("aria-hidden")).toBe("true");
   expect(scene().querySelectorAll(".world-scene__canvas")).toHaveLength(1); expect(frames.size).toBe(0);
 });
+it("unloads the 3D WebGL renderer in Lite mode and recreates it lazily when returning to Full", async () => {
+  await render({ effects: "lite" });
+  expect(bridge.create).not.toHaveBeenCalled();
+  expect(scene().dataset.worldTier).toBe("css");
+  expect(scene().dataset.worldScene).toBe("unavailable");
+  expect(frames.size).toBe(0);
+  await render({ effects: "full" });
+  expect(bridge.create).toHaveBeenCalledTimes(1);
+  expect(scene().dataset.worldTier).toBe("animated");
+  const firstCanvas = scene().querySelector("canvas");
+  await render({ effects: "lite" });
+  expect(fake.dispose).toHaveBeenCalledTimes(1);
+  expect(scene().dataset.worldTier).toBe("css");
+  expect(scene().querySelector("canvas")).not.toBe(firstCanvas);
+  expect(frames.size).toBe(0);
+  const recreated = renderer();
+  bridge.create.mockImplementation((_canvas, handlers) => { callbacks = handlers; return recreated; });
+  await render({ effects: "full" });
+  expect(bridge.create).toHaveBeenCalledTimes(2);
+  expect(scene().dataset.worldTier).toBe("animated");
+});
 it("static tier draws exactly one frame and schedules no animation", async () => {
-  await render({ effects: "lite" }); expect(scene().dataset.worldTier).toBe("static");
+  await render({ reducedMotion: true }); expect(scene().dataset.worldTier).toBe("static");
   expect(fake.draw).toHaveBeenCalledTimes(1); expect(frames.size).toBe(0);
   await advance(); expect(fake.draw).toHaveBeenCalledTimes(1);
 });
 it("static settled targets never query completion or schedule an observation frame", async () => {
-  await render({ effects: "lite", phase: "running" });
+  await render({ reducedMotion: true, phase: "running" });
   expect(fake.draw).toHaveBeenCalledTimes(1);
   expect(fake.draw.mock.calls[0][0].settled).toBe(true);
   expect(fake.pollFrameComplete).not.toHaveBeenCalled();
@@ -77,7 +98,7 @@ it("static settled targets never query completion or schedule an observation fra
   expect(fake.draw).toHaveBeenCalledTimes(1);
 });
 it("uses the initial anchor fallback before any measurable character exists", async () => {
-  await render({ effects: "lite" });
+  await render({ reducedMotion: true });
   expect(fake.setAnchor).toHaveBeenLastCalledWith([.62, -.66]);
   const anchor = document.createElement("div"); anchor.dataset.worldAnchor = "";
   anchor.getBoundingClientRect = () => new DOMRect(300, 100, 0, 0);
@@ -132,14 +153,14 @@ it("updates page composition and phase on the existing renderer", async () => {
   expect(scene().dataset.worldPhase).toBe("preparing"); expect(bridge.create).toHaveBeenCalledTimes(1);
 });
 it("reports the scene from accepted draws instead of an unsubmitted requested scene", async () => {
-  await render({ effects: "lite" });
+  await render({ reducedMotion: true });
   expect(scene().dataset.worldScene).toBe("horizon");
   fake.draw.mockReturnValue({ cpuMs: 0, gpuMs: null, submitted: false, pointsSubmitted: false });
-  await render({ effects: "lite", scene: "massif" });
+  await render({ reducedMotion: true, scene: "massif" });
   expect(fake.draw.mock.calls.at(-1)![0].profile).toBe(1);
   expect(scene().dataset.worldScene).toBe("horizon");
   fake.draw.mockReturnValue({ cpuMs: 2, gpuMs: null, submitted: true, pointsSubmitted: true });
-  await render({ effects: "lite", scene: "massif", phase: "preparing" });
+  await render({ reducedMotion: true, scene: "massif", phase: "preparing" });
   expect(scene().dataset.worldScene).toBe("massif");
   await act(async () => callbacks.onLost());
   expect(scene().dataset.worldScene).toBe("unavailable");
@@ -160,10 +181,10 @@ it("downgrades after two real seconds even when physical simulation dt is capped
   expect(fake.setTier.mock.calls.at(-1)![0].dprCap).toBe(1);
 });
 it("snaps static scene, page and running targets without adding animation frames", async () => {
-  await render({ effects: "lite" });
-  await render({ effects: "lite", scene: "massif", page: "content" });
+  await render({ reducedMotion: true });
+  await render({ reducedMotion: true, scene: "massif", page: "content" });
   expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ profile: 1, exposure: .42, eye: [-22, 46, 66], runDim: .5 });
-  await render({ effects: "lite", scene: "massif", phase: "running" });
+  await render({ reducedMotion: true, scene: "massif", phase: "running" });
   expect(fake.draw.mock.calls.at(-1)![0]).toMatchObject({ front: 165, exposure: .3, runDim: .3, settled: true });
   expect(frames.size).toBe(0);
 });
@@ -244,7 +265,7 @@ it("does not poll completion while paused or create a static completion loop", a
   const polls = fake.pollFrameComplete.mock.calls.length;
   await advance(700);
   expect(fake.pollFrameComplete).toHaveBeenCalledTimes(polls); expect(frames.size).toBe(0);
-  await render({ phase: "running", effects: "lite" });
+  await render({ phase: "running", reducedMotion: true });
   const draws = fake.draw.mock.calls.length;
   await advance(700);
   expect(fake.draw).toHaveBeenCalledTimes(draws); expect(frames.size).toBe(0);
@@ -348,7 +369,7 @@ it("measures the character anchor and retains its last NDC while another page is
   } finally { anchor.remove(); }
 });
 it("remeasures a newly committed anchor and paints one static frame on its layout event", async () => {
-  await render({ effects: "lite" });
+  await render({ reducedMotion: true });
   const anchor = document.createElement("div"); anchor.dataset.worldAnchor = "";
   anchor.getBoundingClientRect = () => new DOMRect(300, 100, 200, 400);
   document.body.append(anchor);
@@ -369,7 +390,7 @@ it("observes a replacement home anchor even when its geometry matches the prior 
   const first = document.createElement("div"); first.dataset.worldAnchor = "";
   first.getBoundingClientRect = () => new DOMRect(300, 100, 200, 400);
   document.body.append(first);
-  await render({ effects: "lite" });
+  await render({ reducedMotion: true });
   const replacement = first.cloneNode() as HTMLElement;
   replacement.getBoundingClientRect = first.getBoundingClientRect;
   first.remove(); document.body.append(replacement);
@@ -395,7 +416,7 @@ it("shocks once from the character anchor on a new preparation, without replay o
 it("does not create a launch shock for initial preparation or a static scene", async () => {
   await render({ phase: "preparing", fraction: .3 });
   expect(fake.shock).not.toHaveBeenCalled();
-  await render({ effects: "lite" });
-  await render({ effects: "lite", phase: "preparing", fraction: 0 });
+  await render({ reducedMotion: true });
+  await render({ reducedMotion: true, phase: "preparing", fraction: 0 });
   expect(fake.shock).not.toHaveBeenCalled();
 });

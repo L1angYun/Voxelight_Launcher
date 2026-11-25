@@ -77,6 +77,8 @@
     "defaultSkin": "默认皮肤",
     "uploadModel": "上传皮肤的模型",
     "upload": "上传正版皮肤",
+    "droppedSkinReady": "已拖入皮肤预览：{{name}}",
+    "uploadDroppedSkin": "上传至微软账号",
     "reset": "恢复默认皮肤",
     "cape": "正版披风",
     "noCape": "不显示披风",

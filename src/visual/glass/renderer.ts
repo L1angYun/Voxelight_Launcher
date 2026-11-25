@@ -22,6 +22,8 @@ export interface GlassRendererOptions {
   beforeFrame?: () => void;
   /** Local SVG optics owns its exact deformed contour instead of the GPU rim. */
   drawSurfaces?: boolean;
+  /** Initial quality; capability-only Lite avoids allocating a WebGL2 context until Full is requested. */
+  initialQuality?: GlassQuality;
 }
 
 const restingOptics: GlassOptics = { bendX: 0, bendY: 0, pressure: 0, energy: 0 };
@@ -287,30 +289,28 @@ function accentChannels(hex: string): [number, number, number] {
 }
 
 export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRendererOptions = {}): GlassRenderer {
-  let gl: WebGL2RenderingContext | null = null;
-  try {
-    gl = canvas.getContext("webgl2", { alpha: true, antialias: false, premultipliedAlpha: false });
-  } catch {
-    gl = null;
-  }
-  if (!gl) return createFallbackRenderer();
-
+  const capabilityOnly = options.drawSurfaces === false;
   const surfaces = new Map<string, GlassSurfaceModel>();
+  let gl: WebGL2RenderingContext | null = null;
+  let loseExt: WEBGL_lose_context | null = null;
   let resources: GLResources | null = null;
-  let quality: GlassQuality = "full";
-  let mode: GlassMode = "full";
+  let quality: GlassQuality = options.initialQuality ?? "full";
+  let mode: GlassMode = quality;
   let dpr = 1;
   let frame: GlassFrame = { time: 0, accent: "#b4f17a", motion: true };
   let disposed = false;
   let drawing = false;
   let paused = false;
+  let probed = false;
+  let pendingLiteLoss = 0;
+  let releasedByLite = false;
 
   const emitMode = (next: GlassMode) => {
     mode = next;
     options.onModeChange?.(next);
   };
   const render = (time: number) => {
-    if (!resources || disposed || mode === "fallback") return;
+    if (!resources || !gl || disposed || mode === "fallback") return;
     drawing = true;
     try {
       options.beforeFrame?.();
@@ -319,11 +319,11 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
     }
     frame = { ...frame, time };
     const current = resources;
-    const context = gl!;
+    const context = gl;
     context.disable(context.SCISSOR_TEST);
     context.clearColor(0, 0, 0, 0);
     context.clear(context.COLOR_BUFFER_BIT);
-    if (options.drawSurfaces === false) return;
+    if (capabilityOnly) return;
     context.useProgram(current.program);
     context.bindBuffer(context.ARRAY_BUFFER, current.buffer);
     context.enableVertexAttribArray(current.position);
@@ -359,32 +359,112 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
   const scheduler = createGlassScheduler(render, {
     requestFrame: callback => requestAnimationFrame(callback),
     cancelFrame: id => cancelAnimationFrame(id),
-    continuous: options.drawSurfaces !== false,
+    continuous: !capabilityOnly,
   });
   const requestPaint = () => {
+    if (!resources || !gl) return;
     if (!frame.motion) render(frame.time);
     else scheduler.request();
   };
+  const releaseGlResources = () => {
+    if (resources && gl) {
+      gl.deleteBuffer(resources.buffer);
+      gl.deleteProgram(resources.program);
+    }
+    resources = null;
+  };
+  const ensureGl = (): boolean => {
+    if (disposed) return false;
+    if (gl) {
+      if (gl.isContextLost()) {
+        if (loseExt && releasedByLite) {
+          releasedByLite = false;
+          try { loseExt.restoreContext(); } catch { emitMode("fallback"); return false; }
+          return true;
+        }
+        return false;
+      }
+      releasedByLite = false;
+      if (!resources) {
+        try { resources = createResources(gl); } catch { emitMode("fallback"); return false; }
+      }
+      return true;
+    }
+    if (probed) return false;
+    probed = true;
+    try {
+      gl = canvas.getContext("webgl2", { alpha: true, antialias: false, premultipliedAlpha: false });
+    } catch {
+      gl = null;
+    }
+    if (!gl) {
+      emitMode("fallback");
+      return false;
+    }
+    loseExt = gl.getExtension("WEBGL_lose_context");
+    try {
+      resources = createResources(gl);
+    } catch (error) {
+      console.warn("Glass shader unavailable; using the CSS material", error);
+      gl = null;
+      loseExt = null;
+      emitMode("fallback");
+      return false;
+    }
+    if (capabilityOnly) {
+      canvas.width = 1;
+      canvas.height = 1;
+    }
+    return true;
+  };
+  const releaseForLite = () => {
+    if (!capabilityOnly || !gl) return;
+    releaseGlResources();
+    if (loseExt && !gl.isContextLost()) {
+      pendingLiteLoss += 1;
+      releasedByLite = true;
+      loseExt.loseContext();
+    }
+    canvas.width = 0;
+    canvas.height = 0;
+  };
 
-  try {
-    resources = createResources(gl);
-  } catch (error) {
-    console.warn("Glass shader unavailable; using the CSS material", error);
-    scheduler.dispose();
-    emitMode("fallback");
-    return createFallbackRenderer();
+  if (!capabilityOnly || quality === "full") {
+    if (!ensureGl()) {
+      scheduler.dispose();
+      return createFallbackRenderer();
+    }
+  } else {
+    canvas.width = 0;
+    canvas.height = 0;
   }
 
   const onLost = (event: Event) => {
     event.preventDefault();
     resources = null;
     scheduler.pause(true);
+    if (pendingLiteLoss > 0) {
+      pendingLiteLoss -= 1;
+      if (quality === "full" && loseExt && !disposed) {
+        releasedByLite = false;
+        try { loseExt.restoreContext(); } catch { emitMode("fallback"); }
+      }
+      return;
+    }
+    releasedByLite = false;
     emitMode("fallback");
   };
   const onRestored = () => {
     if (disposed || !gl) return;
+    releasedByLite = false;
+    if (capabilityOnly && quality === "lite") {
+      releaseForLite();
+      emitMode("lite");
+      return;
+    }
     try {
       resources = createResources(gl);
+      if (capabilityOnly) { canvas.width = 1; canvas.height = 1; }
       emitMode(quality);
       scheduler.pause(paused);
       if (!frame.motion) render(frame.time);
@@ -418,10 +498,10 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
       dpr = Math.max(0.1, nextDpr);
       // Without surface drawing every frame is a transparent clear: the
       // context only reports capability and context loss. A 1x1 backbuffer
-      // keeps those semantics without a window-sized GPU allocation.
-      const backed = options.drawSurfaces !== false;
-      canvas.width = backed ? Math.max(1, Math.floor(width * dpr)) : 1;
-      canvas.height = backed ? Math.max(1, Math.floor(height * dpr)) : 1;
+      // keeps those semantics without a window-sized GPU allocation; Lite holds none.
+      const backed = !capabilityOnly;
+      canvas.width = backed ? Math.max(1, Math.floor(width * dpr)) : gl && quality === "full" ? 1 : 0;
+      canvas.height = backed ? Math.max(1, Math.floor(height * dpr)) : gl && quality === "full" ? 1 : 0;
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       requestPaint();
@@ -432,7 +512,23 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
     },
     setQuality(next) {
       quality = next;
-      if (mode !== "fallback") emitMode(next);
+      if (capabilityOnly) {
+        if (next === "lite") {
+          releaseForLite();
+          emitMode("lite");
+          scheduler.setQuality(next);
+          return;
+        }
+        if (ensureGl()) {
+          if (gl && !gl.isContextLost()) {
+            canvas.width = 1;
+            canvas.height = 1;
+            emitMode("full");
+          }
+        }
+      } else if (mode !== "fallback") {
+        emitMode(next);
+      }
       // Local DOM optics redraw only when a shared spring publishes a pose.
       // Full quality still controls the material/capability mode, not an idle
       // GPU loop once those controls have settled.
@@ -450,11 +546,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
       scheduler.dispose();
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
-      if (resources && gl) {
-        gl.deleteBuffer(resources.buffer);
-        gl.deleteProgram(resources.program);
-      }
-      resources = null;
+      releaseGlResources();
       surfaces.clear();
     },
   };

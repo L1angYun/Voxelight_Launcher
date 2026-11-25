@@ -12,8 +12,12 @@ it("starts full capability at the approved counts, then reduces resolution befor
   expect(counts).toEqual({ ...resolution, particleSide: 160, grid: 110 });
   expect(nextTier(counts)).toBeNull();
 });
-it("prefers static accessibility and supports CSS or solid capability fallback", () => {
-  for (const change of [{ effects: "lite" as const }, { reducedMotion: true }, { highContrast: true }]) {
+it("unloads WebGL in Lite mode, prefers static accessibility, and supports CSS or solid fallback", () => {
+  const lite = selectTier({ ...full, effects: "lite" });
+  expect(lite.kind).toBe("css");
+  expect(lite.particleSide).toBe(0);
+  expect(nextTier(lite)).toBeNull();
+  for (const change of [{ reducedMotion: true }, { highContrast: true }]) {
     const tier = selectTier({ ...full, ...change });
     expect(tier.kind).toBe("static");
     expect(tier.particleSide).toBe(0);

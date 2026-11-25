@@ -14,7 +14,7 @@ import {
 } from "react";
 import { relativeRect, intersectRects, lensBoundaryPath, lensChromaticScales, type CurvatureGeometry } from "./geometry";
 import { readGlassOptics } from "./optics";
-import { curvatureMapImage } from "./refractionImage";
+import { clearCurvatureMapCache, curvatureMapImage } from "./refractionImage";
 import { resetSurfaceOptics, syncSurfaceOptics } from "./liveOptics";
 import { createGlassRenderer } from "./renderer";
 import type { GlassMode, GlassOptics, GlassQuality, GlassRenderer, GlassSurfaceModel, GlassVariant } from "./types";
@@ -202,7 +202,7 @@ export function GlassProvider({
     const root = rootRef.current;
     const canvas = canvasRef.current;
     if (!root || !canvas) return;
-    const renderer = createGlassRenderer(canvas, { onModeChange: setNativeMode, beforeFrame: syncLiveSurfaces, drawSurfaces: false });
+    const renderer = createGlassRenderer(canvas, { onModeChange: setNativeMode, beforeFrame: syncLiveSurfaces, drawSurfaces: false, initialQuality: effects });
     rendererRef.current = renderer;
     setNativeMode(renderer.mode);
     renderer.setQuality(effects);
@@ -275,6 +275,9 @@ export function GlassProvider({
   }, [effects, highContrast, reducedMotion, reducedTransparency, syncPause, updateFrame]);
 
   const refractionEnabled = mode === "full" && effects === "full";
+  useEffect(() => {
+    if (!refractionEnabled) clearCurvatureMapCache();
+  }, [refractionEnabled]);
   const context = useMemo(() => ({ register, unregister, refractionEnabled }), [register, unregister, refractionEnabled]);
 
   return (

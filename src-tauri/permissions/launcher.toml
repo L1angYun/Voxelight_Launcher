@@ -46,6 +46,7 @@ commands.allow = [
   "select_authlib_profile",
   "refresh_account",
   "get_player_profile",
+  "read_skin_preview",
   "upload_account_skin",
   "reset_account_skin",
   "select_account_cape",

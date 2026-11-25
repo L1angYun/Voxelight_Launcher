@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
+import { droppedFileName, useFileDrop } from "../../app/FileDropContext";
 import { Image, RotateCcw, Upload, UserRound } from "lucide-react";
 import { command, type Account, type Config } from "../../lib/launcher";
 import type { useAccountSkin } from "../../lib/accountSkin";
@@ -50,6 +51,7 @@ export function AppearancePanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [droppedSkin, setDroppedSkin] = useState<{ path: string; name: string } | null>(null);
   const localUrl = useRef<string | null>(null);
   const localFile = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
@@ -60,6 +62,7 @@ export function AppearancePanel({
       localUrl.current = null;
     }
     setLocalSource(null);
+    setDroppedSkin(null);
   }, []);
 
   useEffect(() => () => {
@@ -157,6 +160,46 @@ export function AppearancePanel({
     setNotice("");
   }
 
+  const previewDroppedSkin = useCallback(async (path: string) => {
+    const current = generation.current;
+    const name = droppedFileName(path);
+    setError("");
+    setNotice("");
+    try {
+      const dataUrl = await command<string>("read_skin_preview", { path });
+      if (generation.current !== current) return;
+      chooseLocal(dataUrl, name);
+      setDroppedSkin(editable ? { path, name } : null);
+    } catch (cause) {
+      if (generation.current === current) setError(accountErrorText(cause, t));
+    }
+  }, [editable, t]);
+
+  async function uploadDroppedSkin() {
+    if (!editable || busy || !droppedSkin) return;
+    const path = droppedSkin.path;
+    setDroppedSkin(null);
+    await change("upload_account_skin", { path, model: uploadModel }, "skinUpdated");
+  }
+
+  useFileDrop((dropped) => {
+    if (!dropped.skins.length) return false;
+    void previewDroppedSkin(dropped.skins[0]);
+    return true;
+  }, { priority: 20, hintKey: "shell:drop.hintSkin" });
+
+  function handleHtmlDrop(event: DragEvent<HTMLDivElement>) {
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+    event.preventDefault();
+    if ((!/\.png$/i.test(file.name) && file.type !== "image/png") || file.size > 16 * 1024 * 1024) {
+      setError(t("accounts:errors.preview.fileInvalid"));
+      return;
+    }
+    setDroppedSkin(null);
+    chooseLocal(URL.createObjectURL(file), file.name);
+  }
+
   function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -211,7 +254,13 @@ export function AppearancePanel({
       </header>
       <SectionPanel selectionKey={previewMode} className="vx-appearance-workspace" id={`${sourceId}-workspace`} role="tabpanel" aria-labelledby={`${sourceId}-source-tab-${previewMode}`} data-preview-mode={previewMode}>
       <div className="vx-appearance-stage">
-      <div className="vx-appearance-preview vx-card" role="region" aria-label={t(previewMode === "local" ? "accounts:preview.localNotice" : "accounts:preview.accountNotice")}>
+      <div
+        className="vx-appearance-preview vx-card"
+        role="region"
+        aria-label={t(previewMode === "local" ? "accounts:preview.localNotice" : "accounts:preview.accountNotice")}
+        onDragOver={(event) => { event.preventDefault(); }}
+        onDrop={handleHtmlDrop}
+      >
         {currentSkin ? (
           <CharacterCanvas
             deferMs={tier === "none" ? 0 : MOTION.delay.characterMs}
@@ -244,6 +293,19 @@ export function AppearancePanel({
 
       {errorBelowPreview ? <p className="vx-appearance-error" role="alert">{errorBelowPreview}</p> : null}
       {notice ? <p className="vx-appearance-notice" role="status">{notice}</p> : null}
+      {droppedSkin && editable ? (
+        <div className="vx-dropped-file-banner" role="status">
+          <strong>{t("accounts:appearance.droppedSkinReady", { name: droppedSkin.name })}</strong>
+          <div className="vx-action-row">
+            <Button variant="primary" size="sm" loading={busy} onClick={() => void uploadDroppedSkin()}>
+              {t("accounts:appearance.uploadDroppedSkin")}
+            </Button>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setDroppedSkin(null)}>
+              {t("common:actions.cancel")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
       </div>
       <div className="vx-appearance-wardrobe">
       {previewMode === "account" && online ? (

@@ -60,8 +60,8 @@ for (const mode of ["lite", "reduced-motion", "forced-colors"] as const) {
 }
 
 test("system light and dark changes update the interface and rendered world together", async ({ page }) => {
-  await page.emulateMedia({ colorScheme: "dark" });
-  await installLauncherFixture(page, { theme: "system", effects: "lite", worldMaterial: "solid" });
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await installLauncherFixture(page, { theme: "system", effects: "full", worldMaterial: "solid" });
   await page.goto("/");
   const scene = page.locator(".world-scene");
   const canvas = await scene.locator("canvas").elementHandle();
