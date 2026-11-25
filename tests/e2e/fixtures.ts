@@ -531,6 +531,24 @@ export async function installLauncherFixture(
             return resourceContext(String(args?.versionId ?? ""), args?.instanceId as string | undefined);
           if (name === "list_loader_versions")
             return [{ id: "0.16.9", stable: true, recommended: true }];
+          if (name === "change_instance_loader") {
+            const id = String(args?.instanceId ?? "");
+            const targetLoader = String(args?.loader ?? "vanilla");
+            const targetLoaderVersion = targetLoader === "vanilla" ? "" : String(args?.loaderVersion ?? "0.16.9");
+            const target = instances.find((item) => item.id === id);
+            if (!target) throw { code: "instance.notFound", params: {} };
+            const ctx = resourceContext(target.versionId, target.id);
+            const nextVersionId = targetLoader === "vanilla"
+              ? ctx.gameVersion
+              : `${targetLoader}-loader-${targetLoaderVersion}-${ctx.gameVersion}`;
+            target.loader = targetLoader;
+            target.loaderVersion = targetLoaderVersion;
+            target.versionId = nextVersionId;
+            if (!installedVersions.some((v) => v.id === nextVersionId)) {
+              installedVersions.push({ id: nextVersionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
+            }
+            return structuredClone(target);
+          }
           if (name === "resolve_resource_targets") {
             const title = args?.projectId === "P7dR8mSH" ? "Fabric API" : args?.projectId === "sodium" ? "Sodium" : String(args?.projectId);
             const kind = String(args?.resourceType ?? "mod");

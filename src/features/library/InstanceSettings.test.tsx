@@ -81,4 +81,58 @@ describe("InstanceSettings memory fields", () => {
     const payload = await save();
     expect(payload).toMatchObject({ memoryMode: "inherit", minMemoryMb: 1536, clearMinMemory: false });
   });
+
+  it("changes an existing instance's loader after fetching loader versions and confirming", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_resource_context") return { gameVersion: "1.20.1", loader: "forge" };
+      if (name === "list_loader_versions") {
+        if (args?.loader === "fabric") {
+          return [{ id: "0.16.10", stable: true, recommended: true }, { id: "0.16.9", stable: true, recommended: false }];
+        }
+        return [{ id: "47.2.0", stable: true, recommended: true }];
+      }
+      if (name === "change_instance_loader") {
+        return { ...base, versionId: "fabric-loader-0.16.10-1.20.1", loader: "fabric", loaderVersion: "0.16.10" };
+      }
+      return null;
+    });
+
+    await render({ ...base, versionId: "1.20.1-forge-47.2.0", loader: "forge", loaderVersion: "47.2.0" });
+    const fabricBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Fabric")!;
+    await act(async () => fabricBtn.click());
+    expect(commandMock).toHaveBeenCalledWith("list_loader_versions", { loader: "fabric", gameVersion: "1.20.1" });
+
+    const applyBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Change loader")!;
+    expect(applyBtn.disabled).toBe(false);
+    await act(async () => applyBtn.click());
+    expect(window.confirm).toHaveBeenCalled();
+    expect(commandMock).toHaveBeenCalledWith("change_instance_loader", {
+      instanceId: "fixture",
+      loader: "fabric",
+      loaderVersion: "0.16.10",
+    });
+    expect(container.textContent).toContain("Instance loader updated.");
+  });
+
+  it("switches an instance back to Vanilla without requiring a loader version", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    commandMock.mockImplementation(async (name) => {
+      if (name === "get_resource_context") return { gameVersion: "1.20.1", loader: "forge" };
+      if (name === "list_loader_versions") return [{ id: "47.2.0", stable: true, recommended: true }];
+      if (name === "change_instance_loader") return { ...base, versionId: "1.20.1", loader: "vanilla", loaderVersion: "" };
+      return null;
+    });
+
+    await render({ ...base, versionId: "1.20.1-forge-47.2.0", loader: "forge", loaderVersion: "47.2.0" });
+    const vanillaBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Vanilla")!;
+    await act(async () => vanillaBtn.click());
+    const applyBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Change loader")!;
+    await act(async () => applyBtn.click());
+    expect(commandMock).toHaveBeenCalledWith("change_instance_loader", {
+      instanceId: "fixture",
+      loader: "vanilla",
+      loaderVersion: null,
+    });
+  });
 });

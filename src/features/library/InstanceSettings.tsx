@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { command, type Instance } from "../../lib/launcher";
@@ -8,11 +8,19 @@ import { Field } from "../../components/ui/Field";
 import { Segmented } from "../../components/ui/Segmented";
 import { MemoryOverviewHint } from "../settings/MemoryOverviewHint";
 import { Select } from "../../components/ui/Select";
+import type { Loader, LoaderVersion } from "./types";
+
+function normalizeLoader(value?: string): Loader {
+  const lower = (value ?? "").trim().toLowerCase();
+  if (lower === "fabric" || lower === "quilt" || lower === "forge" || lower === "neoforge") return lower;
+  return "vanilla";
+}
 
 export function InstanceSettings({ instance, onChanged }: { instance: Instance; onChanged: () => Promise<void> }) {
   const { t } = useTranslation();
-  const { run } = useLauncher();
+  const { run, busy } = useLauncher();
   const fromInstance = (row: Instance) => row.memoryMode ?? (row.maxMemoryMb != null ? "manual" : "inherit");
+  const currentLoader = normalizeLoader(instance.loader);
   const [memoryMode, setMemoryMode] = useState<"auto" | "manual" | "inherit">(fromInstance(instance));
   const [name, setName] = useState(instance.name);
   const [category, setCategory] = useState(instance.category);
@@ -26,6 +34,16 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
   const [screenWidth, setScreenWidth] = useState(instance.screenWidth?.toString() ?? "");
   const [screenHeight, setScreenHeight] = useState(instance.screenHeight?.toString() ?? "");
   const [notice, setNotice] = useState("");
+
+  const [baseGameVersion, setBaseGameVersion] = useState(currentLoader === "vanilla" ? instance.versionId : "");
+  const [targetLoader, setTargetLoader] = useState<Loader>(currentLoader);
+  const [loaderVersions, setLoaderVersions] = useState<LoaderVersion[]>([]);
+  const [targetLoaderVersion, setTargetLoaderVersion] = useState(instance.loaderVersion ?? "");
+  const [loaderLoading, setLoaderLoading] = useState(false);
+  const [loaderFailed, setLoaderFailed] = useState(false);
+  const [loaderAttempt, retryLoader] = useState(0);
+  const loaderGen = useRef(0);
+
   useEffect(() => {
     setName(instance.name);
     setCategory(instance.category);
@@ -39,7 +57,90 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     setGameProxyMode(instance.gameProxyMode ?? "default");
     setScreenWidth(instance.screenWidth?.toString() ?? "");
     setScreenHeight(instance.screenHeight?.toString() ?? "");
+    setTargetLoader(normalizeLoader(instance.loader));
+    setTargetLoaderVersion(instance.loaderVersion ?? "");
   }, [instance]);
+
+  useEffect(() => {
+    let active = true;
+    const fallback = currentLoader === "vanilla" ? instance.versionId : "";
+    setBaseGameVersion(fallback);
+    void command<{ gameVersion: string; loader?: string | null }>("get_resource_context", {
+      versionId: instance.versionId,
+      instanceId: instance.id,
+    }).then((ctx) => {
+      if (active && ctx?.gameVersion) setBaseGameVersion(ctx.gameVersion);
+    }).catch(() => {
+      if (active && !fallback) setBaseGameVersion(instance.versionId);
+    });
+    return () => { active = false; };
+  }, [currentLoader, instance.id, instance.versionId]);
+
+  useEffect(() => {
+    const request = ++loaderGen.current;
+    if (targetLoader === "vanilla" || !baseGameVersion) {
+      setLoaderVersions([]);
+      setLoaderLoading(false);
+      setLoaderFailed(false);
+      return;
+    }
+    setLoaderLoading(true);
+    setLoaderFailed(false);
+    setLoaderVersions([]);
+    void command<LoaderVersion[]>("list_loader_versions", {
+      loader: targetLoader,
+      gameVersion: baseGameVersion,
+    }).then((versions) => {
+      if (loaderGen.current !== request) return;
+      const list = Array.isArray(versions) ? versions : [];
+      setLoaderVersions(list);
+      const preferred = (targetLoader === currentLoader && instance.loaderVersion && list.some((v) => v.id === instance.loaderVersion))
+        ? instance.loaderVersion
+        : (list.find((v) => v.recommended) ?? list.find((v) => v.stable) ?? list[0])?.id ?? "";
+      setTargetLoaderVersion(preferred);
+    }).catch(() => {
+      if (loaderGen.current === request) setLoaderFailed(true);
+    }).finally(() => {
+      if (loaderGen.current === request) setLoaderLoading(false);
+    });
+    return () => { ++loaderGen.current; };
+  }, [baseGameVersion, currentLoader, instance.loaderVersion, loaderAttempt, targetLoader]);
+
+  const loaderUnchanged = targetLoader === currentLoader
+    && (targetLoader === "vanilla" || targetLoaderVersion === (instance.loaderVersion ?? ""));
+  const canApplyLoader = Boolean(
+    baseGameVersion
+    && !loaderUnchanged
+    && !busy
+    && (targetLoader === "vanilla" || (!loaderLoading && !loaderFailed && targetLoaderVersion)),
+  );
+
+  const loaderNames: Record<Loader, string> = {
+    vanilla: t("library:vanilla"),
+    fabric: "Fabric",
+    quilt: "Quilt",
+    forge: "Forge",
+    neoforge: "NeoForge",
+  };
+
+  const applyLoaderChange = () => {
+    if (!canApplyLoader) return;
+    if (targetLoader !== currentLoader && !window.confirm(t("library:loaderChange.confirm", {
+      name: instance.name,
+      loader: loaderNames[targetLoader],
+    }))) {
+      return;
+    }
+    void run("instance.loader", async () => {
+      await command<Instance>("change_instance_loader", {
+        instanceId: instance.id,
+        loader: targetLoader,
+        loaderVersion: targetLoader === "vanilla" ? null : targetLoaderVersion,
+      });
+      setNotice("loaderChanged");
+      await onChanged();
+    });
+  };
 
   const save = (event: React.FormEvent) => {
     event.preventDefault();
@@ -90,6 +191,54 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         <div className="vx-action-row">
           <Button variant="secondary" onClick={() => void run("instance.settings", () => pickLauncherPath("instanceIcon").then((path) => { if (typeof path === "string") setIconPath(path); }))}>{t("library:chooseIcon")}</Button>
           {iconPath ? <small className="vx-path">{iconPath}</small> : null}
+        </div>
+      </section>
+      <section className="vx-detail-section" aria-labelledby="instance-loader-heading">
+        <h2 id="instance-loader-heading">{t("library:loaderChange.title")}</h2>
+        <p>{t("library:loaderChange.current", {
+          version: baseGameVersion || instance.versionId,
+          loader: loaderNames[currentLoader],
+          loaderVersion: instance.loaderVersion ? ` ${instance.loaderVersion}` : "",
+        })}</p>
+        <Segmented
+          semantic="toggle"
+          label={t("library:loader")}
+          value={targetLoader}
+          onChange={setTargetLoader}
+          options={(["vanilla", "fabric", "quilt", "forge", "neoforge"] as const).map((value) => ({
+            value,
+            label: loaderNames[value],
+          }))}
+        />
+        {targetLoader !== "vanilla" ? (
+          <Field label={t("library:loaderVersion")} htmlFor="instance-loader-version">
+            {loaderFailed ? (
+              <div className="vx-action-row">
+                <span>{t("library:createMetadata.failedLoader", { loader: loaderNames[targetLoader] })}</span>
+                <Button type="button" size="sm" variant="ghost" onClick={() => retryLoader((n) => n + 1)}>{t("common:actions.retry")}</Button>
+              </div>
+            ) : (
+              <Select
+                id="instance-loader-version"
+                aria-label={t("library:loaderVersion")}
+                value={targetLoaderVersion}
+                onChange={setTargetLoaderVersion}
+                disabled={loaderLoading || loaderVersions.length === 0}
+                options={loaderVersions.length > 0
+                  ? loaderVersions.map((item) => ({
+                    value: item.id,
+                    label: item.recommended ? `${item.id} · ${t("library:recommended")}` : item.id,
+                  }))
+                  : [{ value: "", label: loaderLoading ? t("common:status.loading") : t("library:noLoaderVersions") }]}
+              />
+            )}
+          </Field>
+        ) : null}
+        <p>{t("library:loaderChange.hint")}</p>
+        <div className="vx-action-row">
+          <Button type="button" variant="secondary" disabled={!canApplyLoader} loading={busy === "instance.loader"} onClick={applyLoaderChange}>
+            {t("library:loaderChange.apply")}
+          </Button>
         </div>
       </section>
       <section className="vx-detail-section">

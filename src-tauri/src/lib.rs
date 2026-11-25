@@ -332,6 +332,7 @@ pub fn run() {
             downloads::retry_failed_downloads,
             downloads::clear_unfinished_downloads,
             instances::update_instance,
+            instances::change_instance_loader,
             instances::clone_instance,
             instances::backup_instance,
             instances::list_instance_backups,

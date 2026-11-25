@@ -662,6 +662,127 @@ pub async fn update_instance(
     }).map_err(crate::errors::expected)
 }
 
+fn normalize_target_loader(loader: &str) -> Result<String, String> {
+    let normalized = loader.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "vanilla" | "fabric" | "quilt" | "forge" | "neoforge" => Ok(normalized),
+        _ => Err("不支持的加载器；请选择原版、Fabric、Quilt、Forge 或 NeoForge".into()),
+    }
+}
+
+pub(crate) fn resolve_instance_game_version(
+    state: &LauncherState,
+    current: &Instance,
+) -> Result<String, String> {
+    let config = state.snapshot()?.config;
+    if let Ok(root) = crate::processes::configured_game_root(Path::new(&config.game_directory)) {
+        if let Ok((game_version, _)) = crate::resources::context_for_version(&root, &current.version_id) {
+            validate_id(&game_version)?;
+            return Ok(game_version);
+        }
+    }
+    let current_loader = current.loader.trim().to_ascii_lowercase();
+    if current_loader.is_empty() || current_loader == "vanilla" {
+        validate_id(&current.version_id)?;
+        return Ok(current.version_id.clone());
+    }
+    Err("无法确定此实例的基础 Minecraft 版本，请先确认对应版本配置文件存在".into())
+}
+
+fn apply_instance_loader_update(
+    state: &LauncherState,
+    instance_id: &str,
+    new_version_id: &str,
+    new_loader: &str,
+    new_loader_version: &str,
+) -> Result<Instance, String> {
+    validate_id(new_version_id)?;
+    let normalized_loader = normalize_target_loader(new_loader)?;
+    if normalized_loader != "vanilla" {
+        validate_id(new_loader_version)?;
+    }
+    let changes = vec![
+        ("versionId".into(), json!(new_version_id)),
+        ("loader".into(), json!(normalized_loader)),
+        (
+            "loaderVersion".into(),
+            json!(if normalized_loader == "vanilla" { "" } else { new_loader_version }),
+        ),
+    ];
+    state.update(|data| {
+        let value = data
+            .instances
+            .iter_mut()
+            .find(|i| i.id == instance_id)
+            .ok_or("实例不存在")?;
+        replace_metadata(value, &changes)?;
+        Ok(value.clone())
+    })
+}
+
+#[tauri::command]
+pub async fn change_instance_loader(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<LauncherState>>,
+    instance_id: String,
+    loader: String,
+    loader_version: Option<String>,
+) -> AppResult<Instance> {
+    let target_loader = normalize_target_loader(&loader).map_err(crate::errors::expected)?;
+    let _operation = state
+        .operation
+        .try_lock()
+        .map_err(|_| crate::errors::expected("已有安装或启动准备任务运行"))?;
+    require_no_pending_restore(&state, &instance_id)?;
+    let current = instance(&state.snapshot()?, &instance_id).map_err(crate::errors::expected)?;
+    crate::resources::require_target_stopped(&state, &current.version_id, Some(&instance_id))?;
+    crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)
+        .map_err(crate::errors::expected)?;
+    let game_version = resolve_instance_game_version(&state, &current).map_err(crate::errors::expected)?;
+    let requested_version = loader_version.unwrap_or_default().trim().to_owned();
+    if target_loader != "vanilla" && !requested_version.is_empty() && requested_version != "latest" {
+        validate_id(&requested_version).map_err(crate::errors::expected)?;
+    }
+
+    let task = state
+        .control
+        .begin_with_display(
+            "loader",
+            &game_version,
+            &format!("更换实例加载器 {}", current.name),
+            &current.name,
+        )
+        .map_err(crate::errors::expected)?;
+    let install_result: Result<(String, String, String), String> = if target_loader == "vanilla" {
+        crate::minecraft::install(&state, &app, &game_version)
+            .await
+            .map(|_| (game_version.clone(), "vanilla".to_owned(), String::new()))
+    } else {
+        crate::loaders::install_loader_inner(
+            &state,
+            &app,
+            &target_loader,
+            &game_version,
+            &requested_version,
+        )
+        .await
+        .map(|installed| (installed.version_id, installed.loader, installed.loader_version))
+    };
+    state
+        .control
+        .finish(&task, install_result.as_ref().err().map(String::as_str));
+    let (new_version_id, new_loader, new_loader_version) =
+        install_result.map_err(crate::errors::expected)?;
+    apply_instance_loader_update(
+        &state,
+        &instance_id,
+        &new_version_id,
+        &new_loader,
+        &new_loader_version,
+    )
+    .map_err(crate::errors::expected)
+}
+
 #[tauri::command]
 pub async fn clone_instance(
     state: State<'_, Arc<LauncherState>>,
@@ -3614,6 +3735,7 @@ mod backup_recovery_tests {
         // lock and before they write.
         for (source, function, lock, write) in [
             (include_str!("instances.rs"), "pub async fn update_instance(", "let _operation = state.operation.lock().await;", "state.update(|data| {"),
+            (include_str!("instances.rs"), "pub async fn change_instance_loader(", "let _operation = state", "apply_instance_loader_update("),
             (include_str!("content.rs"), "pub async fn import_world(", "let _guard = state.operation.lock().await;", "tokio::task::spawn_blocking"),
             (include_str!("content.rs"), "pub async fn import_local_resources(", "let _guard = state.operation.lock().await;", "tokio::task::spawn_blocking"),
             (include_str!("resources.rs"), "fn recover_resource_update_inner(", "let data = state.snapshot()?;", "resource_transactions::recover_one("),
@@ -3626,5 +3748,64 @@ mod backup_recovery_tests {
             let write = body.find(write).expect(function);
             assert!(guard < write, "{function}");
         }
+    }
+
+    #[test]
+    fn u5_change_instance_loader_resolves_base_version_and_preserves_instance_data() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/instance-tests")
+            .join(format!("loader-switch-{}", Uuid::new_v4()));
+        let game_dir = root.join("game");
+        let inst_dir = game_dir.join("instances/survival");
+        fs::create_dir_all(game_dir.join("versions/1.21.1")).unwrap();
+        fs::create_dir_all(game_dir.join("versions/fabric-loader-0.16.9-1.21.1")).unwrap();
+        fs::create_dir_all(inst_dir.join("saves/world")).unwrap();
+        fs::write(inst_dir.join("saves/world/level.dat"), b"world").unwrap();
+        fs::write(
+            game_dir.join("versions/1.21.1/1.21.1.json"),
+            r#"{"id":"1.21.1","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            game_dir.join("versions/fabric-loader-0.16.9-1.21.1/fabric-loader-0.16.9-1.21.1.json"),
+            r#"{"id":"fabric-loader-0.16.9-1.21.1","inheritsFrom":"1.21.1","launcherMetadata":{"loader":"fabric"},"libraries":[]}"#,
+        )
+        .unwrap();
+        let mut persisted = Persisted::default();
+        persisted.config.game_directory = game_dir.to_string_lossy().into_owned();
+        let state = LauncherState::test_fixture(root.join("data"), persisted, crate::storage::test_client());
+        let mut initial = build_instance("Survival", "fabric-loader-0.16.9-1.21.1", &inst_dir, "fabric", "0.16.9").unwrap();
+        initial.notes = "Keep my notes".into();
+        initial.max_memory_mb = Some(4096);
+        let registered = register(&state, initial).unwrap();
+
+        assert_eq!(resolve_instance_game_version(&state, &registered).unwrap(), "1.21.1");
+
+        let switched = apply_instance_loader_update(
+            &state,
+            &registered.id,
+            "1.21.1-forge-52.0.10",
+            "forge",
+            "52.0.10",
+        )
+        .unwrap();
+        assert_eq!(switched.version_id, "1.21.1-forge-52.0.10");
+        assert_eq!(switched.loader, "forge");
+        assert_eq!(switched.loader_version, "52.0.10");
+        assert_eq!(switched.notes, "Keep my notes");
+        assert_eq!(switched.max_memory_mb, Some(4096));
+        assert_eq!(switched.game_directory, registered.game_directory);
+        assert!(inst_dir.join("saves/world/level.dat").is_file());
+
+        let vanilla = apply_instance_loader_update(&state, &registered.id, "1.21.1", "vanilla", "").unwrap();
+        assert_eq!(vanilla.version_id, "1.21.1");
+        assert_eq!(vanilla.loader, "vanilla");
+        assert_eq!(vanilla.loader_version, "");
+        assert_eq!(resolve_instance_game_version(&state, &vanilla).unwrap(), "1.21.1");
+
+        assert!(apply_instance_loader_update(&state, &registered.id, "1.21.1", "unknown", "1.0").is_err());
+
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

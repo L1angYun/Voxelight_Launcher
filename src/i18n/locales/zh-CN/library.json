@@ -176,6 +176,13 @@
   "windowHeight": "游戏窗口高度",
   "chooseJava": "选择 Java",
   "resetRuntime": "恢复全局启动环境",
+  "loaderChange": {
+    "title": "加载器",
+    "current": "Minecraft {{version}} · {{loader}}{{loaderVersion}}",
+    "hint": "更换加载器会保留此实例的存档、配置和文件；为旧加载器编写的模组可能需要停用或替换。",
+    "apply": "更换加载器",
+    "confirm": "将“{{name}}”的加载器更换为 {{loader}}？存档和实例文件都会保留。"
+  },
   "createModes": "创建方式",
   "versionMode": "版本与加载器",
   "importMode": "导入整合包",
@@ -286,6 +293,7 @@
     "noDiagnosis": "没有发现需要处理的启动错误。",
     "diagnosticsExported": "诊断报告已保存。",
     "settingsSaved": "实例设置已保存。",
+    "loaderChanged": "实例加载器已更换。",
     "runtimeReset": "已恢复全局启动环境。",
     "resourceRecovered": "已恢复中断的资源事务。"
   },

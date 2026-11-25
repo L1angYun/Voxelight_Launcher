@@ -140,3 +140,19 @@ test("drag-and-drop imports mods in instance content, opens modpack import, and 
   await expect(page.getByRole("button", { name: "上传至微软账号", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("instance settings changes an existing instance's loader while preserving the instance", async ({ page }) => {
+  await page.setViewportSize({ width: 1050, height: 720 });
+  await installLauncherFixture(page);
+  await page.goto("/?next-ui");
+  await navigation(page).getByRole("button", { name: "游戏库", exact: true }).click();
+  await page.locator(".vx-instance-card").first().click();
+  await page.getByRole("tab", { name: "设置", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "加载器", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Fabric", exact: true }).click();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "更换加载器", exact: true }).click();
+  await expect(page.getByText("实例加载器已更换。", { exact: true })).toBeVisible();
+  await expect(page.getByText("Minecraft 1.21.1 · Fabric 0.16.9", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

@@ -1104,7 +1104,7 @@ pub(crate) fn resource_target(
     })
 }
 
-fn context_for_version(root: &Path, version_id: &str) -> AppResult<(String, Option<String>)> {
+pub(crate) fn context_for_version(root: &Path, version_id: &str) -> AppResult<(String, Option<String>)> {
     version_context(root, version_id).map_err(|error| {
         if error == "请先安装目标 Minecraft 版本，再安装资源" {
             AppError::new("resource.versionMissing")

@@ -178,6 +178,13 @@
   "windowHeight": "Game window height",
   "chooseJava": "Choose Java",
   "resetRuntime": "Use global runtime",
+  "loaderChange": {
+    "title": "Loader",
+    "current": "Minecraft {{version}} · {{loader}}{{loaderVersion}}",
+    "hint": "Worlds, configs and mods stay in this instance folder. Mods built for another loader may need to be disabled or replaced.",
+    "apply": "Change loader",
+    "confirm": "Change the loader of \"{{name}}\" to {{loader}}? Your worlds and files will be kept."
+  },
   "createModes": "Create method",
   "versionMode": "Version and loader",
   "importMode": "Import modpack",
@@ -289,6 +296,7 @@
     "noDiagnosis": "No launch errors need attention.",
     "diagnosticsExported": "Diagnostics saved.",
     "settingsSaved": "Instance settings saved.",
+    "loaderChanged": "Instance loader updated.",
     "runtimeReset": "Global runtime restored.",
     "resourceRecovered": "The interrupted resource transaction was recovered."
   },

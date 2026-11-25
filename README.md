@@ -25,7 +25,7 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Versions | Every release and snapshot, with Fabric, Quilt, Forge or NeoForge | ✅ |
 | Versions | Version list grouped into releases, snapshots, Beta & Alpha and April Fools versions, with search, sorting and release dates | ✅ |
 | Versions | OptiFine | 🚧 |
-| Versions | Change the loader of an existing instance | 🚧 |
+| Versions | Change the loader of an existing instance | ✅ |
 | Java | Finds installed Java; downloads Mojang's runtime when a version needs another; automatic or manual memory | ✅ |
 | Instances | Own folder per instance, with its own or the global Java, memory, JVM arguments, window size and game proxy | ✅ |
 | Instances | Backup and restore, copy, export as a personal backup or a Modrinth `.mrpack` | ✅ |
