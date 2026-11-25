@@ -11,6 +11,7 @@ import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { useResourceManager } from "./useInstanceContent";
+import { displayName, resourceCounts, visibleResources, type ResourceSort, type ResourceStateFilter } from "./localContentFilter";
 import { errorText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
 
@@ -54,9 +55,30 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
   const { t, i18n } = useTranslation();
   const id = useId();
   const manager = useResourceManager(versionId, instanceId);
-  const { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice } = manager;
+  const { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice,
+    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany } = manager;
+  const [query, setQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<ResourceStateFilter>("all");
+  const [sort, setSort] = useState<ResourceSort>("name");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const selectAllRef = useRef<HTMLInputElement>(null);
   const waitingForView = busy === view || (view === "files" && busy === "import");
   const showEmpty = !waitingForView && !error;
+  const visible = visibleResources(files, { query, state: stateFilter, sort });
+  const counts = resourceCounts(files, query);
+  const allVisibleSelected = visible.length > 0 && visible.every((file) => selectedFileNames.has(file.fileName));
+  const someVisibleSelected = visible.some((file) => selectedFileNames.has(file.fileName));
+  const clearSelectionAndFocus = () => {
+    clearSelection();
+    // The Clear button becomes disabled with nothing selected, so hand keyboard
+    // focus to a control that remains available.
+    (visible.length ? selectAllRef.current : searchRef.current)?.focus();
+  };
+  const changeKind = (value: string) => {
+    setQuery("");
+    clearSelection();
+    setKind(value as typeof kind);
+  };
   return (
     <div className="vx-detail-stack">
       <div className="vx-toolbar">
@@ -64,7 +86,8 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
           className="vx-resource-kind-select"
           aria-label={t("library:resourceKind")}
           value={kind}
-          onChange={(value) => setKind(value as typeof kind)}
+          disabled={Boolean(busy)}
+          onChange={changeKind}
           options={[
             { value: "resourcepack", label: t("library:resourcepacks") },
             { value: "mod", label: t("library:mods") },
@@ -72,10 +95,10 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
           ]}
         />
         <div className="vx-action-row">
-          <Button variant="secondary" icon={<Upload size={15} />} onClick={() => void manager.importFiles()}>{t("library:importResources")}</Button>
-          <Button variant="secondary" icon={<RefreshCw size={15} />} onClick={() => void manager.refresh()}>{t("common:actions.retry")}</Button>
-          <Button variant="secondary" icon={<Download size={15} />} onClick={() => void manager.checkUpdates()}>{t("library:checkUpdates")}</Button>
-          <Button variant="ghost" icon={<History size={15} />} onClick={() => void manager.showHistory()}>{t("library:history")}</Button>
+          <Button variant="secondary" icon={<Upload size={15} />} disabled={Boolean(busy)} onClick={() => void manager.importFiles()}>{t("library:importResources")}</Button>
+          <Button variant="secondary" icon={<RefreshCw size={15} />} disabled={Boolean(busy)} onClick={() => void manager.refresh()}>{t("common:actions.retry")}</Button>
+          <Button variant="secondary" icon={<Download size={15} />} disabled={Boolean(busy)} onClick={() => void manager.checkUpdates()}>{t("library:checkUpdates")}</Button>
+          <Button variant="ghost" icon={<History size={15} />} disabled={Boolean(busy)} onClick={() => void manager.showHistory()}>{t("library:history")}</Button>
         </div>
       </div>
       <Segmented semantic="tabs" label={t("library:resourceViews")} value={view} onChange={setView}
@@ -86,12 +109,61 @@ export function InstanceContent({ versionId, instanceId }: { versionId: string; 
       {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}
       <SectionPanel selectionKey={`${kind}:${view}`} role="tabpanel" id={`${id}-resource-panel`} aria-labelledby={`${id}-resource-tab-${view}`}>
       {view === "files" ? (
-        files.length ? <div className="vx-resource-list">{files.map((file) => (
-          <div className="vx-resource-row" key={file.fileName}>
-            <LocalFileName file={file} versionId={versionId} instanceId={instanceId} />
-            <Button variant={file.enabled ? "secondary" : "ghost"} aria-pressed={file.enabled} onClick={() => void manager.toggle(file)}>{file.enabled ? t("library:enabled") : t("library:disabled")}</Button>
+        files.length ? (
+          <div className="vx-resource-files">
+            <div className="vx-resource-controls">
+              <input className="vx-resource-search" type="search" aria-label={t("library:resourceSearch")}
+                ref={searchRef}
+                placeholder={t("library:resourceSearchPlaceholder")} value={query}
+                autoComplete="off" spellCheck={false} onChange={(event) => setQuery(event.target.value)} />
+              <Segmented<ResourceStateFilter> className="vx-resource-filter" semantic="toggle" label={t("library:resourceFilter")}
+                value={stateFilter} onChange={setStateFilter}
+                options={[
+                  { value: "all", label: t("library:filterAll", { count: counts.all }) },
+                  { value: "enabled", label: t("library:filterEnabled", { count: counts.enabled }) },
+                  { value: "disabled", label: t("library:filterDisabled", { count: counts.disabled }) },
+                ]} />
+              <Select className="vx-resource-sort" aria-label={t("library:sort")} value={sort}
+                onChange={(value) => setSort(value as ResourceSort)}
+                options={[
+                  { value: "name", label: t("library:sortName") },
+                  { value: "size", label: t("library:sortSize") },
+                  { value: "modified", label: t("library:sortModified") },
+                ]} />
+            </div>
+            {/* Always mounted: the bar reserves its space so the list never shifts,
+                and its live region exists before the first selected count changes. */}
+            <div className="vx-resource-batch">
+              <span role="status">{t("library:selectedCount", { count: selectedFiles.length })}</span>
+              <Button variant="secondary" disabled={Boolean(busy) || selectedFiles.length === 0} onClick={() => void toggleMany(selectedFiles, true)}>{t("library:batchEnable")}</Button>
+              <Button variant="secondary" disabled={Boolean(busy) || selectedFiles.length === 0} onClick={() => void toggleMany(selectedFiles, false)}>{t("library:batchDisable")}</Button>
+              {/* Remains mounted so clearing selection never removes a focused control. */}
+              <Button variant="ghost" disabled={Boolean(busy) || selectedFiles.length === 0} onClick={clearSelectionAndFocus}>{t("library:batchClear")}</Button>
+            </div>
+            {visible.length ? (
+              <div className="vx-resource-list">
+                <div className="vx-resource-list__header">
+                  <input type="checkbox" aria-label={t("library:selectAllVisible")} checked={allVisibleSelected}
+                    disabled={Boolean(busy)}
+                    ref={(node) => {
+                      selectAllRef.current = node;
+                      if (node) node.indeterminate = someVisibleSelected && !allVisibleSelected;
+                    }}
+                    onChange={(event) => selectVisible(visible, event.target.checked)} />
+                </div>
+                {visible.map((file) => (
+                  <div className="vx-resource-row vx-resource-file-row" key={file.fileName}>
+                    <input type="checkbox" aria-label={displayName(file)} checked={selectedFileNames.has(file.fileName)}
+                      disabled={Boolean(busy)} onChange={(event) => selectFile(file, event.target.checked)} />
+                    <LocalFileName file={file} versionId={versionId} instanceId={instanceId} />
+                    <Button variant={file.enabled ? "secondary" : "ghost"} aria-pressed={file.enabled} disabled={Boolean(busy)}
+                      onClick={() => void manager.toggle(file)}>{file.enabled ? t("library:enabled") : t("library:disabled")}</Button>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="vx-resource-no-match">{t("library:resourceNoMatch")}</p>}
           </div>
-        ))}</div> : showEmpty ? <EmptyState title={t("library:noResources")} description={t("library:noResourcesDescription")} /> : null
+        ) : showEmpty ? <EmptyState title={t("library:noResources")} description={t("library:noResourcesDescription")} /> : null
       ) : null}
       {view === "updates" ? (
         <>

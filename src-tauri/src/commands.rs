@@ -58,6 +58,21 @@ fn validate_default_skin(skin: &str) -> Result<(), String> {
     }
 }
 
+/// Records that the first-run tour was finished or skipped. It changes only
+/// that flag, so it is never refused while an install holds the operation
+/// lock, and a whole-config save cannot undo it.
+pub(crate) fn set_tour_completed_inner(state: &LauncherState, completed: bool) -> Result<Config, String> {
+    state.update(|data| {
+        data.config.tour_completed = completed;
+        Ok(data.config.clone())
+    })
+}
+
+#[tauri::command]
+pub fn set_tour_completed(state: Shared<'_>, completed: bool) -> AppResult<Config> {
+    set_tour_completed_inner(&state, completed).map_err(expected)
+}
+
 #[tauri::command]
 pub async fn save_config(
     window: tauri::WebviewWindow,
@@ -266,6 +281,9 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
         // running update download and clears a check made with another source.
         config.check_for_updates = data.config.check_for_updates;
         config.update_source.clone_from(&data.config.update_source);
+        // Only set_tour_completed changes this: a Settings page opened before
+        // the tour ended, or an imported preset, must not bring it back.
+        config.tour_completed = data.config.tour_completed;
         let previous = approved_against.unwrap_or(&data.config);
         if previous.jvm_arguments != data.config.jvm_arguments && config.jvm_arguments == previous.jvm_arguments {
             return Err(crate::errors::STORAGE_STATE_CHANGED.into());
@@ -870,6 +888,21 @@ mod tests {
 mod scoped_settings_save_tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn u1_the_tour_flag_is_saved_on_its_own_even_during_an_install_and_a_config_save_keeps_it() {
+        let (_root, state) = owned_profile();
+        state.save().unwrap();
+        let held = state.operation.try_lock().unwrap();
+        assert!(set_tour_completed_inner(&state, true).unwrap().tour_completed, "not refused while an install runs");
+        drop(held);
+        // A Settings page loaded before the tour ended still says false.
+        let mut stale = state.snapshot().unwrap().config;
+        stale.tour_completed = false;
+        assert!(save_config_inner(&state, stale).unwrap().tour_completed);
+        assert!(state.snapshot().unwrap().config.tour_completed);
+        assert!(!set_tour_completed_inner(&state, false).unwrap().tour_completed, "the flag can be cleared on purpose");
+    }
 
     #[test]
     fn config_save_rejects_java_inheritance_from_a_tls_proxy() {

@@ -106,12 +106,12 @@ export function UpdateSettings({ config, onPersistedPatch, onError, focusRequest
   return (
     <section ref={section} className="vx-settings-group vx-settings-updates" aria-labelledby="vx-updates-title">
       <h3 id="vx-updates-title">{t("settings:updates.section")}</h3>
-      <label className="vx-settings-check">
+      <label className="vx-settings-check" data-settings-target="about-update-check">
         <input type="checkbox" aria-label={t("settings:updates.checkOnStartup")} checked={config.checkForUpdates} disabled={saving}
           onChange={(event) => void savePreferences({ checkForUpdates: event.target.checked, updateSource: config.updateSource })} />
         <span>{t("settings:updates.checkOnStartup")}<small>{t("settings:updates.checkOnStartupTip")}</small></span>
       </label>
-      <label>
+      <label data-settings-target="about-update-source">
         {t("settings:updates.source")}
         <Select aria-label={t("settings:updates.source")} value={config.updateSource} disabled={!unblocked}
           onChange={(value) => {
@@ -135,8 +135,9 @@ export function UpdateSettings({ config, onPersistedPatch, onError, focusRequest
           <p>{result.notes}</p>
         </details>
       ) : null}
-      <div className="vx-action-row">
+      <div className="vx-action-row" data-settings-target="about-update-actions">
         <Button ref={checkButton} variant="secondary" icon={<RefreshCw size={15} />} loading={checking} disabled={!unblocked}
+          data-settings-primary="true"
           onClick={() => void updates.check()}>
           {t("settings:updates.checkNow")}
         </Button>

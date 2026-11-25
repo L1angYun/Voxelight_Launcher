@@ -122,6 +122,7 @@ function fixture(): LauncherContextValue {
     gamePid: undefined,
     reload: vi.fn(async () => {}),
     saveConfig: vi.fn(async (next) => next),
+    setTourCompleted: vi.fn(async (completed) => ({ ...defaults, tourCompleted: completed })),
     setConfig: vi.fn(),
     selectInstance: vi.fn(),
     selectVersion: vi.fn(),

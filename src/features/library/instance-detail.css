@@ -229,6 +229,16 @@
     background: color-mix(in srgb, var(--surface-solid) 24%, var(--surface-panel));
   }
   .vx-resource-list { display: grid; }
+  .vx-resource-files { display: grid; gap: var(--space-3); min-width: 0; }
+  .vx-resource-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+  .vx-resource-search { flex: 1 1 220px; }
+  .vx-resource-sort { flex: 0 0 150px; width: 150px; }
+  .vx-resource-list__header { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-1); }
+  .vx-resource-file-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-2) var(--space-1); border-bottom: 1px solid var(--hairline); }
+  .vx-resource-file-row > div { min-width: 0; overflow-wrap: anywhere; }
+  .vx-resource-batch { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: var(--surface-hover); }
+  .vx-resource-batch [role="status"] { margin-inline-end: auto; font-size: var(--text-sm); font-weight: var(--weight-strong); }
+  .vx-resource-no-match { margin: 0; padding: var(--space-4) var(--space-1); color: var(--text-secondary); font-size: var(--text-sm); }
   .vx-screenshot {
     display: grid;
     justify-items: start;
@@ -290,6 +300,7 @@
     width: 36px;
     height: 40px;
   }
+  .vx-detail-header .vx-instance-glyph { width: 32px; height: 32px; }
   .vx-detail-selection {
     display: flex;
     flex-direction: column;

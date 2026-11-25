@@ -27,6 +27,7 @@ import { LibraryLaunchStatus } from "./LibraryLaunchStatus";
 import { VersionDirectoryDetailPage } from "./VersionDirectoryDetailPage";
 import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
 import { InstanceIdentity, InstanceIdentityProvider } from "./InstanceIdentity";
+import { glyphLoaderForVersionDirectory } from "./instanceGlyphs";
 import { MOTION, motionDuration } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 import type { Instance, InstalledVersion } from "../../lib/launcher";
@@ -223,6 +224,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
         <label className="vx-search">
           <Search size={16} aria-hidden="true" />
           <input
+            type="search"
             aria-label={
               scope === "versions"
                 ? t("library:searchVersions")
@@ -427,7 +429,7 @@ function CreateInstanceTile({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function VersionDirectoryCard({
+export function VersionDirectoryCard({
   version,
   selected,
   onOpen,
@@ -443,6 +445,8 @@ function VersionDirectoryCard({
   const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
+  const loader = glyphLoaderForVersionDirectory(version.id);
+  const versionType = loader === "vanilla" ? version.type : null;
   const title = t("library:minecraftVersion", { version: version.id });
   const channel =
     version.type === "release" || version.type === "snapshot"
@@ -487,6 +491,9 @@ function VersionDirectoryCard({
             kind="version-directory"
             name={t("library:minecraft")}
             identity={version.id}
+            loader={loader}
+            versionId={version.id}
+            versionType={versionType}
           />
         </span>
         <span className="vx-instance-card__information">

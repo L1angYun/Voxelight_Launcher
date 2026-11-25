@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, Box, Layers3, Package, Search, Sparkles } from "lucide-react";
+import { command, type Instance } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
 import { Button } from "../../components/ui/Button";
@@ -18,15 +19,59 @@ import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { useToast } from "../../components/ui/ToastProvider";
 import { errorText } from "../library/utils";
 import { formatNumber } from "../../i18n/format";
+import type { ResourceContext } from "./types";
+import type { FittableInstance } from "./versionFits";
 import "./discover.css";
 
 const resourceTypes = ["mod", "resourcepack", "shader", "modpack"] as const;
 const resourceIcons = { mod: Box, resourcepack: Layers3, shader: Sparkles, modpack: Package };
 
+function instanceContextKey(instance: Instance) {
+  return `${instance.id}\u0000${instance.versionId}`;
+}
+
+/**
+ * Resolve every instance through the same `get_resource_context` command the
+ * target planner uses, so loader profiles are matched by their vanilla base
+ * game version and detected loader instead of their profile id and stored
+ * loader. The cache is keyed by the instance list so it is fetched once per
+ * instance and survives unrelated re-renders.
+ */
+function useInstanceContexts(instances: readonly Instance[]): Record<string, ResourceContext> {
+  const [contexts, setContexts] = useState<Record<string, ResourceContext>>({});
+  const cache = useRef<Record<string, ResourceContext>>({});
+  const listKey = instances.map(instanceContextKey).join("\u0001");
+  useEffect(() => {
+    let current = true;
+    const missing = instances.filter(instance => !cache.current[instanceContextKey(instance)]);
+    if (!missing.length) {
+      setContexts(cache.current);
+      return;
+    }
+    void Promise.all(missing.map(async (instance) => {
+      try {
+        const context = await command<ResourceContext>("get_resource_context", { versionId: instance.versionId, instanceId: instance.id });
+        cache.current[instanceContextKey(instance)] = context;
+      } catch {
+        // Metadata that cannot be resolved (the backend's metadataMissing) fits nothing.
+      }
+    })).then(() => {
+      if (current) setContexts({ ...cache.current });
+    });
+    return () => { current = false; };
+  }, [listKey]);
+  return contexts;
+}
+
 export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
   const { t, i18n } = useTranslation();
   const { data, selectedVersionId, selectedInstance, selectInstance, selectVersion } = useLauncher();
   const { play } = useOverture();
+  const instanceContexts = useInstanceContexts(data.instances);
+  const fittableInstances = useMemo<FittableInstance[]>(() => data.instances.map((instance) => {
+    const context = instanceContexts[instanceContextKey(instance)];
+    return { id: instance.id, name: instance.name, versionId: instance.versionId, gameVersion: context?.gameVersion, loader: context?.loader };
+  }), [data.instances, instanceContexts]);
   const { notify } = useToast();
   const [creating, setCreating] = useState(false);
   const discover = useDiscover({
@@ -115,7 +160,7 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
           </SectionPanel>
         </section>
       </div>
-      <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} hasTarget={Boolean(selectedVersionId)} onInstall={() => selectedProject && installProject(selectedProject)} onInstallVersion={versionId => { if (selectedProject) void installProject(selectedProject, versionId); }} onClose={closeProject} />
+      <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} hasTarget={Boolean(selectedVersionId)} instances={fittableInstances} onInstall={() => selectedProject && installProject(selectedProject)} onInstallVersion={versionId => { if (selectedProject) void installProject(selectedProject, versionId); }} onClose={closeProject} />
       <InstallTargetDialog flow={targetFlow} onClose={closeTarget} onInstall={installInto} onCreate={createAndInstall} onCancel={cancelInstall}
         onCreateInstance={() => setCreating(true)} onDownloads={onDownloads} />
       <CreateInstanceDialog

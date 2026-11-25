@@ -134,7 +134,14 @@ export function Dialog({
         // already have returned this same dialog to the top layer.
         if (ref.current?.open) return;
         if (ref.current) notifyDialogLayer(ref.current, false);
-        if (previousFocus.current?.isConnected) previousFocus.current.focus();
+        // The native close already restored focus, or another surface (the
+        // first-run tour reopening from this dialog) has claimed it. Only
+        // restore when the browser left focus on the body or inside us.
+        const active = document.activeElement;
+        if ((!active || active === document.body || ref.current?.contains(active))
+          && previousFocus.current?.isConnected) {
+          previousFocus.current.focus();
+        }
       }}
       onKeyDown={handleKeyDown}
     >

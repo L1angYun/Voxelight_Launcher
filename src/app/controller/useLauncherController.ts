@@ -181,6 +181,19 @@ export function useLauncherController(): LauncherContextValue {
       return value;
     }), [trackOperation]);
 
+  const setTourCompleted = useCallback(async (completed: boolean) => {
+    const value = await command<Config>("set_tour_completed", { completed });
+    // A read initiated before this durable save cannot publish a stale snapshot.
+    ++bootstrapGeneration.current;
+    const previous = canonicalConfig.current;
+    canonicalConfig.current = value;
+    setData((current) => ({ ...current, config: value }));
+    // Keep an unsaved appearance preview on top of the saved config; the tour
+    // command only owns this one flag.
+    setConfigValue((current) => ({ ...value, ...configChanges(previous, current) }));
+    return value;
+  }, []);
+
   const selectInstance = useCallback(
     (id?: string) => {
       setSelectedInstanceId(id);
@@ -376,6 +389,7 @@ export function useLauncherController(): LauncherContextValue {
     gamePid,
     reload,
     saveConfig,
+    setTourCompleted,
     setConfig,
     selectInstance,
     selectVersion,

@@ -181,6 +181,8 @@ export function InstanceDetailPage({
             name={instance.name}
             identity={instance.id}
             iconPath={instance.iconPath}
+            loader={instance.loader}
+            versionId={instance.versionId}
           />
           <div>
             <h1 tabIndex={-1} title={instance.name}>{instance.name}</h1>

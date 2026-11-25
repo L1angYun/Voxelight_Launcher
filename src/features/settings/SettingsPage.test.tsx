@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,13 +11,17 @@ import { LauncherError } from "../../lib/errors";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { createLauncherI18n } from "../../i18n";
 import { SettingsPage } from "./SettingsPage";
+import { settingsIndex } from "./settingsIndex";
+import type { LauncherUpdates } from "../updates/LauncherUpdates";
 
 const mocks = vi.hoisted(() => ({ open: vi.fn(), save: vi.fn(), openUrl: vi.fn() }));
+const updates = vi.hoisted(() => ({ current: null as unknown as LauncherUpdates }));
 const commandMock = vi.mocked(command);
 let mockLauncher: LauncherContextValue;
 let appearance: { effects: string; accentColor: string; resolvedTheme: string };
 let root: Root;
 let container: HTMLDivElement;
+let scrollIntoView: ReturnType<typeof vi.fn>;
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/launcher")>()),
@@ -29,6 +36,10 @@ vi.mock("../../app/AppearanceProvider", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open, save: mocks.save }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
+vi.mock("../updates/LauncherUpdates", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../updates/LauncherUpdates")>()),
+  useLauncherUpdates: () => updates.current,
+}));
 vi.mock("../../visual/glass/GlassSystem", () => ({
   GlassSurface: ({ children, className }: { children: React.ReactNode; className?: string }) => createElement("div", { className }, children),
 }));
@@ -64,6 +75,7 @@ function fixture(): LauncherContextValue {
     gamePid: undefined,
     reload: vi.fn(async () => {}),
     saveConfig: vi.fn(async (next) => next),
+    setTourCompleted: vi.fn(async (completed) => ({ ...defaults, tourCompleted: completed })),
     setConfig: vi.fn((next) => {
       mockLauncher.config = next;
       appearance.effects = next.effects;
@@ -107,6 +119,48 @@ async function fill(label: string, value: string) {
   });
 }
 
+function searchInput(): HTMLInputElement {
+  const input = container.querySelector<HTMLInputElement>('input[type="search"]');
+  if (!input) throw new Error("Missing settings search input");
+  return input;
+}
+
+async function search(value: string) {
+  const input = searchInput();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+function searchResults(): HTMLButtonElement[] {
+  return [...container.querySelectorAll<HTMLButtonElement>('ul[aria-label="Matching settings"] button')];
+}
+
+function searchResult(target: string): HTMLButtonElement {
+  const found = searchResults().find((candidate) => candidate.dataset.settingsResult === target);
+  if (!found) throw new Error(`Missing search result: ${target}`);
+  return found;
+}
+
+function activeElementInside(target: Element | null): boolean {
+  const active = document.activeElement;
+  return Boolean(target && active && (target === active || target.contains(active)));
+}
+
+function accessibleName(element: Element | null): string {
+  if (!element) return "";
+  return element.getAttribute("aria-label") ?? element.textContent?.trim() ?? "";
+}
+
+async function settleFrame() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+}
+
+async function settleFrames(count = 3) {
+  for (let index = 0; index < count; index += 1) await settleFrame();
+}
+
 async function select(label: string, value: string) {
   const trigger = container.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`);
   if (!trigger) throw new Error(`Missing combobox: ${label}`);
@@ -121,6 +175,19 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   appearance = { effects: "full", accentColor: "#b4f17a", resolvedTheme: "dark" };
   mockLauncher = fixture();
+  updates.current = {
+    result: null,
+    status: { key: "notChecked" },
+    progress: 0,
+    checking: false,
+    installing: false,
+    notice: null,
+    check: vi.fn(async () => {}),
+    install: vi.fn(async () => {}),
+    cancel: vi.fn(),
+    sourceChanged: vi.fn(),
+    dismissNotice: vi.fn(),
+  };
   commandMock.mockReset();
   commandMock.mockImplementation(async (name, args) => {
     if (name === "choose_launcher_path") {
@@ -140,6 +207,12 @@ beforeEach(() => {
   mocks.openUrl.mockReset();
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     return this.getAttribute("role") === "combobox" ? new DOMRect(24, 200, 320, 44) : new DOMRect();
+  });
+  scrollIntoView = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    writable: true,
+    value: scrollIntoView,
   });
   container = document.createElement("div");
   document.body.append(container);
@@ -596,6 +669,265 @@ describe("global settings", () => {
     await click("Save settings");
     expect(container.textContent).toContain("The game directory must be an absolute path.");
     expect(container.textContent).not.toContain("Something went wrong");
+  });
+});
+
+describe("settings search", () => {
+  it("lists a matching setting with its section and reveals it after choosing", async () => {
+    await render();
+    await search("memory");
+    const matches = searchResults();
+    expect(matches.length).toBeGreaterThan(0);
+    const initial = matches.find((candidate) => candidate.textContent?.includes("Initial memory (MB)"));
+    expect(initial).toBeTruthy();
+    expect(initial!.textContent).toContain("Java");
+    await act(async () => initial!.click());
+    await settleFrame();
+    expect(searchInput().value).toBe("");
+    expect(searchResults()).toHaveLength(0);
+    const target = container.querySelector<HTMLElement>('[data-settings-target="java-initial-memory"]');
+    expect(target).not.toBeNull();
+    expect(target!.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Initial memory (MB)");
+  });
+
+  it("clears the query with Escape", async () => {
+    await render();
+    await search("memory");
+    expect(searchInput().value).toBe("memory");
+    await act(async () => searchInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(searchInput().value).toBe("");
+    expect(container.querySelector('ul[aria-label="Matching settings"]')).toBeNull();
+  });
+
+  it("shows the no-match message for a query without results", async () => {
+    await render();
+    await search("zzzzzz");
+    expect(searchResults()).toHaveLength(0);
+    expect(container.textContent).toContain("No setting matches.");
+  });
+
+  it("moves into the results with Arrow Down and chooses the first result with Enter", async () => {
+    await render();
+    await search("language");
+    const input = searchInput();
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    expect(document.activeElement).toBe(searchResults()[0]);
+    await act(async () => {
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await settleFrame();
+    expect(searchInput().value).toBe("");
+    const target = container.querySelector<HTMLElement>('[data-settings-target="appearance-language"]');
+    expect(target).not.toBeNull();
+    expect(target!.contains(document.activeElement)).toBe(true);
+  });
+
+  it("reveals the controlling field when a conditional setting is hidden in the current state", async () => {
+    await render();
+    const cases = [
+      { query: "proxy host", target: "downloads-proxy-host", fallback: "downloads-proxy-mode", name: "Launcher proxy mode" },
+      { query: "accent color", target: "appearance-accent-color", fallback: "appearance-accent-source", name: "Accent source" },
+    ];
+    for (const item of cases) {
+      await search(item.query);
+      await act(async () => searchResult(item.target).click());
+      await settleFrame();
+      const fallback = container.querySelector<HTMLElement>(`[data-settings-target="${item.fallback}"]`);
+      expect(fallback, item.target).not.toBeNull();
+      expect(activeElementInside(fallback), item.target).toBe(true);
+      expect(accessibleName(document.activeElement), item.target).toBe(item.name);
+    }
+  });
+
+  it("indexes memory allocation and falls back to it when maximum memory is disabled", async () => {
+    await render();
+    expect(mockLauncher.config.memoryMode).toBe("auto");
+    await search("memory allocation");
+    expect(searchResult("java-memory-mode")).toBeTruthy();
+    await search("memory");
+    await act(async () => searchResult("java-max-memory").click());
+    await settleFrame();
+    const mode = container.querySelector<HTMLElement>('[data-settings-target="java-memory-mode"]');
+    expect(mode).not.toBeNull();
+    expect(activeElementInside(mode)).toBe(true);
+    expect(accessibleName(document.activeElement)).toBe("Automatic memory");
+  });
+
+  it("treats a whitespace-only query as empty", async () => {
+    await render();
+    await search("   ");
+    expect(searchResults()).toHaveLength(0);
+    expect(container.textContent).not.toContain("No setting matches.");
+    expect(container.querySelector('[data-testid="settings-search-status"]')?.textContent).toBe("");
+  });
+
+  it("announces result counts and associates the input with the result list", async () => {
+    await render();
+    const status = container.querySelector<HTMLElement>('[data-testid="settings-search-status"]');
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.textContent).toBe("");
+    await search("memory");
+    const list = container.querySelector<HTMLElement>('ul[aria-label="Matching settings"]');
+    expect(list).not.toBeNull();
+    expect(list!.id).toBe("vx-settings-search-results");
+    expect(searchInput().getAttribute("aria-controls")).toBe(list!.id);
+    expect(status?.textContent).toBe("3 matching settings");
+    await search("language");
+    expect(status?.textContent).toBe("1 matching setting");
+    await search("zzzzzz");
+    expect(status?.textContent).toBe("No setting matches.");
+  });
+
+  it("focuses the named action rather than a sibling or nested field", async () => {
+    await render();
+    const actions = [
+      { query: "Import preset", target: "general-import-preset", name: "Import preset" },
+      { query: "Export preset", target: "general-export-preset", name: "Export preset" },
+      { query: "Detect Java", target: "java-detect", name: "Detect Java" },
+      { query: "Choose background", target: "appearance-background", name: "Choose background" },
+      { query: "Test proxy connection", target: "downloads-proxy-test", name: "Test proxy connection" },
+      { query: "Check for updates", target: "about-update-actions", name: "Check for updates" },
+    ];
+    for (const action of actions) {
+      await search(action.query);
+      await act(async () => searchResult(action.target).click());
+      await settleFrame();
+      expect(accessibleName(document.activeElement), action.target).toBe(action.name);
+      expect(activeElementInside(container.querySelector(`[data-settings-target="${action.target}"]`)),
+        action.target).toBe(true);
+    }
+  });
+
+  it("does not focus a destructive sibling when Check for updates is disabled by a download", async () => {
+    updates.current = {
+      ...updates.current,
+      result: {
+        currentVersion: "0.6.0", latestVersion: "0.7.0", status: "newer", source: "github",
+        releaseUrl: "https://example.test/release", notes: null, installerSize: 4096,
+      },
+      status: { key: "downloading" },
+      progress: 0.42,
+      installing: true,
+    };
+    await render();
+    await search("check for updates");
+    await act(async () => searchResult("about-update-actions").click());
+    await settleFrame();
+
+    expect(button("Check for updates").disabled).toBe(true);
+    const cancel = button("Cancel update");
+    expect(cancel.disabled).toBe(false);
+    expect(document.activeElement).not.toBe(cancel);
+    expect(accessibleName(document.activeElement)).not.toBe("Cancel update");
+    const target = container.querySelector<HTMLElement>('[data-settings-target="about-update-actions"]');
+    expect(activeElementInside(target)).toBe(true);
+  });
+
+  it("does not focus the destructive clear action for Save proxy credentials", async () => {
+    const saved = {
+      ...mockLauncher.config,
+      proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+      gameProxyMode: "off",
+    } satisfies Config;
+    mockLauncher.config = mockLauncher.data.config = saved;
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) =>
+      name === "get_service_status"
+        ? { curseforgeConfigured: false, proxyCredentialsConfigured: true }
+        : base(name, args));
+    await render();
+    await click("Downloads");
+    await settleFrames(2);
+    expect(button("Clear proxy credentials")).toBeTruthy();
+    await search("save proxy");
+    await act(async () => searchResult("downloads-proxy-username").click());
+    await settleFrame();
+    expect(accessibleName(document.activeElement)).toBe("Proxy username");
+    expect(accessibleName(document.activeElement)).not.toBe("Clear proxy credentials");
+  });
+
+  it.each(["Proxy username", "Proxy password"])(
+    "waits for the credential status before focusing %s",
+    async (label) => {
+      const saved = {
+        ...mockLauncher.config,
+        proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+        gameProxyMode: "off",
+      } satisfies Config;
+      mockLauncher.config = mockLauncher.data.config = saved;
+      let resolveStatus!: (value: { curseforgeConfigured: boolean; proxyCredentialsConfigured: boolean }) => void;
+      const pending = new Promise<{ curseforgeConfigured: boolean; proxyCredentialsConfigured: boolean }>((resolve) => {
+        resolveStatus = resolve;
+      });
+      const base = commandMock.getMockImplementation()!;
+      commandMock.mockImplementation(async (name, args) =>
+        name === "get_service_status" ? pending : base(name, args));
+      await render();
+      await search(label.toLowerCase());
+      const target = label === "Proxy username" ? "downloads-proxy-username" : "downloads-proxy-password";
+      await act(async () => searchResult(target).click());
+      await settleFrame();
+      const input = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+      expect(input).not.toBeNull();
+      expect(input!.disabled).toBe(true);
+      await act(async () => {
+        resolveStatus({ curseforgeConfigured: false, proxyCredentialsConfigured: false });
+        await pending;
+      });
+      await settleFrames(3);
+      expect(document.activeElement).toBe(input);
+    },
+  );
+
+  it("scrolls the target to the center and clears the reveal highlight after 1.5 seconds", async () => {
+    await render();
+    await search("language");
+    await act(async () => searchResult("appearance-language").click());
+    await settleFrame();
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+    const target = container.querySelector<HTMLElement>('[data-settings-target="appearance-language"]');
+    expect(target).not.toBeNull();
+    expect(target!.classList.contains("vx-settings-target-revealed")).toBe(true);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1600)); });
+    expect(target!.classList.contains("vx-settings-target-revealed")).toBe(false);
+  });
+
+  it("reveals every indexed setting in the default configuration without leaving focus on body", async () => {
+    const i18n = createLauncherI18n("en-US", "en-US");
+    await i18n.initPromise;
+    const t = (key: string) => i18n.t(key);
+    await render();
+    for (const entry of settingsIndex) {
+      await search(t(entry.labelKey));
+      const result = searchResult(entry.target);
+      await act(async () => result.click());
+      await settleFrame();
+      const active = document.activeElement;
+      expect(active, `${entry.target} left focus on <body>`).not.toBe(document.body);
+      const primary = container.querySelector(`[data-settings-target="${entry.target}"]`);
+      const fallback = entry.fallbackTarget
+        ? container.querySelector(`[data-settings-target="${entry.fallbackTarget}"]`)
+        : null;
+      expect(activeElementInside(primary) || activeElementInside(fallback),
+        `${entry.target} focused ${accessibleName(active)} outside its target`).toBe(true);
+    }
+  }, 30000);
+});
+
+describe("settings search styles", () => {
+  const css = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), "settings.css"), "utf8");
+
+  it("holds the reveal outline before fading it over 1.5 seconds", () => {
+    const source = css();
+    expect(source).toMatch(/\.vx-settings-target-revealed\s*\{[^}]*animation:\s*vx-settings-target-reveal 1\.5s/);
+    expect(source).toMatch(/@keyframes vx-settings-target-reveal\s*\{\s*0%,\s*65%\s*\{\s*outline-color:\s*var\(--accent\)/);
+    expect(source).toMatch(/\[data-reduced-motion="true"\]\s+\.vx-settings-target-revealed\s*\{[^}]*animation:\s*none/);
+  });
+
+  it("keeps the shared focus ring inside the scrolling result list", () => {
+    expect(css()).toMatch(/\.vx-settings-search-results button:focus-visible\s*\{\s*outline-offset:\s*-2px/);
   });
 });
 

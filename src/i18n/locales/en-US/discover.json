@@ -23,6 +23,14 @@
   "authorUnknown": "Unknown author",
   "versions": "Compatible versions",
   "noVersions": "No compatible versions for the current instance",
+  "fits": {
+    "count_one": "Fits {{count}} instance",
+    "count_other": "Fits {{count}} instances",
+    "none": "Fits no instance",
+    "more": ", and {{count}} more",
+    "onlyMine": "Only versions for my instances",
+    "empty": "No versions fit your instances."
+  },
   "dependencies": "Dependencies",
   "noDependencies": "No dependencies declared for this project",
   "dependency": {

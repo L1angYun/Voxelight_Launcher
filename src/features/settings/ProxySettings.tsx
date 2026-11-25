@@ -78,7 +78,7 @@ function ProxyActions({ config, endpointSaved, onError, onNotice }: Pick<Setting
 
   return (
     <>
-      <div className="vx-action-row">
+      <div className="vx-action-row" data-settings-target="downloads-proxy-test">
         <Button disabled={busy} onClick={() => void testConnection()}>{t("settings:proxy.test")}</Button>
       </div>
       {config.proxyMode === "custom" ? (
@@ -87,16 +87,16 @@ function ProxyActions({ config, endpointSaved, onError, onNotice }: Pick<Setting
           {config.proxyScheme === "http" ? <p>{t("settings:proxy.httpWarning")}</p> : null}
           {!endpointSaved ? <p>{t("settings:proxy.saveEndpointFirst")}</p> : null}
           <div className="vx-settings-fields">
-            <label>{t("settings:proxy.username")}
+            <label data-settings-target="downloads-proxy-username">{t("settings:proxy.username")}
               <input aria-label={t("settings:proxy.username")} autoComplete="off" maxLength={255} value={username}
                 disabled={!endpointSaved || loadingStatus || busy} onChange={(event) => setUsername(event.target.value)} />
             </label>
-            <label>{t("settings:proxy.password")}
+            <label data-settings-target="downloads-proxy-password">{t("settings:proxy.password")}
               <input aria-label={t("settings:proxy.password")} type="password" autoComplete="new-password" maxLength={255} value={password}
                 disabled={!endpointSaved || loadingStatus || busy} onChange={(event) => setPassword(event.target.value)} />
             </label>
           </div>
-          <div className="vx-action-row">
+          <div className="vx-action-row" data-settings-target="downloads-proxy-credentials-actions">
             <Button disabled={!endpointSaved || loadingStatus || busy || !username} onClick={() => void saveCredentials(false)}>{t("settings:proxy.saveCredentials")}</Button>
             {configured || statusUnreadable ? <Button variant="ghost" disabled={busy || loadingStatus} onClick={() => void saveCredentials(true)}>{t("settings:proxy.clearCredentials")}</Button> : null}
           </div>
@@ -115,31 +115,31 @@ export function ProxySettings({ config, savedConfig, onChange, onError, onNotice
     <section className="vx-settings-group">
       <h3>{t("settings:proxy.title")}</h3>
       <p>{t("settings:proxy.restartNotice")}</p>
-      <label>{t("settings:proxy.mode")}
+      <label data-settings-target="downloads-proxy-mode">{t("settings:proxy.mode")}
         <Select aria-label={t("settings:proxy.mode")} value={config.proxyMode ?? "system"}
           onChange={(proxyMode) => onChange({ ...config, proxyMode })}
           options={["system", "none", "custom"].map((value) => ({ value, label: t(`settings:proxy.modes.${value}`) }))} />
       </label>
       {config.proxyMode === "custom" ? (
         <>
-          <label>{t("settings:proxy.scheme")}
+          <label data-settings-target="downloads-proxy-scheme">{t("settings:proxy.scheme")}
             <Select aria-label={t("settings:proxy.scheme")} value={config.proxyScheme ?? "http"}
               onChange={(proxyScheme) => onChange({ ...config, proxyScheme })}
               options={[{ value: "http", label: "http://" }, { value: "https", label: "https://" }]} />
           </label>
           <div className="vx-settings-fields">
-            <label>{t("settings:proxy.host")}
+            <label data-settings-target="downloads-proxy-host">{t("settings:proxy.host")}
               <input aria-label={t("settings:proxy.host")} maxLength={253} value={config.proxyHost ?? ""}
                 onChange={(event) => onChange({ ...config, proxyHost: event.target.value })} />
             </label>
-            <label>{t("settings:proxy.port")}
+            <label data-settings-target="downloads-proxy-port">{t("settings:proxy.port")}
               <input aria-label={t("settings:proxy.port")} type="number" min={1} max={65535} value={config.proxyPort || ""}
                 onChange={(event) => onChange({ ...config, proxyPort: Number(event.target.value) })} />
             </label>
           </div>
         </>
       ) : null}
-      <label>{t("settings:proxy.gameMode")}
+      <label data-settings-target="downloads-proxy-game-mode">{t("settings:proxy.gameMode")}
         <Select aria-label={t("settings:proxy.gameMode")} value={config.gameProxyMode ?? "off"}
           onChange={(gameProxyMode) => onChange({ ...config, gameProxyMode })}
           options={["off", "system", "launcher"].map((value) => ({ value, label: t(`settings:proxy.gameModes.${value}`) }))} />

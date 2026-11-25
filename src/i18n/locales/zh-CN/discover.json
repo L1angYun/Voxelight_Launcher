@@ -23,6 +23,13 @@
   "authorUnknown": "作者未知",
   "versions": "兼容版本",
   "noVersions": "当前实例没有兼容版本",
+  "fits": {
+    "count": "适合 {{count}} 个实例",
+    "none": "适合 0 个实例",
+    "more": "，另有 {{count}} 个",
+    "onlyMine": "仅显示适合我的实例的版本",
+    "empty": "没有适合你的实例的版本。"
+  },
   "dependencies": "依赖关系",
   "noDependencies": "此项目没有声明依赖关系",
   "dependency": {

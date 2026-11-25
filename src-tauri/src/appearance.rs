@@ -35,9 +35,7 @@ fn image(path: &Path) -> Result<String, String> {
     };
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
-fn get_launcher_background_inner(
-    state: State<'_, Arc<LauncherState>>,
-) -> Result<Option<String>, String> {
+fn get_launcher_background_inner(state: &LauncherState) -> Result<Option<String>, String> {
     state
         .snapshot()?
         .config
@@ -45,9 +43,15 @@ fn get_launcher_background_inner(
         .map(|path| image(Path::new(&path)))
         .transpose()
 }
+/// Reads and encodes the image off the main thread: the home page asks for it
+/// at every start, and an image can be several megabytes.
 #[tauri::command]
-pub fn get_launcher_background(state: State<'_, Arc<LauncherState>>) -> AppResult<Option<String>> {
-    get_launcher_background_inner(state).map_err(expected)
+pub async fn get_launcher_background(state: State<'_, Arc<LauncherState>>) -> AppResult<Option<String>> {
+    let shared = state.inner().clone();
+    tokio::task::spawn_blocking(move || get_launcher_background_inner(&shared))
+        .await
+        .unwrap_or_else(|error| Err(error.to_string()))
+        .map_err(expected)
 }
 
 fn set_launcher_background_inner(
@@ -186,6 +190,14 @@ pub async fn import_launcher_config(
 mod tests {
     use super::*;
     use crate::models::Persisted;
+
+    #[test]
+    fn u1_the_home_background_is_read_off_the_main_thread() {
+        let source = crate::storage::executable_source(include_str!("appearance.rs"));
+        let body = source.split_once("pub async fn get_launcher_background(").expect("an async command").1;
+        let body = body.split_once("\n}").unwrap().0;
+        assert!(body.contains("tokio::task::spawn_blocking(move || get_launcher_background_inner(&shared))"), "{body}");
+    }
 
     #[test]
     fn legacy_lumen_preset_migrates_to_steve_and_preserves_other_settings() {

@@ -12,6 +12,7 @@ import { AccountsPage } from "../features/accounts/AccountsPage";
 import { MultiplayerPage } from "../features/multiplayer/MultiplayerPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { WorldScene } from "../components/WorldScene";
+import { HomeBackground } from "./HomeBackground";
 import { deriveWorldState } from "../components/world/deriveWorldState";
 import { useLauncher } from "./controller/LauncherProvider";
 import { useAppearance } from "./AppearanceProvider";
@@ -24,6 +25,9 @@ import { PageErrorBoundary } from "./PageErrorBoundary";
 import { pageVariants } from "../design/motion";
 import { useMotionTier } from "../design/useMotionTier";
 import { navigationRegistry } from "./registry";
+import { useShortcuts } from "./useShortcuts";
+import { ShortcutHelp } from "./ShortcutHelp";
+import { FirstRunTour } from "./FirstRunTour";
 import "./shell.css";
 
 const implementedPages = new Set<NavigationPage>(["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]);
@@ -50,7 +54,7 @@ function PageStage({ page, direction, firstHome = false, children }: { page: Nav
   </motion.div>;
 }
 
-function AppShell() {
+export function AppShell() {
   const { t } = useTranslation();
   const [{ page, direction, visit }, setNavigation] = useState<{
     page: NavigationPage; direction: number; visit: number;
@@ -58,6 +62,8 @@ function AppShell() {
   const [navResetTick, setNavResetTick] = useState(0);
   // "View update" opens Settings → About for that one visit only.
   const [updateReview, setUpdateReview] = useState<{ tick: number; visit: number } | null>(null);
+  const [tourRequested, setTourRequested] = useState(false);
+  const [homeImageShown, setHomeImageShown] = useState(false);
   const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   const downloadTasks = useDownloadTasks();
@@ -82,6 +88,8 @@ function AppShell() {
     });
   }
 
+  const shortcuts = useShortcuts({ navigate, implemented: implementedPages });
+
   return (
     <>
       <LauncherNoticeBridge />
@@ -101,9 +109,11 @@ function AppShell() {
           material={config.worldMaterial}
           effects={effects}
           reducedMotion={reducedMotion || highContrast}
+          paused={page === "home" && homeImageShown}
         /> : <div className="world-scene vx-global-scene" aria-hidden="true" data-world-tier="css"
           data-world-bootstrap="pending" data-world-frames="0" data-world-material="solid" data-world-phase={world.phase}
           data-world-front="0" data-motion="reduced" data-paused="true" />}
+        <HomeBackground page={page} onImageShownChange={setHomeImageShown} />
         <FloatingNav
           page={page}
           onNavigate={navigate}
@@ -139,6 +149,14 @@ function AppShell() {
           </AnimatePresence>
         </main>
       </div>
+      <ShortcutHelp
+        open={shortcuts.helpOpen}
+        onOpenChange={shortcuts.setHelpOpen}
+        onShowTour={() => setTourRequested(true)}
+        implemented={implementedPages}
+        canShowTour={bootstrapped}
+      />
+      <FirstRunTour reopen={tourRequested} onDismissed={() => setTourRequested(false)} />
     </>
   );
 }

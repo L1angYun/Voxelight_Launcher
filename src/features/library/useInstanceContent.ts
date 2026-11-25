@@ -19,9 +19,10 @@ import type {
 
 export function useResourceManager(versionId: string, instanceId?: string) {
   const { t } = useTranslation();
-  const [kind, setKind] = useState<ResourceKind>("resourcepack");
+  const [kind, setKindState] = useState<ResourceKind>("resourcepack");
   const [view, setView] = useState<ResourceView>("files");
   const [files, setFiles] = useState<LocalResource[]>([]);
+  const [selectedFileNames, setSelectedFileNames] = useState<ReadonlySet<string>>(() => new Set());
   const [updates, setUpdates] = useState<ResourceUpdate[] | null>(null);
   const [curseforgeSkipped, setCurseforgeSkipped] = useState(false);
   const [curseforgeFailed, setCurseforgeFailed] = useState(false);
@@ -35,6 +36,33 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   const report = useCallback((request: number, cause: unknown) => {
     if (request === generation.current) setError(normalizeError(cause).code);
   }, []);
+
+  // Selection is keyed by fileName: `name` strips the `.disabled` suffix, so an
+  // enabled file and its disabled twin can legitimately share it.
+  const selectedFiles = files.filter((file) => selectedFileNames.has(file.fileName));
+  const setKind = useCallback((next: ResourceKind) => {
+    setSelectedFileNames(new Set());
+    setKindState(next);
+  }, []);
+  const selectFile = useCallback((file: LocalResource, selected: boolean) => {
+    setSelectedFileNames((previous) => {
+      const next = new Set(previous);
+      if (selected) next.add(file.fileName);
+      else next.delete(file.fileName);
+      return next;
+    });
+  }, []);
+  const selectVisible = useCallback((visible: readonly LocalResource[], selected: boolean) => {
+    setSelectedFileNames((previous) => {
+      const next = new Set(previous);
+      for (const file of visible) {
+        if (selected) next.add(file.fileName);
+        else next.delete(file.fileName);
+      }
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelectedFileNames(new Set()), []);
 
   const refresh = useCallback(async () => {
     if (!versionId || !desktop) return;
@@ -55,6 +83,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   useEffect(() => {
     ++generation.current;
     setFiles([]);
+    setSelectedFileNames(new Set());
     setUpdates(null);
     setCurseforgeSkipped(false);
     setCurseforgeFailed(false);
@@ -126,6 +155,20 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     try {
       await command("toggle_resource", { ...selectionArgs(), fileName: file.fileName });
       if (request !== generation.current) return;
+      // The backend renames the file when it is enabled or disabled. Keep the
+      // selected file selected across that rename, like a batch toggle does.
+      const renamed = file.enabled
+        ? `${file.fileName}.disabled`
+        : file.fileName.replace(/\.disabled$/, "");
+      if (renamed !== file.fileName) {
+        setSelectedFileNames((previous) => {
+          if (!previous.has(file.fileName)) return previous;
+          const next = new Set(previous);
+          next.delete(file.fileName);
+          next.add(renamed);
+          return next;
+        });
+      }
       setNotice("resourceToggled");
       await refresh();
     } catch (cause) {
@@ -134,6 +177,67 @@ export function useResourceManager(versionId: string, instanceId?: string) {
       if (request === generation.current) setBusy("");
     }
   }, [busy, refresh, report, selectionArgs]);
+
+  const toggleMany = useCallback(async (targets: LocalResource[], enabled: boolean) => {
+    if (!desktop || busy) return;
+    const pending = targets.filter((file) => file.enabled !== enabled);
+    if (!pending.length) return;
+    const request = ++generation.current;
+    const target = selectionArgs();
+    setBusy("toggle:batch");
+    setError("");
+    setNotice("");
+    let failed = false;
+    try {
+      for (const file of pending) {
+        // The user committed the whole batch. A generation bump (unmount or a
+        // tab change) only invalidates this component's state updates; it must
+        // not leave the remaining files silently untoggled.
+        await command("toggle_resource", { ...target, fileName: file.fileName });
+      }
+      setNotice("resourceToggled");
+    } catch (cause) {
+      failed = true;
+      report(request, cause);
+    }
+    if (request !== generation.current) return;
+    try {
+      // Refresh once for the whole batch, without clearing an error already
+      // reported for the failed command.
+      const nextFiles = await command<LocalResource[]>("list_local_resources", target);
+      if (request !== generation.current) return;
+      setFiles(nextFiles);
+      const present = new Set(nextFiles.map((file) => file.fileName));
+      const toggled = new Set(pending.map((file) => file.fileName));
+      const renamed = (fileName: string) => enabled
+        ? fileName.replace(/\.disabled$/, "")
+        : fileName.endsWith(".disabled") ? fileName : `${fileName}.disabled`;
+      setSelectedFileNames((previous) => {
+        const next = new Set<string>();
+        let changed = false;
+        for (const fileName of previous) {
+          if (present.has(fileName)) {
+            next.add(fileName);
+          } else if (toggled.has(fileName) && present.has(renamed(fileName))) {
+            // Keep the selection on a file that was renamed by this batch.
+            next.add(renamed(fileName));
+            changed = true;
+          } else {
+            changed = true;
+          }
+        }
+        return changed ? next : previous;
+      });
+    } catch (cause) {
+      if (request === generation.current) {
+        setFiles([]);
+        setSelectedFileNames(new Set());
+        if (!failed) report(request, cause);
+      }
+    } finally {
+      if (request === generation.current) setBusy("");
+    }
+  }, [busy, report, selectionArgs]);
 
   const applyUpdate = useCallback(async (update: ResourceUpdate) => {
     if (!desktop || busy || update.manualOnly) return;
@@ -251,7 +355,11 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     }
   }, [busy, kind, refresh, report, selectionArgs, t]);
 
-  return { kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice, refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles };
+  return {
+    kind, setKind, view, setView, files, updates, curseforgeSkipped, curseforgeFailed, history, busy, error, notice,
+    selectedFiles, selectedFileNames, selectFile, selectVisible, clearSelection, toggleMany,
+    refresh, checkUpdates, showHistory, toggle, applyUpdate, rollback, recover, importFiles,
+  };
 }
 
 export function useWorlds(versionId: string, instanceId?: string) {

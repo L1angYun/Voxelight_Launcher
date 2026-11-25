@@ -40,7 +40,7 @@ export function DownloadSettings({ savedConfig, ...props }: SettingsSectionProps
     <div className="vx-settings-section">
       <header><h2>{t("settings:section.downloads")}</h2><p>{t("settings:downloadDescription")}</p></header>
       <section className="vx-settings-group">
-        <label>
+        <label data-settings-target="downloads-source">
           {t("settings:fields.downloadSource")}
           <Select aria-label={t("settings:fields.downloadSource")} value={config.downloadSource}
             onChange={(downloadSource) => onChange({ ...config, downloadSource })}
@@ -66,11 +66,11 @@ export function DownloadSettings({ savedConfig, ...props }: SettingsSectionProps
           </p>
         ) : null}
         <div className="vx-settings-fields">
-          <label>
+          <label data-settings-target="downloads-concurrency">
             {t("settings:fields.downloadConcurrency")}
             <input aria-label={t("settings:fields.downloadConcurrency")} type="number" min={1} max={16} value={config.downloadConcurrency} onChange={(event) => onChange({ ...config, downloadConcurrency: Number(event.target.value) })} />
           </label>
-          <label>
+          <label data-settings-target="downloads-limit">
             {t("settings:fields.downloadLimit")}
             <input aria-label={t("settings:fields.downloadLimit")} type="number" min={0} max={1048576} value={config.downloadLimitKib} onChange={(event) => onChange({ ...config, downloadLimitKib: Number(event.target.value) })} />
           </label>

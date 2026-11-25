@@ -44,6 +44,8 @@ export interface LauncherContextValue {
   gamePid?: number;
   reload(): Promise<void>;
   saveConfig(next: Config, options?: { appearancePatch: AppearancePatch } | { preserveAppearance: true }): Promise<Config>;
+  /** Records the one first-run flag without touching the rest of the config. */
+  setTourCompleted(completed: boolean): Promise<Config>;
   setConfig(next: Config): void;
   selectInstance(id?: string): void;
   selectVersion(id: string): void;

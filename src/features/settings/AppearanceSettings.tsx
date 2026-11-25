@@ -27,6 +27,11 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
       if (selected === undefined || selected === null || typeof selected !== "string" && path === undefined) return;
       const next = await command<Config>("set_launcher_background", { path: selected || null });
       await onPersistedPatch({ customBackground: next.customBackground });
+      // A changed path already re-runs HomeBackground's fetch. Re-picking the
+      // same path (the file on disk may have been replaced) needs this signal.
+      if (next.customBackground === config.customBackground) {
+        window.dispatchEvent(new Event("vx:home-background-refresh"));
+      }
       onNotice(selected ? "backgroundUpdated" : "backgroundCleared");
     } catch (cause) {
       onError(cause);
@@ -38,7 +43,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
       <header><h2>{t("settings:section.appearance")}</h2><p>{t("settings:appearanceDescription")}</p></header>
       <section className="vx-settings-group">
         <div className="vx-settings-fields">
-          <label>
+          <label data-settings-target="appearance-theme">
             {t("settings:fields.theme")}
             <Select
               aria-label={t("settings:fields.theme")}
@@ -51,7 +56,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
               ]}
             />
           </label>
-          <label>
+          <label data-settings-target="appearance-language">
             {t("settings:fields.language")}
             <Select
               aria-label={t("settings:fields.language")}
@@ -64,7 +69,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
               ]}
             />
           </label>
-          <label>
+          <label data-settings-target="appearance-effects">
             {t("settings:fields.effects")}
             <Select
               aria-label={t("settings:fields.effects")}
@@ -76,7 +81,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
               ]}
             />
           </label>
-          <label>
+          <label data-settings-target="appearance-world-scene">
             {t("settings:fields.worldScene")}
             <Select
               aria-label={t("settings:fields.worldScene")}
@@ -88,7 +93,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
               ]}
             />
           </label>
-          <label>
+          <label data-settings-target="appearance-world-material">
             {t("settings:fields.worldMaterial")}
             <Select
               aria-label={t("settings:fields.worldMaterial")}
@@ -102,7 +107,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
             />
             {materialNotice ? <small id={materialNoticeId} role="status">{materialNotice}</small> : null}
           </label>
-          <label>
+          <label data-settings-target="appearance-accent-source">
             {t("settings:fields.accentSource")}
             <Select
               aria-label={t("settings:fields.accentSource")}
@@ -116,12 +121,12 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
             />
           </label>
           {config.accentSource === "custom" ? (
-            <label>
+            <label data-settings-target="appearance-accent-color">
               {t("settings:fields.accentColor")}
               <input aria-label={t("settings:fields.accentColor")} type="color" value={config.accentColor} onChange={(event) => onChange({ ...config, accentColor: event.target.value })} />
             </label>
           ) : null}
-          <label className="vx-settings-check">
+          <label className="vx-settings-check" data-settings-target="appearance-sound">
             <input type="checkbox" aria-label={t("settings:fields.sound")} checked={config.soundEnabled} onChange={(event) => onChange({ ...config, soundEnabled: event.target.checked })} />
             <span>{t("settings:fields.sound")}<small>{t("settings:soundDescription")}</small></span>
           </label>
@@ -147,7 +152,7 @@ export function AppearanceSettings({ config, onChange, onPersistedPatch, onError
       <section className="vx-settings-group">
         <h3>{t("settings:background.title")}</h3>
         <p>{t("settings:background.description")}</p>
-        <div className="vx-action-row">
+        <div className="vx-action-row" data-settings-target="appearance-background">
           <Button variant="secondary" icon={<Image size={15} />} onClick={() => void background()}>{t("settings:background.choose")}</Button>
           {config.customBackground ? <Button variant="ghost" icon={<X size={15} />} onClick={() => void background("")}>{t("settings:background.reset")}</Button> : null}
         </div>

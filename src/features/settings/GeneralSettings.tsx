@@ -71,7 +71,7 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
       <section className="vx-settings-group">
         <h3><KeyRound size={17} />{t("settings:service.title")}</h3>
         <p>{t("settings:service.description")}</p>
-        <label>
+        <label data-settings-target="general-client-id">
           {t(builtin ? "settings:service.clientIdOptional" : "settings:service.clientId")}
           <input
             aria-label="Microsoft Client ID"
@@ -81,7 +81,7 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
           />
         </label>
         {builtin ? <p>{t("settings:service.builtinActive")}</p> : null}
-        <label>
+        <label data-settings-target="general-curseforge-key">
           {t("settings:service.curseforgeKey")}
           <span className="vx-settings-input-action">
             <input
@@ -103,9 +103,9 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
       <section className="vx-settings-group">
         <h3>{t("settings:preset.title")}</h3>
         <p>{t("settings:preset.description")}</p>
-        <div className="vx-action-row">
-          <Button variant="secondary" icon={<Download size={15} />} onClick={() => void preset("export")}>{t("settings:preset.export")}</Button>
-          <Button variant="secondary" icon={<Upload size={15} />} onClick={() => void preset("import")}>{t("settings:preset.import")}</Button>
+        <div className="vx-action-row" data-settings-target="general-presets">
+          <Button variant="secondary" data-settings-target="general-export-preset" icon={<Download size={15} />} onClick={() => void preset("export")}>{t("settings:preset.export")}</Button>
+          <Button variant="secondary" data-settings-target="general-import-preset" icon={<Upload size={15} />} onClick={() => void preset("import")}>{t("settings:preset.import")}</Button>
         </div>
       </section>
     </div>

@@ -35,8 +35,9 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Instances | Game logs per instance, with search and level filters | 🚧 |
 | Content | Search and install mods, resource packs, shaders and modpacks from Modrinth and CurseForge | ✅ |
 | Content | Modrinth installs bring required dependencies; update checks with rollback | ✅ |
-| Content | Search, filter and batch-manage local mods and packs | 🚧 |
-| Content | In a project's version list, show how many of your instances each version fits | 🚧 |
+| Content | Search, filter, sort and batch enable or disable local mods and packs | ✅ |
+| Content | Batch delete of local mods and packs | 🚧 |
+| Content | In a project's version list, show how many of your instances each version fits | ✅ |
 | Content | Drag-and-drop import of mods, modpacks and skins | 🚧 |
 | Modpacks | Import a `.mrpack` or CurseForge ZIP, or install online | ✅ |
 | Modpacks | Update online-installed packs: a plan of every change, your edits kept, automatic backup | ✅ |
@@ -51,9 +52,9 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Multiplayer | Network check: IPv4 and IPv6, NAT type, and advice for direct connections | 🚧 |
 | Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows accessibility settings | ✅ |
 | Interface | Lower memory use, such as unloading the 3D world in Lite mode | 🚧 |
-| Interface | Instance icons by loader and version type | 🚧 |
-| Interface | Keyboard shortcuts, settings search and a first-run tour | 🚧 |
-| Interface | Custom home background (the setting exists but the image is not shown yet) | 🚧 |
+| Interface | Instance icons by loader and version type | ✅ |
+| Interface | Keyboard shortcuts, settings search and a first-run tour | ✅ |
+| Interface | Custom home background | ✅ |
 | Updates | Update checks on GitHub or Gitee, and updates from inside the launcher | ✅ |
 | Installer | Installer pages with the launcher's icon, colors, typeface and world scene | ✅ |
 | Installer | A dark installer theme to match the launcher's default theme | 🚧 |

@@ -237,6 +237,7 @@ pub fn run() {
             commands::get_config,
             memory::get_memory_overview,
             commands::save_config,
+            commands::set_tour_completed,
             commands::save_appearance_config,
             commands::list_versions,
             commands::scan_versions,

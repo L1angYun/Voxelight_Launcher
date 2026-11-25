@@ -124,6 +124,7 @@ beforeEach(() => {
     if (name === "reserve_launch_task") return "reserved-fixture-task";
     if (name === "launch_game") return { gameId: "owned-fixture", pid: 12345 };
     if (name === "save_config") return args?.config as Config;
+    if (name === "set_tour_completed") return { ...bootstrap.config, tourCompleted: Boolean(args?.completed) };
     if (name === "cancel_download_task" || name === "set_download_paused") return { revision: 0, tasks: [] };
     return null;
   });
@@ -462,6 +463,24 @@ describe("launcher controller", () => {
     expect(commandMock).toHaveBeenCalledWith("save_config", { config: next });
     expect(current.config.effects).toBe("lite");
     expect(current.data.config.effects).toBe("lite");
+  });
+
+  it("records the tour flag without a whole-config save and keeps an appearance preview", async () => {
+    bootstrap.config = { ...defaults, theme: "dark", tourCompleted: false };
+    await render();
+    await act(async () => current.setConfig({ ...current.config, theme: "light" }));
+
+    await act(async () => {
+      await expect(current.setTourCompleted(true)).resolves.toMatchObject({ tourCompleted: true });
+    });
+
+    expect(commandMock).toHaveBeenCalledWith("set_tour_completed", { completed: true });
+    expect(commandMock.mock.calls.some(([name]) => name === "save_config")).toBe(false);
+    expect(current.data.config.tourCompleted).toBe(true);
+    expect(current.data.config.theme).toBe("dark");
+    // The unsaved Light preview stays visible and is not written to the config.
+    expect(current.config.tourCompleted).toBe(true);
+    expect(current.config.theme).toBe("light");
   });
 
   it("unsubscribes all native events on unmount", async () => {

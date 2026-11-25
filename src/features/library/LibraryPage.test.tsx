@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import { createLauncherI18n } from "../../i18n";
 import { command, defaults, type Bootstrap, type Instance, type ResourceProject } from "../../lib/launcher";
-import type { LocalResource, ModpackVersion, ResourceUpdate } from "./types";
+import type { LocalModMetadata, LocalResource, ModpackVersion, ResourceUpdate } from "./types";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { instanceTabRegistry } from "../../app/registry";
 import { LibraryPage } from "./LibraryPage";
@@ -14,6 +14,10 @@ import { InstanceLogs } from "./InstanceLogs";
 import { InstanceOverview } from "./InstanceOverview";
 import { InstanceContent } from "./InstanceContent";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const instanceDetailCss = readFileSync(join(process.cwd(), "src/features/library/instance-detail.css"), "utf8");
 
 function giveBackupSelectBounds(button: HTMLElement) {
   vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
@@ -93,6 +97,7 @@ function fixture(): LauncherContextValue {
     gamePid: undefined,
     reload: vi.fn(async () => {}),
     saveConfig: vi.fn(async (next) => next),
+    setTourCompleted: vi.fn(async (completed) => ({ ...defaults, tourCompleted: completed })),
     setConfig: vi.fn(),
     selectInstance: vi.fn(),
     selectVersion: vi.fn(),
@@ -228,8 +233,8 @@ describe("library and instance details", () => {
     ] : []);
     await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
     const rows = [...container.querySelectorAll(".vx-resource-row")];
-    expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual(["Visible Fixture Mod", "file-b.jar"]);
-    expect(rows[0].querySelector("small")?.textContent).toContain("3.1.0 · Alice");
+    expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual(["file-b.jar", "Visible Fixture Mod"]);
+    expect(rows[1].querySelector("small")?.textContent).toContain("3.1.0 · Alice");
   });
   it("loads a visible mod icon once and falls back when the browser cannot decode it", async () => {
     let intersect: ((visible: boolean) => void) | undefined;
@@ -1094,6 +1099,8 @@ describe("library and instance details", () => {
     expect(card.querySelector(".vx-instance-card__technical")?.textContent).toContain("原版");
     expect(card.textContent).not.toContain("可启动");
     expect(container.querySelector(".vx-library-commandbar")).not.toBeNull();
+    // Ctrl+F focuses the first visible input[type="search"] in main.
+    expect(container.querySelector<HTMLInputElement>(".vx-library-commandbar input")?.type).toBe("search");
     expect(container.querySelector(".vx-instance-sheet")).not.toBeNull();
     expect(container.querySelector("[data-create-instance]")).not.toBeNull();
     expect(container.querySelector(".vx-instance-grid")).toBeNull();
@@ -1251,5 +1258,397 @@ describe("library and instance details", () => {
     expect(marker).not.toBeNull();
     expect(marker?.getAttribute("aria-hidden")).toBe("true");
     expect(card.querySelector("svg[data-selected-mark]")).toBeNull();
+  });
+
+  describe("local resource files", () => {
+    function localFile(name: string, options: Partial<LocalResource> = {}): LocalResource {
+      const fileName = options.fileName ?? `${name.toLocaleLowerCase().replaceAll(" ", "-")}.jar`;
+      return { path: `mods/${fileName}`, size: 100, enabled: true, ...options, name, fileName };
+    }
+
+    function metadata(name: string, authors: string[] = [], extra: Partial<LocalModMetadata> = {}): LocalModMetadata {
+      return {
+        loader: "fabric", modId: name.toLocaleLowerCase().replaceAll(" ", "_"), name, version: "1.0.0",
+        description: "", authors, hasIcon: false, dependencies: [], additionalMods: 0, ...extra,
+      };
+    }
+
+    const search = () => container.querySelector<HTMLInputElement>(".vx-resource-search")!;
+    const typeSearch = async (value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search(), value);
+      search().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const rows = () => [...container.querySelectorAll<HTMLElement>(".vx-resource-file-row")];
+    const rowNames = () => rows().map((row) => row.querySelector("strong")?.textContent);
+    const filters = () => [...container.querySelectorAll<HTMLButtonElement>(".vx-resource-filter button")];
+    const filterLabels = () => filters().map((button) => button.textContent);
+    const headerCheckbox = () => container.querySelector<HTMLInputElement>(".vx-resource-list__header input")!;
+    const rowCheckbox = (name: string) => container.querySelector<HTMLInputElement>(`input[type="checkbox"][aria-label="${name}"]`)!;
+    const batchButton = (label: string) => [...container.querySelectorAll<HTMLButtonElement>(".vx-resource-batch button")]
+      .find((button) => button.textContent === label)!;
+    const selectionStatus = () => container.querySelector<HTMLElement>('.vx-resource-batch [role="status"]');
+
+    it("searches files by display name, file name, metadata and author, and filters states with search-following counts", async () => {
+      const resources = [
+        localFile("Alpha Mod", { fileName: "alpha-mod.jar", metadata: metadata("Alpha Mod", ["Alice"], { modId: "alpha_core", version: "2.3.4" }) }),
+        localFile("Beta Pack", { fileName: "beta-pack.jar" }),
+        localFile("Gamma Tools", { fileName: "gamma-tools.jar", enabled: false, metadata: metadata("Gamma Tools", ["Carol"]) }),
+      ];
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+
+      expect(rowNames()).toEqual(["Alpha Mod", "Beta Pack", "Gamma Tools"]);
+      expect(search().getAttribute("aria-label")).toBe("搜索文件");
+      expect(filterLabels()).toEqual(["全部 (3)", "已启用 (2)", "已禁用 (1)"]);
+
+      await typeSearch("alice");
+      expect(rowNames()).toEqual(["Alpha Mod"]);
+      expect(filterLabels()).toEqual(["全部 (1)", "已启用 (1)", "已禁用 (0)"]);
+
+      await typeSearch("2.3.4");
+      expect(rowNames()).toEqual(["Alpha Mod"]);
+      await typeSearch("beta-pack");
+      expect(rowNames()).toEqual(["Beta Pack"]);
+
+      await typeSearch("");
+      await act(async () => filters()[2].click());
+      expect(filters()[2].getAttribute("aria-pressed")).toBe("true");
+      expect(rowNames()).toEqual(["Gamma Tools"]);
+      expect(filterLabels()).toEqual(["全部 (3)", "已启用 (2)", "已禁用 (1)"]);
+
+      await act(async () => filters()[1].click());
+      expect(rowNames()).toEqual(["Alpha Mod", "Beta Pack"]);
+      await act(async () => filters()[0].click());
+      expect(rowNames()).toEqual(["Alpha Mod", "Beta Pack", "Gamma Tools"]);
+
+      await typeSearch("no such file");
+      expect(rows()).toHaveLength(0);
+      expect(container.querySelector(".vx-resource-no-match")?.textContent).toBe("没有匹配的文件。");
+      expect(container.querySelector(".vx-empty")).toBeNull();
+      expect(filterLabels()).toEqual(["全部 (0)", "已启用 (0)", "已禁用 (0)"]);
+    });
+
+    it("selects all visible rows only and keeps hidden selections through search changes", async () => {
+      const resources = [
+        localFile("Alpha Mod", { metadata: metadata("Alpha Mod", ["Alice"]) }),
+        localFile("Beta Pack", { metadata: metadata("Beta Pack", ["Alice"]) }),
+        localFile("Gamma Tools", { metadata: metadata("Gamma Tools", ["Carol"]) }),
+      ];
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+
+      await typeSearch("alice");
+      expect(rows()).toHaveLength(2);
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("已选择 2 个文件");
+      expect(rowCheckbox("Alpha Mod").checked).toBe(true);
+      expect(rowCheckbox("Beta Pack").checked).toBe(true);
+      expect(rowCheckbox("Gamma Tools")).toBeNull();
+
+      await typeSearch("");
+      expect(rows()).toHaveLength(3);
+      expect(selectionStatus()?.textContent).toBe("已选择 2 个文件");
+      expect(headerCheckbox().indeterminate).toBe(true);
+      expect(headerCheckbox().checked).toBe(false);
+      expect(rowCheckbox("Gamma Tools").checked).toBe(false);
+
+      await typeSearch("gamma");
+      expect(rows()).toHaveLength(1);
+      expect(selectionStatus()?.textContent).toBe("已选择 2 个文件");
+      expect(headerCheckbox().checked).toBe(false);
+      expect(headerCheckbox().indeterminate).toBe(false);
+
+      await typeSearch("");
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("已选择 3 个文件");
+      expect(rows().every((row) => row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked)).toBe(true);
+
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(rows().every((row) => !row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked)).toBe(true);
+    });
+
+    it("keeps a selected row selected when its own toggle renames the file", async () => {
+      let resources = [
+        localFile("Alpha Mod", { fileName: "alpha-mod.jar", enabled: true }),
+        localFile("Beta Pack", { fileName: "beta-pack.jar", enabled: true }),
+        localFile("Gamma Tools", { fileName: "gamma-tools.jar", enabled: true }),
+      ];
+      commandMock.mockImplementation(async (name, args) => {
+        if (name === "list_local_resources") return resources;
+        if (name === "toggle_resource") {
+          const fileName = String(args?.fileName);
+          resources = resources.map((file) => file.fileName === fileName
+            ? { ...file, enabled: !file.enabled, fileName: file.enabled ? `${file.fileName}.disabled` : file.fileName.replace(/\.disabled$/, "") }
+            : file);
+          return resources.find((file) => file.fileName === fileName || file.fileName === `${fileName}.disabled`) ?? null;
+        }
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("已选择 3 个文件");
+
+      const alphaRow = () => rows().find((row) => row.querySelector("strong")?.textContent === "Alpha Mod")!;
+      await act(async () => alphaRow().querySelector<HTMLButtonElement>("button")!.click());
+
+      expect(alphaRow().querySelector<HTMLButtonElement>("button")!.textContent).toBe("已禁用");
+      expect(rowCheckbox("Alpha Mod").checked).toBe(true);
+      expect(selectionStatus()?.textContent).toBe("已选择 3 个文件");
+
+      await act(async () => alphaRow().querySelector<HTMLButtonElement>("button")!.click());
+      expect(alphaRow().querySelector<HTMLButtonElement>("button")!.textContent).toBe("已启用");
+      expect(rowCheckbox("Alpha Mod").checked).toBe(true);
+      expect(selectionStatus()?.textContent).toBe("已选择 3 个文件");
+    });
+
+    it("uses the English plural form for the selected count", async () => {
+      const resources = [localFile("Alpha"), localFile("Beta")];
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }), "en-US");
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("2 files selected");
+      await act(async () => rowCheckbox("Alpha").click());
+      expect(selectionStatus()?.textContent).toBe("1 file selected");
+    });
+
+    it("reserves the selection bar before the first selection and keeps focus when clearing", async () => {
+      const resources = [localFile("Alpha"), localFile("Beta")];
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+
+      const bar = container.querySelector<HTMLElement>(".vx-resource-batch");
+      expect(bar).not.toBeNull();
+      expect(container.querySelector(".vx-resource-files > .vx-resource-controls")).not.toBeNull();
+      expect(container.querySelector(".vx-resource-files > .vx-resource-batch")).toBe(bar);
+      expect(instanceDetailCss).toMatch(/\.vx-resource-files\s*\{[^}]*display:\s*grid;[^}]*gap:\s*var\(--space-3\)/);
+      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(batchButton("启用").disabled).toBe(true);
+      expect(batchButton("禁用").disabled).toBe(true);
+      expect(batchButton("清除选择").disabled).toBe(true);
+
+      await act(async () => rowCheckbox("Alpha").click());
+      expect(container.querySelector(".vx-resource-batch")).toBe(bar);
+      expect(selectionStatus()?.textContent).toBe("已选择 1 个文件");
+      const clear = batchButton("清除选择");
+      clear.focus();
+      expect(document.activeElement).toBe(clear);
+      await act(async () => clear.click());
+      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(container.querySelector(".vx-resource-batch")).toBe(bar);
+      expect(document.activeElement).toBe(headerCheckbox());
+      expect(clear.disabled).toBe(true);
+      expect(rowCheckbox("Alpha").checked).toBe(false);
+      expect(rowCheckbox("Beta").checked).toBe(false);
+    });
+
+    it("keys the selection by file name so an enabled and a disabled twin stay independent", async () => {
+      const resources = [
+        localFile("Twin", { fileName: "twin.jar", enabled: true }),
+        localFile("Twin", { fileName: "twin.jar.disabled", enabled: false }),
+      ];
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+
+      const enabledCheckbox = () => rows().find((row) => row.querySelector("button")?.textContent === "已启用")!
+        .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+      const disabledCheckbox = () => rows().find((row) => row.querySelector("button")?.textContent === "已禁用")!
+        .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+
+      await act(async () => enabledCheckbox().click());
+      expect(enabledCheckbox().checked).toBe(true);
+      expect(disabledCheckbox().checked).toBe(false);
+      expect(selectionStatus()?.textContent).toBe("已选择 1 个文件");
+
+      await act(async () => filters()[2].click());
+      expect(rows()).toHaveLength(1);
+      expect(disabledCheckbox().checked).toBe(false);
+      await act(async () => headerCheckbox().click());
+      expect(disabledCheckbox().checked).toBe(true);
+      expect(selectionStatus()?.textContent).toBe("已选择 2 个文件");
+    });
+
+    it("disables batch and toolbar controls while a batch is pending and ignores Retry", async () => {
+      const resources = [
+        localFile("Alpha Mod", { fileName: "alpha-mod.jar" }),
+        localFile("Beta Pack", { fileName: "beta-pack.jar" }),
+      ];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const toggled: string[] = [];
+      commandMock.mockImplementation(async (name, args) => {
+        if (name === "list_local_resources") return resources;
+        if (name === "toggle_resource") {
+          toggled.push(String(args?.fileName));
+          await gate;
+          return resources.find((file) => file.fileName === args?.fileName) ?? null;
+        }
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => rowCheckbox("Alpha Mod").click());
+      await act(async () => batchButton("禁用").click());
+
+      expect(toggled).toEqual(["alpha-mod.jar"]);
+      expect(batchButton("启用").disabled).toBe(true);
+      expect(batchButton("禁用").disabled).toBe(true);
+      expect(headerCheckbox().disabled).toBe(true);
+      expect(rowCheckbox("Alpha Mod").disabled).toBe(true);
+      expect(rowCheckbox("Beta Pack").disabled).toBe(true);
+      expect(rows()[0].querySelector<HTMLButtonElement>("button")!.disabled).toBe(true);
+      const kindSelect = container.querySelector<HTMLButtonElement>('.vx-resource-kind-select [role="combobox"]')!;
+      expect(kindSelect.disabled).toBe(true);
+      const retry = [...container.querySelectorAll<HTMLButtonElement>(".vx-toolbar button")]
+        .find((button) => button.textContent === "重试")!;
+      expect(retry.disabled).toBe(true);
+
+      const listCalls = commandMock.mock.calls.filter(([name]) => name === "list_local_resources").length;
+      await act(async () => retry.click());
+      await act(async () => batchButton("启用").click());
+      expect(toggled).toHaveLength(1);
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(listCalls);
+
+      await act(async () => { release(); });
+      await act(async () => {});
+      expect(batchButton("禁用").disabled).toBe(false);
+      expect(headerCheckbox().disabled).toBe(false);
+      expect(rowCheckbox("Alpha Mod").disabled).toBe(false);
+      expect(kindSelect.disabled).toBe(false);
+      expect(retry.disabled).toBe(false);
+    });
+
+    it("finishes a committed batch after the Content tab unmounts mid-flight", async () => {
+      const resources = [
+        localFile("Alpha Mod", { fileName: "alpha-mod.jar" }),
+        localFile("Beta Pack", { fileName: "beta-pack.jar" }),
+        localFile("Gamma Tools", { fileName: "gamma-tools.jar" }),
+      ];
+      const toggled: string[] = [];
+      let releaseFirst!: () => void;
+      const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      commandMock.mockImplementation(async (name, args) => {
+        if (name === "list_local_resources") return resources;
+        if (name === "toggle_resource") {
+          const fileName = String(args?.fileName);
+          toggled.push(fileName);
+          if (toggled.length === 1) await first;
+          return resources.find((file) => file.fileName === fileName) ?? null;
+        }
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => headerCheckbox().click());
+      await act(async () => batchButton("禁用").click());
+      expect(toggled).toEqual(["alpha-mod.jar"]);
+
+      // Switching detail tabs unmounts InstanceContent and bumps its generation.
+      await act(async () => root.render(createElement("div")));
+      await act(async () => {
+        releaseFirst();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(toggled).toEqual(["alpha-mod.jar", "beta-pack.jar", "gamma-tools.jar"]);
+    });
+
+    it("does not blame the search when only the state filter hides every file in English", async () => {
+      const resources = [localFile("Alpha")];
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }), "en-US");
+
+      await act(async () => filters()[2].click());
+      expect(rows()).toHaveLength(0);
+      expect(container.querySelector(".vx-resource-no-match")?.textContent).toBe("No files match the search or filter.");
+    });
+
+    it("batch-disables only the selected enabled files in order and refreshes once, keeping the selection", async () => {
+      let resources = [
+        localFile("Alpha Mod", { fileName: "alpha-mod.jar", enabled: true }),
+        localFile("Beta Pack", { fileName: "beta-pack.jar", enabled: true }),
+        localFile("Gamma Tools", { fileName: "gamma-tools.jar", enabled: false }),
+      ];
+      const toggled: string[] = [];
+      commandMock.mockImplementation(async (name, args) => {
+        if (name === "list_local_resources") return resources;
+        if (name === "toggle_resource") {
+          const fileName = String(args?.fileName);
+          toggled.push(fileName);
+          resources = resources.map((file) => file.fileName === fileName
+            ? { ...file, enabled: !file.enabled, fileName: file.enabled ? `${file.fileName}.disabled` : file.fileName.replace(/\.disabled$/, "") }
+            : file);
+          return resources.find((file) => file.name === fileName.replace(/\.disabled$/, "")) ?? null;
+        }
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("已选择 3 个文件");
+      await act(async () => batchButton("禁用").click());
+
+      expect(toggled).toEqual(["alpha-mod.jar", "beta-pack.jar"]);
+      expect(commandMock.mock.calls.filter(([name]) => name === "toggle_resource")).toEqual([
+        ["toggle_resource", { versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack", fileName: "alpha-mod.jar" }],
+        ["toggle_resource", { versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack", fileName: "beta-pack.jar" }],
+      ]);
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(2);
+      expect(selectionStatus()?.textContent).toBe("已选择 3 个文件");
+      expect(filterLabels()).toEqual(["全部 (3)", "已启用 (0)", "已禁用 (3)"]);
+      expect(rows().map((row) => row.querySelector<HTMLButtonElement>("button")?.textContent)).toEqual(["已禁用", "已禁用", "已禁用"]);
+      expect(rows().every((row) => row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked)).toBe(true);
+    });
+
+    it("stops a batch at the first error, shows it, and refreshes once", async () => {
+      const resources = [
+        localFile("Alpha Mod", { fileName: "alpha-mod.jar" }),
+        localFile("Beta Pack", { fileName: "beta-pack.jar" }),
+        localFile("Gamma Tools", { fileName: "gamma-tools.jar" }),
+      ];
+      const attempted: string[] = [];
+      commandMock.mockImplementation(async (name, args) => {
+        if (name === "list_local_resources") return resources;
+        if (name === "toggle_resource") {
+          const fileName = String(args?.fileName);
+          attempted.push(fileName);
+          if (attempted.length === 2) throw { code: "resource.unavailable", params: {} };
+          return resources.find((file) => file.fileName === fileName) ?? null;
+        }
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await act(async () => headerCheckbox().click());
+      await act(async () => batchButton("禁用").click());
+
+      expect(attempted).toEqual(["alpha-mod.jar", "beta-pack.jar"]);
+      expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(2);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("无法读取资源目录");
+      expect(selectionStatus()?.textContent).toBe("已选择 3 个文件");
+      expect(batchButton("禁用").disabled).toBe(false);
+    });
+
+    it("clears the search and selection when the resource kind changes", async () => {
+      const packs = [localFile("Alpha Pack"), localFile("Beta Pack")];
+      const mods = [localFile("Delta Mod")];
+      commandMock.mockImplementation(async (name, args) => {
+        if (name === "list_local_resources") return args?.resourceType === "mod" ? mods : packs;
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      await typeSearch("alpha");
+      await act(async () => headerCheckbox().click());
+      expect(selectionStatus()?.textContent).toBe("已选择 1 个文件");
+
+      const kindSelect = container.querySelector<HTMLButtonElement>('.vx-resource-kind-select [role="combobox"]')!;
+      giveBackupSelectBounds(kindSelect);
+      await act(async () => kindSelect.click());
+      await act(async () => document.querySelector<HTMLElement>('[role="option"][data-value="mod"]')!.click());
+
+      expect(commandMock).toHaveBeenCalledWith("list_local_resources", { versionId: "1.21.1", instanceId: instance.id, resourceType: "mod" });
+      expect(rowNames()).toEqual(["Delta Mod"]);
+      expect(search().value).toBe("");
+      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(batchButton("启用").disabled).toBe(true);
+      expect(rowCheckbox("Delta Mod").checked).toBe(false);
+      expect(filterLabels()).toEqual(["全部 (1)", "已启用 (1)", "已禁用 (0)"]);
+    });
   });
 });

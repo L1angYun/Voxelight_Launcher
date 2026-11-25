@@ -332,13 +332,15 @@ test("review D: detail identity gains a readable plate while card artwork stays 
   await prepareHome(page);
   await page.locator('.vx-floating-nav [data-page="library"]').click();
   await expect(page.locator('[data-page-stage="library"]')).toHaveCSS("opacity", "1");
-  await expect(page.locator(".vx-instance-card .vx-instance-identity__plane").first()).toHaveCSS("opacity", "0.35");
+  const cardIdentity = page.locator(".vx-instance-card .vx-instance-identity").first();
+  await expect(cardIdentity).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(cardIdentity.locator(".vx-instance-glyph")).toHaveCSS("width", "48px");
   await page.locator(".vx-instance-card__select").first().click();
   const identity = page.locator(".vx-detail-header .vx-instance-identity");
   await expect(identity).toBeVisible();
   await expect.soft(identity).toHaveCSS("background-color", "rgb(13, 15, 20)");
   await expect.soft(identity).toHaveCSS("border-top-width", "1px");
   await expect.soft(identity).toHaveCSS("border-radius", "6px");
-  await expect.soft(identity.locator(".vx-instance-identity__plane")).toHaveCSS("opacity", "0.7");
+  await expect.soft(identity.locator(".vx-instance-glyph")).toHaveCSS("width", "32px");
   await page.screenshot({ path: info.outputPath("detail-identity-plate.png") });
 });

@@ -76,7 +76,8 @@ export function InstanceCard({
         aria-label={t("library:openInstance", { name: instance.name })}
       >
         <span className="vx-instance-card__identity">
-          <InstanceIdentity name={instance.name} identity={instance.id} iconPath={instance.iconPath} />
+          <InstanceIdentity name={instance.name} identity={instance.id} iconPath={instance.iconPath}
+            loader={instance.loader} versionId={instance.versionId} />
         </span>
         <span className="vx-instance-card__information">
           <span className="vx-instance-card__name" title={instance.name}>{instance.name}</span>

@@ -1,7 +1,8 @@
-﻿import type { Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import type { WorldMaterial, WorldSceneId } from "../../src/components/world/types";
 import { appearanceFields, type Instance } from "../../src/lib/launcher";
 import type { DownloadTask } from "../../src/features/downloads/useDownloadTasks";
+import type { LocalResource } from "../../src/features/library/types";
 import packageJson from "../../package.json" with { type: "json" };
 
 export async function installLauncherFixture(
@@ -31,6 +32,12 @@ export async function installLauncherFixture(
     launchDelay?: number;
     manualLaunchCompletion?: boolean;
     settingsOperationLocked?: boolean;
+    /** Defaults to true so the first-run tour never covers unrelated specs. */
+    tourCompleted?: boolean;
+    /** A configured home image path; the fixture answers with a 1×1 PNG. */
+    customBackground?: string;
+    /** Files returned by list_local_resources for the first instance's resourcepacks. */
+    localResources?: Partial<LocalResource>[];
     /** A newer stable release the update check finds (none: this build is the newest). */
     launcherUpdate?: { latestVersion: string };
   } = {},
@@ -115,11 +122,12 @@ export async function installLauncherFixture(
       worldMaterial: options.worldMaterial ?? "lattice",
       accentSource: "system",
       soundEnabled: false,
-      customBackground: null,
+      customBackground: options.customBackground ?? null,
       javaAutoDownload: true,
       defaultSkin: options.defaultModel === "slim" ? "alex" : "steve",
       checkForUpdates: true,
       updateSource: "auto",
+      tourCompleted: options.tourCompleted ?? true,
     };
     const installedVersions = Array.from(
       { length: Math.max(0, Math.floor(options.versionDirectoryCount ?? 1)) },
@@ -181,6 +189,29 @@ export async function installLauncherFixture(
       if (!installedVersions.some(version => version.id === instance.versionId)) {
         installedVersions.push({ id: instance.versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
       }
+    }
+    const localResourceKey = (args?: Record<string, unknown>) =>
+      `${String(args?.resourceType ?? "resourcepack")}\u0000${String(args?.instanceId ?? "")}\u0000${String(args?.versionId ?? "")}`;
+    const localResourceSets = new Map<string, LocalResource[]>();
+    if (options.localResources?.length) {
+      const first = instances[0];
+      const resourceType = "resourcepack";
+      const files = options.localResources.map((resource, index) => {
+        const fileName = resource.fileName ?? `fixture-resource-${index + 1}.zip`;
+        return {
+          ...resource,
+          name: resource.name ?? fileName.replace(/\.disabled$/, "").replace(/\.[^.]+$/, ""),
+          fileName,
+          path: resource.path ?? `C:\\SyntheticFixture\\resourcepacks\\${fileName}`,
+          enabled: resource.enabled ?? true,
+          size: resource.size ?? 1024,
+        };
+      });
+      localResourceSets.set(localResourceKey({
+        resourceType,
+        instanceId: first?.id ?? "fixture-world",
+        versionId: first?.versionId ?? "1.21.1",
+      }), files);
     }
     const history = Array.from({ length: 198 }, (_, index) => ({
       id: `history-${index}`,
@@ -475,7 +506,14 @@ export async function installLauncherFixture(
             const appearance = args?.preserveAppearance === true
               ? Object.fromEntries(appearanceKeys.map((key) => [key, config[key]]))
               : {};
+            const tourCompleted = config.tourCompleted;
             Object.assign(config, args?.config, appearance);
+            // Like the backend, a whole-config save never changes this flag.
+            config.tourCompleted = tourCompleted;
+            return { ...config };
+          }
+          if (name === "set_tour_completed") {
+            config.tourCompleted = args?.completed === true;
             return { ...config };
           }
           if (name === "list_versions")
@@ -486,6 +524,8 @@ export async function installLauncherFixture(
             };
           if (name === "get_service_status")
             return { curseforgeConfigured: false, microsoftConfigured: false };
+          if (name === "get_launcher_background")
+            return config.customBackground ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" : null;
           if (name === "get_resource_context")
             return resourceContext(String(args?.versionId ?? ""), args?.instanceId as string | undefined);
           if (name === "list_loader_versions")
@@ -738,9 +778,29 @@ export async function installLauncherFixture(
             return { status: "stopped" };
           }
           if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
+          if (name === "list_local_resources") return structuredClone(localResourceSets.get(localResourceKey(args)) ?? []);
+          if (name === "toggle_resource") {
+            const key = localResourceKey(args);
+            const files = localResourceSets.get(key) ?? [];
+            const fileName = String(args?.fileName ?? "");
+            const index = files.findIndex(file => file.fileName === fileName);
+            if (index < 0) throw { code: "resource.unavailable", params: {} };
+            const file = files[index];
+            const nextName = file.enabled
+              ? `${file.fileName}.disabled`
+              : file.fileName.replace(/\.disabled$/, "");
+            const toggled: LocalResource = {
+              ...file,
+              enabled: !file.enabled,
+              fileName: nextName,
+              path: file.path.slice(0, file.path.length - file.fileName.length) + nextName,
+            };
+            localResourceSets.set(key, files.map((item, itemIndex) => itemIndex === index ? toggled : item));
+            return structuredClone(toggled);
+          }
           // These concrete query fixtures deliberately represent empty records.
           if ([
-            "list_local_resources", "list_modpack_versions", "list_resource_update_history",
+            "list_modpack_versions", "list_resource_update_history",
             "list_screenshots", "list_servers", "list_worlds", "read_managed_server_logs",
           ].includes(name)) return [];
           throw new Error(`Unhandled launcher fixture IPC: ${name}`);

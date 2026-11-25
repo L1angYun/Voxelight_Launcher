@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { motion } from "motion/react";
 import { desktop } from "../../lib/launcher";
 import { identityTransition, type MotionTier } from "../../design/motion";
+import { InstanceGlyph, glyphLoader, glyphVersion } from "./instanceGlyphs";
 
 const IconFailures = createContext<{
   tier: MotionTier;
@@ -27,12 +28,18 @@ export function InstanceIdentity({
   iconPath,
   kind = "instance",
   placement = "card",
+  loader,
+  versionId,
+  versionType,
 }: {
   name: string;
   identity: string;
   iconPath?: string | null;
   kind?: "instance" | "version-directory";
   placement?: "card" | "detail";
+  loader?: string | null;
+  versionId?: string;
+  versionType?: string | null;
 }) {
   const sharedFailures = useContext(IconFailures);
   const tier = sharedFailures?.tier ?? "none";
@@ -56,6 +63,9 @@ export function InstanceIdentity({
     return restoreCard;
   }, [layoutId, placement, restoreCard]);
   const letter = Array.from(name.trim())[0]?.toLocaleUpperCase() ?? "";
+  const glyph = !icon && (loader !== undefined || versionId !== undefined)
+    ? { loader: glyphLoader(loader), version: glyphVersion(versionId ?? "", versionType) }
+    : undefined;
   return (
     <motion.span
       ref={element}
@@ -86,6 +96,12 @@ export function InstanceIdentity({
             else setFailedIcon(iconPath);
           }}
         />
+      ) : glyph ? (
+        <>
+          <InstanceGlyph loader={glyph.loader} version={glyph.version} />
+          {/* Keep the initial in the DOM as a non-visual fallback. */}
+          <span className="vx-instance-identity__letter" hidden>{letter}</span>
+        </>
       ) : (
         <>
           <span className="vx-instance-identity__plane" />

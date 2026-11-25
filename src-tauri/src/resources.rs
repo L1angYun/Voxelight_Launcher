@@ -1118,12 +1118,16 @@ pub struct ResourceContext {
 }
 
 #[tauri::command]
-pub fn get_resource_context(
+pub async fn get_resource_context(
     state: tauri::State<'_, Arc<LauncherState>>,
     version_id: String,
     instance_id: Option<String>,
 ) -> AppResult<ResourceContext> {
-    resource_context(&state, &version_id, instance_id.as_deref())
+    // Discover asks once per instance; reading version profiles stays off the main thread.
+    let shared = state.inner().clone();
+    tokio::task::spawn_blocking(move || resource_context(&shared, &version_id, instance_id.as_deref()))
+        .await
+        .unwrap_or_else(|error| Err(crate::errors::expected(error.to_string())))
 }
 
 pub(crate) fn resource_context(

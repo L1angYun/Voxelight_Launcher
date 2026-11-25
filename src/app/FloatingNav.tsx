@@ -474,6 +474,7 @@ export function FloatingNav({
           dragPage === id && !active && "is-drag-target",
         )}
         data-page={id}
+        data-tour-anchor={id}
         aria-current={active ? "page" : undefined}
         aria-label={`${t(item.labelKey)}${activityLabel}`}
         title={id === "accounts" && accountName ? `${t(item.labelKey)} · ${accountName}` : t(item.labelKey)}

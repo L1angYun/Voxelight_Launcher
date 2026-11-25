@@ -18,6 +18,7 @@ commands.allow = [
   "get_config",
   "get_memory_overview",
   "save_config",
+  "set_tour_completed",
   "save_appearance_config",
   "detect_java",
   "get_service_status",

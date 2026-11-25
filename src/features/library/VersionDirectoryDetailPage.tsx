@@ -14,6 +14,7 @@ import { InstanceWorlds } from "./InstanceWorlds";
 import { InstanceLogs } from "./InstanceLogs";
 import type { InstalledVersion } from "../../lib/launcher";
 import { InstanceIdentity } from "./InstanceIdentity";
+import { glyphLoaderForVersionDirectory } from "./instanceGlyphs";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
@@ -32,6 +33,8 @@ export function VersionDirectoryDetailPage({
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"content" | "worlds" | "logs">("content");
+  const loader = glyphLoaderForVersionDirectory(version.id);
+  const versionType = loader === "vanilla" ? version.type : null;
   const tabs = instanceTabRegistry
     .enabled({})
     .filter((item) => ["content", "worlds", "logs"].includes(item.id));
@@ -49,6 +52,9 @@ export function VersionDirectoryDetailPage({
             placement="detail"
             name={t("library:minecraft")}
             identity={version.id}
+            loader={loader}
+            versionId={version.id}
+            versionType={versionType}
           />
           <div>
             <h1 tabIndex={-1}>{t("library:minecraftVersion", { version: version.id })}</h1>

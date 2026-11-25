@@ -11,7 +11,7 @@ import { DiscoverPage } from "./DiscoverPage";
 import { ToastProvider } from "../../components/ui/ToastProvider";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { MOTION } from "../../design/motion";
-import type { ResourceProjectDetails, ResourceTargetPlan } from "./types";
+import type { ResourceContext, ResourceProjectDetails, ResourceTargetPlan } from "./types";
 
 const commandMock = vi.mocked(command);
 const searchMock = vi.mocked(searchResources);
@@ -20,6 +20,17 @@ let root: Root;
 let container: HTMLDivElement;
 let resourcePlan: ResourceTargetPlan;
 const fabricVersion = "fabric-loader-0.16.9-1.21.1";
+const forgeVersion = "1.20.1-forge-47.2.0";
+const neoforgeVersion = "neoforge-21.1.77";
+const quiltVersion = "quilt-loader-0.27.0-1.21.1";
+let instanceContexts: Record<string, { versionId: string; context: ResourceContext }>;
+const profileContexts: Record<string, ResourceContext> = {
+  "1.21.1": { gameVersion: "1.21.1", loader: null },
+  [fabricVersion]: { gameVersion: "1.21.1", loader: "fabric" },
+  [forgeVersion]: { gameVersion: "1.20.1", loader: "forge" },
+  [neoforgeVersion]: { gameVersion: "1.21.1", loader: "neoforge" },
+  [quiltVersion]: { gameVersion: "1.21.1", loader: "quilt" },
+};
 function plan(compatible = true): ResourceTargetPlan {
   return { projectId: "sodium", title: "Sodium", projectType: "mod", manifestUnavailable: false, targets: [{ kind: "instance", instanceId: "fixture-world", versionId: "1.21.1", name: "合成测试世界", gameVersion: "1.21.1", loader: null, compatible, reason: compatible ? undefined : "vanilla" }], suggestion: { loader: "fabric", gameVersion: "1.21.1", name: "Sodium", matrix: [{ loader: "fabric", gameVersions: ["1.21.1", "1.20.1"] }, { loader: "neoforge", gameVersions: ["1.21.1"] }] }, unsupportedReason: undefined };
 }
@@ -109,6 +120,7 @@ function fixture(): LauncherContextValue {
     gamePid: undefined,
     reload: vi.fn(async () => {}),
     saveConfig: vi.fn(async (next) => next),
+    setTourCompleted: vi.fn(async (completed) => ({ ...defaults, tourCompleted: completed })),
     setConfig: vi.fn(),
     selectInstance: vi.fn(),
     selectVersion: vi.fn(),
@@ -145,11 +157,20 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockLauncher = fixture();
   resourcePlan = plan();
+  instanceContexts = {};
   project.project_type = "mod";
   commandMock.mockReset();
-  commandMock.mockImplementation(async (name) => {
+  commandMock.mockImplementation(async (name, args) => {
     if (name === "get_modrinth_project_details" || name === "get_curseforge_project_details") return details;
-    if (name === "get_resource_context") return { gameVersion: "1.21.1", loader: mockLauncher.selectedInstance?.loader === "fabric" ? "fabric" : null };
+    if (name === "get_resource_context") {
+      const versionId = typeof args?.versionId === "string" ? args.versionId : "";
+      const instanceId = typeof args?.instanceId === "string" ? args.instanceId : "";
+      const entry = instanceContexts[instanceId];
+      if (entry && entry.versionId === versionId) return entry.context;
+      const resolved = profileContexts[versionId];
+      if (resolved) return resolved;
+      throw { code: "resource.versionMissing" };
+    }
     if (name === "resolve_resource_targets") return resourcePlan;
     if (name === "list_loader_versions") return [{ id: "0.16.9", stable: true, recommended: true }];
     if (name === "list_download_tasks") return { revision: 0, tasks: [] };
@@ -625,6 +646,189 @@ describe("DiscoverPage", () => {
     await render();
     expect(container.textContent).toContain("发生未预期错误");
     expect(container.textContent).not.toContain("没有找到相关资源");
+  });
+});
+
+describe("project version fitting", () => {
+  function addInstance(
+    id: string,
+    name: string,
+    versionId: string,
+    gameVersion: string,
+    loader: string | null,
+    storedLoader: string = loader ?? "vanilla",
+  ) {
+    const base = mockLauncher.data.instances[0];
+    mockLauncher.data.instances = [...mockLauncher.data.instances, { ...base, id, name, versionId, loader: storedLoader }];
+    instanceContexts[id] = { versionId, context: { gameVersion, loader } };
+  }
+
+  function useVersionDetails(versions: ResourceProjectDetails["versions"]) {
+    const dispatched = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => name === "get_modrinth_project_details"
+      ? { ...details, versions }
+      : dispatched(name, args));
+  }
+
+  function versionRows(drawer: HTMLElement) {
+    const sections = drawer.querySelectorAll<HTMLElement>(".vx-project-details__section");
+    return [...sections[0].querySelectorAll<HTMLElement>(".vx-resource-row")];
+  }
+
+  async function flush() {
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  }
+
+  async function openDrawer() {
+    await render(true, "en-US");
+    await act(async () => container.querySelector<HTMLButtonElement>(".vx-project-card__actions button:last-child")!.click());
+    await flush();
+    return container.querySelector<HTMLDialogElement>(".vx-project-details")!;
+  }
+
+  it("counts loader-profile instances by resolved context and lists their names in the tooltip", async () => {
+    addInstance("fabric-a", "Fabric Alpha", fabricVersion, "1.21.1", "fabric");
+    addInstance("fabric-b", "Fabric Beta", fabricVersion, "1.21.1", "fabric");
+    addInstance("fabric-c", "Fabric Gamma", fabricVersion, "1.21.1", "fabric");
+    addInstance("fabric-d", "Fabric Delta", fabricVersion, "1.21.1", "fabric");
+    addInstance("fabric-e", "Fabric Epsilon", fabricVersion, "1.21.1", "fabric");
+    // The stored loader is stale; the resolved context must win.
+    addInstance("fabric-f", "Fabric Zeta", fabricVersion, "1.21.1", "fabric", "");
+    addInstance("quilt-world", "Quilt World", quiltVersion, "1.21.1", "quilt");
+    addInstance("neo-world", "Neo World", neoforgeVersion, "1.21.1", "neoforge");
+    addInstance("old-world", "Old World", forgeVersion, "1.20.1", "forge");
+    const fitting = { ...details.versions[0], name: "Fitting version" };
+    const single = { ...details.versions[0], id: "single", name: "Single version", loaders: ["quilt"] };
+    const forge = { ...details.versions[0], id: "forge", name: "Forge version", gameVersions: ["1.20.1"], loaders: ["forge"] };
+    const loose = { ...details.versions[0], id: "loose", name: "Loose version", gameVersions: ["1.19.4"] };
+    useVersionDetails([fitting, single, forge, loose]);
+
+    const drawer = await openDrawer();
+    const rows = versionRows(drawer);
+    const fittingRow = rows.find(row => row.textContent?.includes("Fitting version"))!;
+    const singleRow = rows.find(row => row.textContent?.includes("Single version"))!;
+    const forgeRow = rows.find(row => row.textContent?.includes("Forge version"))!;
+    const looseRow = rows.find(row => row.textContent?.includes("Loose version"))!;
+    const fittingText = fittingRow.querySelector<HTMLElement>(".vx-project-details__fits")!;
+
+    expect(fittingRow.textContent).toContain("Fits 6 instances");
+    expect(singleRow.textContent).toContain("Fits 1 instance");
+    expect(forgeRow.textContent).toContain("Fits 1 instance");
+    expect(fittingText.title).toContain("Fabric Alpha");
+    expect(fittingText.title).toContain("Fabric Epsilon");
+    expect(fittingText.title).toContain("and 1 more");
+    expect(fittingText.title).not.toContain("Fabric Zeta");
+    expect(fittingText.title).not.toContain("Quilt World");
+    expect(looseRow.textContent).toContain("Fits no instance");
+    expect(looseRow.querySelector(".vx-project-details__fits")?.hasAttribute("title")).toBe(false);
+    // The names tooltip belongs to the fits text only; an Install button must
+    // not inherit it from the whole row.
+    expect(fittingRow.hasAttribute("title")).toBe(false);
+    expect(commandMock).toHaveBeenCalledWith("get_resource_context", { versionId: fabricVersion, instanceId: "fabric-a" });
+    expect(commandMock).toHaveBeenCalledWith("get_resource_context", { versionId: forgeVersion, instanceId: "old-world" });
+  });
+
+  it("hides versions that fit none of my instances when the toggle is on", async () => {
+    addInstance("fabric-home", "Fabric Home", fabricVersion, "1.21.1", "fabric");
+    const fitting = { ...details.versions[0], name: "Fitting version" };
+    const loose = { ...details.versions[0], id: "loose", name: "Loose version", gameVersions: ["1.19.4"] };
+    useVersionDetails([fitting, loose]);
+
+    const drawer = await openDrawer();
+    const toggle = drawer.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(toggle.checked).toBe(false);
+    expect(drawer.textContent).toContain("Only versions for my instances");
+    expect(versionRows(drawer)).toHaveLength(2);
+
+    await act(async () => toggle.click());
+
+    expect(toggle.checked).toBe(true);
+    expect(versionRows(drawer).map(row => row.textContent).some(text => text?.includes("Fitting version"))).toBe(true);
+    expect(versionRows(drawer).map(row => row.textContent).some(text => text?.includes("Loose version"))).toBe(false);
+    expect(drawer.textContent).not.toContain("No versions fit your instances.");
+  });
+
+  it("explains when the filter hides every version", async () => {
+    const loose = { ...details.versions[0], name: "Loose version", gameVersions: ["1.18.2"] };
+    useVersionDetails([loose]);
+    const drawer = await openDrawer();
+    const toggle = drawer.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+
+    await act(async () => toggle.click());
+
+    expect(versionRows(drawer)).toHaveLength(0);
+    expect(drawer.textContent).toContain("No versions fit your instances.");
+  });
+
+  it("keeps the version install button working while the filter is on", async () => {
+    addInstance("fabric-home", "Fabric Home", fabricVersion, "1.21.1", "fabric");
+    const drawer = await openDrawer();
+    const toggle = drawer.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    await act(async () => toggle.click());
+
+    const row = versionRows(drawer)[0];
+    const install = row.querySelector<HTMLButtonElement>("button")!;
+    await act(async () => install.click());
+
+    expect(commandMock).toHaveBeenCalledWith("install_resource", expect.objectContaining({
+      projectId: "sodium", instanceId: "fixture-world", resourceType: "mod",
+    }));
+  });
+
+  it("resets the filter when the parent closes and reopens the drawer", async () => {
+    addInstance("fabric-home", "Fabric Home", fabricVersion, "1.21.1", "fabric");
+    mockLauncher.selectInstance = vi.fn((id?: string) => {
+      const found = id ? mockLauncher.data.instances.find(instance => instance.id === id) : undefined;
+      mockLauncher.selectedInstance = found;
+      mockLauncher.selectedVersionId = found?.versionId ?? "";
+    });
+    const fitting = { ...details.versions[0], name: "Fitting version" };
+    useVersionDetails([fitting]);
+    resourcePlan = { ...plan(false), targets: [{
+      kind: "instance", instanceId: "fabric-home", versionId: fabricVersion,
+      name: "Fabric Home", gameVersion: "1.21.1", loader: "fabric", compatible: true,
+    }] };
+
+    const drawer = await openDrawer();
+    const toggle = drawer.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    await act(async () => toggle.click());
+    expect(toggle.checked).toBe(true);
+
+    const install = versionRows(drawer)[0].querySelector<HTMLButtonElement>("button")!;
+    await act(async () => install.click());
+    await act(async () => dialogButton("Install into Fabric Home").click());
+    await flush();
+
+    expect(mockLauncher.selectInstance).toHaveBeenCalledWith("fabric-home");
+    expect(drawer.open).toBe(false);
+
+    await act(async () => container.querySelector<HTMLButtonElement>(".vx-project-card__actions button:last-child")!.click());
+    await flush();
+    expect(drawer.open).toBe(true);
+    const reopened = drawer.querySelector<HTMLInputElement>(".vx-project-details__version-filter input")!;
+    expect(reopened.checked).toBe(false);
+    expect(versionRows(drawer)).toHaveLength(1);
+  });
+
+  it("shows no fit text and no filter for modpacks", async () => {
+    addInstance("fabric-a", "Fabric Alpha", fabricVersion, "1.21.1", "fabric");
+    const pack = { ...project, project_type: "modpack", title: "Example pack" };
+    const packVersion = { ...details.versions[0], id: "pack-v1", name: "Pack version" };
+    searchMock.mockResolvedValue([pack]);
+    const dispatched = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => name === "get_modrinth_project_details"
+      ? { ...details, project: pack, versions: [packVersion], dependencies: [] }
+      : dispatched(name, args));
+
+    await render(true, "en-US");
+    await act(async () => container.querySelector<HTMLButtonElement>(".vx-project-card__actions button:last-child")!.click());
+    await flush();
+    const drawer = container.querySelector<HTMLDialogElement>(".vx-project-details")!;
+
+    expect(versionRows(drawer)).toHaveLength(1);
+    expect(drawer.querySelector(".vx-project-details__fits")).toBeNull();
+    expect(drawer.querySelector(".vx-project-details__version-filter")).toBeNull();
+    expect(drawer.textContent).not.toContain("Fits");
   });
 });
 

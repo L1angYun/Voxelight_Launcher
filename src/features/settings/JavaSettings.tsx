@@ -29,11 +29,11 @@ export function JavaSettings({ config, onChange, onError, onNotice }: SettingsSe
     <div className="vx-settings-section">
       <header><h2>{t("settings:section.java")}</h2><p>{t("settings:javaDescription")}</p></header>
       <section className="vx-settings-group">
-        <label>
+        <label data-settings-target="java-executable">
           {t("settings:fields.javaPath")}
           <span className="vx-settings-input-action">
             <input aria-label={t("settings:fields.javaPath")} value={config.javaPath} placeholder={t("settings:java.auto")} onChange={(event) => onChange({ ...config, javaPath: event.target.value })} />
-            <Button variant="secondary" icon={<Search size={15} />} loading={busy} onClick={() => void detect()}>{t("settings:java.detect")}</Button>
+            <Button variant="secondary" data-settings-target="java-detect" icon={<Search size={15} />} loading={busy} onClick={() => void detect()}>{t("settings:java.detect")}</Button>
           </span>
         </label>
         {found.length ? (
@@ -45,16 +45,18 @@ export function JavaSettings({ config, onChange, onError, onNotice }: SettingsSe
             ))}
           </div>
         ) : null}
-        <Segmented semantic="toggle" label={t("settings:memory.mode")} value={config.memoryMode ?? "manual"}
-          options={[{ value: "auto", label: t("settings:memory.auto") }, { value: "manual", label: t("settings:memory.manual") }]}
-          onChange={(memoryMode) => onChange({ ...config, memoryMode })} />
+        <div data-settings-target="java-memory-mode">
+          <Segmented semantic="toggle" label={t("settings:memory.mode")} value={config.memoryMode ?? "manual"}
+            options={[{ value: "auto", label: t("settings:memory.auto") }, { value: "manual", label: t("settings:memory.manual") }]}
+            onChange={(memoryMode) => onChange({ ...config, memoryMode })} />
+        </div>
         <MemoryOverviewHint />
         <div className="vx-settings-fields">
-          <label>
+          <label data-settings-target="java-max-memory">
             {t("settings:fields.maxMemory")}
             <input aria-label={t("settings:fields.maxMemory")} type="number" min={512} max={65536} step={512} disabled={config.memoryMode === "auto"} value={config.maxMemoryMb} onChange={(event) => onChange({ ...config, maxMemoryMb: Number(event.target.value) })} />
           </label>
-          <label>
+          <label data-settings-target="java-initial-memory">
             {t("settings:memory.initial")}
             <input aria-label={t("settings:memory.initial")} type="number" min={256} max={65536}
               value={config.minMemoryMb ?? ""} onChange={(event) => onChange({ ...config,
@@ -62,12 +64,12 @@ export function JavaSettings({ config, onChange, onError, onNotice }: SettingsSe
               })} />
             <small>{t("settings:memory.initialHint")}</small>
           </label>
-          <label>
+          <label data-settings-target="java-jvm-arguments">
             {t("settings:fields.jvmArguments")}
             <input aria-label={t("settings:fields.jvmArguments")} value={config.jvmArguments} onChange={(event) => onChange({ ...config, jvmArguments: event.target.value })} />
           </label>
         </div>
-        <label className="vx-settings-check">
+        <label className="vx-settings-check" data-settings-target="java-auto-download">
           <input type="checkbox" aria-label={t("settings:fields.javaAutoDownload")} checked={config.javaAutoDownload} onChange={(event) => onChange({ ...config, javaAutoDownload: event.target.checked })} />
           <span>{t("settings:fields.javaAutoDownload")}<small>{t("settings:java.autoDescription")}</small></span>
         </label>

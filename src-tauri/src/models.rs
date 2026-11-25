@@ -43,6 +43,8 @@ pub struct Config {
     /// "auto" (GitHub and Gitee at once), "github" or "gitee".
     pub update_source: String,
     pub default_skin: String,
+    /// The first-run tour was finished or skipped; older profiles have not seen it.
+    pub tour_completed: bool,
 }
 
 impl Default for Config {
@@ -87,6 +89,7 @@ impl Default for Config {
             check_for_updates: true,
             update_source: "auto".into(),
             default_skin: "steve".into(),
+            tour_completed: false,
         }
     }
 }
@@ -296,6 +299,19 @@ mod tests {
         old_config.as_object_mut().unwrap().remove("defaultSkin");
         let decoded: Config = serde_json::from_value(old_config).unwrap();
         assert_eq!(decoded.default_skin, "steve");
+    }
+
+    #[test]
+    fn u1_the_first_run_tour_is_remembered_and_older_profiles_have_not_seen_it() {
+        let mut config = Config::default();
+        assert!(!config.tour_completed);
+        let mut old_config = serde_json::to_value(&config).unwrap();
+        old_config.as_object_mut().unwrap().remove("tourCompleted");
+        assert!(!serde_json::from_value::<Config>(old_config).unwrap().tour_completed);
+        config.tour_completed = true;
+        let saved = serde_json::to_value(&config).unwrap();
+        assert_eq!(saved["tourCompleted"], true);
+        assert!(serde_json::from_value::<Config>(saved).unwrap().tour_completed);
     }
 
     #[test]

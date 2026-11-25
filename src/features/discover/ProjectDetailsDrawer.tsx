@@ -1,9 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowDownToLine, Download } from "lucide-react";
 import { ExternalLink } from "../../components/ui/ExternalLink";
 import type { ResourceProject } from "../../lib/launcher";
-import type { ResourceProjectDetails, ResourceSource } from "./types";
+import type { ResourceProjectDetails, ResourceSource, ResourceVersion } from "./types";
+import { instancesFitting, type FittableInstance } from "./versionFits";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/Feedback";
@@ -24,6 +25,7 @@ export function ProjectDetailsDrawer({
   source,
   targetName,
   hasTarget,
+  instances = [],
 }: {
   project?: ResourceProject;
   details?: ResourceProjectDetails;
@@ -35,24 +37,43 @@ export function ProjectDetailsDrawer({
   source: ResourceSource;
   targetName: string;
   hasTarget: boolean;
+  instances?: readonly FittableInstance[];
 }) {
   const { t, i18n } = useTranslation();
+  const [fittingProject, setFittingProject] = useState<string>();
   const snapshot = useRef<{ project: ResourceProject; details?: ResourceProjectDetails; loading: boolean; error: string; source: ResourceSource; targetName: string; hasTarget: boolean } | undefined>(undefined);
   const current = project ? { project, details, loading, error, source, targetName, hasTarget } : undefined;
   if (current) snapshot.current = current;
+  // The parent can close the drawer by dropping `project`, without going
+  // through Dialog.onOpenChange. Reset the filter for every open/close so it
+  // defaults to off when a project is opened again.
+  const openProjectKey = project ? `${source}:${project.project_id}` : undefined;
+  useEffect(() => { setFittingProject(undefined); }, [openProjectKey]);
   const view = current ?? snapshot.current;
   if (!view) return null;
   const shown = view.project;
   const projectKey = `${view.source}:${shown.project_id}`;
   const hasPinnedInstall = shown.project_type !== "modpack";
+  const onlyFitting = hasPinnedInstall && fittingProject === projectKey;
   const installLabel = t("discover:install");
+  const versions = view.details?.versions ?? [];
+  const fitted = (version: ResourceVersion) => instancesFitting(version, instances, shown.project_type);
+  const visibleVersions = onlyFitting ? versions.filter(version => fitted(version).length > 0) : versions;
+  const fittingTitle = (matches: readonly FittableInstance[]) => {
+    if (!matches.length) return undefined;
+    const names = matches.slice(0, 5).map(instance => instance.name);
+    const remaining = matches.length - names.length;
+    return remaining > 0
+      ? `${names.join(", ")}${t("discover:fits.more", { count: remaining })}`
+      : names.join(", ");
+  };
   const external = shown.external_url || (view.source === "curseforge"
     ? `https://www.curseforge.com/projects/${shown.project_id}`
     : `https://modrinth.com/${shown.project_type}/${shown.slug}`);
   return (
     <Dialog
       open={Boolean(project)}
-      onOpenChange={(open) => { if (!open) onClose(); }}
+      onOpenChange={(open) => { if (!open) { setFittingProject(undefined); onClose(); } }}
       title={shown.title}
       closeLabel={t("common:actions.close")}
       className="vx-project-details"
@@ -67,17 +88,31 @@ export function ProjectDetailsDrawer({
         <SectionPanel selectionKey={projectKey}>
           <section className="vx-project-details__section">
             <h2>{t("discover:versions")}</h2>
-            {hasPinnedInstall && view.source === "modrinth" && view.details.versions.length > 0 ? <p>{t("discover:installVersionNotice")}</p> : null}
-            {view.details.versions.length ? <div className="vx-resource-list">{view.details.versions.map((version) => (
-              <div className="vx-resource-row" key={version.id}>
-                <div><strong>{version.name || version.versionNumber}</strong><small>{version.gameVersions.join(", ")}{version.loaders.length ? ` · ${version.loaders.join(", ")}` : ""}</small></div>
-                <small>{formatDate(version.datePublished, i18n.language)}</small>
-                {hasPinnedInstall ? <Button variant="secondary" size="sm"
-                  disabled={view.hasTarget && !version.compatible}
-                  aria-label={t("discover:installVersion", { version: version.name || version.versionNumber || version.id })}
-                  onClick={() => onInstallVersion(version.id)}>{t("discover:install")}</Button> : null}
-              </div>
-            ))}</div> : <EmptyState title={t("discover:noVersions")} />}
+            {hasPinnedInstall && view.source === "modrinth" && versions.length > 0 ? <p>{t("discover:installVersionNotice")}</p> : null}
+            {hasPinnedInstall && versions.length ? <label className="vx-project-details__version-filter">
+              <input type="checkbox" checked={onlyFitting} onChange={event => setFittingProject(event.target.checked ? projectKey : undefined)} />
+              <span>{t("discover:fits.onlyMine")}</span>
+            </label> : null}
+            {versions.length ? (visibleVersions.length ? <div className="vx-resource-list">{visibleVersions.map((version) => {
+              const matches = fitted(version);
+              const title = fittingTitle(matches);
+              return (
+                <div className="vx-resource-row" key={version.id}>
+                  <div>
+                    <strong>{version.name || version.versionNumber}</strong>
+                    <small>{version.gameVersions.join(", ")}{version.loaders.length ? ` · ${version.loaders.join(", ")}` : ""}</small>
+                    {hasPinnedInstall ? <small className="vx-project-details__fits" data-fits={matches.length ? "true" : "false"} title={title}>
+                      {matches.length ? t("discover:fits.count", { count: matches.length }) : t("discover:fits.none")}
+                    </small> : null}
+                  </div>
+                  <small>{formatDate(version.datePublished, i18n.language)}</small>
+                  {hasPinnedInstall ? <Button variant="secondary" size="sm"
+                    disabled={view.hasTarget && !version.compatible}
+                    aria-label={t("discover:installVersion", { version: version.name || version.versionNumber || version.id })}
+                    onClick={() => onInstallVersion(version.id)}>{t("discover:install")}</Button> : null}
+                </div>
+              );
+            })}</div> : <p className="vx-project-details__version-empty" role="status">{t("discover:fits.empty")}</p>) : <EmptyState title={t("discover:noVersions")} />}
           </section>
           <section className="vx-project-details__section">
             <h2>{t("discover:dependencies")}</h2>

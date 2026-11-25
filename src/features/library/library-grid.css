@@ -479,6 +479,21 @@
     text-shadow: 0 2px 10px var(--bg-raised);
     color: var(--text-primary);
   }
+  .vx-instance-glyph { /* Pixel glyph colors for instanceGlyphs.tsx. */
+    --vx-glyph-ink: var(--text-primary); --vx-glyph-base: color-mix(in srgb, var(--text-secondary) 72%, var(--surface-card));
+    --vx-glyph-shade: color-mix(in srgb, var(--text-primary) 30%, var(--surface-card)); --vx-glyph-light: color-mix(in srgb, var(--text-primary) 82%, var(--surface-card));
+    --vx-glyph-accent: var(--accent-ink, var(--accent, var(--optical-warm))); --vx-glyph-cold: var(--optical-cold); --vx-glyph-green: var(--success); --vx-glyph-warm: var(--optical-warm);
+    --vx-glyph-mark: var(--accent-ink, var(--accent, var(--optical-warm))); --vx-glyph-mark-old: var(--optical-warm);
+    display: block; width: 48px; height: 48px;
+    filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--bg-base) 45%, transparent));
+  }
+  [data-theme="light"] .vx-instance-glyph {
+    --vx-glyph-base: color-mix(in srgb, var(--text-secondary) 58%, var(--surface-card)); --vx-glyph-shade: color-mix(in srgb, var(--text-primary) 72%, var(--surface-card));
+    --vx-glyph-light: color-mix(in srgb, var(--text-primary) 14%, var(--surface-card)); --vx-glyph-warm: color-mix(in srgb, var(--optical-warm) 82%, var(--text-primary));
+    --vx-glyph-mark-old: color-mix(in srgb, var(--optical-warm) 88%, var(--text-primary));
+  }
+  [data-high-contrast="true"] .vx-instance-glyph { --vx-glyph-base: var(--text-primary); --vx-glyph-shade: var(--text-primary); --vx-glyph-accent: var(--text-primary); --vx-glyph-mark: var(--accent-ink, var(--accent, var(--optical-cold))); --vx-glyph-mark-old: var(--warning); }
+  .vx-instance-sheet--list .vx-instance-glyph { width: 32px; height: 32px; }
   .vx-library-view.vx-selection {
     gap: var(--space-1);
     padding: var(--space-1);

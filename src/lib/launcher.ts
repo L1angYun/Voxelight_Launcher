@@ -54,6 +54,7 @@ export interface Config {
   defaultSkin: DefaultSkinId;
   checkForUpdates: boolean;
   updateSource: "auto" | "github" | "gitee";
+  tourCompleted?: boolean;
 }
 type AppearanceField = typeof appearanceFields[number];
 export const appearanceFields = [
@@ -227,6 +228,7 @@ export const defaults: Config = {
   defaultSkin: "steve",
   checkForUpdates: true,
   updateSource: "auto",
+  tourCompleted: false,
 };
 
 export interface ResourceProject {

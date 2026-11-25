@@ -5,8 +5,42 @@
 .vx-settings-error { margin: 0 0 18px; color: var(--danger); }
 .vx-settings-notice { margin: 0 0 18px; color: var(--success); }
 .vx-settings-layout { min-width: 0; min-height: calc(100dvh - 260px); }
+.vx-settings-rail { display: grid; align-self: start; gap: var(--space-3); min-width: 0; }
 .vx-settings-nav {
   align-self: start;
+}
+.vx-settings-search { display: grid; gap: var(--space-2); min-width: 0; }
+.vx-settings-search input { width: 100%; }
+.vx-settings-search-results {
+  display: grid; gap: var(--space-1); min-width: 0; max-block-size: min(320px, 50vh);
+  margin: 0; padding: var(--space-1); overflow-y: auto;
+  border: 1px solid var(--hairline); border-radius: var(--radius-md);
+  background: var(--surface-solid); list-style: none;
+}
+.vx-settings-search-results button {
+  display: grid; width: 100%; min-width: 0; padding: var(--space-2); gap: var(--space-1);
+  border-radius: var(--radius-sm); color: var(--text-primary); text-align: start; overflow-wrap: anywhere;
+}
+.vx-settings-search-results button:hover { background: var(--surface-hover); }
+/* The list scrolls and clips outlines; keep the shared focus ring inside the button. */
+.vx-settings-search-results button:focus-visible { outline-offset: -2px; }
+.vx-settings-search-result__label { font-size: var(--text-sm); }
+.vx-settings-search-result__section { color: var(--text-tertiary); font-size: var(--text-xs); }
+.vx-settings-search-empty {
+  margin: 0; padding: var(--space-2);
+  border: 1px solid var(--hairline); border-radius: var(--radius-md);
+  background: var(--surface-solid); color: var(--text-tertiary); font-size: var(--text-sm);
+}
+.vx-settings-target-revealed {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+  animation: vx-settings-target-reveal 1.5s linear forwards;
+}
+@keyframes vx-settings-target-reveal {
+  0%, 65% { outline-color: var(--accent); }
+  100% { outline-color: transparent; }
+}
+[data-reduced-motion="true"] .vx-settings-target-revealed {
+  animation: none; outline: 2px solid var(--accent); outline-offset: 3px;
 }
 .vx-settings-content {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0;
