@@ -4,7 +4,8 @@
   "views": "多人联机视图",
   "tab": {
     "servers": "服务器",
-    "managed": "服务端管理"
+    "managed": "服务端管理",
+    "network": "网络检测"
   },
   "environment": "游戏环境",
   "chooseEnvironment": "选择已安装游戏",
@@ -141,6 +142,66 @@
     "forceStopRequested": "已请求强制停止。",
     "stopRequested": "已请求保存世界并停止。",
     "commandSent": "命令已发送，执行结果见控制台日志。"
+  },
+  "network": {
+    "description": "检测当前 IPv4、IPv6、NAT 映射类型以及直连开服建议。",
+    "runCheck": "开始网络检测",
+    "rerunCheck": "重新检测",
+    "emptyTitle": "准备检测当前网络环境",
+    "emptyDescription": "点击开始检测，查看公网 IPv4 / IPv6、NAT 映射类型以及适合当前网络的联机直连建议。",
+    "privacyNote": "仅在你点击检测时向公开 STUN 服务器（stun.cloudflare.com、stun.miwifi.com、stun.l.google.com、stun1.l.google.com）发送探测包，结果只保留在本机。",
+    "ipv4Title": "IPv4",
+    "ipv6Title": "IPv6",
+    "natTitle": "NAT 映射",
+    "available": "可用",
+    "unavailable": "不可用",
+    "publicIp": "公网地址",
+    "localIp": "本机地址",
+    "mappedPort": "UDP 端口映射",
+    "latency": "STUN 延迟",
+    "none": "无",
+    "ipv6Status": {
+      "globalPublic": "公网 IPv6 直通",
+      "behindNat6": "处于 NAT6 后",
+      "localOnly": "仅本地地址",
+      "unavailable": "不可用"
+    },
+    "natType": {
+      "openInternet": "直连公网",
+      "endpointIndependent": "锥型 NAT",
+      "addressPortDependent": "对称型 NAT",
+      "behindNat": "处于 NAT 后",
+      "unreachable": "无法探测"
+    },
+    "natSummary": {
+      "openInternet": "本机直接拥有公网 IPv4 地址，无地址或端口转换。",
+      "endpointIndependent": "端点无关映射（锥型 NAT）：不同 STUN 服务器看到同一个外部端口。",
+      "addressPortDependent": "地址/端口相关映射（对称型 NAT）：访问不同目标会分配不同的外部端口。",
+      "behindNat": "当前处于 IPv4 NAT 后，但仅一台 STUN 服务器响应，暂无法区分锥型与对称型。",
+      "unreachable": "IPv4 UDP 探测均未收到响应。"
+    },
+    "cgnatBadge": "本机出口位于运营商级 NAT 网段（100.64.0.0/10）。",
+    "directTitle": "直连地址",
+    "directPort": "直连端口",
+    "directIpv6Label": "IPv6（双方均有 IPv6 时推荐）",
+    "directIpv4Label": "IPv4（处于 NAT 后需在路由器配置端口转发并放行防火墙）",
+    "copyAddress": "复制",
+    "copied": "已复制",
+    "adviceTitle": "直连建议",
+    "advice": {
+      "ipv6DirectReady": "当前拥有全球单播公网 IPv6 地址。在 Windows 防火墙和路由器 IPv6 防火墙放行对应 TCP 端口后，具备 IPv6 的好友可直接通过 [<ipv6>]:<端口> 加入。",
+      "ipv6BehindNat": "IPv6 可访问公网，但公网地址与本机地址不一致（NAT6），请检查路由器的 IPv6 转发或防火墙规则。",
+      "ipv6Unavailable": "未检测到可用的公网 IPv6 路由。若宽带支持 IPv6，在路由器开启 IPv6 通常比在 IPv4 NAT 下直连更省心。",
+      "ipv4OpenDirect": "本机直接拥有公网 IPv4 地址，在 Windows 防火墙放行 Minecraft 服务端 TCP 端口后即可直连。",
+      "ipv4ConeForward": "当前为 IPv4 锥型 NAT。如果路由器拨号获取的是公网 IPv4（非运营商大内网），在路由器配置 TCP 端口转发即可直连。",
+      "ipv4SymmetricWarn": "检测到 IPv4 对称型 NAT，IPv4 直连和常规打洞通常难以成功；建议优先使用 IPv6 直连、虚拟局域网（如 Tailscale / ZeroTier）或中转/云服务器。",
+      "ipv4BehindNatSingleProbe": "IPv4 处于 NAT 后且仅一台 STUN 服务器有回复，可重试检测以确认是锥型还是对称型 NAT。",
+      "ipv4CgnatDetected": "本机路由处于运营商级 NAT（100.64.0.0/10）网段，仅做路由器端口转发无法从公网连入；请优先使用 IPv6 或虚拟局域网。",
+      "ipv4Unavailable": "IPv4 UDP 探测超时，请检查网络连接或防火墙是否拦截了出站 UDP。",
+      "proxyDirectUdpNote": "启动器当前启用了自定义 HTTP 代理；网络检测走直连 UDP，不经过 HTTP 代理。"
+    },
+    "stunHosts": "探测的 STUN 服务器：{{hosts}}",
+    "checkedAt": "检测时间：{{time}}"
   },
   "errors": {
     "processFailed": "服务端进程发生错误，请检查控制台日志后再启动。",

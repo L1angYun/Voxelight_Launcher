@@ -152,6 +152,7 @@ commands.allow = [
   "remove_server",
   "ping_server",
   "discover_lan",
+  "check_network_environment",
   "list_managed_servers",
   "create_managed_server",
   "update_managed_server",

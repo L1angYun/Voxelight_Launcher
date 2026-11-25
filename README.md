@@ -49,7 +49,7 @@ Get `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](https://g
 | Multiplayer | Server list, status, LAN worlds, direct join; local vanilla servers with a console | ✅ |
 | Multiplayer | Import third-party server software, such as Spigot, Paper or Fabric, as a JAR or an existing server folder, and run it as a managed server | ✅ |
 | Multiplayer | Import Forge and NeoForge servers that start only from an arguments file (Forge 1.17+ without a shim JAR, NeoForge) | 🚧 |
-| Multiplayer | Network check: IPv4 and IPv6, NAT type, and advice for direct connections | 🚧 |
+| Multiplayer | Network check: IPv4 and IPv6, NAT type, and advice for direct connections | ✅ |
 | Interface | Simplified Chinese and English; dark and light themes; Lite and Full effects; follows Windows accessibility settings | ✅ |
 | Interface | Lower memory use, such as unloading the 3D world in Lite mode | ✅ |
 | Interface | Instance icons by loader and version type | ✅ |
@@ -94,7 +94,7 @@ No telemetry, analytics or crash reporting. The launcher connects only to:
 | Authlib accounts | The server you entered; `authlib-injector.yushi.moe` |
 | Content and modpacks | Modrinth, CurseForge; files listed in a modpack can also come from GitHub or GitLab |
 | Launcher updates | GitHub, Gitee |
-| Multiplayer | The servers you check; UDP 4445 for LAN discovery |
+| Multiplayer | The servers you check; UDP 4445 for LAN discovery; STUN servers (`stun.cloudflare.com`, `stun.miwifi.com`, `stun.l.google.com`, `stun1.l.google.com`) only when you run a network check |
 | Skin preview | A skin URL you enter |
 
 - Every start fetches the version list. The update check also runs at every start by default; with the default Auto source it asks both GitHub and Gitee (**Settings → About**).

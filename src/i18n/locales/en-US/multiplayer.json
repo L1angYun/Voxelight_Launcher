@@ -4,7 +4,8 @@
   "views": "Multiplayer views",
   "tab": {
     "servers": "Servers",
-    "managed": "Managed servers"
+    "managed": "Managed servers",
+    "network": "Network check"
   },
   "environment": "Game environment",
   "chooseEnvironment": "Choose an installed version",
@@ -142,6 +143,66 @@
     "forceStopRequested": "Force stop requested.",
     "stopRequested": "Save and stop requested.",
     "commandSent": "Command sent. See the console log for its result."
+  },
+  "network": {
+    "description": "Check IPv4, IPv6, NAT mapping behavior, and direct-connection readiness for hosting a server.",
+    "runCheck": "Run network check",
+    "rerunCheck": "Run again",
+    "emptyTitle": "Ready to check your network",
+    "emptyDescription": "Run a check to detect your public IPv4 and IPv6 addresses, NAT mapping type, and practical advice for direct connections.",
+    "privacyNote": "Only queries public STUN servers (stun.cloudflare.com, stun.miwifi.com, stun.l.google.com, stun1.l.google.com) when you start a check. Results stay on this PC.",
+    "ipv4Title": "IPv4",
+    "ipv6Title": "IPv6",
+    "natTitle": "NAT mapping",
+    "available": "Reachable",
+    "unavailable": "Unavailable",
+    "publicIp": "Public address",
+    "localIp": "Local address",
+    "mappedPort": "UDP port mapping",
+    "latency": "STUN latency",
+    "none": "None",
+    "ipv6Status": {
+      "globalPublic": "Global public IPv6",
+      "behindNat6": "Behind NAT6",
+      "localOnly": "Local only",
+      "unavailable": "Unavailable"
+    },
+    "natType": {
+      "openInternet": "Open internet",
+      "endpointIndependent": "Cone NAT",
+      "addressPortDependent": "Symmetric NAT",
+      "behindNat": "Behind NAT",
+      "unreachable": "Unreachable"
+    },
+    "natSummary": {
+      "openInternet": "Your PC holds a public IPv4 address directly with no address or port translation.",
+      "endpointIndependent": "Endpoint-independent mapping (Cone NAT): the same external port is reused across STUN servers.",
+      "addressPortDependent": "Address/port-dependent mapping (Symmetric NAT): each remote server sees a different external port.",
+      "behindNat": "Your IPv4 traffic is translated by NAT, and only one STUN server replied so Cone vs. Symmetric could not be distinguished.",
+      "unreachable": "No STUN server replied over IPv4 UDP."
+    },
+    "cgnatBadge": "Carrier-grade NAT (100.64.0.0/10) detected on the local route.",
+    "directTitle": "Direct-connect address",
+    "directPort": "Direct-connect port",
+    "directIpv6Label": "IPv6 (recommended when both sides have IPv6)",
+    "directIpv4Label": "IPv4 (requires Windows Firewall & router port forwarding if behind NAT)",
+    "copyAddress": "Copy",
+    "copied": "Copied",
+    "adviceTitle": "Direct-connection advice",
+    "advice": {
+      "ipv6DirectReady": "You have a global public IPv6 address. Friends with IPv6 can connect directly via [<ipv6>]:<port> once TCP is allowed in Windows Firewall and your router's IPv6 firewall.",
+      "ipv6BehindNat": "Your IPv6 traffic reaches the internet, but the public address differs from your local address (NAT6). Check your router's IPv6 forwarding or firewall rules.",
+      "ipv6Unavailable": "No public IPv6 route was detected. If your ISP supports IPv6, enabling it on your router often makes direct hosting easier than IPv4 NAT.",
+      "ipv4OpenDirect": "Your device has a direct public IPv4 address. Allow the Minecraft server TCP port in Windows Firewall so friends can join directly.",
+      "ipv4ConeForward": "Cone NAT detected on IPv4. Set up TCP port forwarding on your router if your router's WAN address is public (not CGNAT).",
+      "ipv4SymmetricWarn": "Symmetric NAT detected on IPv4. Direct IPv4 hosting and NAT traversal rarely work here; use IPv6 direct connect, a virtual LAN (such as Tailscale or ZeroTier), or a hosted server.",
+      "ipv4BehindNatSingleProbe": "IPv4 is behind NAT, and only one STUN server responded. Run the check again or test from another network to confirm whether NAT is Cone or Symmetric.",
+      "ipv4CgnatDetected": "Your local route is inside the CGNAT range (100.64.0.0/10). Router port forwarding on IPv4 will not reach the public internet; prefer IPv6 or a virtual LAN.",
+      "ipv4Unavailable": "IPv4 UDP probes did not get a reply. Check your internet connection or firewall UDP rules.",
+      "proxyDirectUdpNote": "A custom HTTP proxy is enabled in launcher settings. This check probes direct UDP traffic without using the HTTP proxy."
+    },
+    "stunHosts": "Queried STUN hosts: {{hosts}}",
+    "checkedAt": "Checked {{time}}"
   },
   "errors": {
     "processFailed": "The server process failed. Review the console logs before restarting.",

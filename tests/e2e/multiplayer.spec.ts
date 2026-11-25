@@ -277,3 +277,19 @@ test("a server JAR is imported from its dialog, which fits the smallest window",
   await expect(page.locator(".vx-managed-list [aria-current='true']")).toContainText("Paper · 1.21.1");
   await expect(page.locator(".vx-managed-overview header p")).toContainText("Paper · 1.21.1");
 });
+
+test("network check runs on demand and shows IPv4, IPv6, NAT type and direct-connect addresses", async ({ page }) => {
+  await installLauncherFixture(page);
+  await openMultiplayer(page);
+  await page.getByRole("tab", { name: "网络检测", exact: true }).click();
+  await expect(page.getByText("准备检测当前网络环境", { exact: true })).toBeVisible();
+  expect((await calls(page)).some((call) => call.name === "check_network_environment")).toBe(false);
+  await page.getByRole("button", { name: "开始网络检测", exact: true }).click();
+  await expect(page.getByText("198.51.100.42", { exact: true })).toBeVisible();
+  await expect(page.getByText("[2409:8a00:1234::42]:25565", { exact: true })).toBeVisible();
+  await expect(page.getByText("锥型 NAT", { exact: true })).toBeVisible();
+  await expect(page.getByText("公网 IPv6 直通", { exact: true })).toBeVisible();
+  await page.getByRole("spinbutton", { name: "直连端口", exact: true }).fill("25570");
+  await expect(page.getByText("[2409:8a00:1234::42]:25570", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

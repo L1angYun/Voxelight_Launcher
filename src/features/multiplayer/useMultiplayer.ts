@@ -114,6 +114,55 @@ export interface ServerLog {
   message: string;
 }
 
+export type NatType =
+  | "openInternet"
+  | "endpointIndependent"
+  | "addressPortDependent"
+  | "behindNat"
+  | "unreachable";
+
+export type Ipv6Status =
+  | "globalPublic"
+  | "behindNat6"
+  | "localOnly"
+  | "unavailable";
+
+export interface NetworkAdvice {
+  code: string;
+  severity: "good" | "info" | "warn";
+}
+
+export interface Ipv4Report {
+  available: boolean;
+  localIp: string | null;
+  publicIp: string | null;
+  localPort: number | null;
+  mappedPort: number | null;
+  probesSucceeded: number;
+  rttMs: number | null;
+}
+
+export interface Ipv6Report {
+  status: Ipv6Status;
+  localIp: string | null;
+  publicIp: string | null;
+  mappedPort: number | null;
+  probesSucceeded: number;
+  rttMs: number | null;
+}
+
+export interface NetworkCheckReport {
+  checkedAt: string;
+  ipv4: Ipv4Report;
+  ipv6: Ipv6Report;
+  natType: NatType;
+  cgnatSuspected: boolean;
+  directConnectIpv4: string | null;
+  directConnectIpv6: string | null;
+  stunHostsQueried: string[];
+  advice: NetworkAdvice[];
+}
+
 export const defaultServerSettings: ServerSettings = {
   port: 25565,
   maxPlayers: 20,
@@ -147,7 +196,7 @@ export function useMultiplayer() {
     notice: launchNotice,
     dismissNotice,
   } = useLauncher();
-  const [tab, setTab] = useState<"servers" | "managed">("servers");
+  const [tab, setTab] = useState<"servers" | "managed" | "network">("servers");
   const environment = useMemo<ServerEnvironment>(() => ({
     versionId: selectedVersionId,
     gameDirectory: data.config.gameDirectory,
@@ -165,6 +214,9 @@ export function useMultiplayer() {
   const [managedServers, setManagedServers] = useState<ManagedServer[]>([]);
   const [selectedManagedId, setSelectedManagedId] = useState("");
   const [logs, setLogs] = useState<ServerLog[]>([]);
+  const [networkReport, setNetworkReport] = useState<NetworkCheckReport | null>(null);
+  const [networkBusy, setNetworkBusy] = useState(false);
+  const [networkError, setNetworkError] = useState<LauncherError | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState<LauncherError | null>(null);
   const [notice, setNotice] = useState("");
@@ -421,6 +473,21 @@ export function useMultiplayer() {
     "commandSent",
   ), [managedRun, selectedManagedId]);
 
+  const runNetworkCheck = useCallback(async () => {
+    setNetworkBusy(true);
+    setNetworkError(null);
+    try {
+      const result = await command<NetworkCheckReport>("check_network_environment");
+      if (mounted.current) setNetworkReport(result);
+      return result;
+    } catch (cause) {
+      if (mounted.current) setNetworkError(normalizeError(cause));
+      return undefined;
+    } finally {
+      if (mounted.current) setNetworkBusy(false);
+    }
+  }, []);
+
   return {
     tab,
     setTab,
@@ -436,9 +503,12 @@ export function useMultiplayer() {
     setSelectedManagedId,
     currentManaged,
     logs,
-    busy: tab === "servers" ? visibleActivity?.key ?? "" : busy,
-    error: tab === "servers" ? visibleFeedback?.error ?? null : error,
-    notice: tab === "servers" ? visibleFeedback?.notice ?? "" : notice,
+    networkReport,
+    networkBusy,
+    runNetworkCheck,
+    busy: tab === "servers" ? visibleActivity?.key ?? "" : tab === "network" ? (networkBusy ? "network-check" : "") : busy,
+    error: tab === "servers" ? visibleFeedback?.error ?? null : tab === "network" ? networkError : error,
+    notice: tab === "servers" ? visibleFeedback?.notice ?? "" : tab === "network" ? "" : notice,
     launchNotice,
     dismissNotice,
     report,

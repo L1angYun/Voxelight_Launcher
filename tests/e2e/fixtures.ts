@@ -863,6 +863,37 @@ export async function installLauncherFixture(
           if (name === "read_skin_preview") {
             return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
           }
+          if (name === "check_network_environment") {
+            return {
+              checkedAt: "2026-11-25T08:00:00Z",
+              ipv4: {
+                available: true,
+                localIp: "192.168.1.25",
+                publicIp: "198.51.100.42",
+                localPort: 50000,
+                mappedPort: 61234,
+                probesSucceeded: 2,
+                rttMs: 22,
+              },
+              ipv6: {
+                status: "globalPublic",
+                localIp: "2409:8a00:1234::42",
+                publicIp: "2409:8a00:1234::42",
+                mappedPort: 50001,
+                probesSucceeded: 2,
+                rttMs: 18,
+              },
+              natType: "endpointIndependent",
+              cgnatSuspected: false,
+              directConnectIpv4: "198.51.100.42:25565",
+              directConnectIpv6: "[2409:8a00:1234::42]:25565",
+              stunHostsQueried: ["stun.cloudflare.com:3478", "stun.miwifi.com:3478"],
+              advice: [
+                { code: "ipv6DirectReady", severity: "good" },
+                { code: "ipv4ConeForward", severity: "info" },
+              ],
+            };
+          }
           // These concrete query fixtures deliberately represent empty records.
           if ([
             "list_modpack_versions", "list_resource_update_history",

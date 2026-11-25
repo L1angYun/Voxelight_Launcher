@@ -21,6 +21,7 @@ mod models;
 mod mod_metadata;
 mod modpacks;
 mod network;
+mod network_check;
 mod pack_update_plan;
 mod parts;
 mod path_grants;
@@ -357,6 +358,7 @@ pub fn run() {
             servers::remove_server,
             servers::ping_server,
             servers::discover_lan,
+            network_check::check_network_environment,
             server_manager::list_managed_servers,
             server_manager::create_managed_server,
             server_manager::update_managed_server,
