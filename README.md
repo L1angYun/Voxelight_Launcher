@@ -4,9 +4,14 @@ English | [简体中文](README.zh-CN.md)
 
 An open-source launcher for Minecraft: Java Edition on 64-bit Windows, built with Rust, Tauri 2, and React. Licensed under GPL-3.0-only. Unofficial: not affiliated with or endorsed by Mojang or Microsoft.
 
-![Voxelight Launcher home page](docs/images/home-0.5.0.png)
+![Voxelight Launcher home page](docs/images/home-en.png)
 
-_Screenshot from 0.5.0; the interface has evolved since._
+<details>
+<summary>Light theme &amp; instance library preview</summary>
+
+![Voxelight Launcher instance library in light theme](docs/images/library-light-en.png)
+
+</details>
 
 ## Download
 

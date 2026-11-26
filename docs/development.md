@@ -80,7 +80,7 @@ npm run license:check
 | `npm run license:check` | Compares the locked npm and Cargo graph with `licenses/`. Offline, but needs `npm ci` and a filled Cargo cache. |
 | `npm run license:update` | Rebuilds `licenses/npm`, `cargo` and `toolchain` after a dependency change. Needs the network, Git and the NSIS toolchain from an earlier installer build. Never runs install scripts or invents copyright lines. |
 
-**Public guard** (`scripts/check-public-secrets.mjs`, part of `npm test`) blocks what must not be published: `.cargo` configs, agent tool folders and files, development-process records under `docs/`, unexpected dotfiles, images, fonts or archives outside `public/`, `src-tauri/icons/`, `src-tauri/installer/windows/assets/`, `tests/fixtures/`, `licenses/` and `docs/images/`, local user paths, Client IDs and CurseForge keys, and AI tool names in commit messages. It also checks the Git history for `.cargo` configs, agent and process folders, local paths, and commit messages.
+**Public guard** (`scripts/check-public-secrets.mjs`, part of `npm test`) blocks what must not be published: `.cargo` configs, local tool workspace folders and files, internal process notes under `docs/`, unexpected dotfiles, images, fonts or archives outside `public/`, `src-tauri/icons/`, `src-tauri/installer/windows/assets/`, `tests/fixtures/`, `licenses/` and `docs/images/`, local user paths, Client IDs and CurseForge keys, and disallowed commit-message patterns. It also audits Git history for `.cargo` configs, excluded local folders, local paths, and commit messages.
 
 ## Source archive
 
@@ -100,8 +100,8 @@ npm run tauri -- build --no-bundle --no-sign --debug -- --locked
 
 Voxelight Launcher follows [Semantic Versioning 2.0.0](https://semver.org/):
 
-- **Stable releases (`MAJOR.MINOR.PATCH`)**: e.g. `0.7.0`, `1.0.0`, tagged `v0.7.0`. Distributed via GitHub Releases and Gitee Releases with `prerelease: false` and offered automatically by the in-app updater.
-- **Pre-releases (`MAJOR.MINOR.PATCH-(alpha|beta|rc).N`)**: e.g. `0.7.0-beta.1`, `0.7.0-rc.1`, tagged `v0.7.0-beta.1`. Published explicitly as a GitHub/Gitee Pre-release (`prerelease: true`) and never auto-pushed to users on stable releases. Users running a pre-release build automatically receive the upgrade offer when the corresponding stable release (`0.7.0`) is published.
+- **Stable releases (`MAJOR.MINOR.PATCH`)**: e.g. `0.7.0`, `1.0.0`, tagged `v0.7.0`. Distributed via GitHub Releases and Gitee Releases with `prerelease: false` and offered automatically by the in-app updater on both channels.
+- **Pre-releases (`MAJOR.MINOR.PATCH-(alpha|beta|rc).N`)**: e.g. `0.7.0-beta.1`, `0.7.0-rc.1`, tagged `v0.7.0-beta.1`. Published explicitly as a GitHub/Gitee Pre-release (`prerelease: true`). Users on the default **Stable** channel never receive pre-releases automatically; users who opt into the **Beta** update channel in **Settings → About** can update to newer pre-releases, and pre-release builds automatically graduate to the corresponding stable release (`0.7.0`) once published.
 - **Version synchronization**: Every release manifest (`package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`, `licenses/dependency-inventory.json`) must declare the exact same SemVer string. Use `npm run version:check` (also part of `npm run check`) to verify and `npm run version:set -- <version>` to bump all six files atomically.
 - **Changelog**: Record user-visible changes under `CHANGELOG.md` (`[Unreleased]`) during development and move them under the version heading when cutting a tag.
 
@@ -114,7 +114,7 @@ Voxelight Launcher follows [Semantic Versioning 2.0.0](https://semver.org/):
 5. `node scripts/prepare-release-assets.mjs --version <version> --installer releases\<version>-installer\VoxelightLauncher-<version>-x64-setup.exe --source releases\<version>\VoxelightLauncher-<version>-source.zip --out releases\<version>-assets` (add `--prerelease` for pre-releases).
 6. Upload the four files to the GitHub and Gitee releases of `v<version>` (mark as Pre-release for `-alpha`/`-beta`/`-rc` tags): installer, source ZIP and `SHA256SUMS.txt` first, `update.json` last.
 
-`release-metadata.mjs` and `prepare-release-assets.mjs` never upload, sign or run anything. The in-app auto-updater only offers stable releases, and the installer must keep its fixed name and stay under 512 MiB.
+`release-metadata.mjs` and `prepare-release-assets.mjs` never upload, sign or run anything. By default the in-app auto-updater offers stable releases only, and offers pre-releases when the user opts into the **Beta** update channel in **Settings → About**; the installer must keep its fixed name and stay under 512 MiB.
 
 ## Smoke tests
 

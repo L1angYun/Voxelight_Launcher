@@ -80,7 +80,7 @@ npm run license:check
 | `npm run license:check` | 把锁定的 npm 和 Cargo 依赖与 `licenses/` 对比。离线运行，但需要先 `npm ci`，并且 Cargo 缓存已有内容。 |
 | `npm run license:update` | 依赖变更后重建 `licenses/npm`、`cargo` 和 `toolchain`。需要联网、Git，以及之前生成安装程序时留下的 NSIS 工具链。从不运行安装脚本，也不编造版权声明。 |
 
-**公开仓库检查**（`scripts/check-public-secrets.mjs`，属于 `npm test`）拦截不能公开的内容：`.cargo` 配置、AI 编程助手（agent）工具的文件夹和文件、`docs/` 下的开发过程记录、意外的点文件、`public/`、`src-tauri/icons/`、`src-tauri/installer/windows/assets/`、`tests/fixtures/`、`licenses/` 和 `docs/images/` 以外的图片、字体或压缩包、本机用户路径、Client ID 和 CurseForge Key，以及提交信息里的 AI 工具名称。它还会检查 Git 历史中的 `.cargo` 配置、agent 和过程文件夹、本机路径，以及提交信息。
+**公开仓库检查**（`scripts/check-public-secrets.mjs`，属于 `npm test`）拦截不能公开的内容：`.cargo` 配置、本地工具配置目录与文件、`docs/` 下的内部过程文档、意外的点文件、`public/`、`src-tauri/icons/`、`src-tauri/installer/windows/assets/`、`tests/fixtures/`、`licenses/` 和 `docs/images/` 以外的图片、字体或压缩包、本机用户路径、Client ID 和 CurseForge Key，以及不符合规范的提交信息。它还会检查 Git 历史中的 `.cargo` 配置、受限本地目录、本机路径与提交信息。
 
 ## 源码包
 
@@ -100,8 +100,8 @@ npm run tauri -- build --no-bundle --no-sign --debug -- --locked
 
 Voxelight Launcher 遵循 [语义化版本 2.0.0（SemVer）](https://semver.org/lang/zh-CN/)：
 
-- **正式版（`MAJOR.MINOR.PATCH`）**：例如 `0.7.0`、`1.0.0`，对应 Git 标签 `v0.7.0`，在 GitHub / Gitee 以正式发布（`prerelease: false`）推送，启动器内置自动更新器会自动检测并提供升级。
-- **预发布版（`MAJOR.MINOR.PATCH-(alpha|beta|rc).N`）**：例如 `0.7.0-beta.1`、`0.7.0-rc.1`，对应 Git 标签 `v0.7.0-beta.1`，在 GitHub / Gitee 显式勾选为 Pre-release（`prerelease: true`）。正式版用户不会被自动推送预发布版；而运行预发布版的用户在对应正式版（如 `0.7.0`）发布后会自动收到正式版升级提示。
+- **正式版（`MAJOR.MINOR.PATCH`）**：例如 `0.7.0`、`1.0.0`，对应 Git 标签 `v0.7.0`，在 GitHub / Gitee 以正式发布（`prerelease: false`）推送，启动器内置自动更新器在稳定版和测试版通道下均会自动检测并提供升级。
+- **预发布版（`MAJOR.MINOR.PATCH-(alpha|beta|rc).N`）**：例如 `0.7.0-beta.1`、`0.7.0-rc.1`，对应 Git 标签 `v0.7.0-beta.1`，在 GitHub / Gitee 显式勾选为 Pre-release（`prerelease: true`）。默认 **稳定版** 通道用户不会被自动推送预发布版；在 **设置 → 关于** 中主动切换到 **测试版（Beta）** 通道的用户可自动检测并更新到更新的预发布版，且运行预发布版的用户在对应正式版（如 `0.7.0`）发布后也会自动升级到正式版。
 - **多文件版本号同步**：仓库中的 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 与 `licenses/dependency-inventory.json` 必须保持完全一致。日常通过 `npm run version:check`（已纳入 `npm run check`）自动校验，切版本时使用 `npm run version:set -- <版本号>` 原子同步六处文件。
 - **变更记录**：开发期间把用户可见变更维护在 `CHANGELOG.md` 的 `[Unreleased]` 小节，切标签发布时整理为对应版本号与日期。
 
@@ -114,7 +114,7 @@ Voxelight Launcher 遵循 [语义化版本 2.0.0（SemVer）](https://semver.org
 5. `node scripts/prepare-release-assets.mjs --version <版本> --installer releases\<版本>-installer\VoxelightLauncher-<版本>-x64-setup.exe --source releases\<版本>\VoxelightLauncher-<版本>-source.zip --out releases\<版本>-assets`（预发布构建加 `--prerelease`）。
 6. 把这四个文件上传到 `v<版本>` 的 GitHub 发布和 Gitee 发布（`-alpha`/`-beta`/`-rc` 勾选为预发布）：先传安装程序、源码包和 `SHA256SUMS.txt`，最后传 `update.json`。
 
-`release-metadata.mjs` 和 `prepare-release-assets.mjs` 从不上传、签名或运行任何东西。内置自动更新器只推送正式版本，安装程序必须保持固定名称，且小于 512 MiB。
+`release-metadata.mjs` 和 `prepare-release-assets.mjs` 从不上传、签名或运行任何东西。内置自动更新器默认只推送正式版本，用户在 **设置 → 关于** 中选择 **测试版（Beta）** 更新通道后会额外检测预发布版本；安装程序必须保持固定名称，且小于 512 MiB。
 
 ## 冒烟测试
 

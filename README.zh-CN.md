@@ -4,9 +4,14 @@
 
 开源的 Minecraft: Java 版启动器，面向 64 位 Windows，使用 Rust、Tauri 2 和 React 构建，采用 GPL-3.0-only 许可。非官方项目，与 Mojang 及 Microsoft 无关，也未获其认可。
 
-![Voxelight Launcher 首页](docs/images/home-0.5.0.png)
+![Voxelight Launcher 首页](docs/images/home-zh.png)
 
-_截图来自 0.5.0，当前界面已持续迭代更新。_
+<details>
+<summary>浅色主题与实例库预览</summary>
+
+![Voxelight Launcher 浅色主题实例库](docs/images/library-light-zh.png)
+
+</details>
 
 ## 下载
 
