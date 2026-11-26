@@ -9,6 +9,7 @@ import { LauncherError, normalizeError } from "../../lib/errors";
 export interface UpdateView {
   currentVersion: string;
   latestVersion: string;
+  prerelease?: boolean;
   /** "stale": the source is behind a version this launcher has seen before. */
   status: "newer" | "current" | "stale";
   source: "github" | "gitee";
@@ -97,7 +98,8 @@ export function LauncherUpdateProvider({ children, pollMs = 1000 }: { children?:
   const startupChecks = useRef(config.checkForUpdates);
   startupChecks.current = config.checkForUpdates;
   const noticeDismissed = useRef(false);
-  // The source the shown result was checked with; another saved source clears it.
+  const preferenceKey = `${config.updateSource}:${config.updateChannel ?? "stable"}`;
+  // The source and channel the shown result was checked with; another saved value clears it.
   const resultSource = useRef<string | null>(null);
   useEffect(() => {
     mounted.current = true;
@@ -116,7 +118,7 @@ export function LauncherUpdateProvider({ children, pollMs = 1000 }: { children?:
     if (busy.current || !desktop) return;
     busy.current = true;
     const run = ++generation.current;
-    const source = config.updateSource;
+    const checkedPreference = preferenceKey;
     setChecking(true);
     setResult(null);
     setNotice(null);
@@ -124,7 +126,7 @@ export function LauncherUpdateProvider({ children, pollMs = 1000 }: { children?:
     try {
       const view = await command<UpdateView>("check_launcher_update");
       if (!mounted.current || run !== generation.current) return;
-      resultSource.current = source;
+      resultSource.current = checkedPreference;
       setResult(view);
       setStatus(checkedStatus(view));
       if (background && view.status === "newer" && startupChecks.current && !noticeDismissed.current) setNotice(view);
@@ -134,7 +136,7 @@ export function LauncherUpdateProvider({ children, pollMs = 1000 }: { children?:
       busy.current = false;
       if (mounted.current) setChecking(false);
     }
-  }, [config.updateSource]);
+  }, [preferenceKey]);
 
   const install = useCallback(async () => {
     if (busy.current || !result || result.status !== "newer" || !result.installerSize) return;
@@ -204,11 +206,11 @@ export function LauncherUpdateProvider({ children, pollMs = 1000 }: { children?:
     setNotice(null);
   }, []);
 
-  // A source saved another way (a preset import, the settings form) clears a
+  // A source or channel saved another way (a preset import, the settings form) clears a
   // result checked with the old one.
   useEffect(() => {
-    if (resultSource.current !== null && resultSource.current !== config.updateSource && !busy.current) clearResult();
-  }, [checking, clearResult, config.updateSource, installing]);
+    if (resultSource.current !== null && resultSource.current !== preferenceKey && !busy.current) clearResult();
+  }, [checking, clearResult, preferenceKey, installing]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -240,7 +242,7 @@ export function LauncherUpdateProvider({ children, pollMs = 1000 }: { children?:
       }
       if (!mounted.current) return;
       if (state?.check) {
-        resultSource.current = config.updateSource;
+        resultSource.current = preferenceKey;
         setResult(state.check);
         setStatus(checkedStatus(state.check));
       }
@@ -266,7 +268,7 @@ export function LauncherUpdateProvider({ children, pollMs = 1000 }: { children?:
       }
       if (!state?.check && config.checkForUpdates) await check(true);
     })();
-  }, [bootstrapped, check, config.checkForUpdates, config.updateSource, pollMs]);
+  }, [bootstrapped, check, config.checkForUpdates, preferenceKey, pollMs]);
 
   const value = useMemo<LauncherUpdates>(() => ({
     result, status, progress, checking, installing, notice,

@@ -72,6 +72,7 @@ const keyword = {
   credentials: "settings:search.keywords.credentials",
   startupCheck: "settings:search.keywords.startupCheck",
   updateChannel: "settings:search.keywords.updateChannel",
+  betaChannel: "settings:search.keywords.betaChannel",
   updateCheck: "settings:search.keywords.updateCheck",
   aiAssistant: "settings:search.keywords.aiAssistant",
   mcpServer: "settings:search.keywords.mcpServer",
@@ -137,6 +138,7 @@ export const settingsIndex: readonly SettingsEntry[] = [
   { section: "assistant", labelKey: "settings:assistant.mcpStart", keywords: [keyword.mcpServer], target: "assistant-mcp-actions" },
 
   { section: "about", labelKey: "settings:updates.checkOnStartup", keywords: [keyword.startupCheck], target: "about-update-check" },
+  { section: "about", labelKey: "settings:updates.channel", keywords: [keyword.updateChannel, keyword.betaChannel], target: "about-update-channel" },
   { section: "about", labelKey: "settings:updates.source", keywords: [keyword.updateChannel], target: "about-update-source" },
   { section: "about", labelKey: "settings:updates.checkNow", keywords: [keyword.updateCheck], target: "about-update-actions" },
 ];

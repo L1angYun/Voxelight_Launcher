@@ -141,8 +141,8 @@ describe("Settings → About → Updates", () => {
     const toggle = container.querySelector<HTMLInputElement>('input[aria-label="Check for updates on startup"]');
     await act(async () => toggle?.click());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(commandMock).toHaveBeenCalledWith("set_launcher_update_preferences", { checkForUpdates: true, updateSource: "auto" });
-    expect(onPersistedPatch).toHaveBeenCalledWith({ checkForUpdates: true, updateSource: "auto" });
+    expect(commandMock).toHaveBeenCalledWith("set_launcher_update_preferences", { checkForUpdates: true, updateSource: "auto", updateChannel: "stable" });
+    expect(onPersistedPatch).toHaveBeenCalledWith({ checkForUpdates: true, updateSource: "auto", updateChannel: "stable" });
     expect(status()).toBe("Version 0.7.0 is available.");
   });
 
@@ -154,8 +154,23 @@ describe("Settings → About → Updates", () => {
     const option = [...document.querySelectorAll<HTMLElement>('[role="option"][data-value="gitee"]')].find((item) => !item.closest('[aria-hidden="true"]'));
     await act(async () => option?.click());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(commandMock).toHaveBeenCalledWith("set_launcher_update_preferences", { checkForUpdates: false, updateSource: "gitee" });
-    expect(onPersistedPatch).toHaveBeenCalledWith({ checkForUpdates: false, updateSource: "gitee" });
+    expect(commandMock).toHaveBeenCalledWith("set_launcher_update_preferences", { checkForUpdates: false, updateSource: "gitee", updateChannel: "stable" });
+    expect(onPersistedPatch).toHaveBeenCalledWith({ checkForUpdates: false, updateSource: "gitee", updateChannel: "stable" });
+    expect(status()).toBe("Updates have not been checked.");
+    await rerender();
+    expect(button("Download and update")).toBeUndefined();
+  });
+
+  it("a new channel (beta) is saved at once and clears the previous result", async () => {
+    const rerender = await render();
+    await click("Check for updates");
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Update channel"]');
+    await act(async () => trigger?.click());
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"][data-value="beta"]')].find((item) => !item.closest('[aria-hidden="true"]'));
+    await act(async () => option?.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(commandMock).toHaveBeenCalledWith("set_launcher_update_preferences", { checkForUpdates: false, updateSource: "auto", updateChannel: "beta" });
+    expect(onPersistedPatch).toHaveBeenCalledWith({ checkForUpdates: false, updateSource: "auto", updateChannel: "beta" });
     expect(status()).toBe("Updates have not been checked.");
     await rerender();
     expect(button("Download and update")).toBeUndefined();
@@ -194,7 +209,7 @@ describe("Settings → About → Updates", () => {
     expect(status()).toBe("The installer could not be downloaded or verified. Try again or download it from the release page.");
     handlers.download_launcher_update = () => { throw new LauncherError("update.sourceChanged"); };
     await click("Retry update");
-    expect(status()).toBe("The update source changed. Check for updates again.");
+    expect(status()).toBe("The update source or channel changed. Check for updates again.");
     expect(button("Retry update")).toBeUndefined();
     expect(button("Download and update")).toBeUndefined();
     await click("Check for updates");

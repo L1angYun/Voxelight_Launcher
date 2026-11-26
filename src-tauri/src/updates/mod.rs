@@ -15,7 +15,9 @@ pub(crate) mod sweep;
 use crate::errors::AppResult;
 use crate::storage::LauncherState;
 use futures_util::{FutureExt, StreamExt};
-use manifest::{display_version, parse_running_version, parse_version, Release, Version};
+use manifest::{parse_semver, Release, SemVer};
+#[cfg(test)]
+use manifest::Version;
 use serde::Serialize;
 use sources::{Request, Response, Transport};
 use std::sync::Arc;
@@ -23,6 +25,7 @@ use std::sync::Arc;
 pub(crate) const GITHUB_REPO: &str = "/L1angYun/Voxelight_Launcher";
 pub(crate) const GITEE_REPO: &str = "/liangyun_Liu/Voxelight_Launcher";
 pub(crate) const API_LATEST: &str = "https://api.github.com/repos/L1angYun/Voxelight_Launcher/releases/latest";
+pub(crate) const API_RELEASES: &str = "https://api.github.com/repos/L1angYun/Voxelight_Launcher/releases?per_page=15";
 pub(crate) const MANIFEST_LATEST: &str =
     "https://github.com/L1angYun/Voxelight_Launcher/releases/latest/download/update.json";
 pub(crate) const GITEE_RELEASES: &str =
@@ -72,21 +75,51 @@ impl Preference {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Channel {
+    Stable,
+    Beta,
+}
+
+impl Channel {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "stable" => Some(Self::Stable),
+            "beta" => Some(Self::Beta),
+            _ => None,
+        }
+    }
+    pub(crate) const fn includes_prerelease(self) -> bool {
+        matches!(self, Self::Beta)
+    }
+}
+
 /// The fixed, space-free installer asset name used on both release pages.
+pub(crate) fn installer_name_for(version: SemVer) -> String {
+    format!("VoxelightLauncher-{}-x64-setup.exe", version.display())
+}
+
+#[cfg(test)]
 pub(crate) fn installer_name(version: Version) -> String {
-    format!("VoxelightLauncher-{}-x64-setup.exe", display_version(version))
+    installer_name_for(SemVer::stable(version))
 }
 
+pub(crate) fn current_semver() -> SemVer {
+    let raw = env!("CARGO_PKG_VERSION");
+    if raw.starts_with('v') {
+        panic!("the crate version must not start with 'v'");
+    }
+    parse_semver(raw).expect("the crate version is a valid SemVer stable or pre-release version")
+}
+
+#[cfg(test)]
 pub(crate) fn current_version() -> Version {
-    parse_running_version(env!("CARGO_PKG_VERSION"))
-        .expect("the crate version is a valid SemVer stable or pre-release version")
-        .0
+    current_semver().base()
 }
 
+#[cfg(test)]
 pub(crate) fn current_is_prerelease() -> bool {
-    parse_running_version(env!("CARGO_PKG_VERSION"))
-        .expect("the crate version is a valid SemVer stable or pre-release version")
-        .1
+    current_semver().is_prerelease()
 }
 
 pub(crate) fn current_version_string() -> String {
@@ -182,13 +215,13 @@ impl Transport for HttpTransport {
 #[derive(Default)]
 pub(crate) struct UpdateService {
     rate_limit: checker::RateLimit,
-    /// The offered package and the source preference its check used (HSR
-    /// binds the preference into the package).
-    offered: std::sync::Mutex<Option<(manifest::Package, Preference)>>,
+    /// The offered package and the source/channel preference its check used
+    /// (HSR binds the preference into the package).
+    offered: std::sync::Mutex<Option<(manifest::Package, Preference, Channel)>>,
     staged: tokio::sync::Mutex<Option<download::StagedUpdate>>,
-    /// The last check's view and the preference it used, for a window that
+    /// The last check's view and the source/channel it used, for a window that
     /// reloads (get_launcher_update_state).
-    last_check: std::sync::Mutex<Option<(UpdateView, Preference)>>,
+    last_check: std::sync::Mutex<Option<(UpdateView, Preference, Channel)>>,
     /// IDLE, RUNNING or CANCELLING: one atomic, so a cancel can never land
     /// after a finished download cleared it.
     download_state: std::sync::atomic::AtomicU8,
@@ -205,6 +238,8 @@ const INSTALLING: u8 = 3;
 pub(crate) struct UpdateView {
     current_version: String,
     latest_version: String,
+    /// True when `latest_version` is a pre-release (alpha / beta / rc).
+    prerelease: bool,
     /// "newer", "current" or "stale" (a source is behind a version seen before).
     status: &'static str,
     source: Source,
@@ -216,7 +251,8 @@ pub(crate) struct UpdateView {
 fn view(release: &Release, offer: checker::Offer) -> UpdateView {
     UpdateView {
         current_version: current_version_string(),
-        latest_version: display_version(release.version),
+        latest_version: release.version.display(),
+        prerelease: release.version.is_prerelease(),
         status: match offer {
             checker::Offer::Newer => "newer",
             checker::Offer::Current => "current",
@@ -229,8 +265,8 @@ fn view(release: &Release, offer: checker::Offer) -> UpdateView {
     }
 }
 
-/// Checks, records the highest version seen (an additive root field, kept
-/// by older builds through RetainedFields) and returns the offer.
+/// Checks, records the highest version seen (separate monotonic watermarks for
+/// stable and beta channels) and returns the offer.
 pub(crate) async fn check_with(
     state: &LauncherState,
     service: &UpdateService,
@@ -239,31 +275,50 @@ pub(crate) async fn check_with(
 ) -> Result<UpdateView, String> {
     let config = state.snapshot()?.config;
     let preference = Preference::parse(&config.update_source).ok_or("更新来源无效")?;
+    let channel = Channel::parse(&config.update_channel).ok_or("更新通道无效")?;
     // HSR clears the result when a check starts: a failed check offers nothing.
     service.forget_check();
-    let release = checker::check(transport, preference, &service.rate_limit, now).await?;
-    let seen = state.snapshot()?.update_highest_seen.as_deref().and_then(parse_version);
-    let offer = checker::classify_for_running(&release, current_version(), current_is_prerelease(), seen);
-    if offer != checker::Offer::Stale && seen.is_none_or(|seen| release.version > seen) {
-        let highest = display_version(release.version);
+    let release = checker::check_channel(transport, preference, channel, &service.rate_limit, now).await?;
+    let snap = state.snapshot()?;
+    let seen_stable = snap.update_highest_seen.as_deref().and_then(parse_semver);
+    let seen_beta = snap.update_highest_seen_beta.as_deref().and_then(parse_semver);
+    let seen = match channel {
+        Channel::Stable => seen_stable,
+        Channel::Beta => seen_stable.into_iter().chain(seen_beta).max(),
+    };
+    let offer = checker::classify_semver(&release, current_semver(), seen);
+    if offer != checker::Offer::Stale {
         let release_version = release.version;
-        state.update(|data| {
-            let current_seen = data.update_highest_seen.as_deref().and_then(parse_version);
-            if current_seen.is_none_or(|existing| release_version > existing) {
-                data.update_highest_seen = Some(highest.clone());
-            }
-            Ok(())
-        })?;
+        let highest = release_version.display();
+        let update_stable = !release_version.is_prerelease() && seen_stable.is_none_or(|s| release_version > s);
+        let update_beta = channel == Channel::Beta && seen_beta.is_none_or(|s| release_version > s);
+        if update_stable || update_beta {
+            state.update(|data| {
+                if !release_version.is_prerelease() {
+                    let current_seen = data.update_highest_seen.as_deref().and_then(parse_semver);
+                    if current_seen.is_none_or(|existing| release_version > existing) {
+                        data.update_highest_seen = Some(highest.clone());
+                    }
+                }
+                if channel == Channel::Beta {
+                    let current_beta = data.update_highest_seen_beta.as_deref().and_then(parse_semver);
+                    if current_beta.is_none_or(|existing| release_version > existing) {
+                        data.update_highest_seen_beta = Some(highest.clone());
+                    }
+                }
+                Ok(())
+            })?;
+        }
     }
     if let Ok(mut offered) = service.offered.lock() {
         *offered = match (offer, release.package.clone()) {
-            (checker::Offer::Newer, Some(package)) => Some((package, preference)),
+            (checker::Offer::Newer, Some(package)) => Some((package, preference, channel)),
             _ => None,
         };
     }
     let view = view(&release, offer);
     if let Ok(mut last) = service.last_check.lock() {
-        *last = Some((view.clone(), preference));
+        *last = Some((view.clone(), preference, channel));
     }
     Ok(view)
 }
@@ -333,7 +388,7 @@ pub(crate) struct StagedView {
 
 impl StagedView {
     fn of(package: &manifest::Package) -> Self {
-        Self { version: display_version(package.version), file_name: package.file_name.clone(), size: package.size }
+        Self { version: package.version.display(), file_name: package.file_name.clone(), size: package.size }
     }
 }
 
@@ -374,14 +429,17 @@ pub(crate) async fn download_with(
         return Err(ALREADY_DOWNLOADING.into());
     }
     let _downloading = Downloading(service);
-    let (package, checked_with) = service.offered.lock().map_err(|_| "更新状态异常")?.clone().ok_or(NOT_OFFERED)?;
+    let (package, checked_with, checked_channel) =
+        service.offered.lock().map_err(|_| "更新状态异常")?.clone().ok_or(NOT_OFFERED)?;
     let view = StagedView::of(&package);
     let mut staged = service.staged.lock().await;
-    // A source change after the check needs a new check (HSR clears the
-    // result), so an excluded host is never contacted. Read after taking the
+    // A source or channel change after the check needs a new check (HSR clears the
+    // result), so an excluded host or channel is never contacted. Read after taking the
     // slot: a preference change holds it (set_preferences_with).
-    let preference = Preference::parse(&state.snapshot()?.config.update_source).ok_or("更新来源无效")?;
-    if preference != checked_with {
+    let cfg = state.snapshot()?.config;
+    let preference = Preference::parse(&cfg.update_source).ok_or("更新来源无效")?;
+    let channel = Channel::parse(&cfg.update_channel).ok_or("更新通道无效")?;
+    if preference != checked_with || channel != checked_channel {
         return Err(SOURCE_CHANGED.into());
     }
     let cancelled = || service.download_state.load(Ordering::SeqCst) == CANCELLING;
@@ -438,9 +496,13 @@ pub(crate) fn state_with(
     service: &UpdateService,
     servers: &crate::server_manager::ServerRegistry,
 ) -> Result<UpdateState, String> {
-    let preference = Preference::parse(&state.snapshot()?.config.update_source);
+    let cfg = state.snapshot()?.config;
+    let preference = Preference::parse(&cfg.update_source);
+    let channel = Channel::parse(&cfg.update_channel);
     let check = service.last_check.lock().ok().and_then(|last| {
-        last.as_ref().filter(|(_, used)| Some(*used) == preference).map(|(view, _)| view.clone())
+        last.as_ref()
+            .filter(|(_, used_source, used_channel)| Some(*used_source) == preference && Some(*used_channel) == channel)
+            .map(|(view, ..)| view.clone())
     });
     let download = match service.download_state.load(std::sync::atomic::Ordering::SeqCst) {
         RUNNING => "downloading",
@@ -467,18 +529,27 @@ pub(crate) fn get_launcher_update_state(
     state_with(&state, &service, &servers).map_err(crate::errors::expected)
 }
 
-/// Saves "check on startup" and the update source at once (HSR saves both as
-/// they change). A new source clears the check, and cannot be chosen while a
+/// Saves "check on startup", the update source, and the update channel at once.
+/// A new source or channel clears the check, and cannot be chosen while a
 /// download or the install holds the service.
 pub(crate) fn set_preferences_with(
     state: &LauncherState,
     service: &UpdateService,
     check_for_updates: bool,
     update_source: &str,
+    update_channel: Option<&str>,
 ) -> AppResult<crate::models::Config> {
     use crate::errors::AppError;
     Preference::parse(update_source).ok_or_else(|| AppError::new("update.sourceInvalid"))?;
-    let changed = state.snapshot()?.config.update_source != update_source;
+    let current = state.snapshot()?.config;
+    let next_channel = match update_channel {
+        Some(value) => {
+            Channel::parse(value).ok_or_else(|| AppError::new("update.channelInvalid"))?;
+            value.to_owned()
+        }
+        None => current.update_channel.clone(),
+    };
+    let changed = current.update_source != update_source || current.update_channel != next_channel;
     // Holding the slot orders this against a download that waits for it.
     let _slot = if changed {
         let busy = service.download_state.load(std::sync::atomic::Ordering::SeqCst) != IDLE;
@@ -490,6 +561,7 @@ pub(crate) fn set_preferences_with(
     let config = state.update(|data| {
         data.config.check_for_updates = check_for_updates;
         data.config.update_source = update_source.to_owned();
+        data.config.update_channel = next_channel.clone();
         Ok(data.config.clone())
     })?;
     if changed {
@@ -504,8 +576,9 @@ pub(crate) fn set_launcher_update_preferences(
     service: tauri::State<'_, Arc<UpdateService>>,
     check_for_updates: bool,
     update_source: String,
+    update_channel: Option<String>,
 ) -> AppResult<crate::models::Config> {
-    set_preferences_with(&state, &service, check_for_updates, &update_source)
+    set_preferences_with(&state, &service, check_for_updates, &update_source, update_channel.as_deref())
 }
 
 /// Asks a running update download to stop; it removes its own files.

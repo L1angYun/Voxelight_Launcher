@@ -330,7 +330,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let bytes = b"committed bytes";
         let package = Package {
-            version: (0, 7, 0),
+            version: (0, 7, 0).into(),
             tag: "v0.7.0".into(),
             file_name: "VoxelightLauncher-0.7.0-x64-setup.exe".into(),
             size: bytes.len() as u64,

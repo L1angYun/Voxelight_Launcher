@@ -292,6 +292,14 @@ describe("launcher update review fixes", () => {
     expect(latest.result).toBeNull();
     expect(latest.status).toEqual({ key: "notChecked" });
 
+    respond({ get_launcher_update_state: () => idleState, check_launcher_update: () => newer });
+    await act(async () => latest.check());
+    expect(latest.result).toEqual(newer);
+    launcher.data.config = { ...launcher.data.config, updateChannel: "beta" };
+    await render();
+    expect(latest.result).toBeNull();
+    expect(latest.status).toEqual({ key: "notChecked" });
+
     for (const code of ["update.sourceChanged", "update.notOffered"]) {
       respond({
         get_launcher_update_state: () => idleState,

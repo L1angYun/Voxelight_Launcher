@@ -1,5 +1,9 @@
-use super::checker::{check, classify, select, Offer, RateLimit};
-use super::manifest::{parse_release, parse_version, pick_gitee_release, strict_json, Package, Release};
+use super::checker::{check, check_channel, classify, classify_semver, select, Offer, RateLimit};
+use super::manifest::{
+    display_version, parse_release, parse_release_for_channel, parse_running_version, parse_semver, parse_version,
+    pick_gitee_release, pick_gitee_release_for_channel, pick_github_release, strict_json, Package, PreReleaseStage,
+    Release, SemVer,
+};
 use super::sources::{get_file, manifest_location_tag, validate_location, FetchError, Location, Request, Response, Transport};
 use super::*;
 use futures_util::future::BoxFuture;
@@ -105,13 +109,14 @@ fn run<T>(future: impl std::future::Future<Output = T>) -> T {
 }
 
 fn release_json(tag: &str, sha: &str, size: u64) -> serde_json::Value {
-    let version = parse_version(tag).unwrap();
-    json!({"tag_name": tag, "draft": false, "prerelease": false, "body": format!("notes {tag}"),
-        "assets": [{"name": installer_name(version), "size": size, "digest": format!("sha256:{sha}")}]})
+    let version = parse_semver(tag).unwrap();
+    json!({"tag_name": tag, "draft": false, "prerelease": version.is_prerelease(), "body": format!("notes {tag}"),
+        "assets": [{"name": installer_name_for(version), "size": size, "digest": format!("sha256:{sha}")}]})
 }
 
 fn gitee_list(tag: &str) -> serde_json::Value {
-    json!([{"tag_name": tag, "prerelease": false, "body": format!("gitee notes {tag}"), "assets": [{"name": "update.json"}]}])
+    let version = parse_semver(tag).unwrap();
+    json!([{"tag_name": tag, "prerelease": version.is_prerelease(), "body": format!("gitee notes {tag}"), "assets": [{"name": "update.json"}]}])
 }
 
 fn gitee_manifest_url(tag: &str) -> String {
@@ -163,7 +168,7 @@ fn strict_json_rejects_duplicate_keys_excess_depth_and_oversize_bodies() {
 fn release_must_be_stable_and_bound_to_the_expected_tag() {
     let good = release_json("v0.7.0", SHA, 10);
     let release = parse_release(&good, Source::GitHub, Some("v0.7.0")).unwrap();
-    assert_eq!(release.version, (0, 7, 0));
+    assert_eq!(release.version, SemVer::stable((0, 7, 0)));
     assert_eq!(release.notes.as_deref(), Some("notes v0.7.0"));
     assert_eq!(release.release_url(), "https://github.com/L1angYun/Voxelight_Launcher/releases/tag/v0.7.0");
     let package = release.package.unwrap();
@@ -320,7 +325,7 @@ fn github_fallback_binds_the_tag_across_the_redirect_chain() {
     let limit = RateLimit::default();
     let now = chrono::Utc::now();
     let release = run(check(&fake, Preference::GitHub, &limit, now)).unwrap();
-    assert_eq!((release.version, release.source), ((0, 7, 0), Source::GitHub));
+    assert_eq!((release.version, release.source), (SemVer::stable((0, 7, 0)), Source::GitHub));
     fake.done();
 
     // While the quota is exhausted, later checks skip the API entirely.
@@ -471,13 +476,14 @@ fn a_single_source_preference_never_contacts_the_other_host() {
 }
 
 fn release(version: (u64, u64, u64), sha: &str, size: u64, source: Source) -> Release {
-    let tag = format!("v{}.{}.{}", version.0, version.1, version.2);
+    let semver = SemVer::stable(version);
+    let tag = format!("v{}", semver.display());
     Release {
-        version,
+        version: semver,
         tag: tag.clone(),
         source,
         notes: None,
-        package: Some(Package { version, tag, file_name: installer_name(version), size, sha256: sha.into(), source }),
+        package: Some(Package { version: semver, tag, file_name: installer_name_for(semver), size, sha256: sha.into(), source }),
     }
 }
 
@@ -485,8 +491,8 @@ fn release(version: (u64, u64, u64), sha: &str, size: u64, source: Source) -> Re
 fn selection_prefers_higher_versions_and_refuses_disagreeing_installers() {
     let a = release((0, 7, 0), SHA, 5, Source::GitHub);
     let b = release((0, 7, 1), SHA, 5, Source::Gitee);
-    assert_eq!(select(Ok(a.clone()), Some(Ok(b.clone()))).unwrap().version, (0, 7, 1));
-    assert_eq!(select(Ok(b.clone()), Some(Ok(a.clone()))).unwrap().version, (0, 7, 1));
+    assert_eq!(select(Ok(a.clone()), Some(Ok(b.clone()))).unwrap().version, SemVer::stable((0, 7, 1)));
+    assert_eq!(select(Ok(b.clone()), Some(Ok(a.clone()))).unwrap().version, SemVer::stable((0, 7, 1)));
     assert!(select(Ok(a.clone()), Some(Ok(release((0, 7, 0), OTHER_SHA, 5, Source::Gitee)))).is_err());
     assert!(select(Ok(a.clone()), Some(Ok(release((0, 7, 0), SHA, 6, Source::Gitee)))).is_err());
     assert_eq!(select(Ok(a.clone()), Some(Ok(release((0, 7, 0), SHA, 5, Source::Gitee)))).unwrap().source, Source::GitHub);
@@ -548,15 +554,20 @@ fn the_general_save_and_preset_import_keep_the_update_preferences() {
     let state = LauncherState::test_fixture(dir.path().join("profile"), Default::default(), crate::storage::test_client());
     let mut config = state.snapshot().unwrap().config;
     config.game_directory = dir.path().join("game").to_string_lossy().into_owned();
-    for (source, check) in [("mirror", false), ("gitee", false)] {
+    for (source, channel, check) in [("mirror", "beta", false), ("gitee", "beta", false)] {
         config.update_source = source.into();
+        config.update_channel = channel.into();
         config.check_for_updates = check;
         let saved = crate::commands::save_config_inner(&state, config.clone()).unwrap();
-        assert_eq!((saved.update_source.as_str(), saved.check_for_updates), ("auto", true), "{source}");
+        assert_eq!(
+            (saved.update_source.as_str(), saved.update_channel.as_str(), saved.check_for_updates),
+            ("auto", "stable", true),
+            "{source}"
+        );
     }
     let service = UpdateService::default();
-    let saved = set_preferences_with(&state, &service, false, "gitee").unwrap();
-    assert_eq!((saved.update_source.as_str(), saved.check_for_updates), ("gitee", false));
+    let saved = set_preferences_with(&state, &service, false, "gitee", Some("beta")).unwrap();
+    assert_eq!((saved.update_source.as_str(), saved.update_channel.as_str(), saved.check_for_updates), ("gitee", "beta", false));
     drop(state);
 }
 
@@ -565,10 +576,16 @@ fn update_settings_default_to_auto_and_a_startup_check() {
     let config = crate::models::Config::default();
     assert!(config.check_for_updates);
     assert_eq!(config.update_source, "auto");
+    assert_eq!(config.update_channel, "stable");
     let old: crate::models::Config = serde_json::from_str("{}").unwrap();
-    assert!(old.check_for_updates && old.update_source == "auto", "older state files get the defaults");
+    assert!(
+        old.check_for_updates && old.update_source == "auto" && old.update_channel == "stable",
+        "older state files get the defaults"
+    );
     assert!(Preference::parse("auto").is_some() && Preference::parse("github").is_some() && Preference::parse("gitee").is_some());
     assert!(Preference::parse("mirror").is_none());
+    assert!(Channel::parse("stable").is_some() && Channel::parse("beta").is_some());
+    assert!(Channel::parse("nightly").is_none());
 }
 
 // ---- C4b: the verified download ----
@@ -582,7 +599,7 @@ fn sha_of(bytes: &[u8]) -> String {
 
 fn package_of(bytes: &[u8], source: Source) -> Package {
     Package {
-        version: (0, 7, 0),
+        version: SemVer::stable((0, 7, 0)),
         tag: "v0.7.0".into(),
         file_name: installer_name((0, 7, 0)),
         size: bytes.len() as u64,
@@ -920,7 +937,7 @@ fn the_download_uses_only_the_offered_package_and_reuses_a_staged_one() {
 
     // An Auto re-check answered by the other source offers the same bytes: still reused.
     if let Ok(mut offered) = service.offered.lock() {
-        if let Some((package, _)) = offered.as_mut() {
+        if let Some((package, ..)) = offered.as_mut() {
             package.source = Source::Gitee;
         }
     }
@@ -1012,30 +1029,35 @@ fn update_preferences_save_at_once_and_a_new_source_clears_the_check() {
     let (_dir, state) = preference_fixture("github");
     let service = UpdateService::default();
     let servers = crate::server_manager::ServerRegistry::default();
-    let invalid = set_preferences_with(&state, &service, true, "sourceforge").err().map(|error| error.code);
+    let invalid = set_preferences_with(&state, &service, true, "sourceforge", None).err().map(|error| error.code);
     assert_eq!(invalid.as_deref(), Some("update.sourceInvalid"));
+    let invalid_channel = set_preferences_with(&state, &service, true, "github", Some("nightly")).err().map(|error| error.code);
+    assert_eq!(invalid_channel.as_deref(), Some("update.channelInvalid"));
 
     run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(newer_release()))]), chrono::Utc::now())).unwrap();
     // The toggle alone keeps the result.
-    let config = set_preferences_with(&state, &service, false, "github").unwrap();
+    let config = set_preferences_with(&state, &service, false, "github", None).unwrap();
     assert!(!config.check_for_updates);
     assert!(!state.snapshot().unwrap().config.check_for_updates, "saved, not only returned");
     assert!(service.offered.lock().unwrap().is_some());
     assert!(state_with(&state, &service, &servers).unwrap().check.is_some());
 
-    // While a download runs (or the install holds the service) the source cannot change; the toggle can.
+    // While a download runs (or the install holds the service) neither source nor channel can change; the toggle can.
     for phase in [RUNNING, CANCELLING, INSTALLING] {
         service.download_state.store(phase, std::sync::atomic::Ordering::SeqCst);
-        let refused = set_preferences_with(&state, &service, true, "gitee").err().map(|error| error.code);
+        let refused = set_preferences_with(&state, &service, true, "gitee", None).err().map(|error| error.code);
         assert_eq!(refused.as_deref(), Some("update.downloading"));
+        let refused_ch = set_preferences_with(&state, &service, true, "github", Some("beta")).err().map(|error| error.code);
+        assert_eq!(refused_ch.as_deref(), Some("update.downloading"));
         assert_eq!(state.snapshot().unwrap().config.update_source, "github");
-        set_preferences_with(&state, &service, true, "github").unwrap();
+        assert_eq!(state.snapshot().unwrap().config.update_channel, "stable");
+        set_preferences_with(&state, &service, true, "github", Some("stable")).unwrap();
     }
     service.download_state.store(IDLE, std::sync::atomic::Ordering::SeqCst);
 
-    let config = set_preferences_with(&state, &service, true, "gitee").unwrap();
-    assert_eq!((config.check_for_updates, config.update_source.as_str()), (true, "gitee"));
-    assert!(service.offered.lock().unwrap().is_none(), "the next download needs a check with the new source");
+    let config = set_preferences_with(&state, &service, true, "gitee", Some("beta")).unwrap();
+    assert_eq!((config.check_for_updates, config.update_source.as_str(), config.update_channel.as_str()), (true, "gitee", "beta"));
+    assert!(service.offered.lock().unwrap().is_none(), "the next download needs a check with the new source/channel");
     assert_eq!(state_with(&state, &service, &servers).unwrap().check, None);
     drop(state);
 }
@@ -1140,6 +1162,92 @@ fn a_cancel_that_arrives_as_the_download_ends_still_stops_it_and_keeps_the_file(
     assert!(state_with(&state, &service, &servers).unwrap().staged.is_some(), "the verified file stays for the next attempt");
     // Without a cancel the staged file is reused.
     run(download_with(&state, &service, &fake, root.path(), &|_, _| {})).unwrap();
+    drop(service);
+    assert!(root.leftovers().is_empty());
+    drop(state);
+}
+
+#[test]
+fn beta_channel_supports_semver_prerelease_checks_downloads_and_separate_watermarks() {
+    // SemVer 2.0.0 ordering across alpha, beta (numeric), rc, and stable.
+    let v_a1 = parse_semver("v0.7.0-alpha.1").unwrap();
+    let v_b1 = parse_semver("v0.7.0-beta.1").unwrap();
+    let v_b2 = parse_semver("v0.7.0-beta.2").unwrap();
+    let v_b10 = parse_semver("v0.7.0-beta.10").unwrap();
+    let v_rc1 = parse_semver("v0.7.0-rc.1").unwrap();
+    let v_rel = parse_semver("v0.7.0").unwrap();
+    assert!(v_a1 < v_b1 && v_b1 < v_b2 && v_b2 < v_b10 && v_b10 < v_rc1 && v_rc1 < v_rel);
+    assert_eq!(v_b2.pre, Some((PreReleaseStage::Beta, 2)));
+    assert_eq!(installer_name_for(v_b2), "VoxelightLauncher-0.7.0-beta.2-x64-setup.exe");
+
+    // Stable rejects pre-releases; Beta accepts matching prerelease flag and rejects mismatched flag/tag.
+    let beta_json = release_json("v99.0.0-beta.2", &sha_of(BYTES), BYTES.len() as u64);
+    assert!(parse_release_for_channel(&beta_json, Source::GitHub, None, Channel::Stable).is_err());
+    let parsed_beta = parse_release_for_channel(&beta_json, Source::GitHub, None, Channel::Beta).unwrap();
+    assert!(parsed_beta.version.is_prerelease());
+    assert_eq!(parsed_beta.package.as_ref().unwrap().file_name, "VoxelightLauncher-99.0.0-beta.2-x64-setup.exe");
+    assert_eq!(classify_semver(&parsed_beta, parse_semver("99.0.0-beta.1").unwrap(), None), Offer::Newer);
+    assert_eq!(classify_semver(&parsed_beta, parse_semver("99.0.0").unwrap(), None), Offer::Current);
+
+    let mut mismatched = beta_json.clone();
+    mismatched["prerelease"] = json!(false);
+    assert!(parse_release_for_channel(&mismatched, Source::GitHub, None, Channel::Beta).is_err());
+
+    // GitHub Beta picks the highest SemVer across drafts, pre-releases, and stable releases.
+    let gh_list = json!([
+        {"tag_name": "v99.0.0-beta.1", "draft": false, "prerelease": true, "body": "b1", "assets": []},
+        {"tag_name": "v99.1.0-beta.1", "draft": true, "prerelease": true, "body": "draft", "assets": []},
+        beta_json.clone(),
+        release_json("v98.0.0", &sha_of(BYTES), BYTES.len() as u64)
+    ]);
+    let picked_gh = pick_github_release(&gh_list, Channel::Beta).unwrap();
+    assert_eq!(picked_gh.tag, "v99.0.0-beta.2");
+
+    // Gitee Beta picks the highest pre-release or stable carrying update.json; Stable skips pre-releases.
+    let gitee_mixed = json!([
+        {"tag_name": "v98.0.0", "prerelease": false, "assets": [{"name": "update.json"}], "body": "stable"},
+        {"tag_name": "v99.0.0-beta.2", "prerelease": true, "assets": [{"name": "update.json"}], "body": "beta2"}
+    ]);
+    assert_eq!(pick_gitee_release_for_channel(&gitee_mixed, Channel::Stable).unwrap().0, "v98.0.0");
+    assert_eq!(pick_gitee_release_for_channel(&gitee_mixed, Channel::Beta).unwrap().0, "v99.0.0-beta.2");
+
+    // End-to-end check + download on Beta channel via GitHub API_RELEASES.
+    let (_dir, state) = preference_fixture("github");
+    let service = UpdateService::default();
+    let root = Root::new();
+    set_preferences_with(&state, &service, true, "github", Some("beta")).unwrap();
+    let fake_beta = Fake::with(vec![(API_RELEASES, ok(gh_list))]);
+    let view = run(check_with(&state, &service, &fake_beta, chrono::Utc::now())).unwrap();
+    assert_eq!((view.status, view.latest_version.as_str(), view.prerelease), ("newer", "99.0.0-beta.2", true));
+    assert_eq!(state.snapshot().unwrap().update_highest_seen, None, "beta pre-release must not pollute stable watermark");
+    assert_eq!(state.snapshot().unwrap().update_highest_seen_beta.as_deref(), Some("99.0.0-beta.2"));
+
+    let beta_url = super::sources::file_url(Source::GitHub, "v99.0.0-beta.2", "VoxelightLauncher-99.0.0-beta.2-x64-setup.exe");
+    let staged = run(download_with(&state, &service, &Fake::with(vec![(&beta_url, body(BYTES))]), root.path(), &|_, _| {})).unwrap();
+    assert_eq!(staged.version, "99.0.0-beta.2");
+    assert_eq!(staged.file_name, "VoxelightLauncher-99.0.0-beta.2-x64-setup.exe");
+
+    // A frozen source serving 99.0.0-beta.1 on Beta channel is caught as stale.
+    let frozen_beta = Fake::with(vec![(API_RELEASES, ok(json!([release_json("v99.0.0-beta.1", &sha_of(BYTES), BYTES.len() as u64)])))]);
+    let stale_view = run(check_with(&state, &service, &frozen_beta, chrono::Utc::now())).unwrap();
+    assert_eq!(stale_view.status, "stale");
+
+    // Switching back to Stable does NOT flag stable 98.0.0 as stale because stable watermark is untouched.
+    set_preferences_with(&state, &service, true, "github", Some("stable")).unwrap();
+    let fake_stable = Fake::with(vec![(API_LATEST, ok(release_json("v98.0.0", &sha_of(BYTES), BYTES.len() as u64)))]);
+    let stable_view = run(check_with(&state, &service, &fake_stable, chrono::Utc::now())).unwrap();
+    assert_eq!((stable_view.status, stable_view.latest_version.as_str(), stable_view.prerelease), ("newer", "98.0.0", false));
+    assert_eq!(state.snapshot().unwrap().update_highest_seen.as_deref(), Some("98.0.0"));
+
+    // Gitee Beta end-to-end check works via check_channel.
+    let fake_gitee_beta = Fake::with(vec![
+        (GITEE_RELEASES, ok(gitee_mixed)),
+        (&gitee_manifest_url("v99.0.0-beta.2"), ok(beta_json)),
+    ]);
+    let gitee_rel = run(check_channel(&fake_gitee_beta, Preference::Gitee, Channel::Beta, &RateLimit::default(), chrono::Utc::now())).unwrap();
+    assert_eq!(gitee_rel.tag, "v99.0.0-beta.2");
+    fake_gitee_beta.done();
+
     drop(service);
     assert!(root.leftovers().is_empty());
     drop(state);

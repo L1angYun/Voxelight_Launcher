@@ -82,12 +82,12 @@ pub(crate) fn inputs_from(get: impl Fn(&str) -> Option<String>) -> Result<Inputs
     }
 }
 
-/// `VoxelightLauncher-<x.y.z>-x64-setup.exe`.
+/// `VoxelightLauncher-<x.y.z[-(alpha|beta|rc).N]>-x64-setup.exe`.
 pub(crate) fn installer_file_name(name: &str) -> bool {
     name.strip_prefix("VoxelightLauncher-")
         .and_then(|rest| rest.strip_suffix("-x64-setup.exe"))
-        .and_then(super::manifest::parse_version)
-        .is_some_and(|version| super::installer_name(version) == name)
+        .and_then(super::manifest::parse_semver)
+        .is_some_and(|version| super::installer_name_for(version) == name)
 }
 
 /// A staging directory name: 32 lowercase hex digits.

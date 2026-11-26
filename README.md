@@ -14,7 +14,7 @@ Download `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](http
 
 - Installs per-user with no administrator privileges (default: `%LOCALAPPDATA%\Voxelight Launcher`), and installs WebView2 if missing.
 - **Official releases bundle a Microsoft Client ID and CurseForge API key**, so Microsoft sign-in and CurseForge work out of the box. Source builds include neither; see [Accounts and service keys](#accounts-and-service-keys).
-- Stable updates can be verified (size + SHA-256) and installed in-app from **Settings → About**, with downgrade protection. Pre-release builds (`-alpha.N`, `-beta.N`, `-rc.N`) are published explicitly as pre-releases and automatically upgrade to the corresponding stable release once published.
+- Updates can be verified (size + SHA-256) and installed in-app from **Settings → About**, with downgrade protection. Choose **Stable** (official releases only, default) or **Beta** (also includes `-alpha.N` / `-beta.N` / `-rc.N` pre-releases) under **Update channel**; pre-release builds also graduate automatically to the corresponding stable release once published.
 
 ## Highlights
 

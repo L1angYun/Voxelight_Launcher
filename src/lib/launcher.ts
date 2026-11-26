@@ -70,6 +70,7 @@ export interface Config {
   defaultSkin: DefaultSkinId;
   checkForUpdates: boolean;
   updateSource: "auto" | "github" | "gitee";
+  updateChannel: "stable" | "beta";
   tourCompleted?: boolean;
   assistantProvider: "openai" | "anthropic";
   assistantBaseUrl: string;
@@ -250,6 +251,7 @@ export const defaults: Config = {
   defaultSkin: "steve",
   checkForUpdates: true,
   updateSource: "auto",
+  updateChannel: "stable",
   tourCompleted: false,
   assistantProvider: "openai",
   assistantBaseUrl: "",

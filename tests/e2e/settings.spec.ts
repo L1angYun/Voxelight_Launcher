@@ -244,19 +244,25 @@ test("the startup update notice opens Settings → About once and installs from 
   });
 });
 
-test("the update source and the startup check save at once", async ({ page }) => {
+test("the update source, channel, and the startup check save at once", async ({ page }) => {
   await installLauncherFixture(page);
   await openSettings(page);
   await page.locator(".vx-settings-nav").getByRole("button", { name: "关于", exact: true }).click();
   await expect(page.getByTestId("launcher-update-status")).toHaveText(`当前版本 ${packageJson.version} 已是最新。`);
   await page.getByLabel("启动时检查更新", { exact: true }).uncheck();
+  await selectValue(page, "更新通道", "beta");
+  await expect(page.getByTestId("launcher-update-status")).toHaveText("尚未检查更新。");
   await selectValue(page, "更新来源", "gitee");
   await expect(page.getByTestId("launcher-update-status")).toHaveText("尚未检查更新。");
   await expect(page.getByText(/有未保存的更改/)).toHaveCount(0);
   const persisted = await page.evaluate(async () => (await (window as unknown as {
     __TAURI_INTERNALS__: { invoke: (name: string) => Promise<{ config: Record<string, unknown> }> };
   }).__TAURI_INTERNALS__.invoke("bootstrap")).config);
-  expect(persisted).toMatchObject({ checkForUpdates: false, updateSource: "gitee" });
+  expect(persisted).toMatchObject({ checkForUpdates: false, updateSource: "gitee", updateChannel: "beta" });
   const saved = (await calls(page)).filter(({ name }) => name === "set_launcher_update_preferences").map(({ args }) => args);
-  expect(saved).toEqual([{ checkForUpdates: false, updateSource: "auto" }, { checkForUpdates: false, updateSource: "gitee" }]);
+  expect(saved).toEqual([
+    { checkForUpdates: false, updateSource: "auto", updateChannel: "stable" },
+    { checkForUpdates: false, updateSource: "auto", updateChannel: "beta" },
+    { checkForUpdates: false, updateSource: "gitee", updateChannel: "beta" },
+  ]);
 });

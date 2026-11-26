@@ -80,6 +80,7 @@
       "credentials": "Credenciales del proxy",
       "startupCheck": "Comprobación al inicio",
       "updateChannel": "Canal de actualización",
+      "betaChannel": "Beta prelanzamiento versión de prueba",
       "updateCheck": "Buscar actualizaciones",
       "aiAssistant": "Asistente de IA Lumen",
       "mcpServer": "Servidor MCP",
@@ -373,7 +374,13 @@
   "updates": {
     "section": "Actualizaciones",
     "checkOnStartup": "Buscar actualizaciones al iniciar",
-    "checkOnStartupTip": "Usa la fuente de actualización seleccionada al iniciar para buscar versiones estables. También puedes comprobarlo en cualquier momento.",
+    "checkOnStartupTip": "Usa el canal y la fuente seleccionados al iniciar para buscar actualizaciones. También puedes comprobarlo en cualquier momento.",
+    "channel": "Canal de actualización",
+    "channelTip": "Estable recibe solo versiones oficiales. Beta también incluye prelanzamientos (beta / rc) y nunca degrada la versión.",
+    "channels": {
+      "stable": "Estable",
+      "beta": "Beta (prelanzamiento)"
+    },
     "source": "Fuente de actualización",
     "sourceTip": "Elige dónde buscar y descargar actualizaciones. Automático consulta GitHub y Gitee a la vez.",
     "sources": {

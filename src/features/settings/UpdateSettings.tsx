@@ -18,6 +18,7 @@ type Props = Pick<SettingsSectionProps, "config" | "onPersistedPatch" | "onError
 };
 
 const sources = ["auto", "github", "gitee"] as const;
+const channels = ["stable", "beta"] as const;
 
 /** Settings → About → Updates (HSR "Updates" section). */
 export function UpdateSettings({ config, onPersistedPatch, onError, focusRequest, onFocusHandled }: Props) {
@@ -44,14 +45,20 @@ export function UpdateSettings({ config, onPersistedPatch, onError, focusRequest
     onFocusHandled?.();
   }, [focusRequest, onFocusHandled]);
 
-  async function savePreferences(patch: Pick<Config, "checkForUpdates" | "updateSource">) {
+  const currentChannel: Config["updateChannel"] = config.updateChannel === "beta" ? "beta" : "stable";
+
+  async function savePreferences(patch: Pick<Config, "checkForUpdates" | "updateSource" | "updateChannel">) {
     setSaving(true);
     try {
       const next = await command<Config>("set_launcher_update_preferences", patch);
       // Saved: clear what no longer applies before the page reloads its data.
-      if (next.updateSource !== config.updateSource) updates.sourceChanged();
+      if (next.updateSource !== config.updateSource || next.updateChannel !== currentChannel) updates.sourceChanged();
       if (!next.checkForUpdates) updates.dismissNotice();
-      await onPersistedPatch({ checkForUpdates: next.checkForUpdates, updateSource: next.updateSource });
+      await onPersistedPatch({
+        checkForUpdates: next.checkForUpdates,
+        updateSource: next.updateSource,
+        updateChannel: next.updateChannel,
+      });
     } catch (cause) {
       onError(cause);
     } finally {
@@ -108,14 +115,35 @@ export function UpdateSettings({ config, onPersistedPatch, onError, focusRequest
       <h3 id="vx-updates-title">{t("settings:updates.section")}</h3>
       <label className="vx-settings-check" data-settings-target="about-update-check">
         <input type="checkbox" aria-label={t("settings:updates.checkOnStartup")} checked={config.checkForUpdates} disabled={saving}
-          onChange={(event) => void savePreferences({ checkForUpdates: event.target.checked, updateSource: config.updateSource })} />
+          onChange={(event) => void savePreferences({ checkForUpdates: event.target.checked, updateSource: config.updateSource, updateChannel: currentChannel })} />
         <span>{t("settings:updates.checkOnStartup")}<small>{t("settings:updates.checkOnStartupTip")}</small></span>
       </label>
+      <label data-settings-target="about-update-channel">
+        {t("settings:updates.channel")}
+        <Select aria-label={t("settings:updates.channel")} value={currentChannel} disabled={!unblocked}
+          onChange={(value) => {
+            if (value !== currentChannel) {
+              void savePreferences({
+                checkForUpdates: config.checkForUpdates,
+                updateSource: config.updateSource,
+                updateChannel: value as Config["updateChannel"],
+              });
+            }
+          }}
+          options={channels.map((value) => ({ value, label: t(`settings:updates.channels.${value}`) }))} />
+      </label>
+      <p>{t("settings:updates.channelTip")}</p>
       <label data-settings-target="about-update-source">
         {t("settings:updates.source")}
         <Select aria-label={t("settings:updates.source")} value={config.updateSource} disabled={!unblocked}
           onChange={(value) => {
-            if (value !== config.updateSource) void savePreferences({ checkForUpdates: config.checkForUpdates, updateSource: value as Config["updateSource"] });
+            if (value !== config.updateSource) {
+              void savePreferences({
+                checkForUpdates: config.checkForUpdates,
+                updateSource: value as Config["updateSource"],
+                updateChannel: currentChannel,
+              });
+            }
           }}
           options={sources.map((value) => ({ value, label: t(`settings:updates.sources.${value}`) }))} />
       </label>

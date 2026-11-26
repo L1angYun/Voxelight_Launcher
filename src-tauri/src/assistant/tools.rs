@@ -749,6 +749,7 @@ pub async fn execute_tool(
                 "javaAutoDownload": config.java_auto_download,
                 "checkForUpdates": config.check_for_updates,
                 "updateSource": config.update_source,
+                "updateChannel": config.update_channel,
                 "assistantPermission": config.assistant_permission,
             }))
         }

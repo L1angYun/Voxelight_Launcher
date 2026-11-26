@@ -5,7 +5,7 @@ All notable changes to **Voxelight Launcher** are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning 2.0.0](https://semver.org/):
 
 - `MAJOR.MINOR.PATCH` — Stable release (`v0.7.0`, `v1.0.0`), distributed via the in-app stable auto-updater.
-- `MAJOR.MINOR.PATCH-(alpha|beta|rc).N` — Pre-release (`v0.7.0-beta.1`, `v0.7.0-rc.1`), published as a GitHub/Gitee Pre-release and never auto-pushed to stable users; pre-release builds automatically upgrade to the corresponding stable release once published.
+- `MAJOR.MINOR.PATCH-(alpha|beta|rc).N` — Pre-release (`v0.7.0-beta.1`, `v0.7.0-rc.1`), published as a GitHub/Gitee Pre-release; users on the **Stable** channel never receive pre-releases automatically, while users who opt into the **Beta** update channel in **Settings → About** can update to newer pre-releases and graduate seamlessly to stable releases.
 
 ## [Unreleased]
 
@@ -20,7 +20,7 @@ _Pre-release beta for 0.7.0._
 - **Factory reset**: **Settings → General → Restore initial state** clears settings, accounts, DPAPI tokens/keys, instance registrations, download history, and stops MCP while never deleting Minecraft game directories, worlds, mods, backups, or server files.
 - **Local & Windows system proxy auto-detection**: Detects Windows system proxy (WinHTTP), PAC URLs, environment variables, and common local HTTP proxy listeners (`127.0.0.1`) with one-click adoption in Settings and OOBE.
 - **7 interface languages**: Added Traditional Chinese (`zh-TW`), Japanese (`ja-JP`), Korean (`ko-KR`), Russian (`ru-RU`), and Spanish (`es-ES`) alongside Simplified Chinese (`zh-CN`) and English (`en-US`), with full system-locale mapping, native Windows CJK font stacks, and diagnostic report localization.
-- **Version management tooling**: Added `scripts/version.mjs` (`npm run version:check` / `npm run version:set`) and pre-release packaging support (`--prerelease`) in release metadata and asset staging scripts, plus SemVer pre-release support in the launcher updater's current-version check.
+- **Version management & Beta update channel**: Added `scripts/version.mjs` (`npm run version:check` / `npm run version:set`), pre-release packaging support (`--prerelease`) in release metadata and asset staging scripts, and an opt-in **Update channel** selector (**Stable** / **Beta**) in **Settings → About** with full SemVer 2.0.0 ordering, GitHub/Gitee pre-release discovery, and independent stable/beta anti-downgrade watermarks.
 - **Loader switching, OptiFine, MultiMC / MCBBS import, drag-and-drop, and STUN network check**: Change the loader of existing instances, install OptiFine via local installer JAR or BMCLAPI, import MultiMC / Prism / MCBBS modpacks, drag-and-drop mods/modpacks/skins, import JAR / folder / `win_args.txt` third-party servers, and diagnose IPv4/IPv6 NAT reachability.
 
 ### Changed

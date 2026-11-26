@@ -79,6 +79,7 @@
       "credentials": "プロキシ認証情報",
       "startupCheck": "起動時チェック",
       "updateChannel": "更新チャネル",
+      "betaChannel": "ベータ beta プレリリース テスト版",
       "updateCheck": "更新確認",
       "aiAssistant": "Lumen AI アシスタント",
       "mcpServer": "MCP サーバー",
@@ -370,7 +371,13 @@
   "updates": {
     "section": "アップデート",
     "checkOnStartup": "起動時に更新を確認",
-    "checkOnStartupTip": "起動時に選択中の更新ソースで安定版リリースを確認します。いつでも手動確認できます。",
+    "checkOnStartupTip": "起動時に選択中の更新チャネルと更新ソースで更新を確認します。いつでも手動確認できます。",
+    "channel": "更新チャネル",
+    "channelTip": "安定版は正式リリースのみを受け取ります。ベータ版では beta / rc などのプレリリースも含まれ、ダウングレードは行われません。",
+    "channels": {
+      "stable": "安定版",
+      "beta": "ベータ版（Beta）"
+    },
     "source": "更新ソース",
     "sourceTip": "更新の確認・ダウンロード元を選択します。「自動」は GitHub と Gitee を併用します。",
     "sources": {

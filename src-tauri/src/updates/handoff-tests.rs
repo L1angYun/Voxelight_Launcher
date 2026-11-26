@@ -191,7 +191,17 @@ use std::collections::HashMap;
 #[test]
 fn staging_identity_is_exact() {
     assert!(installer_file_name("VoxelightLauncher-0.7.0-x64-setup.exe"));
-    for bad in ["VoxelightLauncher-v0.7.0-x64-setup.exe", "VoxelightLauncher-0.7-x64-setup.exe", "other.exe", "VoxelightLauncher-0.7.0-x64-setup.exe.bat"] {
+    assert!(installer_file_name("VoxelightLauncher-0.7.0-beta.2-x64-setup.exe"));
+    assert!(installer_file_name("VoxelightLauncher-0.7.0-rc.1-x64-setup.exe"));
+    for bad in [
+        "VoxelightLauncher-v0.7.0-x64-setup.exe",
+        "VoxelightLauncher-v0.7.0-beta.1-x64-setup.exe",
+        "VoxelightLauncher-0.7.0-beta.0-x64-setup.exe",
+        "VoxelightLauncher-0.7.0-dev.1-x64-setup.exe",
+        "VoxelightLauncher-0.7-x64-setup.exe",
+        "other.exe",
+        "VoxelightLauncher-0.7.0-x64-setup.exe.bat",
+    ] {
         assert!(!installer_file_name(bad), "{bad}");
     }
     assert!(staging_name(&"a".repeat(32)));
@@ -396,7 +406,7 @@ fn install_waits_for_games_servers_tasks_and_downloads() {
 fn the_helper_copy_never_replaces_a_file_and_the_command_carries_only_fixed_values() {
     let stage = Stage::new();
     let package = super::manifest::Package {
-        version: (0, 7, 0),
+        version: (0, 7, 0).into(),
         tag: "v0.7.0".into(),
         file_name: installer_name((0, 7, 0)),
         size: BYTES.len() as u64,
@@ -494,7 +504,7 @@ fn the_helper_really_runs_with_only_the_fixed_environment() {
     let probe = stage.root.path().join("probe.cmd");
     std::fs::write(&probe, "@set\r\n").unwrap();
     let package = super::manifest::Package {
-        version: (0, 7, 0),
+        version: (0, 7, 0).into(),
         tag: "v0.7.0".into(),
         file_name: installer_name((0, 7, 0)),
         size: BYTES.len() as u64,

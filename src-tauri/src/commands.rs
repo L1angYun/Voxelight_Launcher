@@ -281,9 +281,10 @@ fn save_approved_config_with_scope(state: &LauncherState, mut config: Config, ap
             keep_saved_appearance(&mut config, &data.config);
         }
         // Only set_launcher_update_preferences changes these: it waits for a
-        // running update download and clears a check made with another source.
+        // running update download and clears a check made with another source or channel.
         config.check_for_updates = data.config.check_for_updates;
         config.update_source.clone_from(&data.config.update_source);
+        config.update_channel.clone_from(&data.config.update_channel);
         // Only set_tour_completed changes this: a Settings page opened before
         // the tour ended, or an imported preset, must not bring it back.
         config.tour_completed = data.config.tour_completed;
@@ -689,6 +690,7 @@ pub(crate) async fn reset_launcher_state_inner(
         data.instances.clear();
         data.pending_credential_removals.clear();
         data.update_highest_seen = None;
+        data.update_highest_seen_beta = None;
         Ok(data.config.clone())
     })?;
     state.control.set_limit(saved.download_limit_kib);

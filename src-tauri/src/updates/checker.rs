@@ -2,9 +2,13 @@
 //! first with a tag-bound update.json fallback when rate limited, the Gitee
 //! release list, and in Auto mode both at once with a one-second window for
 //! the second answer. Same version with different installer bytes is an error.
-use super::manifest::{parse_release, pick_gitee_release, strict_json, Release, Version};
+use super::manifest::{
+    parse_release_for_channel, pick_gitee_release_for_channel, pick_github_release, strict_json, Release, SemVer,
+};
+#[cfg(test)]
+use super::manifest::Version;
 use super::sources::{file_url, get_file, manifest_location_tag, read_body, Request, Response, Transport};
-use super::{Preference, Source, API_LATEST, GITEE_RELEASES, MANIFEST_LATEST, MAX_METADATA_BYTES};
+use super::{Channel, Preference, Source, API_LATEST, API_RELEASES, GITEE_RELEASES, MANIFEST_LATEST, MAX_METADATA_BYTES};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -65,11 +69,17 @@ pub(crate) const QUOTA_EXHAUSTED: &str = "GitHub API 调用次数已用完";
 /// The end of a source's deadline message (update.timedOut).
 pub(crate) const TIMED_OUT: &str = "更新检查超时";
 
-async fn read_github(transport: &dyn Transport, limit: &RateLimit, now: DateTime<Utc>) -> Result<Release, String> {
+async fn read_github(
+    transport: &dyn Transport,
+    channel: Channel,
+    limit: &RateLimit,
+    now: DateTime<Utc>,
+) -> Result<Release, String> {
     let until = match limit.until(now) {
         Some(until) => until,
         None => {
-            let response = transport.send(Request { url: API_LATEST.into(), api: true }).await?;
+            let api_url = if channel.includes_prerelease() { API_RELEASES } else { API_LATEST };
+            let response = transport.send(Request { url: api_url.into(), api: true }).await?;
             match rate_limited_until(&response, now) {
                 Some(until) => {
                     limit.set(until);
@@ -79,7 +89,12 @@ async fn read_github(transport: &dyn Transport, limit: &RateLimit, now: DateTime
                     if !(200..300).contains(&response.status) {
                         return Err(format!("GitHub 更新检查失败（HTTP {}）", response.status));
                     }
-                    return parse_release(&json_of(response).await?, Source::GitHub, None);
+                    let json = json_of(response).await?;
+                    return if channel.includes_prerelease() {
+                        pick_github_release(&json, channel)
+                    } else {
+                        parse_release_for_channel(&json, Source::GitHub, None, Channel::Stable)
+                    };
                 }
             }
         }
@@ -112,19 +127,19 @@ async fn read_github_fallback(transport: &dyn Transport) -> Result<Release, Stri
         if !(200..300).contains(&response.status) {
             return Err(format!("GitHub 更新信息读取失败（HTTP {}）", response.status));
         }
-        return parse_release(&json_of(response).await?, Source::GitHub, expected.as_deref());
+        return parse_release_for_channel(&json_of(response).await?, Source::GitHub, expected.as_deref(), Channel::Stable);
     }
     Err("更新跳转次数过多".into())
 }
 
-async fn read_gitee(transport: &dyn Transport) -> Result<Release, String> {
+async fn read_gitee(transport: &dyn Transport, channel: Channel) -> Result<Release, String> {
     let response = transport.send(Request { url: GITEE_RELEASES.into(), api: false }).await?;
     if !(200..300).contains(&response.status) {
         return Err(format!("Gitee 更新检查失败（HTTP {}）", response.status));
     }
-    let (tag, notes) = pick_gitee_release(&json_of(response).await?)?;
+    let (tag, notes) = pick_gitee_release_for_channel(&json_of(response).await?, channel)?;
     let manifest = get_file(transport, &file_url(Source::Gitee, &tag, "update.json"), "update.json", Source::Gitee, Some(&tag)).await?;
-    let mut release = parse_release(&json_of(manifest).await?, Source::Gitee, Some(&tag))?;
+    let mut release = parse_release_for_channel(&json_of(manifest).await?, Source::Gitee, Some(&tag), channel)?;
     // The mirror's update.json has no body; its release list carries the notes.
     release.notes = release.notes.or(notes);
     Ok(release)
@@ -133,12 +148,13 @@ async fn read_gitee(transport: &dyn Transport) -> Result<Release, String> {
 async fn read_source(
     transport: &dyn Transport,
     source: Source,
+    channel: Channel,
     limit: &RateLimit,
     now: DateTime<Utc>,
 ) -> Result<Release, String> {
     let (deadline, read) = match source {
-        Source::GitHub => (GITHUB_DEADLINE, futures_util::future::Either::Left(read_github(transport, limit, now))),
-        Source::Gitee => (GITEE_DEADLINE, futures_util::future::Either::Right(read_gitee(transport))),
+        Source::GitHub => (GITHUB_DEADLINE, futures_util::future::Either::Left(read_github(transport, channel, limit, now))),
+        Source::Gitee => (GITEE_DEADLINE, futures_util::future::Either::Right(read_gitee(transport, channel))),
     };
     tokio::time::timeout(deadline, read)
         .await
@@ -166,21 +182,33 @@ pub(crate) fn select(first: Result<Release, String>, second: Option<Result<Relea
     }
 }
 
-/// Runs the check. In Auto mode both sources start at once; once one
-/// answers successfully, the other gets at most one more second.
+/// Runs the check on the Stable channel.
+#[cfg(test)]
 pub(crate) async fn check(
     transport: &dyn Transport,
     preference: Preference,
     limit: &RateLimit,
     now: DateTime<Utc>,
 ) -> Result<Release, String> {
+    check_channel(transport, preference, Channel::Stable, limit, now).await
+}
+
+/// Runs the check for `channel`. In Auto mode both sources start at once; once
+/// one answers successfully, the other gets at most one more second.
+pub(crate) async fn check_channel(
+    transport: &dyn Transport,
+    preference: Preference,
+    channel: Channel,
+    limit: &RateLimit,
+    now: DateTime<Utc>,
+) -> Result<Release, String> {
     use futures_util::future::{select as race, Either};
     match preference {
-        Preference::GitHub => read_source(transport, Source::GitHub, limit, now).await,
-        Preference::Gitee => read_source(transport, Source::Gitee, limit, now).await,
+        Preference::GitHub => read_source(transport, Source::GitHub, channel, limit, now).await,
+        Preference::Gitee => read_source(transport, Source::Gitee, channel, limit, now).await,
         Preference::Auto => {
-            let github = std::pin::pin!(read_source(transport, Source::GitHub, limit, now));
-            let gitee = std::pin::pin!(read_source(transport, Source::Gitee, limit, now));
+            let github = std::pin::pin!(read_source(transport, Source::GitHub, channel, limit, now));
+            let gitee = std::pin::pin!(read_source(transport, Source::Gitee, channel, limit, now));
             let (first, other) = match race(github, gitee).await {
                 Either::Left((first, other)) => (first, Either::Left(other)),
                 Either::Right((first, other)) => (first, Either::Right(other)),
@@ -198,26 +226,47 @@ pub(crate) async fn check(
 /// Only a strictly higher version than both the running one and the highest
 /// version seen before counts as an update; a lower answer means a source is
 /// frozen on an old release.
+#[cfg(test)]
 pub(crate) fn classify(release: &Release, current: Version, highest_seen: Option<Version>) -> Offer {
-    classify_for_running(release, current, false, highest_seen)
+    classify_semver(release, SemVer::stable(current), highest_seen.map(SemVer::stable))
 }
 
-/// Classifies an offered stable release against the running build. Per SemVer
-/// 2.0.0, a pre-release build (e.g. `0.7.0-beta.1`) treats the matching stable
-/// release (`0.7.0`) as newer while never downgrading to an older release.
+/// Classifies an offered release against the running build using full SemVer
+/// 2.0.0 ordering (`0.7.0-alpha.1 < 0.7.0-beta.1 < 0.7.0-beta.2 < 0.7.0-rc.1 < 0.7.0`).
+pub(crate) fn classify_semver(
+    release: &Release,
+    current: SemVer,
+    highest_seen: Option<SemVer>,
+) -> Offer {
+    if highest_seen.is_some_and(|seen| release.version < seen) {
+        Offer::Stale
+    } else if release.version > current {
+        Offer::Newer
+    } else {
+        Offer::Current
+    }
+}
+
+/// Compatibility helper for tests classifying a stable release against a
+/// `(base, is_prerelease)` pair.
+#[cfg(test)]
 pub(crate) fn classify_for_running(
     release: &Release,
     current: Version,
     current_is_prerelease: bool,
     highest_seen: Option<Version>,
 ) -> Offer {
-    if highest_seen.is_some_and(|seen| release.version < seen) {
-        Offer::Stale
-    } else if release.version > current || (current_is_prerelease && release.version == current) {
-        Offer::Newer
+    let running = if current_is_prerelease {
+        SemVer {
+            major: current.0,
+            minor: current.1,
+            patch: current.2,
+            pre: Some((super::manifest::PreReleaseStage::Beta, 1)),
+        }
     } else {
-        Offer::Current
-    }
+        SemVer::stable(current)
+    };
+    classify_semver(release, running, highest_seen.map(SemVer::stable))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

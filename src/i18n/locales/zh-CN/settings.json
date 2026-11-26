@@ -79,6 +79,7 @@
       "credentials": "代理凭据",
       "startupCheck": "启动检查",
       "updateChannel": "更新渠道",
+      "betaChannel": "测试版 beta 预发布 通道",
       "updateCheck": "更新检查",
       "aiAssistant": "Lumen AI 助手",
       "mcpServer": "MCP 服务",
@@ -370,7 +371,13 @@
   "updates": {
     "section": "版本更新",
     "checkOnStartup": "启动时检查更新",
-    "checkOnStartupTip": "启动时通过所选更新来源检查正式发布版本，也可以随时手动检查。",
+    "checkOnStartupTip": "启动时按所选更新通道和来源检查更新，也可以随时手动检查。",
+    "channel": "更新通道",
+    "channelTip": "稳定版仅接收正式发布；测试版（Beta）还会包含 beta / rc 等预发布版本，且始终不会降级。",
+    "channels": {
+      "stable": "稳定版",
+      "beta": "测试版（Beta）"
+    },
     "source": "更新来源",
     "sourceTip": "选择检查和下载更新的来源。自动模式同时检查 GitHub 和 Gitee。",
     "sources": {

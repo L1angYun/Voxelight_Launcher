@@ -42,6 +42,8 @@ pub struct Config {
     pub check_for_updates: bool,
     /// "auto" (GitHub and Gitee at once), "github" or "gitee".
     pub update_source: String,
+    /// "stable" (official releases only) or "beta" (includes alpha/beta/rc pre-releases).
+    pub update_channel: String,
     pub default_skin: String,
     /// The first-run tour was finished or skipped; older profiles have not seen it.
     pub tour_completed: bool,
@@ -100,6 +102,7 @@ impl Default for Config {
             java_auto_download: true,
             check_for_updates: true,
             update_source: "auto".into(),
+            update_channel: "stable".into(),
             default_skin: "steve".into(),
             tour_completed: false,
             assistant_provider: "openai".into(),
@@ -161,10 +164,14 @@ pub struct Persisted {
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub pending_credential_removals: std::collections::BTreeSet<String>,
     pub instances: Vec<Instance>,
-    /// The highest launcher version any update source has reported, so a
+    /// The highest stable launcher version any update source has reported, so a
     /// source frozen on an older release is noticed (never offered).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_highest_seen: Option<String>,
+    /// The highest launcher version seen on the beta update channel, tracked
+    /// separately so switching back to stable never flags a stable release as stale.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_highest_seen_beta: Option<String>,
 }
 
 impl Default for Persisted {
@@ -176,6 +183,7 @@ impl Default for Persisted {
             pending_credential_removals: Default::default(),
             instances: Vec::new(),
             update_highest_seen: None,
+            update_highest_seen_beta: None,
         }
     }
 }

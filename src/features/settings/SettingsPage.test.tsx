@@ -236,6 +236,12 @@ beforeEach(() => {
     if (name === "rotate_mcp_token") return { running: true, port: mockLauncher.config.assistantMcpPort, url: `http://127.0.0.1:${mockLauncher.config.assistantMcpPort}/mcp`, tokenMasked: "••••••••999999" };
     if (name === "get_mcp_token") return "synthetic-mcp-token-abcdef";
     if (name === "detect_java") return [{ path: "C:\\SyntheticFixture\\java.exe", version: "21.0.1", major: 21 }];
+    if (name === "set_launcher_update_preferences") return {
+      ...mockLauncher.config,
+      checkForUpdates: args?.checkForUpdates === true,
+      updateSource: String(args?.updateSource ?? mockLauncher.config.updateSource),
+      updateChannel: String(args?.updateChannel ?? mockLauncher.config.updateChannel),
+    };
     if (name === "set_launcher_background") return { ...mockLauncher.config, customBackground: args?.path ?? null };
     if (name === "export_launcher_config") return args?.path;
     if (name === "import_launcher_config") return { config: { ...mockLauncher.config, effects: "lite", accentSource: "system" }, heapArgumentsRemoved: false };
@@ -1044,5 +1050,19 @@ describe("Settings review request", () => {
       proxyHost: "127.0.0.1",
       proxyPort: 7897,
     }), { preserveAppearance: true });
+  });
+
+  it("switches the update channel between Stable and Beta immediately and supports search by beta", async () => {
+    await render();
+    await search("beta");
+    expect(searchResult("about-update-channel")).toBeTruthy();
+    await click("About");
+    await select("Update channel", "beta");
+    expect(commandMock).toHaveBeenCalledWith("set_launcher_update_preferences", {
+      checkForUpdates: true,
+      updateSource: "auto",
+      updateChannel: "beta",
+    });
+    expect(updates.current.sourceChanged).toHaveBeenCalledTimes(1);
   });
 });

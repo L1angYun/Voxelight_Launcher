@@ -2,7 +2,7 @@
 //! HSRUnlocker `UpdateSources.cs`): every hop is HTTPS on 443 with no
 //! userinfo or fragment, stays on an allowlisted host and path, and the
 //! chain has at most five redirects.
-use super::manifest::parse_version;
+use super::manifest::{parse_semver, parse_version};
 use super::{Source, GITEE_REPO, GITHUB_REPO};
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
@@ -99,7 +99,7 @@ pub(crate) fn validate_location(
             let parts: Vec<&str> = rest.split('/').collect();
             if parts.len() == 2
                 && parts[1] == file_name
-                && parse_version(parts[0]).is_some()
+                && parse_semver(parts[0]).is_some()
                 && expected_tag.is_none_or(|tag| tag == parts[0])
             {
                 return Ok(Location::Release);

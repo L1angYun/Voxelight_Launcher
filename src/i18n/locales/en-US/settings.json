@@ -80,6 +80,7 @@
       "credentials": "Proxy credentials",
       "startupCheck": "Startup check",
       "updateChannel": "Update channel",
+      "betaChannel": "Beta pre-release preview channel",
       "updateCheck": "Update check",
       "aiAssistant": "Lumen AI assistant",
       "mcpServer": "MCP server",
@@ -373,7 +374,13 @@
   "updates": {
     "section": "Updates",
     "checkOnStartup": "Check for updates on startup",
-    "checkOnStartupTip": "Use the selected update source at startup to check stable releases. You can also check at any time.",
+    "checkOnStartupTip": "Use the selected update channel and source at startup to check for updates. You can also check at any time.",
+    "channel": "Update channel",
+    "channelTip": "Stable receives official releases only. Beta also includes pre-release builds (beta / rc) and never downgrades.",
+    "channels": {
+      "stable": "Stable",
+      "beta": "Beta (pre-release)"
+    },
     "source": "Update source",
     "sourceTip": "Choose where to check for and download updates. Auto checks GitHub and Gitee together.",
     "sources": {

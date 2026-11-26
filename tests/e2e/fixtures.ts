@@ -127,6 +127,7 @@ export async function installLauncherFixture(
       defaultSkin: options.defaultModel === "slim" ? "alex" : "steve",
       checkForUpdates: true,
       updateSource: "auto",
+      updateChannel: "stable",
       tourCompleted: options.tourCompleted ?? true,
       assistantProvider: "openai",
       assistantBaseUrl: "",
@@ -501,7 +502,11 @@ export async function installLauncherFixture(
             };
           }
           if (name === "set_launcher_update_preferences") {
-            Object.assign(config, { checkForUpdates: args?.checkForUpdates === true, updateSource: String(args?.updateSource) });
+            Object.assign(config, {
+              checkForUpdates: args?.checkForUpdates === true,
+              updateSource: String(args?.updateSource),
+              ...(typeof args?.updateChannel === "string" ? { updateChannel: args.updateChannel } : {}),
+            });
             return { ...config };
           }
           if (name === "download_launcher_update") {
@@ -557,6 +562,7 @@ export async function installLauncherFixture(
               defaultSkin: "steve",
               checkForUpdates: true,
               updateSource: "auto",
+              updateChannel: "stable",
               tourCompleted: false,
               assistantProvider: "openai",
               assistantBaseUrl: "",
