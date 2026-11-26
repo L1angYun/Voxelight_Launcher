@@ -133,6 +133,12 @@
 .vx-network-empty { display: grid; gap: var(--space-3); justify-items: center; padding: var(--space-6); border: 1px solid var(--hairline); border-radius: var(--radius-lg); background: var(--surface-panel); }
 .vx-network-privacy { max-width: 62ch; margin: 0; color: var(--text-tertiary); font-size: var(--text-xs); text-align: center; line-height: 1.55; }
 .vx-network-results { display: grid; gap: var(--space-4); }
+.vx-network-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--border-subtle); border-inline-start: 3px solid var(--info); border-radius: var(--radius-md); background: var(--surface-panel); }
+.vx-network-verdict[data-tone='good'] { border-inline-start-color: var(--success); }
+.vx-network-verdict[data-tone='warn'] { border-inline-start-color: var(--warning); }
+.vx-network-verdict__tag { font-family: var(--font-ui); font-size: var(--text-md); font-weight: var(--weight-strong); color: var(--text-primary); }
+.vx-network-verdict p { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.5; }
+.vx-network-port-field input[aria-invalid='true'] { border-color: var(--danger); }
 .vx-network-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
 @media (max-width: 960px) { .vx-network-grid { grid-template-columns: minmax(0, 1fr); } }
 .vx-network-card { display: grid; gap: var(--space-3); align-content: start; padding: var(--space-4); border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--surface-card); min-width: 0; }
@@ -165,4 +171,16 @@
 .vx-network-advice li[data-severity='info'] > svg { color: var(--info); }
 .vx-network-advice li[data-severity='warn'] > svg { color: var(--warning); }
 .vx-network-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); color: var(--text-tertiary); font-size: var(--text-xs); }
+}
+@layer overrides {
+@media (forced-colors: active) {
+  .vx-server-address-state,
+  .vx-server-population__cells > i {
+    border: 1px solid CanvasText;
+  }
+  .vx-server-population__cells > i[data-occupied='true'] {
+    background: Highlight;
+    border-color: Highlight;
+  }
+}
 }

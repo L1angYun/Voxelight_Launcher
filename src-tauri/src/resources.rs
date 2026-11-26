@@ -2224,8 +2224,7 @@ pub(crate) async fn list_local_resources_for_state(
         instance_id.as_deref(),
         kind,
     )?;
-    let state = state.clone();
-    tokio::task::spawn_blocking(move || list_local_resources_blocking(&state, &directory, kind))
+    tokio::task::spawn_blocking(move || list_local_resources_blocking(&directory, kind))
         .await
         .map_err(|_| "资源目录读取任务意外中止")?
 }
@@ -2298,13 +2297,12 @@ async fn list_local_resources_inner(
         instance_id.as_deref(),
         kind,
     )?;
-    let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || list_local_resources_blocking(&state, &directory, kind))
+    tokio::task::spawn_blocking(move || list_local_resources_blocking(&directory, kind))
         .await.map_err(|_| "资源目录读取任务意外中止")?
 }
 
 fn list_local_resources_blocking(
-    state: &LauncherState, directory: &Path, kind: ResourceKind,
+    directory: &Path, kind: ResourceKind,
 ) -> Result<Vec<LocalResource>, String> {
     if !directory.exists() {
         return Ok(Vec::new());
@@ -2313,7 +2311,6 @@ fn list_local_resources_blocking(
     let mut result = Vec::new();
     for entry in fs::read_dir(&directory).map_err(|_| "无法读取资源目录，请检查访问权限")?
     {
-        crate::instances::sync_checkpoint(state)?;
         let entry = entry.map_err(|_| "读取资源目录失败")?;
         if let Some(resource) = local_resource(entry.path(), kind)? {
             result.push(resource);

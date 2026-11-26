@@ -180,6 +180,9 @@ fn crypt(bytes: &[u8], encrypt: bool) -> Result<Vec<u8>, String> {
     if success == 0 {
         return Err("Windows 无法保护或解密凭据；请使用原 Windows 用户重新登录".into());
     }
+    if output.data.is_null() {
+        return Ok(Vec::new());
+    }
     let result = unsafe {
         let result = std::slice::from_raw_parts(output.data, output.length as usize).to_vec();
         // Clear DPAPI-owned plaintext before returning its allocation to Windows.

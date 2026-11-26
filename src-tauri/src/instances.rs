@@ -1140,7 +1140,7 @@ fn write_archive_controlled(
             if let Some(state) = control {
                 sync_checkpoint(state)?;
             }
-            if record.relative == manifest_name {
+            if record.relative.eq_ignore_ascii_case(manifest_name) {
                 return Err("实例包含与备份清单冲突的文件名，无法导出".into());
             }
             let path = safe_join(source, &record.relative)?;

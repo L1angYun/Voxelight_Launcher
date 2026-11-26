@@ -409,7 +409,7 @@ export function SettingsPage({
           {section === "game" ? <GameSettings {...sectionProps} /> : null}
           {section === "java" ? <JavaSettings {...sectionProps} /> : null}
           {section === "downloads" ? <DownloadSettings {...sectionProps} savedConfig={savedConfig.current} /> : null}
-          {section === "assistant" ? <AssistantSettings {...sectionProps} onOpenAssistant={onOpenAssistant} /> : null}
+          {section === "assistant" ? <AssistantSettings {...sectionProps} savedConfig={savedConfig.current} onOpenAssistant={onOpenAssistant} /> : null}
           {section === "about" ? <AboutSettings {...sectionProps} focusUpdates={focusUpdates} onFocusHandled={focusHandled} /> : null}
         </SectionPanel>
       </div>

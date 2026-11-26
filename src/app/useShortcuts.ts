@@ -81,8 +81,8 @@ export function useShortcuts({ navigate, implemented, onOpenAssistant }: UseShor
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.altKey || event.metaKey || event.isComposing || event.keyCode === 229 || event.repeat) return;
-      // Native dialogs own their keyboard handling, including Escape.
-      if (document.querySelector("dialog[open]")) return;
+      // Native dialogs and the first-run OOBE own their keyboard handling, including Escape.
+      if (document.querySelector("dialog[open], .vx-tour__card")) return;
 
       const textEntry = isTextEntry(event.target);
       const pages = implementedPages(implementedRef.current);

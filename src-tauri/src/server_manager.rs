@@ -1082,8 +1082,8 @@ pub async fn set_managed_server_eula(
 }
 async fn start_managed_server_inner(
     app: AppHandle,
-    state: State<'_, Arc<LauncherState>>,
-    registry: State<'_, Arc<ServerRegistry>>,
+    state: &Arc<LauncherState>,
+    registry: &Arc<ServerRegistry>,
     server_id: String,
 ) -> Result<ServerStateEvent, String> {
     let _guard = registry
@@ -1091,89 +1091,6 @@ async fn start_managed_server_inner(
         .try_lock()
         .map_err(|_| "已有服务端操作正在进行")?;
     registry.require_stopped(&server_id)?;
-    let dir = server_directory(&state, &server_id)?;
-    let mut definition = load_definition(&dir)?;
-    require_eula(&definition, &dir)?;
-    let settings = settings_from_properties(&properties(&dir)?, &definition.settings)?;
-    let launch = launch_args_in_dir(&definition, &settings, &dir)?;
-    if definition.source == ServerSource::Imported
-        && definition.args_file.is_none()
-        && !safe_join(&dir, server_jar(&definition)?)?.is_file()
-    {
-        return Err(IMPORTED_JAR_MISSING.into());
-    }
-    if registry
-        .processes
-        .lock()
-        .map_err(|_| "服务端进程锁异常")?
-        .iter()
-        .any(|(id, entry)| {
-            id != &server_id
-                && entry.alive.load(Ordering::SeqCst)
-                && server_directory(&state, id)
-                    .and_then(|dir| load_definition(&dir))
-                    .is_ok_and(|other| other.settings.port == settings.port)
-        })
-    {
-        return Err("另一个由启动器管理的服务端已使用此端口，请先更换端口".into());
-    }
-    // The server follows the global game proxy mode, and a TLS
-    // proxy is refused before any download, file write or task record.
-    let proxy_args = server_proxy_args(&state.snapshot()?.config)?;
-    let _download = state
-        .operation
-        .try_lock()
-        .map_err(|_| "已有下载或启动准备任务运行")?;
-    let task = state.control.begin_with_display(
-        "server-start",
-        &definition.version_id,
-        &format!("准备服务端 {}", definition.name),
-        &definition.name,
-    )?;
-    let prepared = async {
-        let metadata = match definition.source {
-            ServerSource::Vanilla => install_jar(&state, &app, &mut definition, &dir).await?,
-            // An imported server keeps its own JAR; the version's metadata
-            // only chooses Java, as for a vanilla server.
-            ServerSource::Imported => {
-                let metadata = minecraft::official_metadata(&state, &definition.version_id, &safe_join(&dir, "metadata")?).await?;
-                definition.java_major = Some(metadata["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32);
-                save_definition(&dir, &definition)?;
-                metadata
-            }
-        };
-        let config = state.snapshot()?.config;
-        let runtime = minecraft::select_or_install_java(&state, &app, &config, &metadata).await?;
-        Ok::<_, String>(runtime)
-    }
-    .await;
-    state
-        .control
-        .finish(&task, prepared.as_ref().err().map(String::as_str));
-    let runtime = prepared?;
-    let temp = crate::storage::runtime_temp_directory(&dir)?;
-    let mut command = Command::new(crate::storage::to_process_path(Path::new(&runtime.path))?);
-    command.arg(format!("-Djava.io.tmpdir={}", crate::storage::process_path_text(&temp)?));
-    command.args(&proxy_args);
-    command.current_dir(crate::storage::to_process_path(&dir)?).args(&launch);
-    registry
-        .inner()
-        .spawn_owned(server_id, dir, command, Some(app))
-}
-
-pub(crate) async fn start_managed_server_for_state(
-    app: AppHandle,
-    state: &Arc<LauncherState>,
-    registry: &Arc<ServerRegistry>,
-    server_id: String,
-) -> Result<ServerStateEvent, String> {
-    let _operation = registry
-        .operation
-        .try_lock()
-        .map_err(|_| "已有服务端管理操作正在进行")?;
-    if registry.running(&server_id) {
-        return Err("服务端已在运行".into());
-    }
     let dir = server_directory(state, &server_id)?;
     let mut definition = load_definition(&dir)?;
     require_eula(&definition, &dir)?;
@@ -1200,6 +1117,8 @@ pub(crate) async fn start_managed_server_for_state(
     {
         return Err("另一个由启动器管理的服务端已使用此端口，请先更换端口".into());
     }
+    // The server follows the global game proxy mode, and a TLS
+    // proxy is refused before any download, file write or task record.
     let proxy_args = server_proxy_args(&state.snapshot()?.config)?;
     let _download = state
         .operation
@@ -1214,6 +1133,8 @@ pub(crate) async fn start_managed_server_for_state(
     let prepared = async {
         let metadata = match definition.source {
             ServerSource::Vanilla => install_jar(state, &app, &mut definition, &dir).await?,
+            // An imported server keeps its own JAR; the version's metadata
+            // only chooses Java, as for a vanilla server.
             ServerSource::Imported => {
                 let metadata = minecraft::official_metadata(state, &definition.version_id, &safe_join(&dir, "metadata")?).await?;
                 definition.java_major = Some(metadata["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32);
@@ -1236,6 +1157,15 @@ pub(crate) async fn start_managed_server_for_state(
     command.args(&proxy_args);
     command.current_dir(crate::storage::to_process_path(&dir)?).args(&launch);
     registry.spawn_owned(server_id, dir, command, Some(app))
+}
+
+pub(crate) async fn start_managed_server_for_state(
+    app: AppHandle,
+    state: &Arc<LauncherState>,
+    registry: &Arc<ServerRegistry>,
+    server_id: String,
+) -> Result<ServerStateEvent, String> {
+    start_managed_server_inner(app, state, registry, server_id).await
 }
 
 pub(crate) async fn stop_managed_server_for_state(
@@ -1306,7 +1236,7 @@ pub async fn start_managed_server(
     registry: State<'_, Arc<ServerRegistry>>,
     server_id: String,
 ) -> AppResult<ServerStateEvent> {
-    start_managed_server_inner(app, state, registry, server_id)
+    start_managed_server_inner(app, &state, &registry, server_id)
         .await
         .map_err(expected)
 }
@@ -1347,47 +1277,7 @@ pub fn read_managed_server_logs(
     server_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<ServerLog>, String> {
-    let dir = server_directory(&state, &server_id)?;
-    load_definition(&dir)?;
-    let limit = limit.unwrap_or(200).clamp(1, 500);
-    if let Some(logs) = registry
-        .logs
-        .lock()
-        .map_err(|_| "日志锁异常")?
-        .get(&server_id)
-    {
-        return Ok(logs
-            .iter()
-            .skip(logs.len().saturating_sub(limit))
-            .cloned()
-            .collect());
-    }
-    let path = safe_join(&dir, "launcher-console.jsonl")?;
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err("无法读取服务端日志".into()),
-    };
-    let length = file.metadata().map_err(|_| "无法读取日志大小")?.len();
-    let offset = length.saturating_sub(512 * 1024);
-    file.seek(std::io::SeekFrom::Start(offset))
-        .map_err(|_| "无法定位日志")?;
-    let mut bytes = Vec::new();
-    file.take(512 * 1024)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "无法读取日志")?;
-    let mut logs: Vec<ServerLog> = String::from_utf8_lossy(&bytes)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<ServerLog>(line).ok())
-        .filter(|log| log.server_id == server_id)
-        .collect();
-    for log in &mut logs {
-        log.message = redact_console(&log.message);
-    }
-    if logs.len() > limit {
-        logs.drain(..logs.len() - limit);
-    }
-    Ok(logs)
+    read_managed_server_logs_for_state(&state, &registry, &server_id, limit.or(Some(200)))
 }
 fn validate_console_command(command: &str) -> Result<String, String> {
     if command.chars().any(char::is_control) {

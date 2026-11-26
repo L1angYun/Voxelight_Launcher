@@ -56,7 +56,7 @@ No telemetry, analytics, or crash reporting. Network requests go only to:
 | Content & modpacks | Modrinth, CurseForge; modpack external links (e.g. GitHub/GitLab) |
 | Launcher updates | GitHub, Gitee |
 | Multiplayer | Configured game servers; UDP 4445 (LAN); public STUN servers only when running a network check |
-| Lumen & MCP | Only your configured AI endpoint when enabled and invoked; local MCP binds strictly to `127.0.0.1` and starts off |
+| Lumen & MCP | Only your configured AI endpoint when you chat with Lumen or when optional proactive crash wake-up triggers; local MCP binds strictly to `127.0.0.1` and starts off |
 
 ## Download sources and proxy
 
@@ -68,7 +68,7 @@ No telemetry, analytics, or crash reporting. Network requests go only to:
 - Windows x64 and Minecraft: Java Edition only.
 - Shader packs require a shader loader mod such as Iris.
 - Built-in server download provides vanilla servers; modded/plugin servers can be imported as a JAR or folder (including `win_args.txt` Forge/NeoForge servers). CurseForge resource installs do not auto-resolve dependencies.
-- The Windows NSIS installer currently uses a fixed dark visual style rather than adapting dynamically to the Windows light/dark theme.
+- The Windows NSIS installer currently uses a fixed light visual style rather than adapting dynamically to the Windows light/dark theme.
 - Closing the window exits the launcher; interrupted downloads can be resumed or retried from **Downloads**.
 
 ## Building from source

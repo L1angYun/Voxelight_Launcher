@@ -961,7 +961,7 @@ describe("settings search styles", () => {
   it("holds the reveal outline before fading it over 1.5 seconds", () => {
     const source = css();
     expect(source).toMatch(/\.vx-settings-target-revealed\s*\{[^}]*animation:\s*vx-settings-target-reveal 1\.5s/);
-    expect(source).toMatch(/@keyframes vx-settings-target-reveal\s*\{\s*0%,\s*65%\s*\{\s*outline-color:\s*var\(--accent\)/);
+    expect(source).toMatch(/@keyframes vx-settings-target-reveal\s*\{\s*0%,\s*65%\s*\{\s*outline-color:\s*var\(--accent(?:-indicator)?\)/);
     expect(source).toMatch(/\[data-reduced-motion="true"\]\s+\.vx-settings-target-revealed\s*\{[^}]*animation:\s*none/);
   });
 

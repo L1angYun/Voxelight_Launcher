@@ -170,7 +170,7 @@
     "solid": "Sólido",
     "solidFallback": "El renderizado de partículas en coma flotante no está disponible en este dispositivo. Se usa Sólido temporalmente; tu preferencia por Retícula se conserva.",
     "cssFallback": "El mundo 3D no está disponible. Se muestra un fondo estático de puntos; el inicio de los juegos no se ve afectado.",
-    "liteUnloaded": "El mundo 3D se descarga con efectos ligeros para ahorrar memoria. Vuelve a efectos completos para restaurarlo."
+    "liteUnloaded": "El mundo 3D se retira de la memoria con efectos ligeros para ahorrar recursos. Vuelve a efectos completos para restaurarlo."
   },
   "accent": {
     "voxelight": "Verde Voxelight",
@@ -295,7 +295,7 @@
   "assistant": {
     "description": "Configura Lumen con tu propia clave de API de IA o expón las herramientas del iniciador mediante un servidor MCP solo en localhost. Mientras no se configure, Lumen permanece completamente oculto en el resto de la app.",
     "providerTitle": "Proveedor de IA y clave de Lumen",
-    "providerDescription": "Las solicitudes solo se envían cuando hablas con Lumen o apruebas una activación, directamente al punto de conexión configurado.",
+    "providerDescription": "Las solicitudes se envían directamente al punto de conexión configurado cuando hablas con Lumen o cuando se activa el aviso proactivo ante fallos.",
     "provider": "Proveedor",
     "providers": {
       "openai": "Compatible con OpenAI",
@@ -321,7 +321,7 @@
     },
     "toolSummary": "Conjunto de herramientas seleccionado: {{total}} herramientas del iniciador ({{readOnly}} de solo lectura, {{controlled}} de escritura controlada). Nunca se exponen comandos arbitrarios de consola, rutas externas al iniciador ni lectura de secretos.",
     "proactive": "Activar Lumen proactivamente ante fallos del juego",
-    "proactiveDescription": "Cuando Lumen esté configurado, ábrelo automáticamente con el contexto del fallo si un juego se cierra de forma anómala, y muestra accesos rápidos de ayuda en errores.",
+    "proactiveDescription": "Cuando Lumen esté configurado, se abrirá automáticamente con el contexto del fallo si un juego se cierra de forma anómala, y mostrará accesos rápidos de ayuda ante errores.",
     "openDialog": "Abrir Lumen (Ctrl+K)",
     "mcpTitle": "Servidor MCP local",
     "mcpDescription": "Desactivado por defecto en cada inicio. Escucha estrictamente en 127.0.0.1 y exige un token Bearer por sesión con comprobaciones de Host/Origin en loopback.",

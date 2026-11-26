@@ -76,6 +76,7 @@ pub struct ToolContext {
     pub games: Arc<GameRegistry>,
     pub servers: Arc<ServerRegistry>,
     pub app: Option<tauri::AppHandle>,
+    pub mcp_port: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -95,7 +96,7 @@ impl ToolExecError {
 
 pub fn catalog() -> Vec<ToolSpec> {
     vec![
-        // ---- Read-only tools (21) ----
+        // ---- Read-only tools (22) ----
         ToolSpec {
             name: "list_instances",
             description: "List all configured Minecraft instances in Voxelight Launcher (name, version, loader, category, play time, notes, runtime overrides).",
@@ -921,14 +922,34 @@ pub async fn execute_tool(
             .map_err(ToolExecError::Failed)?;
             let total = log.lines.len();
             let start = total.saturating_sub(max_lines);
-            let lines = &log.lines[start..];
+            const MAX_LOG_CHARS: usize = 16_000;
+            let mut budget = MAX_LOG_CHARS;
+            let mut char_truncated = false;
+            let mut selected_rev = Vec::new();
+            for line in log.lines[start..].iter().rev() {
+                let len = line.message.chars().count();
+                if len <= budget {
+                    budget -= len;
+                    selected_rev.push(line.clone());
+                } else {
+                    char_truncated = true;
+                    if selected_rev.is_empty() && budget > 0 {
+                        let mut trimmed = line.clone();
+                        let chars: Vec<char> = trimmed.message.chars().collect();
+                        trimmed.message = chars[chars.len().saturating_sub(budget)..].iter().collect();
+                        selected_rev.push(trimmed);
+                    }
+                    break;
+                }
+            }
+            selected_rev.reverse();
             Ok(json!({
                 "instanceId": instance_id,
                 "hasLog": log.path.is_some(),
                 "totalLines": total,
-                "returnedLines": lines.len(),
-                "truncated": log.truncated || start > 0,
-                "lines": lines,
+                "returnedLines": selected_rev.len(),
+                "truncated": log.truncated || start > 0 || char_truncated,
+                "lines": selected_rev,
             }))
         }
         "diagnose_instance" => {
@@ -956,7 +977,8 @@ pub async fn execute_tool(
             Ok(value)
         }
         "detect_local_proxies" => {
-            let report = crate::network::detect_local_proxies_inner(&[]).await;
+            let exclude: Vec<u16> = ctx.mcp_port.into_iter().collect();
+            let report = crate::network::detect_local_proxies_inner(&exclude).await;
             serde_json::to_value(&report).map_err(|error| ToolExecError::Failed(error.to_string()))
         }
         "search_modrinth" => {
@@ -1111,6 +1133,7 @@ pub async fn execute_tool(
                     "Version '{version_id}' is not installed locally. Install it first before creating an instance."
                 )));
             }
+            let _operation = ctx.state.operation.lock().await;
             let created = crate::commands::create_instance_inner(&ctx.state, name, version_id)
                 .map_err(ToolExecError::Failed)?;
             serde_json::to_value(created)

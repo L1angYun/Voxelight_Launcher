@@ -140,6 +140,7 @@ fn read_config_preset(path: &str) -> Result<Config, String> {
 /// Older presets can carry heap flags in the custom JVM arguments, which the
 /// memory fields now own. Drop them so the preset still imports; the values
 /// are not migrated and the save checks still run.
+#[cfg(test)]
 fn strip_heap_arguments(config: &mut Config) -> Result<bool, String> {
     let arguments = shell_words::split(&config.jvm_arguments).map_err(|_| "JVM 参数引号不匹配")?;
     let kept: Vec<_> = arguments.iter().filter(|arg| !crate::memory::is_memory_argument(arg)).collect();
@@ -148,6 +149,43 @@ fn strip_heap_arguments(config: &mut Config) -> Result<bool, String> {
     }
     config.jvm_arguments = shell_words::join(kept);
     Ok(true)
+}
+
+fn assistant_permission_rank(value: &str) -> u8 {
+    match value {
+        "fullAccess" => 2,
+        "controlled" => 1,
+        _ => 0,
+    }
+}
+
+/// Preserves security-sensitive fields when importing an untrusted preset file.
+fn sanitize_imported_preset(previous: &Config, config: &mut Config) {
+    if config.custom_background != previous.custom_background {
+        // A preset can restore visual preferences, but a reference to an
+        // external image is not a native file grant. Keep the selected image.
+        config.custom_background = previous.custom_background.clone();
+    }
+    // An imported preset must never inject JVM agent/code-execution flags, hijack proxy
+    // or Microsoft Client ID settings, redirect Lumen's DPAPI-stored API key to another
+    // endpoint, silently enable proactive crash auto-send, or elevate permissions.
+    config.jvm_arguments = previous.jvm_arguments.clone();
+    config.proxy_mode = previous.proxy_mode.clone();
+    config.proxy_scheme = previous.proxy_scheme.clone();
+    config.proxy_host = previous.proxy_host.clone();
+    config.proxy_port = previous.proxy_port;
+    config.game_proxy_mode = previous.game_proxy_mode.clone();
+    config.microsoft_client_id = previous.microsoft_client_id.clone();
+    config.assistant_provider = previous.assistant_provider.clone();
+    config.assistant_base_url = previous.assistant_base_url.clone();
+    if assistant_permission_rank(&config.assistant_permission)
+        > assistant_permission_rank(&previous.assistant_permission)
+    {
+        config.assistant_permission = previous.assistant_permission.clone();
+    }
+    if config.assistant_proactive && !previous.assistant_proactive {
+        config.assistant_proactive = false;
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -175,19 +213,10 @@ pub async fn import_launcher_config(
     let path = grants.consume(PathUse::PresetRead, &path, &window)?.to_string_lossy().into_owned();
     let previous = state.snapshot()?.config;
     let mut config = read_config_preset(&path)?;
-    let heap_arguments_removed = strip_heap_arguments(&mut config)?;
-    if config.custom_background != previous.custom_background {
-        // A preset can restore visual preferences, but a reference to an
-        // external image is not a native file grant. Keep the selected image.
-        config.custom_background = previous.custom_background.clone();
-    }
-    // An imported preset must never silently elevate assistant/MCP permissions.
-    if config.assistant_permission == "fullAccess" && previous.assistant_permission != "fullAccess" {
-        config.assistant_permission = previous.assistant_permission.clone();
-    }
+    sanitize_imported_preset(&previous, &mut config);
     crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
     let config = crate::commands::save_approved_config(&state, config, Some(&previous)).map_err(expected)?;
-    Ok(ImportedPreset { config, heap_arguments_removed })
+    Ok(ImportedPreset { config, heap_arguments_removed: false })
 }
 
 #[cfg(test)]
@@ -270,5 +299,60 @@ mod tests {
         assert_eq!(state.snapshot().unwrap().config.jvm_arguments, imported.config.jvm_arguments);
         drop(state);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn u7_imported_preset_preserves_security_sensitive_fields() {
+        let previous = Config {
+            jvm_arguments: "-XX:+UseG1GC".into(),
+            proxy_mode: "system".into(),
+            proxy_scheme: "http".into(),
+            proxy_host: "corp.example.invalid".into(),
+            proxy_port: 8080,
+            game_proxy_mode: "off".into(),
+            microsoft_client_id: "synthetic-client-prev".into(),
+            assistant_provider: "openai".into(),
+            assistant_base_url: "https://api.openai.com/v1".into(),
+            assistant_permission: "readOnly".into(),
+            assistant_proactive: false,
+            ..Config::default()
+        };
+        let mut incoming = Config {
+            theme: "dark".into(),
+            jvm_arguments: "-javaagent:C:/evil.jar".into(),
+            proxy_mode: "custom".into(),
+            proxy_scheme: "socks5".into(),
+            proxy_host: "attacker.example.invalid".into(),
+            proxy_port: 1080,
+            game_proxy_mode: "launcher".into(),
+            microsoft_client_id: "synthetic-client-incoming".into(),
+            assistant_provider: "anthropic".into(),
+            assistant_base_url: "https://evil.example.invalid/v1".into(),
+            assistant_permission: "controlled".into(),
+            assistant_proactive: true,
+            ..Config::default()
+        };
+        sanitize_imported_preset(&previous, &mut incoming);
+        assert_eq!(incoming.theme, "dark");
+        assert_eq!(incoming.jvm_arguments, previous.jvm_arguments);
+        assert_eq!(incoming.proxy_mode, previous.proxy_mode);
+        assert_eq!(incoming.proxy_host, previous.proxy_host);
+        assert_eq!(incoming.proxy_port, previous.proxy_port);
+        assert_eq!(incoming.game_proxy_mode, previous.game_proxy_mode);
+        assert_eq!(incoming.microsoft_client_id, previous.microsoft_client_id);
+        assert_eq!(incoming.assistant_provider, previous.assistant_provider);
+        assert_eq!(incoming.assistant_base_url, previous.assistant_base_url);
+        assert_eq!(incoming.assistant_permission, "readOnly");
+        assert!(!incoming.assistant_proactive);
+
+        // Downgrading assistant_permission remains permitted.
+        let mut higher = previous.clone();
+        higher.assistant_permission = "fullAccess".into();
+        let mut downgrade = Config {
+            assistant_permission: "readOnly".into(),
+            ..Config::default()
+        };
+        sanitize_imported_preset(&higher, &mut downgrade);
+        assert_eq!(downgrade.assistant_permission, "readOnly");
     }
 }

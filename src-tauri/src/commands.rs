@@ -638,6 +638,9 @@ pub(crate) async fn reset_launcher_state_inner(
         .operation
         .try_lock()
         .map_err(|_| "已有安装或启动准备任务运行，请等待完成后修改配置".to_owned())?;
+    let _server_hold = servers
+        .try_hold()
+        .ok_or_else(|| "有托管服务端正在运行，请先停止服务端后再还原初始状态。".to_owned())?;
     if !state.games.snapshot()?.is_empty() {
         return Err("有游戏正在运行，请先退出游戏后再还原初始状态。".into());
     }
@@ -656,13 +659,22 @@ pub(crate) async fn reset_launcher_state_inner(
     .map_err(|error| error.to_string())??;
 
     mcp.stop();
-    let account_ids: Vec<String> = snapshot
+    let mut account_ids: Vec<String> = snapshot
         .accounts
         .iter()
         .map(|account| account.id.clone())
         .collect();
+    for pending_id in &snapshot.pending_credential_removals {
+        if !account_ids.iter().any(|id| id == pending_id) {
+            account_ids.push(pending_id.clone());
+        }
+    }
     auth.clear_all_credentials(&account_ids)?;
-    crate::secrets::save_service_secret(&state.data_dir, "curseforge", "")?;
+    crate::secrets::save_service_secret(
+        &state.data_dir,
+        crate::curseforge_key::CURSEFORGE_SECRET_KEY,
+        "",
+    )?;
     crate::secrets::save_service_secret(
         &state.data_dir,
         crate::assistant::ASSISTANT_SECRET_KEY,
@@ -702,28 +714,9 @@ pub async fn install_version(
     state: Shared<'_>,
     version_id: String,
 ) -> AppResult<InstallResult> {
-    let _guard = state
-        .operation
-        .try_lock()
-        .map_err(|_| "已有安装或启动准备任务运行，请等待完成")?;
-    let task = state.control.begin_recorded(
-        "install",
-        &version_id,
-        &format!("Minecraft {version_id}"),
-        None,
-        crate::downloads::RetryRequest::Install { version_id: version_id.clone() },
-    )?;
-    let result = minecraft::install(&state, &app, &version_id).await;
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
-    match result {
-        Ok((result, _)) => Ok(result),
-        Err(error) => {
-            minecraft::log(&app, &state, "error", &error);
-                Err(expected(error))
-        }
-    }
+    install_version_for_state(&app, &state, version_id)
+        .await
+        .map_err(expected)
 }
 
 #[tauri::command]

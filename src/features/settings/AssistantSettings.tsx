@@ -1,59 +1,86 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, Copy, KeyRound, Play, RefreshCw, Server, Square } from "lucide-react";
-import { command } from "../../lib/launcher";
+import { command, type Config } from "../../lib/launcher";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
 import { useLumen } from "../assistant/LumenContext";
-import type { AssistantPermission, AssistantProvider, AssistantStatus, McpStatus, ToolSummary } from "../assistant/types";
+import type { AssistantPermission, AssistantProvider, AssistantStatus, McpStatus } from "../assistant/types";
 import type { SettingsSectionProps } from "./types";
 
 export function AssistantSettings({
   config,
+  savedConfig,
   onChange,
   onError,
   onNotice,
   onOpenAssistant,
-}: SettingsSectionProps & { onOpenAssistant?: () => void }) {
+}: SettingsSectionProps & { savedConfig?: Config; onOpenAssistant?: () => void }) {
   const { t } = useTranslation();
   const lumen = useLumen();
   const [apiKey, setApiKey] = useState("");
-  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-  const [ready, setReady] = useState(false);
-  const [tools, setTools] = useState<ToolSummary[]>([]);
-  const [mcp, setMcp] = useState<McpStatus>({
-    running: false,
-    port: config.assistantMcpPort || 25590,
-    url: null,
-    tokenMasked: null,
-  });
+  const [localStatus, setLocalStatus] = useState<AssistantStatus | null>(null);
+  const [mcpOverride, setMcpOverride] = useState<McpStatus | null>(null);
   const [busyKey, setBusyKey] = useState(false);
   const [busyMcp, setBusyMcp] = useState(false);
+  const mountedRef = useRef(true);
+  const loadGenRef = useRef(0);
 
-  const loadStatus = useCallback(async () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const loadStandaloneStatus = useCallback(async () => {
+    const gen = ++loadGenRef.current;
     try {
-      const status = await command<AssistantStatus>("get_assistant_status");
-      setApiKeyConfigured(status.apiKeyConfigured);
-      setReady(Boolean(status.ready));
-      setTools(status.tools ?? []);
-      setMcp(status.mcp);
+      const next = await command<AssistantStatus>("get_assistant_status");
+      if (!mountedRef.current || gen !== loadGenRef.current) return;
+      setLocalStatus(next);
     } catch (cause) {
-      onError(cause);
+      if (mountedRef.current && gen === loadGenRef.current) onError(cause);
     }
   }, [onError]);
 
   useEffect(() => {
-    void loadStatus();
-  }, [loadStatus]);
+    if (lumen.managed) {
+      setMcpOverride(null);
+    }
+  }, [lumen.managed, lumen.status]);
+
+  useEffect(() => {
+    if (lumen.managed) {
+      void lumen.refreshStatus();
+    } else {
+      void loadStandaloneStatus();
+    }
+  }, [lumen.managed, lumen.refreshStatus, loadStandaloneStatus]);
+
+  const effectiveStatus = lumen.managed ? lumen.status : localStatus;
+  const apiKeyConfigured = Boolean(effectiveStatus?.apiKeyConfigured);
+  const ready = Boolean(effectiveStatus?.ready);
+  const tools = effectiveStatus?.tools ?? [];
+  const mcp: McpStatus = mcpOverride ?? effectiveStatus?.mcp ?? {
+    running: false,
+    port: config.assistantMcpPort || 25590,
+    url: null,
+    tokenMasked: null,
+  };
 
   async function saveApiKey(secret: string) {
     setBusyKey(true);
     try {
       const configured = await command<boolean>("set_assistant_api_key", { secret });
-      setApiKeyConfigured(configured);
-      await loadStatus();
-      void lumen.refreshStatus();
+      if (lumen.managed) {
+        await lumen.refreshStatus();
+      } else {
+        await loadStandaloneStatus();
+        if (mountedRef.current) {
+          setLocalStatus((prev) => (prev ? { ...prev, apiKeyConfigured: configured } : prev));
+        }
+      }
+      if (!mountedRef.current) return;
       if (secret.trim()) {
         setApiKey("");
         onNotice("assistantKeySaved");
@@ -61,9 +88,9 @@ export function AssistantSettings({
         onNotice("assistantKeyCleared");
       }
     } catch (cause) {
-      onError(cause);
+      if (mountedRef.current) onError(cause);
     } finally {
-      setBusyKey(false);
+      if (mountedRef.current) setBusyKey(false);
     }
   }
 
@@ -73,12 +100,18 @@ export function AssistantSettings({
       const next = mcp.running
         ? await command<McpStatus>("stop_mcp_server")
         : await command<McpStatus>("start_mcp_server", { port: config.assistantMcpPort });
-      setMcp(next);
+      if (!mountedRef.current) return;
+      setMcpOverride(next);
+      if (lumen.managed) {
+        void lumen.refreshStatus();
+      } else {
+        setLocalStatus((prev) => (prev ? { ...prev, mcp: next } : prev));
+      }
       onNotice(next.running ? "mcpStarted" : "mcpStopped", { port: next.port });
     } catch (cause) {
-      onError(cause);
+      if (mountedRef.current) onError(cause);
     } finally {
-      setBusyMcp(false);
+      if (mountedRef.current) setBusyMcp(false);
     }
   }
 
@@ -86,12 +119,18 @@ export function AssistantSettings({
     setBusyMcp(true);
     try {
       const next = await command<McpStatus>("rotate_mcp_token");
-      setMcp(next);
+      if (!mountedRef.current) return;
+      setMcpOverride(next);
+      if (lumen.managed) {
+        void lumen.refreshStatus();
+      } else {
+        setLocalStatus((prev) => (prev ? { ...prev, mcp: next } : prev));
+      }
       onNotice("mcpTokenRotated");
     } catch (cause) {
-      onError(cause);
+      if (mountedRef.current) onError(cause);
     } finally {
-      setBusyMcp(false);
+      if (mountedRef.current) setBusyMcp(false);
     }
   }
 
@@ -126,7 +165,17 @@ export function AssistantSettings({
     : "https://api.openai.com/v1";
   const readOnlyCount = tools.filter((item) => item.tier === "readOnly").length;
   const controlledCount = tools.filter((item) => item.tier === "controlled").length;
-  const lumenActive = ready || lumen.configured;
+  const lumenActive = ready && (!lumen.managed || lumen.configured);
+  const assistantDraftDirty = Boolean(
+    savedConfig && (
+      config.assistantProvider !== savedConfig.assistantProvider
+      || config.assistantModel.trim() !== savedConfig.assistantModel.trim()
+      || config.assistantBaseUrl.trim() !== savedConfig.assistantBaseUrl.trim()
+      || config.assistantPermission !== savedConfig.assistantPermission
+      || config.assistantProactive !== savedConfig.assistantProactive
+      || config.assistantMcpPort !== savedConfig.assistantMcpPort
+    ),
+  );
 
   return (
     <div className="vx-settings-section">
@@ -247,6 +296,8 @@ export function AssistantSettings({
             <small>{t("settings:assistant.proactiveDescription")}</small>
           </span>
         </label>
+
+        {assistantDraftDirty ? <p role="status">{t("settings:unsaved")}</p> : null}
 
         {lumenActive && onOpenAssistant ? (
           <div className="vx-action-row">

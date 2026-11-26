@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
-import { command, type Instance, type RemoteVersion, type ResourceProject, type VersionManifest } from "../../lib/launcher";
+import { command, type Instance, type RemoteVersion, type ResourceProject, type ResourceSource, type VersionManifest } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { droppedFileName, useFileDrop } from "../../app/FileDropContext";
 import { Button } from "../../components/ui/Button";
@@ -11,7 +11,6 @@ import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
-import type { ResourceSource } from "../discover/types";
 import type { Loader, LoaderResult, LoaderVersion, ModpackVersion, PackResult } from "./types";
 import { formatDate } from "../../i18n/format";
 import { catalogVersions, categoryCounts, VERSION_CATEGORIES, VERSION_SORTS, visibleVersions, type VersionCategory, type VersionSort } from "./versionCatalog";

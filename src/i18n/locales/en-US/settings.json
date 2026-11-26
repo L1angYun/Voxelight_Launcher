@@ -295,7 +295,7 @@
   "assistant": {
     "description": "Configure Lumen with your own AI API key, or expose launcher tools over a localhost-only MCP server. Until configured, Lumen stays completely hidden everywhere else.",
     "providerTitle": "Lumen AI provider and key",
-    "providerDescription": "Requests are sent only when you talk to Lumen or approve a wake-up, directly to the endpoint you configure.",
+    "providerDescription": "Requests are sent directly to your configured endpoint when you chat with Lumen or when optional proactive crash wake-up triggers.",
     "provider": "Provider",
     "providers": {
       "openai": "OpenAI-compatible",

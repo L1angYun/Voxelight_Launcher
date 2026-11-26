@@ -76,6 +76,14 @@ function replaceJsonVersion(filePath, updater) {
 export function setVersions(root, nextVersion) {
   validateSemver(nextVersion);
 
+  const cargoTomlPath = path.join(root, "src-tauri", "Cargo.toml");
+  const cargoToml = readFileSync(cargoTomlPath, "utf8");
+  if (!CARGO_TOML_RE.test(cargoToml)) throw new Error("Could not locate [package] version in src-tauri/Cargo.toml.");
+
+  const cargoLockPath = path.join(root, "src-tauri", "Cargo.lock");
+  const cargoLock = readFileSync(cargoLockPath, "utf8");
+  if (!CARGO_PACKAGE_RE.test(cargoLock)) throw new Error("Could not locate voxelight-launcher version in src-tauri/Cargo.lock.");
+
   replaceJsonVersion(path.join(root, "package.json"), (doc) => {
     doc.version = nextVersion;
   });
@@ -89,15 +97,7 @@ export function setVersions(root, nextVersion) {
   replaceJsonVersion(path.join(root, "licenses", "dependency-inventory.json"), (doc) => {
     doc.version = nextVersion;
   });
-
-  const cargoTomlPath = path.join(root, "src-tauri", "Cargo.toml");
-  const cargoToml = readFileSync(cargoTomlPath, "utf8");
-  if (!CARGO_TOML_RE.test(cargoToml)) throw new Error("Could not locate [package] version in src-tauri/Cargo.toml.");
   writeFileSync(cargoTomlPath, cargoToml.replace(CARGO_TOML_RE, `$1${nextVersion}$3`), "utf8");
-
-  const cargoLockPath = path.join(root, "src-tauri", "Cargo.lock");
-  const cargoLock = readFileSync(cargoLockPath, "utf8");
-  if (!CARGO_PACKAGE_RE.test(cargoLock)) throw new Error("Could not locate voxelight-launcher version in src-tauri/Cargo.lock.");
   writeFileSync(cargoLockPath, cargoLock.replace(CARGO_PACKAGE_RE, `$1${nextVersion}$3`), "utf8");
 
   return checkVersions(root);

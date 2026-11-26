@@ -797,7 +797,7 @@ pub(crate) async fn detect_local_proxies_inner(exclude_ports: &[u16]) -> LocalPr
 
 #[tauri::command]
 pub(crate) async fn detect_local_proxies(
-    mcp: tauri::State<'_, crate::assistant::mcp::McpService>,
+    mcp: tauri::State<'_, std::sync::Arc<crate::assistant::McpService>>,
 ) -> crate::errors::AppResult<LocalProxyReport> {
     let mcp_status = mcp.status(0);
     let exclude = if mcp_status.running {

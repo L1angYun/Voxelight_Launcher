@@ -24,7 +24,7 @@ export const tauriOutputName = (version) => `Voxelight Launcher_${version}_x64-s
 /** package.json, Cargo.toml and tauri.conf.json must name the same version. */
 export function projectVersion(root, { allowPrerelease = false } = {}) {
   const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
-  const cargo = /^version = "([^"]+)"$/m.exec(readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8"))?.[1];
+  const cargo = /^\[package\][\s\S]*?^version = "([^"]+)"$/m.exec(readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8"))?.[1];
   const tauri = JSON.parse(readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8")).version;
   if (!pkg || pkg !== cargo || pkg !== tauri) {
     throw new Error(`Version fields disagree: package.json ${pkg}, Cargo.toml ${cargo}, tauri.conf.json ${tauri}.`);

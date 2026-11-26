@@ -8,7 +8,7 @@
     "network": "网络检测"
   },
   "environment": "游戏环境",
-  "chooseEnvironment": "选择已安装游戏",
+  "chooseEnvironment": "选择已安装版本",
   "environmentRequired": "保存或加入服务器前，先选择游戏环境。",
   "refresh": "刷新",
   "addServer": "添加服务器",

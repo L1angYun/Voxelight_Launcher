@@ -18,8 +18,8 @@ use tauri::State;
 pub use mcp::{McpService, McpStatus};
 
 pub(crate) const ASSISTANT_SECRET_KEY: &str = "assistant_api_key";
-pub(crate) const ASSISTANT_API_KEY_REQUIRED: &str = "请先在「设置 → 助手与 MCP」中保存你的 AI API Key";
-pub(crate) const ASSISTANT_MODEL_REQUIRED: &str = "请先在「设置 → 助手与 MCP」中填写模型名称";
+pub(crate) const ASSISTANT_API_KEY_REQUIRED: &str = "请先在「设置 → Lumen 与 MCP」中保存你的 AI API Key";
+pub(crate) const ASSISTANT_MODEL_REQUIRED: &str = "请先在「设置 → Lumen 与 MCP」中填写模型名称";
 pub(crate) const ASSISTANT_INVALID_BASE_URL: &str = "助手 API 地址必须为 HTTPS 网址，或本机回环 HTTP（127.0.0.1 / localhost）";
 pub(crate) const ASSISTANT_PROVIDER_ERROR: &str = "AI 服务请求失败";
 pub(crate) const ASSISTANT_EMPTY_MESSAGE: &str = "请输入消息内容";
@@ -157,13 +157,16 @@ pub async fn assistant_chat(
     state: State<'_, Arc<LauncherState>>,
     games: State<'_, Arc<GameRegistry>>,
     servers: State<'_, Arc<ServerRegistry>>,
+    mcp: State<'_, Arc<McpService>>,
     request: llm::AssistantTurnRequest,
 ) -> AppResult<llm::AssistantTurnResponse> {
+    let mcp_status = mcp.status(0);
     let ctx = tools::ToolContext {
         state: state.inner().clone(),
         games: games.inner().clone(),
         servers: servers.inner().clone(),
         app: Some(app),
+        mcp_port: mcp_status.running.then_some(mcp_status.port),
     };
     llm::run_turn(&ctx, request).await.map_err(expected)
 }
@@ -187,6 +190,7 @@ pub async fn start_mcp_server(
         games: games.inner().clone(),
         servers: servers.inner().clone(),
         app: Some(app),
+        mcp_port: Some(target_port),
     };
     mcp.start(ctx, target_port, tokio::runtime::Handle::current())
         .map_err(expected)
@@ -275,6 +279,7 @@ mod tests {
                 games,
                 servers,
                 app: None,
+                mcp_port: None,
             },
             root,
         )
@@ -606,7 +611,21 @@ mod tests {
             // get_launcher_config exposes safe config without leaking secrets
             crate::secrets::save_service_secret(&ctx.state.data_dir, ASSISTANT_SECRET_KEY, "sk-lumen-secret")
                 .unwrap();
-            crate::secrets::save_service_secret(&ctx.state.data_dir, "curseforge", "cf-secret")
+            crate::secrets::save_service_secret(
+                &ctx.state.data_dir,
+                crate::curseforge_key::CURSEFORGE_SECRET_KEY,
+                "cf-secret",
+            )
+            .unwrap();
+            let secret_store = crate::secrets::SecretStore::new(ctx.state.data_dir.clone());
+            secret_store
+                .set("account:pending-acc-99", "orphaned-token")
+                .unwrap();
+            ctx.state
+                .update(|data| {
+                    data.pending_credential_removals.insert("pending-acc-99".into());
+                    Ok(())
+                })
                 .unwrap();
             let cfg = tools::execute_tool(
                 &ctx,
@@ -700,10 +719,76 @@ mod tests {
             assert!(crate::secrets::load_service_secret(&ctx.state.data_dir, ASSISTANT_SECRET_KEY)
                 .unwrap()
                 .is_none());
-            assert!(crate::secrets::load_service_secret(&ctx.state.data_dir, "curseforge")
+            assert!(crate::secrets::load_service_secret(
+                &ctx.state.data_dir,
+                crate::curseforge_key::CURSEFORGE_SECRET_KEY
+            )
+            .unwrap()
+            .is_none());
+            assert!(secret_store
+                .get("account:pending-acc-99")
                 .unwrap()
                 .is_none());
             assert!(inst_mod.is_file(), "game files on disk must never be deleted");
+        });
+    }
+
+    #[test]
+    fn u7_mcp_stop_never_deadlocks_while_operation_lock_is_held_and_bare_bearer_redacts() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (ctx, _root) = fixture_context();
+            ctx.state
+                .update(|data| {
+                    data.config.assistant_permission = "fullAccess".into();
+                    Ok(())
+                })
+                .unwrap();
+            let mcp = Arc::new(McpService::default());
+            let started = mcp
+                .start(ctx.clone(), 0, tokio::runtime::Handle::current())
+                .unwrap();
+            let token = mcp.token().unwrap();
+
+            // Hold state.operation (simulating reset_launcher_state_inner) while an MCP write tool
+            // tries to acquire state.operation, then verify mcp.stop() returns promptly without deadlock.
+            let op_guard = ctx.state.operation.lock().await;
+            let port = started.port;
+            let auth = format!("Authorization: Bearer {token}\r\n");
+            let client_task = std::thread::spawn(move || {
+                let _ = raw_http_post(
+                    port,
+                    "/mcp",
+                    &auth,
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"update_instance_notes","arguments":{"instanceId":"inst-1","notes":"race"}}}"#,
+                );
+            });
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            // Missing Host header must be rejected with 400 Bad Request (DNS-rebinding defense).
+            let mut no_host_stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let req = format!(
+                "POST /mcp HTTP/1.1\r\nContent-Length: 2\r\nAuthorization: Bearer {token}\r\n\r\n{{}}"
+            );
+            no_host_stream.write_all(req.as_bytes()).unwrap();
+            let mut no_host_resp = String::new();
+            no_host_stream.read_to_string(&mut no_host_resp).unwrap();
+            assert!(no_host_resp.starts_with("HTTP/1.1 400 "), "{no_host_resp}");
+
+            let stop_start = std::time::Instant::now();
+            let stopped = mcp.stop();
+            assert!(!stopped.running);
+            assert!(
+                stop_start.elapsed() < std::time::Duration::from_secs(2),
+                "mcp.stop() must not wait on in-flight tool holding/waiting on state.operation"
+            );
+            drop(op_guard);
+            let _ = client_task.join();
+
+            // Bare Bearer tokens (both bare and quoted) must be redacted.
+            let redacted = crate::processes::redact("token leaked: Bearer eyJhbGciOiJIUzI1NiJ9.secret");
+            assert!(!redacted.contains("eyJhbGciOiJIUzI1NiJ9.secret"));
+            let quoted_redacted = crate::processes::redact(r#"token leaked: Bearer "quoted-secret-token""#);
+            assert!(!quoted_redacted.contains("quoted-secret-token"));
         });
     }
 }

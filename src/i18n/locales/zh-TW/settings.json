@@ -292,7 +292,7 @@
   "assistant": {
     "description": "使用你自己的 AI API Key 設定 Lumen，或透過僅限本機的 MCP 服務開放啟動器工具。在完成設定之前，Lumen 不會出現在啟動器的任何其他位置。",
     "providerTitle": "Lumen 供應商與金鑰",
-    "providerDescription": "僅在你主動與 Lumen 對話或觸發診斷喚醒時傳送請求，直接連線至你設定的端點網址。",
+    "providerDescription": "僅在你主動與 Lumen 對話，或開啟崩潰自動喚醒並觸發異常結束時，直接向你設定的端點網址傳送請求。",
     "provider": "供應商",
     "providers": {
       "openai": "OpenAI 相容介面",
@@ -303,7 +303,7 @@
     "baseUrl": "API 基礎網址（選填）",
     "baseUrlHint": "留空以使用供應商預設 HTTPS 網址。遠端介面必須使用 HTTPS；本機服務（如 Ollama 或 LM Studio）允許 http://127.0.0.1 或 http://localhost。",
     "apiKey": "Lumen API Key",
-    "apiKeyPlaceholder": "填寫你自己的 API Key（本機迴圈介面可留空）",
+    "apiKeyPlaceholder": "填寫你自己的 API Key（本機回送介面可留空）",
     "apiKeyHint": "透過 Windows DPAPI 按目前 Windows 使用者加密儲存，匯出設定組時不會包含。",
     "permission": "工具權限",
     "permissions": {
@@ -314,14 +314,14 @@
     "permissionHints": {
       "readOnly": "只檢視實例、版本、模組、世界存檔、日誌、崩潰診斷、下載任務、Java、網路環境與託管伺服器，不修改任何內容。",
       "controlled": "唯讀工具自動執行；Lumen 執行寫入操作前會逐項請求你的確認；外部 MCP 用戶端仍維持唯讀。",
-      "fullAccess": "允許 Lumen 及通過認證的本機 MCP 用戶端執行全部精選啟動器工具（安裝版本 / 模組、建立 / 複製 / 備份實例、調整安全設定、管理下載、啟停遊戲與伺服器等）。"
+      "fullAccess": "允許 Lumen 及通過認證的本機 MCP 用戶端執行全部精選啟動器工具（安裝版本 / 模組、建立 / 複製 / 備份實例、調整實例設定、管理下載、啟停遊戲與伺服器等）。"
     },
     "toolSummary": "已開放精選工具集：共 {{total}} 項啟動器工具（{{readOnly}} 項唯讀、{{controlled}} 項受控寫入）。絕不暴露任意 Shell 指令、越界路徑或任何金鑰讀取。",
     "proactive": "遊戲異常崩潰時主動喚醒 Lumen",
     "proactiveDescription": "僅在已設定 Lumen 時生效：當遊戲非正常結束時自動帶崩潰上下文喚醒 Lumen，並在日誌發生錯誤、下載失敗與受限 NAT 情境提供快速求助入口。",
     "openDialog": "開啟 Lumen（Ctrl+K）",
     "mcpTitle": "本機 MCP 服務",
-    "mcpDescription": "每次啟動預設關閉。僅監聽 127.0.0.1，要求每次工作階段隨機產生的 Bearer 權杖並驗證本機迴圈 Host/Origin。",
+    "mcpDescription": "每次啟動預設關閉。僅監聽 127.0.0.1，要求每次工作階段隨機產生的 Bearer 權杖並驗證本機回送 Host/Origin。",
     "mcpPort": "MCP 連接埠（1024–65535）",
     "mcpRunning": "執行中：127.0.0.1:{{port}}（僅限本機）。",
     "mcpStopped": "已停止。",

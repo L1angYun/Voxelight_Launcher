@@ -891,9 +891,20 @@ fn the_download_uses_only_the_offered_package_and_reuses_a_staged_one() {
     let root = Root::new();
     let none = run(download_with(&state, &service, &Fake::default(), root.path(), &|_, _| {}));
     assert_eq!(none.err().as_deref(), Some("没有可下载的更新，请先检查更新"));
-    // A check that finds only the running version offers nothing to download.
-    let current = display_version(current_version());
-    let same = Fake::with(vec![(API_LATEST, ok(release_json(&format!("v{current}"), &sha_of(BYTES), BYTES.len() as u64)))]);
+    // A check that finds a version not newer than the running build offers nothing to download.
+    let not_newer = if current_is_prerelease() {
+        let (major, minor, patch) = current_version();
+        if patch > 0 {
+            display_version((major, minor, patch - 1))
+        } else if minor > 0 {
+            display_version((major, minor - 1, 0))
+        } else {
+            display_version((major.saturating_sub(1), 0, 0))
+        }
+    } else {
+        display_version(current_version())
+    };
+    let same = Fake::with(vec![(API_LATEST, ok(release_json(&format!("v{not_newer}"), &sha_of(BYTES), BYTES.len() as u64)))]);
     run(check_with(&state, &service, &same, chrono::Utc::now())).unwrap();
     let none = run(download_with(&state, &service, &Fake::default(), root.path(), &|_, _| {}));
     assert_eq!(none.err().as_deref(), Some("没有可下载的更新，请先检查更新"));
@@ -953,7 +964,7 @@ fn the_state_reports_the_last_check_for_the_saved_source_and_the_download_phase(
     let service = UpdateService::default();
     let servers = crate::server_manager::ServerRegistry::default();
     let empty = state_with(&state, &service, &servers).unwrap();
-    assert_eq!(empty.current_version, display_version(current_version()));
+    assert_eq!(empty.current_version, current_version_string());
     assert_eq!((empty.check, empty.download, empty.staged), (None, "idle", None));
 
     let view = run(check_with(&state, &service, &Fake::with(vec![(API_LATEST, ok(newer_release()))]), chrono::Utc::now())).unwrap();

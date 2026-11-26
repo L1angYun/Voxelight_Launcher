@@ -5,7 +5,7 @@ import { command } from "../../lib/launcher";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
-import type { LumenWakeRequest } from "./LumenContext";
+import { useLumen, type LumenWakeRequest } from "./LumenContext";
 import type {
   AssistantStatus,
   AssistantTurnResponse,
@@ -19,6 +19,12 @@ import "./assistant.css";
 interface TranscriptEntry extends ChatMessage {
   id: string;
   traces?: ToolTraceItem[];
+}
+
+function formatArgValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
 }
 
 export function AssistantDialog({
@@ -37,7 +43,9 @@ export function AssistantDialog({
   onConsumeWake?: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const [status, setStatus] = useState<AssistantStatus | null>(null);
+  const { managed, status: contextStatus, refreshStatus } = useLumen();
+  const [localStatus, setLocalStatus] = useState<AssistantStatus | null>(null);
+  const status = managed ? contextStatus : localStatus;
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,24 +55,65 @@ export function AssistantDialog({
   const [wakeReason, setWakeReason] = useState<string | null>(null);
   const entriesRef = useRef<TranscriptEntry[]>(entries);
   entriesRef.current = entries;
+  const mountedRef = useRef(true);
+  const inFlightRef = useRef(false);
   const handledWakeId = useRef<number>(0);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const prevBusyRef = useRef(false);
+  const prevPendingCountRef = useRef(0);
+  const prevProviderRef = useRef<string | undefined>(status?.provider);
 
-  const loadStatus = useCallback(async () => {
-    try {
-      const next = await command<AssistantStatus>("get_assistant_status");
-      setStatus(next);
-    } catch (cause) {
-      setError(normalizeError(cause));
-    }
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
   }, []);
 
   useEffect(() => {
+    if (status?.provider && prevProviderRef.current && status.provider !== prevProviderRef.current) {
+      setPendingApprovals([]);
+      setContinuation(null);
+    }
+    if (status?.provider) {
+      prevProviderRef.current = status.provider;
+    }
+  }, [status?.provider]);
+
+  useEffect(() => {
     if (open) {
-      void loadStatus();
+      let active = true;
+      if (managed) {
+        void refreshStatus();
+      } else {
+        // Standalone usage (e.g. unit tests outside LumenProvider) fetches status directly.
+        void command<AssistantStatus>("get_assistant_status")
+          .then((fallback) => { if (active && fallback) setLocalStatus(fallback); })
+          .catch((cause) => { if (active) setError(normalizeError(cause)); });
+      }
+      return () => { active = false; };
     } else {
       setWakeReason(null);
     }
-  }, [open, loadStatus]);
+  }, [open, managed, refreshStatus]);
+
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el || !open) return;
+    el.scrollTop = el.scrollHeight;
+  }, [entries.length, pendingApprovals.length, busy, open]);
+
+  useEffect(() => {
+    const wasBusy = prevBusyRef.current;
+    const prevPending = prevPendingCountRef.current;
+    prevBusyRef.current = busy;
+    prevPendingCountRef.current = pendingApprovals.length;
+    if (!open || busy) return;
+    if (pendingApprovals.length > 0 && (wasBusy || prevPending === 0)) {
+      transcriptRef.current?.querySelector<HTMLButtonElement>("[data-lumen-approve]")?.focus();
+    } else if (wasBusy && pendingApprovals.length === 0) {
+      textareaRef.current?.focus();
+    }
+  }, [open, busy, pendingApprovals.length]);
 
   function errorMessage(cause: LauncherError): string {
     const key = [
@@ -81,7 +130,8 @@ export function AssistantDialog({
     return cause.detail || t("common:errors.internalUnexpected");
   }
 
-  const applyResponse = useCallback((response: AssistantTurnResponse) => {
+  const applyResponse = useCallback(async (response: AssistantTurnResponse) => {
+    if (!mountedRef.current) return;
     const assistantText = response.reply.trim();
     if (assistantText || response.traces.length > 0) {
       setEntries((current) => [
@@ -97,13 +147,18 @@ export function AssistantDialog({
     setPendingApprovals(response.pendingApprovals);
     setContinuation(response.continuation);
     if (response.traces.some((item) => item.tier === "controlled" && (item.status === "approved" || item.status === "executed"))) {
-      void onMutated();
+      try {
+        await onMutated();
+      } catch (cause) {
+        if (mountedRef.current) setError(normalizeError(cause));
+      }
     }
   }, [onMutated]);
 
   const sendPrompt = useCallback(async (rawPrompt: string) => {
     const content = rawPrompt.trim();
-    if (!content) return;
+    if (!content || inFlightRef.current) return;
+    inFlightRef.current = true;
     setError(null);
     const currentEntries = entriesRef.current;
     const nextUser: TranscriptEntry = {
@@ -123,11 +178,12 @@ export function AssistantDialog({
       const response = await command<AssistantTurnResponse>("assistant_chat", {
         request: { messages },
       });
-      applyResponse(response);
+      await applyResponse(response);
     } catch (cause) {
-      setError(normalizeError(cause));
+      if (mountedRef.current) setError(normalizeError(cause));
     } finally {
-      setBusy(false);
+      inFlightRef.current = false;
+      if (mountedRef.current) setBusy(false);
     }
   }, [applyResponse]);
 
@@ -147,12 +203,13 @@ export function AssistantDialog({
   }, [open, wakeRequest, status?.ready, busy, pendingApprovals.length, onConsumeWake, sendPrompt]);
 
   async function resolveApprovals(approve: boolean) {
-    if (!continuation || busy) return;
+    if (!continuation || inFlightRef.current) return;
+    inFlightRef.current = true;
     setError(null);
     setBusy(true);
     const ids = pendingApprovals.map((item) => item.id);
     try {
-      const messages: ChatMessage[] = entries
+      const messages: ChatMessage[] = entriesRef.current
         .filter((item) => item.content.trim().length > 0)
         .map(({ role, content: text }) => ({ role, content: text }));
       const response = await command<AssistantTurnResponse>("assistant_chat", {
@@ -163,11 +220,12 @@ export function AssistantDialog({
           pendingContinuation: continuation,
         },
       });
-      applyResponse(response);
+      await applyResponse(response);
     } catch (cause) {
-      setError(normalizeError(cause));
+      if (mountedRef.current) setError(normalizeError(cause));
     } finally {
-      setBusy(false);
+      inFlightRef.current = false;
+      if (mountedRef.current) setBusy(false);
     }
   }
 
@@ -204,6 +262,12 @@ export function AssistantDialog({
     ? t(`settings:assistant.permissions.${status.permission}`)
     : t("settings:assistant.permissions.readOnly");
 
+  const activeToolCount = status?.tools
+    ? status.permission === "readOnly"
+      ? status.tools.filter((item) => item.tier === "readOnly").length
+      : status.tools.length
+    : 0;
+
   return (
     <Dialog
       open={open}
@@ -222,16 +286,16 @@ export function AssistantDialog({
                 : t("settings:assistant.providers.openai")}
             </span>
             {status?.model ? (
-              <span className="vx-assistant-pill">{status.model}</span>
+              <span className="vx-assistant-pill vx-assistant-pill--mono">{status.model}</span>
             ) : (
               <span className="vx-assistant-pill vx-assistant-pill--warn">
                 {t("shell:assistant.notConfigured")}
               </span>
             )}
             <span className="vx-assistant-pill">{permissionLabel}</span>
-            {status?.tools && status.tools.length > 0 ? (
-              <span className="vx-assistant-pill">
-                {t("shell:assistant.toolCount", { count: status.tools.length })}
+            {activeToolCount > 0 ? (
+              <span className="vx-assistant-pill vx-assistant-pill--mono">
+                {t("shell:assistant.toolCount", { count: activeToolCount })}
               </span>
             ) : null}
           </div>
@@ -254,7 +318,7 @@ export function AssistantDialog({
           </div>
         ) : null}
 
-        <div className="vx-assistant-transcript" aria-live="polite">
+        <div ref={transcriptRef} className="vx-assistant-transcript" aria-live="polite">
           {entries.length === 0 ? (
             <div className="vx-assistant-empty">
               <p>
@@ -287,17 +351,28 @@ export function AssistantDialog({
                     : t("shell:assistant.roleAssistant")}
                 </span>
                 {entry.traces && entry.traces.length > 0 ? (
-                  <ul className="vx-assistant-traces" aria-label={t("shell:assistant.toolActivity")}>
+                  <ol className="vx-assistant-traces" aria-label={t("shell:assistant.toolActivity")}>
                     {entry.traces.map((trace) => (
-                      <li className="vx-assistant-trace" key={`${entry.id}-${trace.id}`}>
-                        <span className="vx-assistant-trace__name">{trace.name}</span>
-                        <span className="vx-assistant-trace__status">
-                          {t(`shell:assistant.traceStatus.${trace.status}`)}
-                        </span>
-                        <span className="vx-assistant-trace__summary">{trace.summary}</span>
+                      <li
+                        className="vx-assistant-trace"
+                        data-status={trace.status}
+                        key={`${entry.id}-${trace.id}`}
+                      >
+                        <span className="vx-assistant-trace__node" aria-hidden="true" />
+                        <div className="vx-assistant-trace__content">
+                          <div className="vx-assistant-trace__head">
+                            <span className="vx-assistant-trace__name">{trace.name}</span>
+                            <span className="vx-assistant-trace__status" data-status={trace.status}>
+                              {t(`shell:assistant.traceStatus.${trace.status}`)}
+                            </span>
+                          </div>
+                          {trace.summary ? (
+                            <span className="vx-assistant-trace__summary">{trace.summary}</span>
+                          ) : null}
+                        </div>
                       </li>
                     ))}
-                  </ul>
+                  </ol>
                 ) : null}
                 {entry.content ? (
                   <p className="vx-assistant-message__body">{entry.content}</p>
@@ -306,22 +381,46 @@ export function AssistantDialog({
             ))
           )}
 
+          {busy ? (
+            <div className="vx-assistant-thinking">
+              <span className="vx-assistant-thinking__dot" aria-hidden="true" />
+              <span>{t("common:status.loading")}</span>
+            </div>
+          ) : null}
+
           {pendingApprovals.length > 0 ? (
             <section className="vx-assistant-approval" aria-label={t("shell:assistant.approvalTitle")}>
               <h3>{t("shell:assistant.approvalTitle")}</h3>
               <p>{t("shell:assistant.approvalDescription")}</p>
               <ul className="vx-assistant-approval__list">
-                {pendingApprovals.map((call) => (
-                  <li className="vx-assistant-approval__item" key={call.id}>
-                    <span className="vx-assistant-trace__name">{call.name}</span>
-                    {call.description ? <p>{call.description}</p> : null}
-                    <pre>{JSON.stringify(call.arguments, null, 2)}</pre>
-                  </li>
-                ))}
+                {pendingApprovals.map((call) => {
+                  const argEntries = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
+                    ? Object.entries(call.arguments as Record<string, unknown>)
+                    : [];
+                  return (
+                    <li className="vx-assistant-approval__item" key={call.id}>
+                      <span className="vx-assistant-trace__name">{call.name}</span>
+                      {call.description ? <p>{call.description}</p> : null}
+                      {argEntries.length > 0 ? (
+                        <dl className="vx-assistant-approval__args">
+                          {argEntries.map(([key, value]) => (
+                            <div key={key}>
+                              <dt>{key}</dt>
+                              <dd>{formatArgValue(value)}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      ) : (
+                        <pre>{JSON.stringify(call.arguments, null, 2)}</pre>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
               <div className="vx-action-row">
                 <Button
                   variant="primary"
+                  data-lumen-approve=""
                   icon={<Check size={14} />}
                   loading={busy}
                   onClick={() => void resolveApprovals(true)}
@@ -344,6 +443,8 @@ export function AssistantDialog({
         <form className="vx-assistant-composer" onSubmit={handleSubmit}>
           {error ? <p className="vx-assistant-error" role="alert">{errorMessage(error)}</p> : null}
           <textarea
+            ref={textareaRef}
+            data-dialog-autofocus=""
             aria-label={t("shell:assistant.inputLabel")}
             placeholder={
               status?.ready

@@ -549,32 +549,7 @@ async fn list_worlds_inner(
     version_id: String,
     instance_id: Option<String>,
 ) -> Result<Vec<World>, String> {
-    let root = game_root(&state, &version_id, instance_id.as_deref())?;
-    tokio::task::spawn_blocking(move || {
-        let saves = safe_join(&root, "saves")?;
-        if !saves.exists() {
-            return Ok(Vec::new());
-        }
-        let mut result = Vec::new();
-        for entry in fs::read_dir(&saves).map_err(|e| e.to_string())?.take(2000) {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with(".world-import-")
-                || !entry.file_type().map_err(|e| e.to_string())?.is_dir()
-            {
-                continue;
-            }
-            let path = safe_join(&saves, &name)?;
-            if !safe_join(&path, "level.dat")?.is_file() {
-                continue;
-            }
-            result.push(world_info(&saves, &name)?);
-        }
-        result.sort_by(|a, b| b.last_played.cmp(&a.last_played).then(a.name.cmp(&b.name)));
-        Ok(result)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    list_worlds_for_state(&state, version_id, instance_id).await
 }
 
 fn hash(path: &Path) -> Result<String, String> {
@@ -1505,10 +1480,8 @@ pub async fn list_world_datapacks(
     instance_id: Option<String>,
     world_folder: String,
 ) -> AppResult<Vec<WorldDatapack>> {
-    let root = game_root(&state, &version_id, instance_id.as_deref()).map_err(expected)?;
-    tokio::task::spawn_blocking(move || list_world_datapacks_in_root(&root, &world_folder))
+    list_world_datapacks_for_state(&state, version_id, instance_id, world_folder)
         .await
-        .map_err(|e| expected(e.to_string()))?
         .map_err(expected)
 }
 
@@ -1550,18 +1523,9 @@ pub async fn toggle_world_datapack(
     world_folder: String,
     file_name: String,
 ) -> AppResult<WorldDatapack> {
-    let _guard = state.operation.lock().await;
-    let root = game_root(&state, &version_id, instance_id.as_deref())?;
-    let root = stopped_game_root(&state, &root, instance_id.as_deref())?;
-    if let Some(id) = instance_id.as_deref() {
-        instances::require_no_pending_restore(&state, id)?;
-    }
-    tokio::task::spawn_blocking(move || {
-        toggle_world_datapack_in_root(&root, &world_folder, &file_name)
-    })
-    .await
-    .map_err(|e| expected(e.to_string()))?
-    .map_err(expected)
+    toggle_world_datapack_for_state(&state, version_id, instance_id, world_folder, file_name)
+        .await
+        .map_err(expected)
 }
 
 #[tauri::command]
@@ -1599,21 +1563,27 @@ mod tests {
     #[test]
     fn a4_world_writers_check_running_before_writing_and_after_taking_the_lock() {
         let source = include_str!("content.rs");
-        for command in [
-            "backup_world",
-            "import_world",
-            "import_local_resources",
-            "import_world_datapacks",
-            "toggle_world_datapack",
-            "delete_world_datapack",
+        for (prefix, command) in [
+            ("pub async fn ", "backup_world"),
+            ("pub async fn ", "import_world"),
+            ("pub async fn ", "import_local_resources"),
+            ("pub async fn ", "import_world_datapacks"),
+            ("pub(crate) async fn ", "toggle_world_datapack_for_state"),
+            ("pub async fn ", "delete_world_datapack"),
         ] {
-            let (_, body) = source.split_once(&format!("pub async fn {command}(")).unwrap();
+            let (_, body) = source.split_once(&format!("{prefix}{command}(")).unwrap();
             let (body, _) = body.split_once("\n}").unwrap();
             let body = &crate::storage::executable_source(body);
             // A named binding keeps the lock held; `let _ =` would drop it at once.
             let lock = body.find("let _guard = state.operation.lock().await;").expect(command);
-            let resolve = body.find("game_root(&state, &version_id").expect(command);
-            let guard = body.find("let root = stopped_game_root(&state, &root, instance_id.as_deref())?;").expect(command);
+            let resolve = body
+                .find("game_root(&state, &version_id")
+                .or_else(|| body.find("game_root(state, &version_id"))
+                .expect(command);
+            let guard = body
+                .find("let root = stopped_game_root(&state, &root, instance_id.as_deref())?;")
+                .or_else(|| body.find("let root = stopped_game_root(state, &root, instance_id.as_deref())?;"))
+                .expect(command);
             let spawn = body.find("tokio::task::spawn_blocking").expect(command);
             assert!(lock < resolve && resolve < guard && guard < spawn, "{command}");
             if command == "import_world" {
@@ -1621,6 +1591,9 @@ mod tests {
                 assert!(resolve < validate && validate < guard, "ZIP validation precedes detection");
             }
         }
+        let (_, toggle_cmd) = source.split_once("pub async fn toggle_world_datapack(").unwrap();
+        let (toggle_cmd, _) = toggle_cmd.split_once("\n}").unwrap();
+        assert!(toggle_cmd.contains("toggle_world_datapack_for_state("));
     }
 
     #[test]

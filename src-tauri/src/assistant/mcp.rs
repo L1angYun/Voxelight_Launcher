@@ -13,13 +13,16 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+const MAX_CONCURRENT_CONNECTIONS: usize = 4;
+const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,12 +112,15 @@ fn is_allowed_origin(origin: &str) -> bool {
 impl McpService {
     pub fn start(
         &self,
-        ctx: ToolContext,
+        mut ctx: ToolContext,
         port: u16,
         runtime: tokio::runtime::Handle,
     ) -> Result<McpStatus, String> {
-        let mut guard = self.inner.lock().map_err(|_| "MCP 服务锁异常")?;
-        if let Some(existing) = guard.take() {
+        let existing = {
+            let mut guard = self.inner.lock().map_err(|_| "MCP 服务锁异常")?;
+            guard.take()
+        };
+        if let Some(existing) = existing {
             existing.shutdown.store(true, Ordering::Release);
             if let Some(handle) = existing.handle {
                 let _ = handle.join();
@@ -130,9 +136,11 @@ impl McpService {
         listener
             .set_nonblocking(true)
             .map_err(|error| format!("无法配置 MCP 监听套接字：{error}"))?;
+        ctx.mcp_port = Some(bound_port);
 
         let token = Arc::new(Mutex::new(generate_token()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
         let thread_token = token.clone();
         let thread_shutdown = shutdown.clone();
 
@@ -141,11 +149,27 @@ impl McpService {
             .spawn(move || {
                 while !thread_shutdown.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((stream, _peer)) => {
+                        Ok((mut stream, _peer)) => {
                             let _ = stream.set_nonblocking(false);
-                            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                             let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                            handle_connection(stream, &ctx, &thread_token, &runtime);
+                            let Ok(permit) = permits.clone().try_acquire_owned() else {
+                                write_http_response(
+                                    &mut stream,
+                                    503,
+                                    "Service Unavailable",
+                                    Some(b"{\"error\":\"too_many_requests\"}"),
+                                    None,
+                                );
+                                continue;
+                            };
+                            let conn_ctx = ctx.clone();
+                            let conn_token = thread_token.clone();
+                            let conn_runtime = runtime.clone();
+                            runtime.spawn_blocking(move || {
+                                let _permit = permit;
+                                handle_connection(stream, &conn_ctx, &conn_token, &conn_runtime);
+                            });
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(25));
@@ -162,12 +186,21 @@ impl McpService {
             .lock()
             .map(|value| mask_token(&value))
             .unwrap_or_else(|_| "••••••".into());
-        *guard = Some(RunningMcp {
-            port: bound_port,
-            token,
-            shutdown,
-            handle: Some(handle),
-        });
+        let replaced = {
+            let mut guard = self.inner.lock().map_err(|_| "MCP 服务锁异常")?;
+            guard.replace(RunningMcp {
+                port: bound_port,
+                token,
+                shutdown,
+                handle: Some(handle),
+            })
+        };
+        if let Some(stale) = replaced {
+            stale.shutdown.store(true, Ordering::Release);
+            if let Some(handle) = stale.handle {
+                let _ = handle.join();
+            }
+        }
         Ok(McpStatus {
             running: true,
             port: bound_port,
@@ -177,11 +210,14 @@ impl McpService {
     }
 
     pub fn stop(&self) -> McpStatus {
-        let mut guard = match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+        let existing = {
+            let mut guard = match self.inner.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.take()
         };
-        if let Some(existing) = guard.take() {
+        if let Some(existing) = existing {
             existing.shutdown.store(true, Ordering::Release);
             if let Some(handle) = existing.handle {
                 let _ = handle.join();
@@ -280,11 +316,22 @@ fn handle_connection(
     token_store: &Arc<Mutex<String>>,
     runtime: &tokio::runtime::Handle,
 ) {
+    let deadline = Instant::now() + REQUEST_DEADLINE;
     let mut buffer = Vec::with_capacity(2048);
     let mut chunk = [0u8; 2048];
     let header_end = loop {
         if let Some(pos) = find_header_end(&buffer) {
             break pos;
+        }
+        if Instant::now() >= deadline {
+            write_http_response(
+                &mut stream,
+                408,
+                "Request Timeout",
+                Some(b"{\"error\":\"request_timeout\"}"),
+                None,
+            );
+            return;
         }
         if buffer.len() >= MAX_HEADER_BYTES {
             write_http_response(
@@ -324,58 +371,70 @@ fn handle_connection(
         return;
     };
 
-    let mut content_length: usize = 0;
+    let mut content_length: Option<usize> = None;
     let mut authorization: Option<String> = None;
-    let mut host: Option<String> = None;
-    let mut origin: Option<String> = None;
+    let mut host_seen = false;
     let mut transfer_encoding = false;
 
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
+        if name.is_empty() || name.bytes().any(|b| b.is_ascii_whitespace()) {
+            write_http_response(&mut stream, 400, "Bad Request", None, None);
+            return;
+        }
         let value = value.trim();
         if name.eq_ignore_ascii_case("content-length") {
             let Ok(parsed) = value.parse::<usize>() else {
                 write_http_response(&mut stream, 400, "Bad Request", None, None);
                 return;
             };
-            content_length = parsed;
+            if content_length.is_some_and(|existing| existing != parsed) {
+                write_http_response(&mut stream, 400, "Bad Request", None, None);
+                return;
+            }
+            content_length = Some(parsed);
         } else if name.eq_ignore_ascii_case("authorization") {
             authorization = Some(value.to_owned());
         } else if name.eq_ignore_ascii_case("host") {
-            host = Some(value.to_owned());
+            if host_seen || !is_allowed_host(value) {
+                write_http_response(
+                    &mut stream,
+                    403,
+                    "Forbidden",
+                    Some(b"{\"error\":\"forbidden_host\"}"),
+                    None,
+                );
+                return;
+            }
+            host_seen = true;
         } else if name.eq_ignore_ascii_case("origin") {
-            origin = Some(value.to_owned());
+            if !is_allowed_origin(value) {
+                write_http_response(
+                    &mut stream,
+                    403,
+                    "Forbidden",
+                    Some(b"{\"error\":\"forbidden_origin\"}"),
+                    None,
+                );
+                return;
+            }
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             transfer_encoding = true;
         }
     }
-
-    if let Some(ref host_value) = host {
-        if !is_allowed_host(host_value) {
-            write_http_response(
-                &mut stream,
-                403,
-                "Forbidden",
-                Some(b"{\"error\":\"forbidden_host\"}"),
-                None,
-            );
-            return;
-        }
+    if !host_seen {
+        write_http_response(
+            &mut stream,
+            400,
+            "Bad Request",
+            Some(b"{\"error\":\"missing_host\"}"),
+            None,
+        );
+        return;
     }
-    if let Some(ref origin_value) = origin {
-        if !is_allowed_origin(origin_value) {
-            write_http_response(
-                &mut stream,
-                403,
-                "Forbidden",
-                Some(b"{\"error\":\"forbidden_origin\"}"),
-                None,
-            );
-            return;
-        }
-    }
+    let content_length = content_length.unwrap_or(0);
 
     if path != "/mcp" && path != "/" {
         write_http_response(
@@ -437,6 +496,16 @@ fn handle_connection(
         body.extend_from_slice(&buffer[body_start..body_start + take]);
     }
     while body.len() < content_length {
+        if Instant::now() >= deadline {
+            write_http_response(
+                &mut stream,
+                408,
+                "Request Timeout",
+                Some(b"{\"error\":\"request_timeout\"}"),
+                None,
+            );
+            return;
+        }
         let remaining = content_length - body.len();
         let to_read = remaining.min(chunk.len());
         match stream.read(&mut chunk[..to_read]) {
@@ -537,13 +606,13 @@ fn dispatch_jsonrpc(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let outcome = runtime.block_on(tools::execute_tool(
-                ctx,
-                name,
-                &arguments,
-                permission,
-                false,
-            ));
+            let outcome = match runtime.block_on(tokio::time::timeout(
+                Duration::from_secs(120),
+                tools::execute_tool(ctx, name, &arguments, permission, false),
+            )) {
+                Ok(res) => res,
+                Err(_) => Err(ToolExecError::Failed("Tool execution timed out".into())),
+            };
             match outcome {
                 Ok(value) => {
                     let text = serde_json::to_string_pretty(&value)

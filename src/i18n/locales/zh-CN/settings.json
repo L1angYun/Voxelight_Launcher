@@ -292,7 +292,7 @@
   "assistant": {
     "description": "使用你自己的 AI API Key 配置 Lumen，或通过仅限本机的 MCP 服务开放启动器工具。在完成配置之前，Lumen 不会出现在启动器的任何其他位置。",
     "providerTitle": "Lumen 提供商与密钥",
-    "providerDescription": "仅在你主动与 Lumen 对话或触发诊断唤醒时发包，直接连向你配置的接口地址。",
+    "providerDescription": "仅在你主动与 Lumen 对话，或开启崩溃自动唤醒并触发异常退出时，直接向你配置的接口地址发包。",
     "provider": "提供商",
     "providers": {
       "openai": "OpenAI 兼容接口",
@@ -314,7 +314,7 @@
     "permissionHints": {
       "readOnly": "只查看实例、版本、模组、世界存档、日志、崩溃诊断、下载任务、Java、网络环境和托管服务端，不修改任何内容。",
       "controlled": "只读工具自动执行；Lumen 执行写入操作前会逐项请求你的确认；外部 MCP 客户端仍保持只读。",
-      "fullAccess": "允许 Lumen 及通过认证的本机 MCP 客户端执行全部精选启动器工具（安装版本/模组、创建/克隆/备份实例、调整安全设置、管理下载、启停游戏与服务端等）。"
+      "fullAccess": "允许 Lumen 及通过认证的本机 MCP 客户端执行全部精选启动器工具（安装版本/模组、创建/克隆/备份实例、调整实例设置、管理下载、启停游戏与服务端等）。"
     },
     "toolSummary": "已开放精选工具集：共 {{total}} 项启动器工具（{{readOnly}} 项只读、{{controlled}} 项受控写入）。绝不暴露任意 Shell 命令、越界路径或任何密钥读取。",
     "proactive": "游戏异常崩溃时主动唤醒 Lumen",

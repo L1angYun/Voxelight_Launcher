@@ -1,11 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { DefaultSkinId } from "./defaultSkin";
 import type { WorldMaterial, WorldSceneId } from "../components/world/types";
 import { LauncherError, normalizeError } from "./errors";
 
+export type DefaultSkinId = "steve" | "alex";
 export type EffectsLevel = "lite" | "full";
 export type AccentSource = "voxelight" | "system" | "custom";
+export type ResourceSource = "modrinth" | "curseforge";
 
 export interface SystemAppearance {
   accentColor: string;

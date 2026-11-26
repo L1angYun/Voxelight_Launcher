@@ -21,6 +21,8 @@ export interface LumenWakeRequest {
 }
 
 export interface LumenContextValue {
+  /** True inside LumenProvider; false in standalone unit tests without a provider. */
+  managed: boolean;
   /** True only once the user has configured Lumen (model + API key or local loopback endpoint). */
   configured: boolean;
   proactive: boolean;
@@ -34,6 +36,7 @@ export interface LumenContextValue {
 }
 
 const inactiveContext: LumenContextValue = {
+  managed: false,
   configured: false,
   proactive: false,
   status: null,
@@ -54,7 +57,10 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [wakeRequest, setWakeRequest] = useState<LumenWakeRequest | null>(null);
   const wakeCounter = useRef(0);
+  const refreshGen = useRef(0);
   const gameTargets = useRef(new Map<string, { instanceId?: string | null; versionId: string }>());
+  const instancesRef = useRef(data.instances);
+  instancesRef.current = data.instances;
 
   useEffect(() => {
     for (const game of running) {
@@ -66,12 +72,16 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   }, [running]);
 
   const refreshStatus = useCallback(async (): Promise<AssistantStatus | null> => {
+    const gen = ++refreshGen.current;
     if (!desktop) {
       setStatus(null);
+      setOpen(false);
+      setWakeRequest(null);
       return null;
     }
     try {
       const next = await command<AssistantStatus>("get_assistant_status");
+      if (gen !== refreshGen.current) return null;
       setStatus(next);
       if (!next?.ready) {
         setOpen(false);
@@ -79,6 +89,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       }
       return next;
     } catch {
+      if (gen !== refreshGen.current) return null;
+      // Fail closed: never keep stale configured=true state when status cannot be verified.
+      setStatus(null);
+      setOpen(false);
+      setWakeRequest(null);
       return null;
     }
   }, []);
@@ -113,6 +128,7 @@ export function LumenProvider({ children }: { children: ReactNode }) {
 
   const closeLumen = useCallback(() => {
     setOpen(false);
+    setWakeRequest(null);
   }, []);
 
   const consumeWakeRequest = useCallback(() => {
@@ -127,12 +143,13 @@ export function LumenProvider({ children }: { children: ReactNode }) {
     const promise = events<{ gameId: string; pid: number; code: number | null }>(
       "launcher://game-exit",
       (event) => {
+        const tracked = gameTargets.current.get(event.gameId);
+        gameTargets.current.delete(event.gameId);
         if (!active) return;
         if (event.code === null || event.code === 0) return;
-        if (document.querySelector("dialog[open]")) return;
-        const tracked = gameTargets.current.get(event.gameId);
+        if (document.querySelector("dialog[open], .vx-tour__card")) return;
         const instance = tracked?.instanceId
-          ? data.instances.find((item) => item.id === tracked.instanceId)
+          ? instancesRef.current.find((item) => item.id === tracked.instanceId)
           : undefined;
         const target = instance?.name ?? tracked?.versionId ?? "Minecraft";
         const instanceHint = instance ? ` (instanceId: ${instance.id})` : "";
@@ -147,10 +164,11 @@ export function LumenProvider({ children }: { children: ReactNode }) {
       active = false;
       void promise.then((dispose) => dispose());
     };
-  }, [configured, proactive, data.instances, openLumen, t]);
+  }, [configured, proactive, openLumen, t]);
 
   const value = useMemo<LumenContextValue>(
     () => ({
+      managed: true,
       configured,
       proactive,
       status,

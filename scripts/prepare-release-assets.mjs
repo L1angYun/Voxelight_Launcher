@@ -132,7 +132,7 @@ export function checkManifest(manifest, version, installer, { prerelease = false
 }
 
 /** Every file entry of the ZIP must read back (stored or deflated) at its declared length. */
-export function checkZip(data) {
+export function checkZip(data, expectedVersion) {
   try {
     let end = -1;
     for (let i = data.length - 22; i >= Math.max(0, data.length - 22 - 65535); i--) {
@@ -155,6 +155,9 @@ export function checkZip(data) {
       const local = data.readUInt32LE(offset + 42);
       const name = data.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
       offset += 46 + nameLength + data.readUInt16LE(offset + 30) + data.readUInt16LE(offset + 32);
+      if (name.startsWith("/") || name.includes("\\") || name.split("/").includes("..")) {
+        throw new Error(`The source archive entry path is unsafe: ${name}`);
+      }
       if (name.endsWith("/")) continue;
       if (data.readUInt32LE(local) !== 0x04034b50) throw new Error(`The source archive entry ${name} is damaged.`);
       const start = local + 30 + data.readUInt16LE(local + 26) + data.readUInt16LE(local + 28);
@@ -165,6 +168,12 @@ export function checkZip(data) {
       else if (method === 8) content = inflateRawSync(raw, { maxOutputLength: size + 1 });
       else throw new Error(`The source archive entry ${name} uses an unsupported compression method.`);
       if (content.length !== size) throw new Error(`The source archive entry ${name} does not match its declared length.`);
+      if (expectedVersion && (name === "SOURCE_MANIFEST.json" || name.endsWith("/SOURCE_MANIFEST.json"))) {
+        const parsed = JSON.parse(content.toString("utf8"));
+        if (parsed?.version !== expectedVersion) {
+          throw new Error(`The source archive manifest version (${parsed?.version ?? "missing"}) does not match ${expectedVersion}.`);
+        }
+      }
       if (size > 0) withData = true;
     }
     if (!withData) throw new Error("The source archive must hold nonempty file data.");
@@ -223,7 +232,7 @@ export function prepare({ version, installer, source, out, prerelease = false })
   const inputs = selected.map((input) => readInput(input, input.limit));
   const [installerFile, sourceFile, manifestFile] = inputs;
   checkManifest(strictJson(manifestFile.bytes), version, installerFile, { prerelease });
-  checkZip(sourceFile.bytes);
+  checkZip(sourceFile.bytes, version);
 
   assertEmptyOutput(output);
   mkdirSync(output, { recursive: true });

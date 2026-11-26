@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { Download, KeyRound, RotateCcw, Upload } from "lucide-react";
@@ -18,22 +18,30 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
   const [busy, setBusy] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const mountedRef = useRef(true);
+  const statusGenRef = useRef(0);
 
   useEffect(() => {
-    let active = true;
-    void command<{ curseforgeConfigured: boolean; curseforgeBuiltin?: boolean; microsoftBuiltin?: boolean }>("get_service_status")
-      .then((value) => {
-        if (active) {
-          setConfigured(value.curseforgeConfigured);
-          setCurseforgeBuiltin(value.curseforgeBuiltin === true);
-          setBuiltin(value.microsoftBuiltin === true);
-        }
-      })
-      .catch(onError);
-    return () => {
-      active = false;
-    };
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const loadServiceStatus = useCallback(async () => {
+    const gen = ++statusGenRef.current;
+    try {
+      const value = await command<{ curseforgeConfigured: boolean; curseforgeBuiltin?: boolean; microsoftBuiltin?: boolean }>("get_service_status");
+      if (!mountedRef.current || gen !== statusGenRef.current) return;
+      setConfigured(value.curseforgeConfigured);
+      setCurseforgeBuiltin(value.curseforgeBuiltin === true);
+      setBuiltin(value.microsoftBuiltin === true);
+    } catch (cause) {
+      if (mountedRef.current && gen === statusGenRef.current) onError(cause);
+    }
   }, [onError]);
+
+  useEffect(() => {
+    void loadServiceStatus();
+  }, [loadServiceStatus]);
 
   async function saveSecret(secret: string) {
     setBusy(true);
@@ -150,7 +158,9 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
                   setResetting(true);
                   try {
                     const fresh = await command<Config>("reset_launcher_state");
-                    await lumen.refreshStatus();
+                    setConfigured(false);
+                    setKey("");
+                    await Promise.all([lumen.refreshStatus(), loadServiceStatus()]);
                     await onPersisted(fresh);
                     setConfirmResetOpen(false);
                     onNotice("launcherReset");

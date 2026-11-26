@@ -20,6 +20,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_TOOL_ROUNDS: usize = 5;
 const MAX_HISTORY_MESSAGES: usize = 40;
 const MAX_MESSAGE_CHARS: usize = 16_000;
+const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const SYSTEM_PROMPT: &str = "You are Lumen, the built-in assistant inside Voxelight Launcher (a Minecraft: Java Edition launcher). \
 Use the available launcher tools whenever you need real data about instances, installed or remote versions, loaders, Java runtimes, mods, \
 worlds, data packs, backups, logs, crash diagnostics, memory, downloads, running games, multiplayer network status, or managed servers. \
@@ -99,6 +100,7 @@ pub(crate) struct RawToolCall {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) arguments: Value,
+    pub(crate) args_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -231,17 +233,32 @@ pub(crate) fn parse_openai_response(body: &Value) -> Result<ProviderTurn, String
             let Some(name) = function.get("name").and_then(Value::as_str) else {
                 continue;
             };
-            let arguments = match function.get("arguments") {
-                Some(Value::String(raw)) => {
-                    serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({}))
+            let (arguments, args_error) = match function.get("arguments") {
+                Some(Value::String(raw)) if !raw.trim().is_empty() => {
+                    match serde_json::from_str::<Value>(raw) {
+                        Ok(Value::Object(map)) => (Value::Object(map), None),
+                        Ok(_) => (
+                            json!({}),
+                            Some("Tool arguments JSON must be an object.".to_owned()),
+                        ),
+                        Err(err) => (
+                            json!({}),
+                            Some(format!("Malformed tool arguments JSON: {err}")),
+                        ),
+                    }
                 }
-                Some(Value::Object(map)) => Value::Object(map.clone()),
-                _ => json!({}),
+                Some(Value::String(_)) | None | Some(Value::Null) => (json!({}), None),
+                Some(Value::Object(map)) => (Value::Object(map.clone()), None),
+                _ => (
+                    json!({}),
+                    Some("Tool arguments must be a JSON object.".to_owned()),
+                ),
             };
             tool_calls.push(RawToolCall {
                 id,
                 name: name.to_owned(),
                 arguments,
+                args_error,
             });
         }
     }
@@ -313,11 +330,19 @@ pub(crate) fn parse_anthropic_response(body: &Value) -> Result<ProviderTurn, Str
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("toolu_{index}"));
                 if let Some(name) = block.get("name").and_then(Value::as_str) {
-                    let arguments = block.get("input").cloned().unwrap_or_else(|| json!({}));
+                    let (arguments, args_error) = match block.get("input") {
+                        None => (json!({}), None),
+                        Some(v) if v.is_object() => (v.clone(), None),
+                        Some(_) => (
+                            json!({}),
+                            Some("Anthropic tool_use input must be a JSON object".to_owned()),
+                        ),
+                    };
                     tool_calls.push(RawToolCall {
                         id,
                         name: name.to_owned(),
                         arguments,
+                        args_error,
                     });
                 }
             }
@@ -406,15 +431,29 @@ async fn send_provider_request(
         request = request.bearer_auth(key);
     }
 
-    let response = request
+    let mut response = request
         .send()
         .await
         .map_err(|error| format!("{ASSISTANT_PROVIDER_ERROR}: {}", sanitize_error(&error.to_string(), api_key)))?;
     let status = response.status();
-    let raw_body = response
-        .text()
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(format!("{ASSISTANT_PROVIDER_ERROR}: response exceeds 4 MiB limit"));
+    }
+    let mut raw_bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("{ASSISTANT_PROVIDER_ERROR}: {}", sanitize_error(&error.to_string(), api_key)))?;
+        .map_err(|error| format!("{ASSISTANT_PROVIDER_ERROR}: {}", sanitize_error(&error.to_string(), api_key)))?
+    {
+        if raw_bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(format!("{ASSISTANT_PROVIDER_ERROR}: response exceeds 4 MiB limit"));
+        }
+        raw_bytes.extend_from_slice(&chunk);
+    }
+    let raw_body = String::from_utf8_lossy(&raw_bytes).into_owned();
 
     if !status.is_success() {
         let preview = sanitize_error(&raw_body, api_key);
@@ -498,6 +537,24 @@ pub async fn run_turn(
         if continuation.provider != provider {
             return Err("助手提供商配置已变更，请重新发送消息".into());
         }
+        let messages_valid = continuation.provider_messages.iter().all(|msg| {
+            let role_ok = msg
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|r| matches!(r, "user" | "assistant" | "tool"));
+            let size_ok = serde_json::to_string(msg)
+                .map(|s| s.len() <= MAX_MESSAGE_CHARS * 8)
+                .unwrap_or(false);
+            msg.is_object() && role_ok && size_ok
+        });
+        if continuation.round >= MAX_TOOL_ROUNDS
+            || continuation.provider_messages.len() > MAX_HISTORY_MESSAGES * 3
+            || continuation.completed_results.len() > 32
+            || continuation.pending_calls.len() > 32
+            || !messages_valid
+        {
+            return Err("助手工具调用上下文已达上限，请重新发送消息".into());
+        }
         provider_messages = continuation.provider_messages;
         round = continuation.round;
         let approved: HashSet<String> = request.approved_call_ids.into_iter().collect();
@@ -505,9 +562,14 @@ pub async fn run_turn(
         let mut results = continuation.completed_results;
 
         for call in continuation.pending_calls {
+            let live_permission = ctx
+                .state
+                .snapshot()
+                .map(|data| PermissionTier::parse(&data.config.assistant_permission))
+                .unwrap_or(PermissionTier::ReadOnly);
             let is_approved = approved.contains(&call.id) && !denied.contains(&call.id);
-            if is_approved && permission != PermissionTier::ReadOnly {
-                match tools::execute_tool(ctx, &call.name, &call.arguments, permission, true).await {
+            if is_approved && live_permission != PermissionTier::ReadOnly {
+                match tools::execute_tool(ctx, &call.name, &call.arguments, live_permission, true).await {
                     Ok(value) => {
                         let output_json =
                             serde_json::to_string(&value).unwrap_or_else(|_| "{}".into());
@@ -545,7 +607,7 @@ pub async fn run_turn(
                     }
                 }
             } else {
-                let reason = if permission == PermissionTier::ReadOnly {
+                let reason = if live_permission == PermissionTier::ReadOnly {
                     "Action blocked because permission is now Read-only."
                 } else {
                     "User denied this action."
@@ -555,7 +617,7 @@ pub async fn run_turn(
                     name: call.name.clone(),
                     arguments: call.arguments.clone(),
                     tier: ToolTier::Controlled.as_str().into(),
-                    status: if permission == PermissionTier::ReadOnly {
+                    status: if live_permission == PermissionTier::ReadOnly {
                         "blocked".into()
                     } else {
                         "denied".into()
@@ -589,7 +651,7 @@ pub async fn run_turn(
         )
         .await?;
 
-        if turn.tool_calls.is_empty() || round >= MAX_TOOL_ROUNDS {
+        if turn.tool_calls.is_empty() {
             return Ok(AssistantTurnResponse {
                 reply: turn.text,
                 traces,
@@ -599,6 +661,39 @@ pub async fn run_turn(
                 provider: provider.to_owned(),
             });
         }
+        if round >= MAX_TOOL_ROUNDS {
+            let reply = if !turn.text.trim().is_empty() {
+                turn.text
+            } else {
+                send_provider_request(
+                    &client,
+                    provider,
+                    &url,
+                    api_key.as_deref(),
+                    &model,
+                    &provider_messages,
+                    &[],
+                )
+                .await
+                .map(|summary| summary.text)
+                .unwrap_or_default()
+            };
+            return Ok(AssistantTurnResponse {
+                reply,
+                traces,
+                pending_approvals: Vec::new(),
+                continuation: None,
+                model,
+                provider: provider.to_owned(),
+            });
+        }
+
+        // Re-read permission before acting on tool calls so mid-turn downgrades take effect immediately.
+        let live_permission = ctx
+            .state
+            .snapshot()
+            .map(|data| PermissionTier::parse(&data.config.assistant_permission))
+            .unwrap_or(PermissionTier::ReadOnly);
 
         provider_messages.push(turn.assistant_message);
         let mut completed_results = Vec::new();
@@ -608,7 +703,25 @@ pub async fn run_turn(
             let spec = tools::find_tool(&call.name);
             let tier = spec.as_ref().map(|item| item.tier).unwrap_or(ToolTier::ReadOnly);
 
-            if tier == ToolTier::Controlled && permission == PermissionTier::Controlled {
+            if let Some(parse_err) = call.args_error {
+                traces.push(ToolTraceItem {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    tier: tier.as_str().into(),
+                    status: "error".into(),
+                    summary: parse_err.clone(),
+                });
+                completed_results.push(CompletedToolResult {
+                    id: call.id,
+                    name: call.name,
+                    output_json: json!({ "error": parse_err }).to_string(),
+                    is_error: true,
+                });
+                continue;
+            }
+
+            if tier == ToolTier::Controlled && live_permission == PermissionTier::Controlled {
                 pending_calls.push(PendingToolCall {
                     id: call.id,
                     name: call.name,
@@ -620,8 +733,8 @@ pub async fn run_turn(
                 continue;
             }
 
-            let allow_controlled = permission == PermissionTier::FullAccess;
-            match tools::execute_tool(ctx, &call.name, &call.arguments, permission, allow_controlled)
+            let allow_controlled = live_permission == PermissionTier::FullAccess;
+            match tools::execute_tool(ctx, &call.name, &call.arguments, live_permission, allow_controlled)
                 .await
             {
                 Ok(value) => {

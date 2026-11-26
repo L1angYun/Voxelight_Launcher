@@ -62,14 +62,14 @@
 .vx-oobe__wordmark {
   font-family: var(--font-matrix);
   font-size: var(--text-sm);
-  font-weight: var(--weight-strong);
+  font-weight: 900;
   letter-spacing: .08em;
   text-transform: uppercase;
   color: var(--text-primary);
 }
 .vx-tour__count {
   color: var(--text-tertiary);
-  font-family: var(--font-matrix);
+  font-family: var(--font-ui);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
   letter-spacing: .04em;
@@ -91,6 +91,22 @@
 }
 
 .vx-oobe__header { display: grid; gap: var(--space-1); }
+.vx-oobe__telemetry {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  justify-self: start;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
 .vx-tour__heading { margin: 0; font-size: var(--text-xl); line-height: 1.25; letter-spacing: -.015em; }
 .vx-tour__body { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.55; }
 
@@ -215,5 +231,8 @@
   .vx-tour__card { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; }
   .vx-tour__count, .vx-tour__body, .vx-oobe__muted { color: CanvasText; }
   .vx-shortcut-help kbd { background: Canvas; color: CanvasText; border-color: CanvasText; }
+  .vx-oobe__dot, .vx-oobe__rail-segment { border: 1px solid CanvasText; }
+  .vx-oobe__rail-segment[data-state="active"],
+  .vx-oobe__rail-segment[data-state="done"] { background: Highlight; border-color: Highlight; }
 }
 }

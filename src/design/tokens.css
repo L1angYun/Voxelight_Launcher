@@ -95,7 +95,7 @@
   --hairline: rgba(50, 45, 36, .14);
   --surface-glass: rgba(255, 254, 250, 0.76);
   --text-primary: #242522;
-  --text-secondary: #63635d;
+  --text-secondary: #4b4b45;
   --text-tertiary: #66665f;
   --border-subtle: rgba(50, 45, 36, 0.14);
   --border-strong: rgba(50, 45, 36, 0.26);
@@ -115,6 +115,9 @@
 :root { --page-gutter: var(--space-5); } }
 @media (min-width: 1680px) {
 :root { --page-gutter: var(--space-6); } }
+:root:lang(zh-TW) { --font-ui: "Microsoft JhengHei UI", "MiSans", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
+:root:lang(ja-JP) { --font-ui: "Yu Gothic UI", "Meiryo UI", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
+:root:lang(ko-KR) { --font-ui: "Malgun Gothic", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
 }
 @layer overrides {
 

@@ -160,8 +160,10 @@ def main():
     lock = json.loads((ROOT / "package-lock.json").read_text(encoding="utf-8"))
     cargo = (ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8")
     cargo_version = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.MULTILINE)
+    cargo_lock = (ROOT / "src-tauri/Cargo.lock").read_text(encoding="utf-8")
+    cargo_lock_version = re.search(r'\[\[package\]\]\r?\nname = "voxelight-launcher"\r?\nversion = "([^"]+)"', cargo_lock)
     inventory = json.loads((ROOT / "licenses/dependency-inventory.json").read_text(encoding="utf-8"))
-    if not cargo_version or {version, package["version"], lock["version"], lock["packages"][""]["version"], cargo_version.group(1), inventory["version"]} != {version}:
+    if not cargo_version or not cargo_lock_version or {version, package["version"], lock["version"], lock["packages"][""]["version"], cargo_version.group(1), cargo_lock_version.group(1), inventory["version"]} != {version}:
         raise RuntimeError("Package, Cargo, Tauri, lockfile and license inventory versions must match")
     if package.get("license") != "GPL-3.0-only" or config["bundle"].get("license") != "GPL-3.0-only":
         raise RuntimeError("The source and bundle must declare GPL-3.0-only")

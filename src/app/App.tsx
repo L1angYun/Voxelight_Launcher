@@ -189,9 +189,9 @@ export function AppShell() {
         showAssistant={lumen.configured}
       />
       <FirstRunTour reopen={tourRequested} onDismissed={() => setTourRequested(false)} />
-      {lumen.configured && lumen.open ? (
+      {lumen.configured ? (
         <AssistantDialog
-          open
+          open={lumen.open}
           onOpenChange={(next) => { if (!next) lumen.closeLumen(); }}
           onConfigure={() => {
             lumen.closeLumen();

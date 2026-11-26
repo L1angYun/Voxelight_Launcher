@@ -502,6 +502,10 @@ pub fn redact(text: &str) -> String {
         regex::Regex::new(r#"(?i)(authorization[\s"':=]+)(?:bearer\s+)?([^\s,;"']+)"#)
             .expect("constant regex")
     });
+    static BARE_BEARER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(\bbearer\s+)["']?([^\s,;"']+)["']?"#)
+            .expect("constant regex")
+    });
     static SECRET: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"(?i)((?:access[_-]?token|refresh[_-]?token|authorization|client[_-]?secret|password|x-api-key)[\s"':=]+)([^\s,;"']+)"#)
             .expect("constant regex")
@@ -513,6 +517,7 @@ pub fn redact(text: &str) -> String {
     let text = URL_USERINFO.replace_all(text, "${1}[已隐藏]@");
     let text = PROXY_AUTH.replace_all(&text, "${1}[已隐藏]");
     let text = BEARER.replace_all(&text, "${1}[已隐藏]");
+    let text = BARE_BEARER.replace_all(&text, "${1}[已隐藏]");
     let text = SECRET.replace_all(&text, "${1}[已隐藏]");
     CLIENT_ID.replace_all(&text, "${1}[已隐藏]").into_owned()
 }

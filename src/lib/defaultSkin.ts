@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { useEffect, useState } from "react";
-import { command, desktop } from "./launcher";
+import { command, desktop, type DefaultSkinId } from "./launcher";
 
-export type DefaultSkinId = "steve" | "alex";
+export type { DefaultSkinId };
 export interface DefaultSkin {
   id: DefaultSkinId;
   name: string;

@@ -1,12 +1,26 @@
 @layer features {
 .vx-assistant-dialog {
-  width: min(760px, calc(100vw - var(--space-6)));
-  max-height: min(82vh, 720px);
+  width: min(780px, calc(100vw - var(--space-6)));
+  max-height: min(84vh, 740px);
+}
+
+.vx-assistant-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.vx-assistant-dialog .vx-dialog__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .vx-assistant-shell {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: var(--space-3);
   min-width: 0;
   min-height: 0;
@@ -58,6 +72,11 @@
   font-size: var(--text-xs);
 }
 
+.vx-assistant-pill--mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .vx-assistant-pill--warn {
   border-color: var(--warning);
   color: var(--warning);
@@ -68,8 +87,7 @@
   align-content: start;
   gap: var(--space-3);
   flex: 1 1 auto;
-  min-height: 200px;
-  max-height: min(44vh, 360px);
+  min-height: 10rem;
   min-width: 0;
   overflow-y: auto;
   padding: var(--space-3);
@@ -112,9 +130,11 @@
 }
 
 .vx-assistant-message__role {
+  font-family: var(--font-ui);
   font-size: var(--text-xs);
   font-weight: var(--weight-strong);
-  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
 }
 
 .vx-assistant-message__body {
@@ -122,42 +142,112 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: var(--text-sm);
-  line-height: 1.6;
+  line-height: 1.65;
   color: var(--text-primary);
 }
 
+/* Light-path vertical timeline for Lumen tool executions */
 .vx-assistant-traces {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-2);
   margin: 0;
-  padding: 0;
+  padding: 0 0 0 var(--space-2);
   list-style: none;
+  border-inline-start: 2px solid var(--accent-border);
 }
 
 .vx-assistant-trace {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-sm);
   background: var(--bg-base);
   font-size: var(--text-xs);
 }
 
+.vx-assistant-trace__node {
+  width: 8px;
+  height: 8px;
+  margin-top: var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.vx-assistant-trace[data-status="approved"] .vx-assistant-trace__node,
+.vx-assistant-trace[data-status="executed"] .vx-assistant-trace__node {
+  background: var(--success);
+}
+
+.vx-assistant-trace[data-status="denied"] .vx-assistant-trace__node,
+.vx-assistant-trace[data-status="blocked"] .vx-assistant-trace__node {
+  background: var(--warning);
+}
+
+.vx-assistant-trace[data-status="error"] .vx-assistant-trace__node {
+  background: var(--danger);
+}
+
+.vx-assistant-trace__content {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.vx-assistant-trace__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
 .vx-assistant-trace__name {
   font-family: var(--font-mono);
+  font-weight: var(--weight-strong);
   color: var(--text-primary);
 }
 
 .vx-assistant-trace__status {
   color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.vx-assistant-trace__status[data-status="error"] {
+  color: var(--danger);
+}
+
+.vx-assistant-trace__status[data-status="denied"],
+.vx-assistant-trace__status[data-status="blocked"] {
+  color: var(--warning);
 }
 
 .vx-assistant-trace__summary {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
+  line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.vx-assistant-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  justify-self: start;
+}
+
+.vx-assistant-thinking__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
 }
 
 .vx-assistant-approval {
@@ -192,11 +282,37 @@
 
 .vx-assistant-approval__item {
   display: grid;
-  gap: var(--space-1);
-  padding: var(--space-2);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--bg-base);
+}
+
+.vx-assistant-approval__args {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.vx-assistant-approval__args > div {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.vx-assistant-approval__args dt {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.vx-assistant-approval__args dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .vx-assistant-approval__item pre {
@@ -240,20 +356,33 @@
   justify-content: space-between;
   gap: var(--space-2);
 }
-
-.vx-mcp-status-card {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-base);
-  font-size: var(--text-sm);
 }
 
-.vx-mcp-status-card code {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  overflow-wrap: anywhere;
+@layer overrides {
+[data-high-contrast="true"] .vx-assistant-message,
+[data-high-contrast="true"] .vx-assistant-trace,
+[data-high-contrast="true"] .vx-assistant-approval,
+[data-high-contrast="true"] .vx-assistant-transcript {
+  border-color: var(--text-primary);
+}
+@media (forced-colors: active) {
+  .vx-assistant-message,
+  .vx-assistant-trace,
+  .vx-assistant-approval,
+  .vx-assistant-pill,
+  .vx-assistant-transcript {
+    background: Canvas;
+    color: CanvasText;
+    border-color: CanvasText;
+  }
+  .vx-assistant-message__role,
+  .vx-assistant-trace__summary,
+  .vx-assistant-trace__status {
+    color: CanvasText;
+  }
+  .vx-assistant-trace__node,
+  .vx-assistant-thinking__dot {
+    border: 1px solid CanvasText;
+  }
 }
 }

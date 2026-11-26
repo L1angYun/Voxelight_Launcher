@@ -7,6 +7,7 @@ import { Segmented } from "../components/ui/Segmented";
 import { Select } from "../components/ui/Select";
 import { LOCALE_LABELS, SUPPORTED_LOCALES } from "../i18n";
 import { useMotionTier } from "../design/useMotionTier";
+import { normalizeError } from "../lib/errors";
 import {
   command,
   desktop,
@@ -120,8 +121,8 @@ export function FirstRunTour({
         base = await saveConfig({ ...base, ...otherPatch }, { preserveAppearance: true });
       }
     } catch {
-      // If saving preferences fails (e.g. an operation is running), still allow completing setup.
-      setConfig?.(initialConfigRef.current);
+      // If saving preferences fails (e.g. an operation is running), preserve any appearance patch already persisted.
+      setConfig?.(base);
     } finally {
       setFinishing(false);
     }
@@ -181,8 +182,10 @@ export function FirstRunTour({
       setOfflineName("");
       setAccountNotice(t("shell:tour.oobe.account.added", { name: trimmed }));
       await reload?.();
-    } catch {
-      setAccountError(t("shell:tour.oobe.account.invalidName"));
+    } catch (cause) {
+      const err = normalizeError(cause);
+      const key = [`shell:errors.${err.code}`, `settings:errors.${err.code}`].find((candidate) => i18n.exists(candidate));
+      setAccountError(key ? t(key, err.params) : t("shell:tour.oobe.account.invalidName"));
     } finally {
       setAccountBusy(false);
     }
@@ -204,8 +207,22 @@ export function FirstRunTour({
     otherPatchRef.current.proxyPort = proxy.port;
   }
 
+  const probeGenRef = useRef(0);
+  const probeInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      probeGenRef.current += 1;
+    };
+  }, []);
+
   const probeEnvironment = useCallback(async () => {
-    if (!desktop) return;
+    if (!desktop || probeInFlightRef.current) return;
+    const gen = ++probeGenRef.current;
+    probeInFlightRef.current = true;
     setJavaBusy(true);
     try {
       const [javas, mem, proxies] = await Promise.all([
@@ -213,11 +230,13 @@ export function FirstRunTour({
         command<MemoryOverview>("get_memory_overview").catch(() => null),
         command<LocalProxyReport>("detect_local_proxies").catch(() => null),
       ]);
+      if (!mountedRef.current || gen !== probeGenRef.current) return;
       if (javas) setJavaList(javas);
       if (mem) setMemoryOverview(mem);
       if (proxies) setProxyReport(proxies);
     } finally {
-      setJavaBusy(false);
+      probeInFlightRef.current = false;
+      if (mountedRef.current && gen === probeGenRef.current) setJavaBusy(false);
     }
   }, []);
 
@@ -244,6 +263,9 @@ export function FirstRunTour({
     setAccountNotice("");
     setAccountError("");
     setOfflineName("");
+    setJavaList(null);
+    setMemoryOverview(null);
+    setProxyReport(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- snapshot once when OOBE becomes visible
   }, [visible]);
 
@@ -377,7 +399,15 @@ export function FirstRunTour({
         </div>
 
         {step === 0 ? (
-          <div className="vx-oobe__grid">
+          <div className="vx-oobe__stack">
+            <div className="vx-oobe__telemetry" aria-hidden="true">
+              <span>{t(`settings:worldScene.${draft.worldScene}`)}</span>
+              <span>·</span>
+              <span>{t(`settings:worldMaterial.${draft.worldMaterial}`)}</span>
+              <span>·</span>
+              <span>{t(`settings:theme.${draft.theme}`)}</span>
+            </div>
+            <div className="vx-oobe__grid">
             <div className="vx-oobe__field">
               <span className="vx-oobe__label">{t("settings:fields.language")}</span>
               <Select
@@ -448,6 +478,7 @@ export function FirstRunTour({
               />
             </div>
           </div>
+          </div>
         ) : null}
 
         {step === 1 ? (
@@ -469,7 +500,13 @@ export function FirstRunTour({
 
             <div className="vx-oobe__field">
               <span className="vx-oobe__label">{t("shell:tour.oobe.account.offlineLabel")}</span>
-              <div className="vx-oobe__inline-form">
+              <form
+                className="vx-oobe__inline-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void addOfflinePlayer();
+                }}
+              >
                 <input
                   aria-label={t("shell:tour.oobe.account.offlineLabel")}
                   placeholder={t("shell:tour.oobe.account.offlinePlaceholder")}
@@ -478,15 +515,15 @@ export function FirstRunTour({
                   onChange={(event) => setOfflineName(event.target.value)}
                 />
                 <Button
+                  type="submit"
                   variant="secondary"
                   icon={<UserPlus size={14} />}
                   loading={accountBusy}
                   disabled={!offlineName.trim()}
-                  onClick={() => void addOfflinePlayer()}
                 >
                   {t("shell:tour.oobe.account.addOffline")}
                 </Button>
-              </div>
+              </form>
               {accountNotice ? <p className="vx-oobe__status" role="status">{accountNotice}</p> : null}
               {accountError ? <p className="vx-oobe__error" role="alert">{accountError}</p> : null}
             </div>
@@ -599,19 +636,31 @@ export function FirstRunTour({
         ) : null}
 
         {step === 3 ? (
-          <div className="vx-oobe__map">
-            {orientationItems.map((item) => {
-              const Icon = item.icon;
-              return (
-                <article key={item.id} className="vx-oobe__map-card">
-                  <div className="vx-oobe__map-head">
-                    <Icon size={16} aria-hidden="true" />
-                    <h3>{t(item.titleKey)}</h3>
-                  </div>
-                  <p>{t(item.bodyKey)}</p>
-                </article>
-              );
-            })}
+          <div className="vx-oobe__stack">
+            <div className="vx-oobe__chips">
+              <span className="vx-oobe__chip">
+                {draft.language === "system"
+                  ? t("settings:language.system")
+                  : LOCALE_LABELS[draft.language as keyof typeof LOCALE_LABELS] ?? draft.language}
+              </span>
+              <span className="vx-oobe__chip">{t(`settings:theme.${draft.theme}`)}</span>
+              <span className="vx-oobe__chip">{t(`settings:worldScene.${draft.worldScene}`)}</span>
+              <span className="vx-oobe__chip">{t(`shell:tour.oobe.environment.sources.${draft.downloadSource}`)}</span>
+            </div>
+            <div className="vx-oobe__map">
+              {orientationItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <article key={item.id} className="vx-oobe__map-card">
+                    <div className="vx-oobe__map-head">
+                      <Icon size={16} aria-hidden="true" />
+                      <h3>{t(item.titleKey)}</h3>
+                    </div>
+                    <p>{t(item.bodyKey)}</p>
+                  </article>
+                );
+              })}
+            </div>
           </div>
         ) : null}
 

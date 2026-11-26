@@ -2,6 +2,7 @@ use std::path::Path;
 
 const RAW_BUILTIN: Option<&str> = option_env!("VOXELIGHT_CF_API_KEY");
 const PREFIX: &str = "$2a$10$";
+pub(crate) const CURSEFORGE_SECRET_KEY: &str = "curseforge-api-key";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
@@ -55,7 +56,7 @@ fn effective_cf_key_with(
     builtin: Option<&str>,
 ) -> Result<Option<String>, String> {
     select_key(explicit, builtin, || {
-        crate::secrets::load_service_secret(data_dir, "curseforge-api-key")
+        crate::secrets::load_service_secret(data_dir, CURSEFORGE_SECRET_KEY)
     })
 }
 

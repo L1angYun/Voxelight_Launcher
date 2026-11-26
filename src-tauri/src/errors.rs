@@ -94,12 +94,16 @@ pub fn expected(detail: impl Into<String>) -> AppError {
         "modpack.platformUnavailable"
     } else if detail.starts_with(crate::assistant::ASSISTANT_PROVIDER_ERROR) {
         "assistant.providerError"
+    } else if detail.starts_with("无法在 127.0.0.1:") {
+        "server.portInUse"
     } else {
         match detail.as_str() {
             crate::assistant::ASSISTANT_API_KEY_REQUIRED => "assistant.apiKeyRequired",
             crate::assistant::ASSISTANT_MODEL_REQUIRED => "assistant.modelRequired",
             crate::assistant::ASSISTANT_INVALID_BASE_URL => "assistant.invalidBaseUrl",
             crate::assistant::ASSISTANT_EMPTY_MESSAGE => "assistant.emptyMessage",
+            "助手提供商配置已变更，请重新发送消息"
+            | "助手工具调用上下文已达上限，请重新发送消息" => "assistant.providerError",
             STORAGE_STATE_CHANGED => "storage.stateChanged",
             "instance.exportPreviewChanged" => "instance.exportPreviewChanged",
             crate::modpacks::pack_update::UNMANAGED => "modpack.unmanaged",

@@ -1,6 +1,8 @@
-import type { Instance, ResourceProject } from "../../lib/launcher";
+import type { Instance, ResourceProject, ResourceSource } from "../../lib/launcher";
 import type { LauncherError } from "../../lib/errors";
 import type { Loader } from "../library/types";
+
+export type { ResourceSource };
 
 export interface ResourceVersion {
   id: string;
@@ -24,7 +26,6 @@ export interface ResourceProjectDetails {
   dependencies: ResourceDependency[];
 }
 
-export type ResourceSource = "modrinth" | "curseforge";
 export type DiscoverType = "mod" | "resourcepack" | "shader" | "modpack";
 
 export interface ResourceContext { gameVersion: string; loader: string | null }

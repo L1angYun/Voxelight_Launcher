@@ -9,7 +9,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-_Target pre-release: `0.7.0-beta.1`_
+## [0.7.0-beta.1] - 2026-11-26
+
+_Pre-release beta for 0.7.0._
 
 ### Added
 - **Lumen & local MCP server**: Optional built-in BYO-API assistant (`OpenAI-compatible` & `Anthropic` providers, plus local loopback servers such as Ollama/LM Studio) with 39 curated launcher tools across Read-only, Controlled (explicit per-action confirmation), and Full access tiers, Windows DPAPI key storage, and an opt-in `127.0.0.1` Streamable HTTP JSON-RPC 2.0 MCP server with per-session Bearer token rotation and Host/Origin checks. Completely invisible outside **Settings → Lumen & MCP** until configured.
@@ -17,13 +19,19 @@ _Target pre-release: `0.7.0-beta.1`_
 - **Voxelight-styled 4-step OOBE**: Interactive first-run welcome setup with live 3D world scene/material/theme/language preview, quick offline player creation, runtime/Java/memory/proxy check, and workspace orientation.
 - **Factory reset**: **Settings → General → Restore initial state** clears settings, accounts, DPAPI tokens/keys, instance registrations, download history, and stops MCP while never deleting Minecraft game directories, worlds, mods, backups, or server files.
 - **Local & Windows system proxy auto-detection**: Detects Windows system proxy (WinHTTP), PAC URLs, environment variables, and common local HTTP proxy listeners (`127.0.0.1`) with one-click adoption in Settings and OOBE.
-- **7 interface languages**: Added Traditional Chinese (`zh-TW`), Japanese (`ja-JP`), Korean (`ko-KR`), Russian (`ru-RU`), and Spanish (`es-ES`) alongside Simplified Chinese (`zh-CN`) and English (`en-US`), with full system-locale mapping and diagnostic report localization.
+- **7 interface languages**: Added Traditional Chinese (`zh-TW`), Japanese (`ja-JP`), Korean (`ko-KR`), Russian (`ru-RU`), and Spanish (`es-ES`) alongside Simplified Chinese (`zh-CN`) and English (`en-US`), with full system-locale mapping, native Windows CJK font stacks, and diagnostic report localization.
 - **Version management tooling**: Added `scripts/version.mjs` (`npm run version:check` / `npm run version:set`) and pre-release packaging support (`--prerelease`) in release metadata and asset staging scripts, plus SemVer pre-release support in the launcher updater's current-version check.
 - **Loader switching, OptiFine, MultiMC / MCBBS import, drag-and-drop, and STUN network check**: Change the loader of existing instances, install OptiFine via local installer JAR or BMCLAPI, import MultiMC / Prism / MCBBS modpacks, drag-and-drop mods/modpacks/skins, import JAR / folder / `win_args.txt` third-party servers, and diagnose IPv4/IPv6 NAT reachability.
 
 ### Changed
 - Unified all system-capable launcher defaults (`theme`, `language`, `accentSource`, `proxyMode`, `gameProxyMode`) to `"system"`, with native initial window background matching Windows light/dark mode to prevent white/black startup flashes.
 - Streamlined `README.md` and `README.zh-CN.md` into concise release-ready documentation.
+
+### Fixed
+- Hardened local MCP concurrency and shutdown to eliminate factory-reset / operation-lock deadlocks and single-threaded request stalls.
+- Prevented untrusted config preset imports from overriding Lumen provider/base URL endpoints or silently enabling proactive crash wake-ups.
+- Removed download pause checkpoints from read-only local resource directory scans so browsing mods never blocks while a download is paused.
+- Hardened Lumen status error handling (fail-closed zero-presence), session persistence across dialog close/reopen, response size bounds, live permission re-checks, and bare Bearer token log redaction.
 
 ## [0.6.0] - 2026-11-23
 

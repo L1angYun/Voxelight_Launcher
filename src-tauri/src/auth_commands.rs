@@ -274,7 +274,7 @@ pub fn set_service_secret(
     secret: String,
 ) -> Result<bool, String> {
     let key = match service.as_str() {
-        "curseforge" => "curseforge-api-key",
+        "curseforge" => crate::curseforge_key::CURSEFORGE_SECRET_KEY,
         _ => return Err("不支持的服务配置".into()),
     };
     if secret.len() > 4096 || secret.contains(['\0', '\r', '\n']) {
@@ -291,8 +291,9 @@ pub fn get_service_status(
 }
 
 pub(crate) fn service_status_for(state: &LauncherState) -> AppResult<serde_json::Value> {
-    let curseforge = crate::secrets::load_service_secret(&state.data_dir, "curseforge-api-key")?
-        .is_some_and(|secret| !secret.is_empty());
+    let curseforge =
+        crate::secrets::load_service_secret(&state.data_dir, crate::curseforge_key::CURSEFORGE_SECRET_KEY)?
+            .is_some_and(|secret| !secret.is_empty());
     let config = state.snapshot()?.config;
     let mut status = service_status(curseforge, crate::curseforge_key::builtin_cf_key(), &config, builtin_client_id());
     match crate::network::proxy_credentials_configured(&state.data_dir, &config) {

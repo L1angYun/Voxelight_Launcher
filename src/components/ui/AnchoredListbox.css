@@ -26,6 +26,7 @@
 }
 .vx-select__listbox { position: relative; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; list-style: none; }
 .vx-select__option { display: grid; grid-template-columns: minmax(0,1fr) 16px; align-items: center; gap: 12px; min-width: 0; min-height: 44px; padding: 10px 12px; border-radius: var(--vx-lens-radius-control,14px); color: var(--text-primary); cursor: pointer; }
+.vx-select__option .vx-select__value { white-space: normal; overflow-wrap: anywhere; }
 .vx-select__option[data-has-icon="true"] { grid-template-columns: 18px minmax(0,1fr) 16px; min-height: 60px; }
 .vx-select__option > svg { color: var(--text-secondary); }
 .vx-select__option[data-active="true"] { background: var(--surface-hover); }

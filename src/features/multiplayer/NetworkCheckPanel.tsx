@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Activity, Check, Copy, Globe, Info, ShieldAlert, ShieldCheck, Sparkles, Wifi } from "lucide-react";
+import { Activity, Check, Copy, Globe, Info, ShieldAlert, ShieldCheck, Wifi } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
 import { formatDate } from "../../i18n/format";
-import { useLumen } from "../assistant/LumenContext";
+import { LumenHelpButton } from "../assistant/LumenHelpButton";
 import type { useMultiplayer } from "./useMultiplayer";
 
 function formatDirectAddress(ip: string, port: number, ipv6: boolean): string {
@@ -13,22 +13,30 @@ function formatDirectAddress(ip: string, port: number, ipv6: boolean): string {
 
 export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMultiplayer> }) {
   const { t, i18n } = useTranslation();
-  const lumen = useLumen();
   const { networkReport: report, networkBusy, runNetworkCheck, currentManaged } = model;
-  const [portInput, setPortInput] = useState(() => String(currentManaged?.settings.port ?? 25565));
+  const managedPort = currentManaged?.settings.port;
+  const [portInput, setPortInput] = useState(() => String(managedPort ?? 25565));
   const [copiedTarget, setCopiedTarget] = useState<string>("");
   const needsNatHelp = Boolean(
     report && (report.cgnatSuspected || report.natType === "addressPortDependent" || report.natType === "unreachable"),
   );
 
-  const parsedPort = Number(portInput);
-  const validPort = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? parsedPort : 25565;
+  useEffect(() => {
+    if (managedPort != null) {
+      setPortInput(String(managedPort));
+      setCopiedTarget("");
+    }
+  }, [managedPort]);
+
+  const parsedPort = Number(portInput.trim());
+  const portValid = portInput.trim().length > 0 && Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535;
+  const effectivePort = portValid ? parsedPort : 25565;
 
   const directV6 = report?.directConnectIpv6 && report.ipv6.publicIp
-    ? formatDirectAddress(report.ipv6.publicIp, validPort, true)
+    ? formatDirectAddress(report.ipv6.publicIp, effectivePort, true)
     : null;
   const directV4 = report?.directConnectIpv4 && report.ipv4.publicIp
-    ? formatDirectAddress(report.ipv4.publicIp, validPort, false)
+    ? formatDirectAddress(report.ipv4.publicIp, effectivePort, false)
     : null;
 
   async function copyAddress(key: string, value: string) {
@@ -54,19 +62,12 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
           >
             {report ? t("multiplayer:network.rerunCheck") : t("multiplayer:network.runCheck")}
           </Button>
-          {lumen.configured && needsNatHelp && report ? (
-            <Button
-              variant="ghost"
-              icon={<Sparkles size={14} />}
-              onClick={() => lumen.openLumen({
-                reason: t("shell:assistant.wake.networkReason"),
-                prompt: t("shell:assistant.wake.networkPrompt", { natType: report.natType }),
-                autoSend: true,
-              })}
-            >
-              {t("shell:assistant.wake.askNetwork")}
-            </Button>
-          ) : null}
+          <LumenHelpButton
+            when={Boolean(needsNatHelp && report)}
+            label={t("shell:assistant.wake.askNetwork")}
+            reason={t("shell:assistant.wake.networkReason")}
+            prompt={t("shell:assistant.wake.networkPrompt", { natType: report?.natType ?? "unknown" })}
+          />
         </div>
       </div>
 
@@ -81,6 +82,21 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
         </section>
       ) : (
         <div className="vx-network-results">
+          <div
+            className="vx-network-verdict"
+            data-tone={
+              report.natType === "openInternet"
+                ? "good"
+                : report.natType === "addressPortDependent" || report.natType === "unreachable"
+                  ? "warn"
+                  : "info"
+            }
+          >
+            <span className="vx-network-verdict__tag">
+              {t("multiplayer:network.natTitle")} · {t(`multiplayer:network.natType.${report.natType}`)}
+            </span>
+            <p>{t(`multiplayer:network.natSummary.${report.natType}`)}</p>
+          </div>
           <div className="vx-network-grid">
             <article className="vx-network-card" data-tone={report.ipv4.available ? "good" : "warn"}>
               <header>
@@ -191,6 +207,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
                     min={1}
                     max={65535}
                     aria-label={t("multiplayer:network.directPort")}
+                    aria-invalid={!portValid}
                     value={portInput}
                     onChange={(event) => {
                       setPortInput(event.target.value);
@@ -208,6 +225,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
                     </div>
                     <Button
                       variant="secondary"
+                      disabled={!portValid}
                       icon={copiedTarget === "v6" ? <Check size={14} /> : <Copy size={14} />}
                       onClick={() => void copyAddress("v6", directV6)}
                     >
@@ -223,6 +241,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
                     </div>
                     <Button
                       variant="secondary"
+                      disabled={!portValid}
                       icon={copiedTarget === "v4" ? <Check size={14} /> : <Copy size={14} />}
                       onClick={() => void copyAddress("v4", directV4)}
                     >

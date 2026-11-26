@@ -53,6 +53,7 @@
 
 .vx-task-section__heading {
   display: flex;
+  flex-wrap: wrap;
   min-height: 24px;
   align-items: baseline;
   justify-content: space-between;

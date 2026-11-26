@@ -246,8 +246,12 @@ pub(crate) async fn check_with(
     let offer = checker::classify_for_running(&release, current_version(), current_is_prerelease(), seen);
     if offer != checker::Offer::Stale && seen.is_none_or(|seen| release.version > seen) {
         let highest = display_version(release.version);
+        let release_version = release.version;
         state.update(|data| {
-            data.update_highest_seen = Some(highest.clone());
+            let current_seen = data.update_highest_seen.as_deref().and_then(parse_version);
+            if current_seen.is_none_or(|existing| release_version > existing) {
+                data.update_highest_seen = Some(highest.clone());
+            }
             Ok(())
         })?;
     }
