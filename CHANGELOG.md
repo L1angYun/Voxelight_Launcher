@@ -16,7 +16,7 @@ _Pre-release beta for 0.7.0._
 ### Security
 - **Lumen**:
   - Crash wake-ups run read-only.
-  - Installing mods or packs, changing loaders, starting or saving servers and joining a server always ask first, even in Full access.
+  - Installing mods or packs, changing loaders, starting or saving servers, joining a server and retrying failed downloads always ask first, even in Full access.
   - At most three changes run without approval per message.
   - Tool output is passed to the model as untrusted data.
   - Approval cards name the real instance, project and server, run exactly what was shown, and can be decided per action.
@@ -24,7 +24,7 @@ _Pre-release beta for 0.7.0._
   - A stop you confirm is no longer treated as a crash.
 - **MCP**:
   - A slow write is no longer abandoned at the 120 s deadline, which could leave the download queue stuck until restart.
-  - Stopping or restarting the server cancels queued writes, and every write rechecks the permission after it gets its turn.
+  - Stopping or restarting the server, or rotating its token, cancels queued writes, and every write rechecks the permission after it gets its turn.
   - New error texts explain a busy or reserved port.
 - **Log redaction**: masks Minecraft session tokens (including the 1.7/1.8 `Session ID is token:…` line, `--accessToken` arguments and JWTs), provider API keys and the masked key fragments providers echo back, before logs or errors reach the UI, Lumen or diagnostic exports.
 - **Imported Forge/NeoForge servers**: `win_args.txt` is checked against an allowlist of printable-ASCII options. `-XX:VMOptionsFile`, `-XX:Flags` and similar indirections are refused, and application paths must stay inside the server folder.
