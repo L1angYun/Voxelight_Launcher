@@ -30,7 +30,11 @@ const RECORD_EVERY: u64 = 4 * 1024 * 1024;
 const RECORD_GAP: Duration = Duration::from_secs(1);
 /// Kept bytes are hashed in pieces of this size, with an await between them.
 const PREFIX_CHUNK: u64 = 8 * 1024 * 1024;
-const EXTENSIONS: [&str; 4] = ["part", "json", "json.tmp", "lock"];
+const EXTENSIONS: [&str; 6] = ["part", "json", "json.tmp", "lock", "owners", "owners.tmp"];
+/// The files of a part besides its lock.
+const DATA_EXTENSIONS: [&str; 5] = ["part", "json", "json.tmp", "owners", "owners.tmp"];
+/// The tasks remembered per part, newest last.
+const OWNERS_MAX: usize = 16;
 /// Files at least this large are fetched as several ranges at once.
 pub(crate) const SEGMENT_MIN: u64 = 16 * 1024 * 1024;
 /// Requests per file at most, the first one included.
@@ -134,6 +138,16 @@ struct Sidecar {
     size: u64,
     done: u64,
     validator: Validator,
+}
+
+/// The download tasks that used a part, newest last. Written before a task's
+/// transfer writes its first byte, so after a crash the part still names the
+/// task that will resume it.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Owners {
+    version: u32,
+    tasks: Vec<String>,
 }
 
 /// The record of a part received in separate ranges (version 2), written
@@ -391,13 +405,25 @@ impl PartStore {
 
     /// Removes the key's files while holding its lock; false when it is in use.
     fn remove_unlocked(&self, key: &PartKey) -> bool {
+        self.remove_unlocked_unless(key, |_| false)
+    }
+
+    /// Removes the key's files while holding its lock, unless `keep`, given
+    /// the tasks recorded for the part (None: no readable record), says to
+    /// keep it; false when it is in use or kept.
+    fn remove_unlocked_unless(&self, key: &PartKey, keep: impl FnOnce(Option<Vec<String>>) -> bool) -> bool {
         let lock_path = key.file(&self.root, "lock");
         // Created if missing: a download that starts now finds this lock held.
         let Ok(lock) = lock_options().create(true).truncate(false).open(&lock_path) else { return false };
         if lock.try_lock().is_err() {
             return false;
         }
-        for extension in ["part", "json", "json.tmp"] {
+        // Read under the lock: no task can add itself while this decides.
+        if keep(read_owners(&key.file(&self.root, "owners"))) {
+            release_lock(lock, &lock_path);
+            return false;
+        }
+        for extension in DATA_EXTENSIONS {
             let _ = fs::remove_file(key.file(&self.root, extension));
         }
         release_lock(lock, &lock_path);
@@ -409,6 +435,14 @@ impl PartStore {
     /// part another task (in this or another launcher) holds is kept. Only
     /// exact part names are touched, and nothing is done through a link.
     pub(crate) fn remove_unreferenced(&self) -> u64 {
+        self.remove_unowned(&std::collections::HashSet::new())
+    }
+
+    /// As `remove_unreferenced`, but also keeps every part a task in
+    /// `resumable` used and, while that set is not empty, every part with no
+    /// readable record of its tasks (made before records were kept, or whose
+    /// record could not be written): one of those tasks may still need it.
+    pub(crate) fn remove_unowned(&self, resumable: &std::collections::HashSet<String>) -> u64 {
         if crate::instances::validate_absolute_syntax(&self.root).is_err() || !ordinary_tree(&self.root) {
             return 0;
         }
@@ -430,9 +464,13 @@ impl PartStore {
                 group.1 += metadata.len();
             }
         }
+        let keep = |owners: Option<Vec<String>>| match owners {
+            Some(tasks) => tasks.iter().any(|task| resumable.contains(task)),
+            None => !resumable.is_empty(),
+        };
         groups
             .into_values()
-            .filter_map(|(key, bytes)| self.remove_unlocked(&key).then_some(bytes))
+            .filter_map(|(key, bytes)| self.remove_unlocked_unless(&key, keep).then_some(bytes))
             .sum()
     }
 
@@ -552,11 +590,17 @@ pub(crate) fn sweep(stores: &[PartStore], now: SystemTime, keep: Duration, cap: 
 /// once. This never removes a part whose lock is held, so a paused task's or
 /// another launcher's part is safe.
 pub(crate) fn remove_unreferenced(stores: &[PartStore]) -> u64 {
+    remove_unowned(stores, &std::collections::HashSet::new())
+}
+
+/// As `remove_unreferenced`, keeping what `PartStore::remove_unowned` keeps
+/// for the tasks in `resumable`.
+pub(crate) fn remove_unowned(stores: &[PartStore], resumable: &std::collections::HashSet<String>) -> u64 {
     let mut seen = std::collections::HashSet::new();
     stores
         .iter()
         .filter(|store| fs::canonicalize(store.root()).map_or(true, |real| seen.insert(real)))
-        .map(|store| store.remove_unreferenced())
+        .map(|store| store.remove_unowned(resumable))
         .sum()
 }
 
@@ -652,6 +696,12 @@ fn read_sidecar(path: &Path) -> Option<Sidecar> {
 
 fn read_ranges(path: &Path) -> Option<SidecarRanges> {
     serde_json::from_str(&read_record(path)?).ok()
+}
+
+/// The tasks recorded for a part, or None without a readable record.
+fn read_owners(path: &Path) -> Option<Vec<String>> {
+    let record: Owners = serde_json::from_str(&read_record(path)?).ok()?;
+    (record.version == 1).then_some(record.tasks)
 }
 
 fn read_record(path: &Path) -> Option<String> {
@@ -951,11 +1001,39 @@ impl ResumablePart {
         self.finish();
     }
 
-    /// Removes the record while the lock is still held, then releases it.
+    /// Records that the download task `task` uses this part, keeping the
+    /// newest `OWNERS_MAX`. Best effort: a clear treats a part without a
+    /// readable record as possibly needed by any task that can resume, so an
+    /// unreadable record is left as it is.
+    pub(crate) fn note_owner(&self, task: &str) {
+        if task.is_empty() || task.len() > 64 {
+            return;
+        }
+        let path = self.key.file(&self.root, "owners");
+        let mut tasks = match read_owners(&path) {
+            Some(tasks) => tasks,
+            None if fs::symlink_metadata(&path).is_ok() => return,
+            None => Vec::new(),
+        };
+        if tasks.iter().any(|known| known == task) {
+            return;
+        }
+        tasks.push(task.to_owned());
+        let skip = tasks.len().saturating_sub(OWNERS_MAX);
+        let tasks = tasks.into_iter().skip(skip).collect();
+        let Ok(bytes) = serde_json::to_vec(&Owners { version: 1, tasks }) else { return };
+        let temporary = self.key.file(&self.root, "owners.tmp");
+        if fs::write(&temporary, bytes).and_then(|()| fs::rename(&temporary, &path)).is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+    }
+
+    /// Removes the records while the lock is still held, then releases it.
     fn finish(&mut self) {
         self.finished = true;
-        let _ = fs::remove_file(self.key.file(&self.root, "json"));
-        let _ = fs::remove_file(self.key.file(&self.root, "json.tmp"));
+        for extension in ["json", "json.tmp", "owners", "owners.tmp"] {
+            let _ = fs::remove_file(self.key.file(&self.root, extension));
+        }
         if let Some(lock) = self.lock.take() {
             release_lock(lock, &self.key.file(&self.root, "lock"));
         }
@@ -1113,6 +1191,11 @@ pub(crate) async fn transfer<H: Hooks>(
 ) -> Result<(), String> {
     let io = |error: io::Error| error.to_string();
     let part = slot.as_mut().ok_or("下载分片不可用")?;
+    // The task this transfer runs for, recorded before any byte is written,
+    // so clearing the history keeps the parts a resumable task will reopen.
+    if let Some(task) = hooks.connections().and_then(crate::downloads::Connections::owner) {
+        part.note_owner(&task);
+    }
     if part.complete() {
         // Everything arrived last time; only the check is left.
         return hash_kept(part, 0, size, hooks, hash).await;

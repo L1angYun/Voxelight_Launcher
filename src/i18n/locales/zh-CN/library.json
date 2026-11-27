@@ -179,9 +179,10 @@
   "loaderChange": {
     "title": "加载器",
     "current": "Minecraft {{version}} · {{loader}}{{loaderVersion}}",
-    "hint": "更换加载器会保留此实例的存档、配置和文件；为旧加载器编写的模组可能需要停用或替换。",
+    "hint": "存档、配置和模组都会保留在此实例文件夹中，更换前会先自动备份此实例。为其他加载器构建的模组可能需要停用或替换；用新加载器打开世界后，即使之后换回，也可能永久丢失模组添加的方块、物品、实体和容器内容。",
     "apply": "更换加载器",
-    "confirm": "将“{{name}}”的加载器更换为 {{loader}}？存档和实例文件都会保留。"
+    "confirm": "将“{{name}}”的加载器更换为 {{loader}}？更换前会先自动备份此实例。用不同加载器打开世界会永久丢失模组添加的方块、物品、实体和容器内容；在打开前换回原加载器则不会丢失。",
+    "skipBackupConfirm": "{{reason}}\n\n要在不备份的情况下更换加载器吗？用不同加载器打开世界会永久丢失模组添加的方块、物品、实体和容器内容，并且没有备份可以恢复。"
   },
   "createModes": "创建方式",
   "versionMode": "版本与加载器",
@@ -215,7 +216,8 @@
   "recommended": "推荐",
   "noLoaderVersions": "暂无可用加载器版本",
   "optifineImportJar": "导入本地 OptiFine 安装器 JAR…",
-  "optifineHint": "启用 BMCLAPI 下载源时可在线获取 OptiFine 列表，也可直接导入从官网下载的 OptiFine 安装器 JAR。",
+  "optifineHint": "Voxelight 不会下载 OptiFine：它的下载没有启动器可以校验的校验值，而安装器是会在你电脑上运行的程序。请从官网下载对应此 Minecraft 版本的安装器，再导入 JAR。",
+  "optifineSite": "OptiFine 官方下载页（optifine.net）",
   "instanceNameOptional": "实例名称（可选）",
   "instanceNamePlaceholder": "给这个世界起个名字",
   "curseforgeKeyOptional": "CurseForge API Key（可选）",
@@ -296,6 +298,7 @@
     "diagnosticsExported": "诊断报告已保存。",
     "settingsSaved": "实例设置已保存。",
     "loaderChanged": "实例加载器已更换。",
+    "loaderChangedBackup": "实例加载器已更换；更换前的实例备份已保存。",
     "runtimeReset": "已恢复全局启动环境。",
     "resourceRecovered": "已恢复中断的资源事务。"
   },

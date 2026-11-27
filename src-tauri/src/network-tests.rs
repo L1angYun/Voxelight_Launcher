@@ -632,13 +632,30 @@ fn local_proxy_parsers_strip_credentials_and_handle_windows_formats() {
 
 #[test]
 fn probe_local_http_proxy_accepts_http_proxy_and_rejects_non_http_listener() {
+    // One listener that answers like a forward proxy.
     let http_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let http_port = http_listener.local_addr().unwrap().port();
     let http_worker = thread::spawn(move || {
         let mut socket = accept_or_timeout(&http_listener);
         let mut buf = [0u8; 256];
-        let _ = socket.read(&mut buf);
+        let n = socket.read(&mut buf).unwrap_or(0);
+        assert!(
+            buf[..n].starts_with(b"CONNECT 127.0.0.1:1 HTTP/1.1\r\n"),
+            "the probe must use CONNECT, not an absolute-form HEAD: {}",
+            String::from_utf8_lossy(&buf[..n])
+        );
         let _ = socket.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+    });
+
+    // A plain origin server (for example Jupyter on 8888) answers the
+    // absolute-form request too, but it is not a proxy.
+    let web_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let web_port = web_listener.local_addr().unwrap().port();
+    let web_worker = thread::spawn(move || {
+        let mut socket = accept_or_timeout(&web_listener);
+        let mut buf = [0u8; 256];
+        let _ = socket.read(&mut buf);
+        let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     });
 
     let non_http_listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -655,9 +672,45 @@ fn probe_local_http_proxy_accepts_http_proxy_and_rejects_non_http_listener() {
         .build()
         .unwrap();
     let detected = rt.block_on(probe_local_http_proxy(http_port));
+    let web_rejected = rt.block_on(probe_local_http_proxy(web_port));
     let rejected = rt.block_on(probe_local_http_proxy(non_http_port));
     http_worker.join().unwrap();
+    web_worker.join().unwrap();
     non_http_worker.join().unwrap();
     assert_eq!(detected.map(|e| e.url()), Some(format!("http://127.0.0.1:{http_port}")));
+    assert!(web_rejected.is_none(), "a plain web server is not a proxy");
     assert!(rejected.is_none());
+}
+
+#[test]
+fn probe_local_http_proxy_accepts_only_proxy_connect_statuses() {
+    for (status, expected) in [
+        (200, true),
+        (407, true),
+        (502, true),
+        (503, true),
+        (504, true),
+        (400, false),
+        (403, false),
+        (404, false),
+        (405, false),
+        (501, false),
+    ] {
+        let reply = format!("HTTP/1.1 {status} .\r\n\r\n");
+        assert_eq!(
+            proxy_connect_status(reply.as_bytes()),
+            Some(status),
+            "the wire status is parsed"
+        );
+        // The parser and the accepted set are separate so a future status
+        // cannot silently widen what is treated as a proxy.
+        assert_eq!(
+            proxy_connect_status_is_proxy(status),
+            expected,
+            "status {status}"
+        );
+    }
+    assert_eq!(proxy_connect_status(b"\x05\x00SOCKS"), None);
+    assert_eq!(proxy_connect_status(b"HTTP/2 200\r\n\r\n"), None);
+    assert_eq!(proxy_connect_status(b"HTTP/1.1 20\r\n\r\n"), None);
 }

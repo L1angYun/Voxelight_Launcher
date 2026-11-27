@@ -361,6 +361,31 @@ fn a_failed_fallback_still_reports_the_exhausted_api_quota() {
 }
 
 #[test]
+fn beta_rate_limited_never_reads_the_stable_fallback() {
+    let limited = Reply {
+        headers: vec![("x-ratelimit-remaining", "0".into()), ("x-ratelimit-reset", "4102444800".into())],
+        ..status(403)
+    };
+    // Only the release list is routed: any read of the stable update.json panics.
+    let fake = Fake::with(vec![(API_RELEASES, limited)]);
+    let limit = RateLimit::default();
+    let now = chrono::Utc::now();
+    let error = run(check_channel(&fake, Preference::GitHub, Channel::Beta, &limit, now)).err().unwrap();
+    assert!(error.starts_with(checker::QUOTA_EXHAUSTED), "{error}");
+    assert!(error.contains("Beta"), "the detail names the channel: {error}");
+    assert_eq!(fake.urls(), [API_RELEASES], "the fallback manifest is never requested");
+    fake.done();
+    let app_error = check_error(error.clone());
+    assert_eq!((app_error.code.as_str(), app_error.detail.as_deref()), ("update.rateLimited", Some(error.as_str())));
+
+    // The cooldown set by that answer also fails as rate limited without contacting GitHub.
+    let quiet = Fake::default();
+    let again = run(check_channel(&quiet, Preference::GitHub, Channel::Beta, &limit, now)).err().unwrap();
+    assert!(again.starts_with(checker::QUOTA_EXHAUSTED), "{again}");
+    assert!(quiet.urls().is_empty(), "the active cooldown needs no request: {:?}", quiet.urls());
+}
+
+#[test]
 fn retry_after_never_overflows_and_follows_hsr_bounds() {
     let now = chrono::Utc::now();
     let wait = |retry_after: &str| {

@@ -103,6 +103,7 @@ struct ServerDefinition {
     #[serde(default)]
     jar: Option<String>,
     /// Validated relative path to a Forge/NeoForge `win_args.txt` inside the server folder.
+    /// Its tokens are checked against the loader allowlist again on every launch.
     #[serde(default)]
     args_file: Option<String>,
     /// The detected server software, for display only.
@@ -780,7 +781,10 @@ fn launch_args(definition: &ServerDefinition, settings: &ServerSettings) -> Resu
 }
 
 /// Java arguments for any managed server, including imported Forge/NeoForge `win_args.txt` servers.
-/// Never executes `.bat`/`.sh` scripts; every token from `win_args.txt` is re-validated on launch.
+/// Never executes `.bat`/`.sh` scripts. On every launch the tokens are parsed again and checked
+/// against the loader allowlist (`validate_args_file_tokens`), so a changed file cannot add JVM
+/// options outside it (agents, `-X`/`-XX`, other system properties, `@` argument files),
+/// characters other than printable ASCII, or paths outside the server folder after import.
 fn launch_args_in_dir(
     definition: &ServerDefinition,
     settings: &ServerSettings,

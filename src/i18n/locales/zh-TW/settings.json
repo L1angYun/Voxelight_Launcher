@@ -90,10 +90,10 @@
       "factoryReset": "還原初始狀態 重設出廠設定"
     }
   },
-  "generalDescription": "服務存取與可攜式啟動器設定組。",
+  "generalDescription": "服務認證資訊與可攜式啟動器設定組。",
   "service": {
-    "title": "服務存取",
-    "description": "使用本專案自己的應用程式存取資訊，登入權杖與平台金鑰由系統加密儲存。",
+    "title": "服務連線",
+    "description": "使用本專案註冊的認證資訊；登入權杖與服務金鑰由系統加密儲存。",
     "clientId": "Microsoft 應用程式 Client ID",
     "clientIdPlaceholder": "填寫應用程式註冊中取得的 Client ID",
     "clientIdOptional": "Microsoft Client ID（選填）",
@@ -109,7 +109,7 @@
   },
   "preset": {
     "title": "設定組",
-    "description": "匯出或匯入啟動器設定，不包含帳號、登入權杖或平台金鑰。",
+    "description": "匯出或匯入啟動器設定，不包含帳號、登入權杖或服務金鑰。",
     "export": "匯出設定組",
     "import": "匯入設定組"
   },
@@ -187,7 +187,7 @@
     "choose": "選擇首頁背景",
     "reset": "還原預設背景"
   },
-  "gameDescription": "共用遊戲檔案與視窗預設值，實例覆蓋仍在實例設定中。",
+  "gameDescription": "共用遊戲檔案與視窗預設值，實例覆寫仍在實例設定中。",
   "game": {
     "browse": "瀏覽",
     "isolationDescription": "為每個遊戲版本儲存獨立的存檔、模組與設定。"
@@ -222,7 +222,7 @@
     "license": "授權條款",
     "source": "原始碼",
     "dataNotice": "解除安裝預設會保留啟動器資料；移除帳號或實例登錄不會刪除遊戲檔案。",
-    "secretNotice": "設定組不包含帳號、登入權杖或平台金鑰，服務認證資訊請在通用分組中設定。",
+    "secretNotice": "設定組不包含帳號、登入權杖或服務金鑰，服務認證資訊請在通用分組中設定。",
     "typeface": "字型",
     "typefaceCredit": "MiSans · Xiaomi"
   },
@@ -275,7 +275,7 @@
     "proxyCredentialsCleared": "代理認證資訊已清除。",
     "secretSaved": "CurseForge 金鑰已加密儲存。",
     "secretCleared": "已清除儲存的 CurseForge 金鑰。",
-    "presetExported": "設定組已匯出，不包含帳號與平台金鑰。",
+    "presetExported": "設定組已匯出，不包含帳號與服務金鑰。",
     "presetImported": "設定組已匯入。",
     "presetImportedHeapRemoved": "設定組已匯入。其中的 -Xms/-Xmx 等 JVM 參數已略過，請在記憶體設定中調整。",
     "backgroundUpdated": "首頁背景已更新。",
@@ -284,7 +284,7 @@
     "javaNotFound": "找不到 Java，請安裝後指定路徑。",
     "assistantKeySaved": "Lumen API Key 已加密儲存。",
     "assistantKeyCleared": "已清除儲存的 Lumen API Key。",
-    "launcherReset": "啟動器已還原為初始狀態，你的 Minecraft 遊戲檔案未被刪除。",
+    "launcherReset": "啟動器已還原為初始狀態，你的 Minecraft 遊戲檔案未被刪除。請重新啟動啟動器，讓登入與網路用戶端也套用還原後的設定。",
     "mcpStarted": "本機 MCP 服務已在 127.0.0.1:{{port}} 啟動。",
     "mcpStopped": "本機 MCP 服務已停止。",
     "mcpTokenRotated": "MCP 存取權杖已輪替，請更新已連線用戶端中的權杖。",
@@ -315,7 +315,7 @@
     "permissionHints": {
       "readOnly": "只檢視實例、版本、模組、世界存檔、日誌、崩潰診斷、下載任務、Java、網路環境與託管伺服器，不修改任何內容。",
       "controlled": "唯讀工具自動執行；Lumen 執行寫入操作前會逐項請求你的確認；外部 MCP 用戶端仍維持唯讀。",
-      "fullAccess": "允許 Lumen 及通過認證的本機 MCP 用戶端執行全部精選啟動器工具（安裝版本 / 模組、建立 / 複製 / 備份實例、調整實例設定、管理下載、啟停遊戲與伺服器等）。"
+      "fullAccess": "Lumen 無需詢問即可執行精選啟動器工具；但安裝模組或資源包、更換載入器、啟動伺服器、儲存伺服器和加入伺服器仍會先詢問你，單則訊息內變更較多時也會先詢問。通過認證的本機 MCP 用戶端可執行全部精選工具。"
     },
     "toolSummary": "已開放精選工具集：共 {{total}} 項啟動器工具（{{readOnly}} 項唯讀、{{controlled}} 項受控寫入）。絕不暴露任意 Shell 指令、越界路徑或任何金鑰讀取。",
     "proactive": "遊戲異常崩潰時主動喚醒 Lumen",
@@ -365,7 +365,10 @@
       "modelRequired": "請先在「設定 → Lumen 與 MCP」中填寫模型名稱。",
       "invalidBaseUrl": "Lumen API 基礎網址必須使用 HTTPS，或本機迴圈 HTTP（127.0.0.1 / localhost）。",
       "providerError": "所設定的 AI 服務回傳了錯誤。",
-      "emptyMessage": "傳送前請輸入訊息內容。"
+      "emptyMessage": "傳送前請輸入訊息內容。",
+      "mcpPortUnavailable": "連接埠 {{port}} 已被佔用或被 Windows 保留。請換一個 MCP 連接埠後重新啟動。",
+      "mcpNotRunning": "MCP 服務未執行，請先啟動。",
+      "mcpFailed": "MCP 服務發生內部錯誤，請停止後重新啟動。"
     }
   },
   "updates": {

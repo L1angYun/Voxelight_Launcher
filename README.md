@@ -23,7 +23,7 @@ Download `VoxelightLauncher-<version>-x64-setup.exe` from [GitHub Releases](http
 
 ## Highlights
 
-- **Versions & Loaders** — Every release, snapshot, Beta/Alpha, and April Fools version; Fabric, Quilt, Forge, NeoForge, and OptiFine (local installer JAR or mirror); switch loaders on an existing instance without losing worlds or mods.
+- **Versions & Loaders** — Every release, snapshot, Beta/Alpha, and April Fools version; Fabric, Quilt, Forge, NeoForge, and OptiFine (official installer JAR); switch the loader of an existing instance, with an automatic backup first.
 - **Instances & Content** — Isolated folders with per-instance Java, automatic or manual memory, JVM arguments, window size, and game proxy; backup/restore, clone, personal archive or Modrinth `.mrpack` export; world import/backup, per-world data packs, screenshots, live searchable game logs, and crash diagnostics.
 - **Mod & Modpack Ecosystem** — Search and install mods, resource packs, shaders, and modpacks from Modrinth (with required dependencies and transactional rollback) and CurseForge; import `.mrpack`, CurseForge, MultiMC / Prism, and MCBBS packs; online modpack updates with diff plans and automatic backups; drag-and-drop import for mods, packs, and skins; batch enable/disable/delete for local resources.
 - **Downloads & Proxy** — Unified resumable, hash-verified download queue with pause, resume, cancel, retry-all, and unfinished cleanup; Official, Automatic latency-measured, or BMCLAPI source; system proxy by default with automatic detection of Windows system proxies, environment variables, and common local HTTP proxy ports.
@@ -56,7 +56,7 @@ No telemetry, analytics, or crash reporting. Network requests go only to:
 | Purpose | Hosts |
 | --- | --- |
 | Game files, version list, Java | Mojang; BMCLAPI when enabled in download source |
-| Loaders | Fabric, Quilt, Forge, NeoForge; OptiFine via local JAR or BMCLAPI if enabled |
+| Loaders | Fabric, Quilt, Forge, NeoForge; OptiFine from the official installer JAR you download |
 | Microsoft / Authlib accounts | Microsoft, Xbox Live, Minecraft services; your Authlib server & `authlib-injector.yushi.moe` |
 | Content & modpacks | Modrinth, CurseForge; modpack external links (e.g. GitHub/GitLab) |
 | Launcher updates | GitHub, Gitee |

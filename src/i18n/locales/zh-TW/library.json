@@ -47,7 +47,7 @@
   "cloneName": "{{name}} 副本",
   "remove": "移除實例",
   "manageInstance": "管理實例 {{name}}",
-  "removeConfirm": "要移除實例「{{name}}」的登錄嗎？檔案不會被刪除。",
+  "removeConfirm": "要從遊戲庫移除實例「{{name}}」嗎？檔案會保留。",
   "backups": "備份與還原",
   "createBackup": "建立備份",
   "backupToRestore": "選擇要還原的備份",
@@ -168,7 +168,7 @@
   "category": "分類",
   "notes": "備註",
   "chooseIcon": "選擇圖示",
-  "runtimeOverrides": "啟動環境覆蓋",
+  "runtimeOverrides": "啟動環境覆寫",
   "maxMemory": "最大記憶體（MB）",
   "javaPath": "Java 執行檔",
   "jvmArguments": "JVM 參數",
@@ -179,9 +179,10 @@
   "loaderChange": {
     "title": "載入器",
     "current": "Minecraft {{version}} · {{loader}}{{loaderVersion}}",
-    "hint": "更換載入器會保留此實例的存檔、設定與檔案；為舊載入器編寫的模組可能需要停用或取代。",
+    "hint": "存檔、設定和模組都會保留在此實例資料夾中，更換前會先自動備份此實例。為其他載入器建置的模組可能需要停用或替換；使用新載入器開啟世界後，即使之後換回，也可能永久遺失模組新增的方塊、物品、實體和容器內容。",
     "apply": "更換載入器",
-    "confirm": "要將「{{name}}」的載入器更換為 {{loader}} 嗎？存檔與實例檔案都會保留。"
+    "confirm": "要將「{{name}}」的載入器更換為 {{loader}} 嗎？更換前會先自動備份此實例。使用不同載入器開啟世界會永久遺失模組新增的方塊、物品、實體和容器內容；在開啟前換回原載入器則不會遺失。",
+    "skipBackupConfirm": "{{reason}}\n\n要在不備份的情況下更換載入器嗎？使用不同載入器開啟世界會永久遺失模組新增的方塊、物品、實體和容器內容，而且沒有備份可以還原。"
   },
   "createModes": "建立方式",
   "versionMode": "版本與載入器",
@@ -215,7 +216,8 @@
   "recommended": "推薦",
   "noLoaderVersions": "尚無可用載入器版本",
   "optifineImportJar": "匯入本機 OptiFine 安裝程式 JAR…",
-  "optifineHint": "啟用 BMCLAPI 下載來源時可線上取得 OptiFine 清單，也可直接匯入從官網下載的 OptiFine 安裝程式 JAR。",
+  "optifineHint": "Voxelight 不會下載 OptiFine：它的下載沒有啟動器可以驗證的校驗值，而安裝程式是會在你電腦上執行的程式。請從官網下載對應此 Minecraft 版本的安裝程式，再匯入 JAR。",
+  "optifineSite": "OptiFine 官方下載頁（optifine.net）",
   "instanceNameOptional": "實例名稱（選填）",
   "instanceNamePlaceholder": "為這個世界取個名字",
   "curseforgeKeyOptional": "CurseForge API Key（選填）",
@@ -296,6 +298,7 @@
     "diagnosticsExported": "診斷報告已儲存。",
     "settingsSaved": "實例設定已儲存。",
     "loaderChanged": "實例載入器已更換。",
+    "loaderChangedBackup": "實例載入器已更換；更換前的實例備份已儲存。",
     "runtimeReset": "已還原全域啟動環境。",
     "resourceRecovered": "已復原中斷的資源作業。"
   },
@@ -398,7 +401,7 @@
     },
     "unknown": {
       "title": "需要進一步檢查日誌",
-      "reason": "尚未符合明確的常見故障，保留原始錯誤供除錯",
+      "reason": "找不到符合的常見故障，日誌節錄如下。",
       "firstSuggestion": "檢視日誌尾部的 Caused by 和 ERROR",
       "secondSuggestion": "可先備份實例，再停用最近新增的資源重試"
     },

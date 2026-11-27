@@ -136,16 +136,18 @@ export function LumenProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Proactively wake Lumen on abnormal game exits (non-zero exit code) only when
-  // the user has configured Lumen and kept proactive wake-up enabled.
+  // the user has configured Lumen and kept proactive wake-up enabled. An exit the
+  // launcher itself asked for (close or force stop) is not a crash.
   useEffect(() => {
     if (!configured || !proactive || !desktop) return;
     let active = true;
-    const promise = events<{ gameId: string; pid: number; code: number | null }>(
+    const promise = events<{ gameId: string; pid: number; code: number | null; requestedStop?: boolean }>(
       "launcher://game-exit",
       (event) => {
         const tracked = gameTargets.current.get(event.gameId);
         gameTargets.current.delete(event.gameId);
         if (!active) return;
+        if (event.requestedStop === true) return;
         if (event.code === null || event.code === 0) return;
         if (document.querySelector("dialog[open], .vx-tour__card")) return;
         const instance = tracked?.instanceId

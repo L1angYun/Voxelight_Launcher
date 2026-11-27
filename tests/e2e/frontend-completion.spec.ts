@@ -249,3 +249,34 @@ test("completion: reduced motion keeps selection visible and section opacity imm
   await expect(page.locator(".vx-settings-content")).toHaveCSS("opacity", "1");
   await expect(page.locator(".vx-settings-content")).toHaveCSS("transition-duration", "0s");
 });
+
+test("completion: the appearance sound checkbox sits on one row with its label", async ({ page }) => {
+  await prepare(page);
+  await navigate(page, "settings");
+  await page.locator(".vx-settings-nav").getByRole("button", { name: "外观", exact: true }).click();
+  const row = page.locator('[data-settings-target="appearance-sound"]');
+  await expect(row).toBeVisible();
+  const [box, text] = await Promise.all([row.locator("input").boundingBox(), row.locator("span").first().boundingBox()]);
+  expect(box && text).toBeTruthy();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(text!.x);
+  expect(box!.y + box!.height / 2).toBeGreaterThan(text!.y);
+  expect(box!.y + box!.height / 2).toBeLessThan(text!.y + text!.height);
+});
+
+test("completion: Discover names a vanilla target in the interface language", async ({ page }) => {
+  await prepare(page);
+  await navigate(page, "discover");
+  const context = page.locator(".vx-discover-context");
+  await expect(context).toBeVisible();
+  await expect(context).not.toContainText("Vanilla");
+});
+
+test("completion: the first-run card never half-covers the home column", async ({ page }) => {
+  await installLauncherFixture(page, { tourCompleted: false, effects: "full" });
+  await page.goto("/?next-ui");
+  await expect(page.locator(".vx-tour__card")).toBeVisible();
+  await expect(page.locator(".vx-home__stage")).toHaveCSS("visibility", "hidden");
+  await page.locator(".vx-tour__card").getByRole("button", { name: "跳过" }).click();
+  await expect(page.locator(".vx-tour__card")).toHaveCount(0);
+  await expect(page.locator(".vx-home__stage")).toHaveCSS("visibility", "visible");
+});

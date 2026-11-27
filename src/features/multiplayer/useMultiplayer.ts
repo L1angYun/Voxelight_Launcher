@@ -122,7 +122,8 @@ export type NatType =
   | "endpointIndependent"
   | "addressPortDependent"
   | "behindNat"
-  | "unreachable";
+  | "unreachable"
+  | "proxied";
 
 export type Ipv6Status =
   | "globalPublic"

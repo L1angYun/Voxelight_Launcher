@@ -79,6 +79,7 @@ pub struct WorldDatapack {
 pub(crate) const DATAPACK_INVALID: &str = "datapack.invalid";
 pub(crate) const DATAPACK_EXISTS: &str = "datapack.exists";
 pub(crate) const DATAPACK_NOT_FOUND: &str = "datapack.notFound";
+pub(crate) const DATAPACK_MANIFEST_CONFLICT: &str = "datapack.manifestConflict";
 const MAX_PACK_MCMETA_BYTES: u64 = 256 * 1024;
 const MAX_DATAPACK_DIR_FILES: usize = 50_000;
 const MAX_DATAPACK_DIR_DEPTH: usize = 64;
@@ -1195,6 +1196,54 @@ fn dir_size_bounded(root: &Path) -> Result<u64, String> {
     Ok(total)
 }
 
+/// The top-level manifests of a directory pack, looked at without changing
+/// anything. Only plain files count; a link or folder under either name is
+/// never followed.
+struct DirManifests {
+    active: PathBuf,
+    disabled: PathBuf,
+    active_meta: Option<fs::Metadata>,
+    disabled_meta: Option<fs::Metadata>,
+}
+
+impl DirManifests {
+    fn read(dir: &Path) -> Result<Self, String> {
+        let active = safe_join(dir, "pack.mcmeta")?;
+        let disabled = safe_join(dir, "pack.mcmeta.disabled")?;
+        let active_meta = fs::symlink_metadata(&active).ok();
+        let disabled_meta = fs::symlink_metadata(&disabled).ok();
+        Ok(Self { active, disabled, active_meta, disabled_meta })
+    }
+
+    fn plain(meta: Option<&fs::Metadata>) -> Option<&fs::Metadata> {
+        meta.filter(|stat| !crate::resources::linked(stat) && stat.is_file())
+    }
+
+    /// Whether the game loads the folder: it has a plain `pack.mcmeta`.
+    fn loaded(&self) -> bool {
+        Self::plain(self.active_meta.as_ref()).is_some()
+    }
+
+    /// The manifest the description comes from (the loaded one, else the
+    /// disabled one); None when the folder is not a data pack at all.
+    fn readable(&self) -> Option<(&Path, &fs::Metadata)> {
+        Self::plain(self.active_meta.as_ref())
+            .map(|meta| (self.active.as_path(), meta))
+            .or_else(|| Self::plain(self.disabled_meta.as_ref()).map(|meta| (self.disabled.as_path(), meta)))
+    }
+
+    /// Before renaming: anything under either name must be a plain file, so a
+    /// rename never replaces or follows something else.
+    fn require_plain(&self) -> Result<(), String> {
+        for meta in [&self.active_meta, &self.disabled_meta].into_iter().flatten() {
+            if Self::plain(Some(meta)).is_none() {
+                return Err("资源路径不安全".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 fn read_datapack_entry(path: &Path, file_name: &str) -> Result<Option<WorldDatapack>, String> {
     if file_name.starts_with(".datapack-import-") {
         return Ok(None);
@@ -1209,10 +1258,16 @@ fn read_datapack_entry(path: &Path, file_name: &str) -> Result<Option<WorldDatap
     }
     let lower = file_name.to_ascii_lowercase();
     if meta.is_file() {
+        // Minecraft looks for the exact lowercase suffix `.zip`; only a
+        // `*.zip.disabled` name is a disabled pack. A `*.ZIP` written by older
+        // launcher versions is listed as disabled and re-normalized on enable
+        // instead of being reported as an enabled pack the game never loads.
         let (enabled, base) = if lower.ends_with(".zip.disabled") {
             (false, &file_name[..file_name.len() - ".zip.disabled".len()])
-        } else if lower.ends_with(".zip") {
+        } else if file_name.ends_with(".zip") {
             (true, &file_name[..file_name.len() - ".zip".len()])
+        } else if lower.ends_with(".zip") {
+            (false, &file_name[..file_name.len() - ".zip".len()])
         } else {
             return Ok(None);
         };
@@ -1231,23 +1286,27 @@ fn read_datapack_entry(path: &Path, file_name: &str) -> Result<Option<WorldDatap
         }));
     }
     if meta.is_dir() {
-        let mcmeta = safe_join(path, "pack.mcmeta")?;
-        let Ok(mcmeta_stat) = fs::symlink_metadata(&mcmeta) else {
+        // Minecraft loads a directory pack exactly when it has a top-level
+        // `pack.mcmeta`, whatever the folder is called. So the list reports
+        // that file, not the name: a `<name>.disabled` folder that still holds
+        // `pack.mcmeta` (left by an older launcher or an interrupted toggle)
+        // is enabled, and a folder holding only `pack.mcmeta.disabled` is
+        // disabled. Reading never renames anything; the toggle repairs both.
+        let manifests = DirManifests::read(path)?;
+        let Some((read_path, metadata)) = manifests.readable() else {
             return Ok(None);
         };
-        if crate::resources::linked(&mcmeta_stat) || !mcmeta_stat.is_file() {
-            return Ok(None);
-        }
-        let (enabled, base) = if lower.ends_with(".disabled") {
-            (false, &file_name[..file_name.len() - ".disabled".len()])
+        let enabled = manifests.loaded();
+        let base = if lower.ends_with(".disabled") {
+            &file_name[..file_name.len() - ".disabled".len()]
         } else {
-            (true, file_name)
+            file_name
         };
         if base.is_empty() {
             return Ok(None);
         }
-        let (description, pack_format) = if mcmeta_stat.len() <= MAX_PACK_MCMETA_BYTES {
-            fs::read(&mcmeta)
+        let (description, pack_format) = if metadata.len() <= MAX_PACK_MCMETA_BYTES {
+            fs::read(read_path)
                 .map(|bytes| parse_pack_mcmeta(&bytes))
                 .unwrap_or((None, None))
         } else {
@@ -1337,6 +1396,16 @@ fn list_world_datapacks_in_root(root: &Path, world_folder: &str) -> Result<Vec<W
     Ok(items)
 }
 
+/// The destination name of an imported datapack ZIP: the same stem, with the
+/// suffix lowercased exactly as Minecraft's case-sensitive discovery expects.
+fn datapack_zip_name(file_name: &str) -> Result<String, String> {
+    let (stem, extension) = file_name.rsplit_once('.').ok_or_else(|| DATAPACK_INVALID.to_string())?;
+    if stem.is_empty() || !extension.eq_ignore_ascii_case("zip") {
+        return Err(DATAPACK_INVALID.into());
+    }
+    Ok(format!("{stem}.zip"))
+}
+
 fn import_world_datapacks_in_root(
     state: &LauncherState,
     root: &Path,
@@ -1375,6 +1444,10 @@ fn import_world_datapacks_in_root(
             .ok_or_else(|| DATAPACK_INVALID.to_string())?
             .to_string_lossy()
             .into_owned();
+        // Minecraft only discovers regular packs whose name ends in the exact
+        // lowercase `.zip`. Importing `Terralith.ZIP` as-is would be reported
+        // as enabled but never load, so publish it under the normalised name.
+        let file_name = datapack_zip_name(&file_name)?;
         validate_id(&file_name)?;
         if !seen.insert(file_name.to_ascii_lowercase()) {
             return Err(DATAPACK_EXISTS.into());
@@ -1429,6 +1502,73 @@ fn import_world_datapacks_in_root(
     Ok(imported)
 }
 
+fn toggle_failure() -> String {
+    "切换资源状态失败，请检查文件是否被游戏占用".into()
+}
+
+/// Whether `target` names the same on-disk file as `source`. A case-only
+/// rename (`Shouty.ZIP` to `Shouty.zip`) hits the target name on Windows, but
+/// must not be refused as a collision when it is the same entry.
+fn same_file(source: &Path, target: &Path) -> bool {
+    target.exists()
+        && match (source.canonicalize(), target.canonicalize()) {
+            (Ok(source), Ok(target)) => source == target,
+            _ => false,
+        }
+}
+
+/// Where a toggled pack ends up, refused when another entry already has that
+/// name.
+fn toggle_target(datapacks: &Path, source: &Path, file_name: &str, target_name: String) -> Result<(PathBuf, String), String> {
+    validate_id(&target_name)?;
+    let target = safe_join(datapacks, &target_name)?;
+    if target_name != file_name && target.exists() && !same_file(source, &target) {
+        return Err(DATAPACK_EXISTS.into());
+    }
+    Ok((target, target_name))
+}
+
+/// Toggles a directory pack and returns its new name. Minecraft loads a
+/// folder exactly when it has a top-level `pack.mcmeta`, so the manifest is
+/// what is switched (`pack.mcmeta` <-> `pack.mcmeta.disabled`), first; the
+/// folder name then follows with a `.disabled` suffix. Each rename is atomic,
+/// and every state an interruption (or a failed undo) can leave between them
+/// is listed truthfully and toggles again: a `<name>.disabled` folder still
+/// holding `pack.mcmeta` (also what older launchers wrote) is enabled and
+/// disables in place, and a folder without the suffix holding only
+/// `pack.mcmeta.disabled` is disabled and enables in place. Runs only behind
+/// the toggle's operation lock, stopped-game and pending-restore checks.
+fn toggle_datapack_dir(datapacks: &Path, source: &Path, file_name: &str) -> Result<String, String> {
+    let manifests = DirManifests::read(source)?;
+    manifests.require_plain()?;
+    let enabling = !manifests.loaded();
+    if !enabling && manifests.disabled_meta.is_some() {
+        // Both names are taken: renaming would overwrite one manifest.
+        return Err(DATAPACK_MANIFEST_CONFLICT.into());
+    }
+    if enabling && manifests.disabled_meta.is_none() {
+        return Err(DATAPACK_NOT_FOUND.into());
+    }
+    let suffixed = file_name.to_ascii_lowercase().ends_with(".disabled");
+    let target_name = match (enabling, suffixed) {
+        (false, false) => format!("{file_name}.disabled"),
+        (true, true) => file_name[..file_name.len() - ".disabled".len()].to_owned(),
+        _ => file_name.to_owned(),
+    };
+    let (target, target_name) = toggle_target(datapacks, source, file_name, target_name)?;
+    let (from, to) = if enabling {
+        (&manifests.disabled, &manifests.active)
+    } else {
+        (&manifests.active, &manifests.disabled)
+    };
+    fs::rename(from, to).map_err(|_| toggle_failure())?;
+    if target_name != file_name && fs::rename(source, &target).is_err() {
+        let _ = fs::rename(to, from);
+        return Err(toggle_failure());
+    }
+    Ok(target_name)
+}
+
 fn toggle_world_datapack_in_root(
     root: &Path,
     world_folder: &str,
@@ -1440,17 +1580,31 @@ fn toggle_world_datapack_in_root(
     reject_path_links(&source)?;
     let current = read_datapack_entry(&source, file_name)?
         .ok_or_else(|| DATAPACK_NOT_FOUND.to_string())?;
-    let target_name = if current.enabled {
-        format!("{file_name}.disabled")
+    let target_name = if current.is_directory {
+        toggle_datapack_dir(&datapacks, &source, file_name)?
     } else {
-        file_name[..file_name.len() - ".disabled".len()].to_owned()
+        let lower = file_name.to_ascii_lowercase();
+        let target_name = if current.enabled {
+            format!("{file_name}.disabled")
+        } else if lower.ends_with(".disabled") {
+            let reenabled = &file_name[..file_name.len() - ".disabled".len()];
+            if reenabled.to_ascii_lowercase().ends_with(".zip") && !reenabled.ends_with(".zip") {
+                format!("{}.zip", &reenabled[..reenabled.len() - ".zip".len()])
+            } else {
+                reenabled.to_owned()
+            }
+        } else if lower.ends_with(".zip") {
+            // A pack imported by an older version as `*.ZIP`: enabling it means
+            // giving it the exact lowercase suffix the game actually loads.
+            format!("{}.zip", &file_name[..file_name.len() - ".zip".len()])
+        } else {
+            return Err(DATAPACK_NOT_FOUND.into());
+        };
+        let (target, target_name) = toggle_target(&datapacks, &source, file_name, target_name)?;
+        fs::rename(&source, &target).map_err(|_| toggle_failure())?;
+        target_name
     };
-    validate_id(&target_name)?;
     let target = safe_join(&datapacks, &target_name)?;
-    if target.exists() {
-        return Err(DATAPACK_EXISTS.into());
-    }
-    fs::rename(&source, &target).map_err(|_| "切换资源状态失败，请检查文件是否被游戏占用".to_string())?;
     read_datapack_entry(&target, &target_name)?
         .ok_or_else(|| DATAPACK_NOT_FOUND.to_string())
 }
@@ -1594,6 +1748,16 @@ mod tests {
         let (_, toggle_cmd) = source.split_once("pub async fn toggle_world_datapack(").unwrap();
         let (toggle_cmd, _) = toggle_cmd.split_once("\n}").unwrap();
         assert!(toggle_cmd.contains("toggle_world_datapack_for_state("));
+        // Listing takes none of these guards, so it must stay a pure read:
+        // any repair of an old or half-toggled pack belongs to the toggle.
+        for reader in ["fn list_world_datapacks_in_root(", "fn read_datapack_entry(", "impl DirManifests {"] {
+            let (_, body) = source.split_once(reader).unwrap();
+            let (body, _) = body.split_once("\n}").unwrap();
+            let body = crate::storage::executable_source(body);
+            for write in ["rename(", "fs::write(", "remove_file(", "remove_dir", "create_dir", "OpenOptions"] {
+                assert!(!body.contains(write), "{reader} must not call {write}");
+            }
+        }
     }
 
     #[test]
@@ -2223,6 +2387,32 @@ mod tests {
                     assert_eq!(imported[0].pack_format, Some(48));
                     assert_eq!(imported[0].description.as_deref(), Some("Overworld terrain"));
 
+                    // A `.ZIP` picked by the case-insensitive file dialog is
+                    // published as `.zip`; Minecraft only discovers that suffix.
+                    let upper_zip = external.join("Uppercase.ZIP");
+                    write_zip_file(
+                        &upper_zip,
+                        &[("pack.mcmeta", br#"{"pack":{"pack_format":48,"description":"Case"}}"#)],
+                    );
+                    let upper = import_world_datapacks_in_root(
+                        &fixture.state,
+                        &fixture.game,
+                        "Survival",
+                        vec![upper_zip.to_string_lossy().into_owned()],
+                    )
+                    .unwrap();
+                    assert_eq!(upper[0].file_name, "Uppercase.zip");
+                    assert!(upper[0].enabled);
+                    assert!(world.join("datapacks/Uppercase.zip").is_file());
+                    // Case-insensitive filesystems resolve both spellings, so
+                    // compare the exact directory entry names.
+                    let names = fs::read_dir(world.join("datapacks"))
+                        .unwrap()
+                        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    assert!(names.iter().any(|name| name == "Uppercase.zip"));
+                    assert!(!names.iter().any(|name| name == "Uppercase.ZIP"));
+
                     // Duplicate import refuses without overwriting
                     let dup = import_world_datapacks_in_root(
                         &fixture.state,
@@ -2233,12 +2423,13 @@ mod tests {
                     assert_eq!(dup.unwrap_err(), DATAPACK_EXISTS);
 
                     let listed = list_world_datapacks_in_root(&fixture.game, "Survival").unwrap();
-                    assert_eq!(listed.len(), 2);
+                    assert_eq!(listed.len(), 3);
                     assert_eq!(listed[0].name, "Terralith");
-                    assert_eq!(listed[1].name, "VanillaTweaks");
-                    assert!(listed[1].is_directory);
-                    assert_eq!(listed[1].pack_format, Some(88));
-                    assert_eq!(listed[1].description.as_deref(), Some("Nice Tweaks"));
+                    assert_eq!(listed[1].name, "Uppercase");
+                    assert_eq!(listed[2].name, "VanillaTweaks");
+                    assert!(listed[2].is_directory);
+                    assert_eq!(listed[2].pack_format, Some(88));
+                    assert_eq!(listed[2].description.as_deref(), Some("Nice Tweaks"));
 
                     // Toggle zip off and back on, and toggle directory off
                     let disabled_zip = toggle_world_datapack_in_root(&fixture.game, "Survival", "Terralith.zip").unwrap();
@@ -2251,6 +2442,24 @@ mod tests {
                     let disabled_dir = toggle_world_datapack_in_root(&fixture.game, "Survival", "VanillaTweaks").unwrap();
                     assert!(!disabled_dir.enabled);
                     assert_eq!(disabled_dir.file_name, "VanillaTweaks.disabled");
+                    // Minecraft discovers any directory with a top-level
+                    // pack.mcmeta, regardless of the folder name.
+                    assert!(
+                        !world.join("datapacks/VanillaTweaks.disabled/pack.mcmeta").exists(),
+                        "a disabled directory pack must not keep a discoverable manifest"
+                    );
+                    assert!(world.join("datapacks/VanillaTweaks.disabled/pack.mcmeta.disabled").is_file());
+                    let disabled_listed = list_world_datapacks_in_root(&fixture.game, "Survival").unwrap();
+                    let disabled_entry = disabled_listed.iter().find(|pack| pack.name == "VanillaTweaks").unwrap();
+                    assert!(!disabled_entry.enabled);
+                    assert_eq!(disabled_entry.description.as_deref(), Some("Nice Tweaks"));
+
+                    // Re-enable the directory pack and check the manifest came back.
+                    let enabled_dir = toggle_world_datapack_in_root(&fixture.game, "Survival", "VanillaTweaks.disabled").unwrap();
+                    assert!(enabled_dir.enabled);
+                    assert_eq!(enabled_dir.file_name, "VanillaTweaks");
+                    assert!(world.join("datapacks/VanillaTweaks/pack.mcmeta").is_file());
+                    assert!(!world.join("datapacks/VanillaTweaks/pack.mcmeta.disabled").exists());
 
                     // Refuses deleting non-datapack files/folders
                     assert_eq!(
@@ -2264,14 +2473,180 @@ mod tests {
                     assert!(world.join("datapacks/readme.txt").is_file());
                     assert!(world.join("datapacks/NotAPack").is_dir());
 
-                    // Delete both valid datapacks
+                    // Delete all valid datapacks
                     delete_world_datapack_in_root(&fixture.game, "Survival", "Terralith.zip").unwrap();
-                    delete_world_datapack_in_root(&fixture.game, "Survival", "VanillaTweaks.disabled").unwrap();
+                    delete_world_datapack_in_root(&fixture.game, "Survival", "Uppercase.zip").unwrap();
+                    delete_world_datapack_in_root(&fixture.game, "Survival", "VanillaTweaks").unwrap();
                     assert!(list_world_datapacks_in_root(&fixture.game, "Survival").unwrap().is_empty());
                 })
                 .await
                 .unwrap();
             });
+    }
+
+    /// Every folder and file under `dir`, with each file's bytes.
+    fn tree_snapshot(dir: &Path) -> std::collections::BTreeMap<String, Option<Vec<u8>>> {
+        let mut snapshot = std::collections::BTreeMap::new();
+        let mut queue = vec![dir.to_path_buf()];
+        while let Some(current) = queue.pop() {
+            for entry in fs::read_dir(&current).unwrap() {
+                let path = entry.unwrap().path();
+                let relative = path.strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
+                if path.is_dir() {
+                    snapshot.insert(format!("{relative}/"), None);
+                    queue.push(path);
+                } else {
+                    snapshot.insert(relative, Some(fs::read(&path).unwrap()));
+                }
+            }
+        }
+        snapshot
+    }
+
+    fn datapack_dir(world: &Path, folder: &str, manifests: &[&str]) -> PathBuf {
+        let dir = world.join("datapacks").join(folder);
+        fs::create_dir_all(dir.join("data")).unwrap();
+        fs::write(dir.join("data/fn.mcfunction"), b"say hi").unwrap();
+        for manifest in manifests {
+            let description = format!("{folder} {manifest}");
+            fs::write(dir.join(manifest), format!(r#"{{"pack":{{"pack_format":15,"description":"{description}"}}}}"#)).unwrap();
+        }
+        dir
+    }
+
+    /// Folders in every state the launcher, an older launcher, an interrupted
+    /// toggle or a hand edit can leave.
+    fn datapack_states(world: &Path) {
+        fs::create_dir_all(world.join("datapacks")).unwrap();
+        fs::write(world.join("level.dat"), b"level").unwrap();
+        datapack_dir(world, "Active", &["pack.mcmeta"]);
+        // An older launcher renamed only the folder: the game still loads it.
+        datapack_dir(world, "LegacyPack.disabled", &["pack.mcmeta"]);
+        datapack_dir(world, "Proper.disabled", &["pack.mcmeta.disabled"]);
+        // Renamed back by hand, or interrupted between the two renames.
+        datapack_dir(world, "HalfOn", &["pack.mcmeta.disabled"]);
+        datapack_dir(world, "Both.disabled", &["pack.mcmeta", "pack.mcmeta.disabled"]);
+        datapack_dir(world, "Both", &["pack.mcmeta", "pack.mcmeta.disabled"]);
+        fs::create_dir_all(world.join("datapacks/NotAPack")).unwrap();
+        fs::write(world.join("datapacks/readme.txt"), b"note").unwrap();
+        write_zip_file(
+            &world.join("datapacks/Shouty.ZIP"),
+            &[("pack.mcmeta", br#"{"pack":{"pack_format":15,"description":"Shout"}}"#)],
+        );
+        write_zip_file(
+            &world.join("datapacks/Off.zip.disabled"),
+            &[("pack.mcmeta", br#"{"pack":{"pack_format":15,"description":"Off"}}"#)],
+        );
+    }
+
+    #[test]
+    fn u2_listing_datapacks_changes_nothing_and_reports_what_the_game_loads() {
+        let fixture = crate::storage::SameRootFixture::new();
+        let world = fixture.game.join("saves/States");
+        datapack_states(&world);
+        let before = tree_snapshot(&world);
+
+        let listed = list_world_datapacks_in_root(&fixture.game, "States").unwrap();
+        list_world_datapacks_in_root(&fixture.game, "States").unwrap();
+        assert_eq!(tree_snapshot(&world), before, "listing leaves every file and folder byte-for-byte as it was");
+
+        let state = |file_name: &str| {
+            let pack = listed.iter().find(|pack| pack.file_name == file_name).unwrap_or_else(|| panic!("{file_name}"));
+            (pack.name.as_str(), pack.enabled, pack.description.as_deref().unwrap_or(""))
+        };
+        assert_eq!(state("Active"), ("Active", true, "Active pack.mcmeta"));
+        // The game loads a folder with pack.mcmeta whatever its name.
+        assert_eq!(state("LegacyPack.disabled"), ("LegacyPack", true, "LegacyPack.disabled pack.mcmeta"));
+        assert_eq!(state("Proper.disabled"), ("Proper", false, "Proper.disabled pack.mcmeta.disabled"));
+        assert_eq!(state("HalfOn"), ("HalfOn", false, "HalfOn pack.mcmeta.disabled"));
+        assert_eq!(state("Both.disabled"), ("Both", true, "Both.disabled pack.mcmeta"));
+        assert_eq!(state("Both"), ("Both", true, "Both pack.mcmeta"));
+        // Minecraft only loads a lowercase `.zip` suffix.
+        assert_eq!(state("Shouty.ZIP"), ("Shouty", false, "Shout"));
+        assert_eq!(state("Off.zip.disabled"), ("Off", false, "Off"));
+        assert_eq!(listed.len(), 8, "a folder or file that is no data pack is not listed");
+    }
+
+    #[test]
+    fn u2_datapack_toggle_repairs_every_half_state_and_refuses_two_manifests() {
+        let fixture = crate::storage::SameRootFixture::new();
+        let world = fixture.game.join("saves/States");
+        datapack_states(&world);
+        let packs = world.join("datapacks");
+        let toggle = |file_name: &str| toggle_world_datapack_in_root(&fixture.game, "States", file_name);
+
+        // A legacy folder the game still loads disables in place.
+        let legacy = toggle("LegacyPack.disabled").unwrap();
+        assert_eq!((legacy.file_name.as_str(), legacy.enabled), ("LegacyPack.disabled", false));
+        assert!(!packs.join("LegacyPack.disabled/pack.mcmeta").exists());
+        assert_eq!(
+            fs::read(packs.join("LegacyPack.disabled/pack.mcmeta.disabled")).unwrap(),
+            br#"{"pack":{"pack_format":15,"description":"LegacyPack.disabled pack.mcmeta"}}"#
+        );
+        let legacy = toggle("LegacyPack.disabled").unwrap();
+        assert_eq!((legacy.file_name.as_str(), legacy.enabled), ("LegacyPack", true));
+        assert!(packs.join("LegacyPack/pack.mcmeta").is_file());
+        assert!(!packs.join("LegacyPack/pack.mcmeta.disabled").exists());
+
+        // A folder without the suffix that holds only the disabled manifest
+        // enables in place, and disables normally afterwards.
+        let half = toggle("HalfOn").unwrap();
+        assert_eq!((half.file_name.as_str(), half.enabled), ("HalfOn", true));
+        assert!(packs.join("HalfOn/pack.mcmeta").is_file());
+        assert!(!packs.join("HalfOn/pack.mcmeta.disabled").exists());
+        let half = toggle("HalfOn").unwrap();
+        assert_eq!((half.file_name.as_str(), half.enabled), ("HalfOn.disabled", false));
+        assert!(packs.join("HalfOn.disabled/pack.mcmeta.disabled").is_file());
+
+        // Two manifests: neither is overwritten, and the refusal says why.
+        for both in ["Both.disabled", "Both"] {
+            let before = tree_snapshot(&packs.join(both));
+            assert_eq!(toggle(both).unwrap_err(), DATAPACK_MANIFEST_CONFLICT);
+            assert_eq!(tree_snapshot(&packs.join(both)), before, "{both}");
+        }
+
+        // A `.ZIP` from an earlier import enables under the suffix the game loads.
+        let fixed = toggle("Shouty.ZIP").unwrap();
+        assert_eq!((fixed.file_name.as_str(), fixed.enabled), ("Shouty.zip", true));
+        let names = fs::read_dir(&packs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| name == "Shouty.zip"));
+        assert!(!names.iter().any(|name| name == "Shouty.ZIP"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn u2_datapack_toggle_undoes_the_manifest_rename_when_the_folder_cannot_move() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let fixture = crate::storage::SameRootFixture::new();
+        let world = fixture.game.join("saves/Held");
+        fs::create_dir_all(world.join("datapacks")).unwrap();
+        fs::write(world.join("level.dat"), b"level").unwrap();
+        let packs = world.join("datapacks");
+        // A file the game (or an editor) holds open keeps its folder from moving.
+        let hold = |dir: &Path| {
+            fs::OpenOptions::new().read(true).share_mode(0x1).open(dir.join("data/fn.mcfunction")).unwrap()
+        };
+
+        let on = datapack_dir(&world, "OnPack", &["pack.mcmeta"]);
+        let held = hold(&on);
+        assert_eq!(toggle_world_datapack_in_root(&fixture.game, "Held", "OnPack").unwrap_err(), toggle_failure());
+        assert!(on.join("pack.mcmeta").is_file(), "the manifest rename was undone");
+        assert!(!on.join("pack.mcmeta.disabled").exists());
+        assert!(!packs.join("OnPack.disabled").exists());
+        drop(held);
+        assert!(!toggle_world_datapack_in_root(&fixture.game, "Held", "OnPack").unwrap().enabled);
+
+        let off = datapack_dir(&world, "OffPack.disabled", &["pack.mcmeta.disabled"]);
+        let held = hold(&off);
+        assert_eq!(toggle_world_datapack_in_root(&fixture.game, "Held", "OffPack.disabled").unwrap_err(), toggle_failure());
+        assert!(off.join("pack.mcmeta.disabled").is_file(), "the manifest rename was undone");
+        assert!(!off.join("pack.mcmeta").exists());
+        assert!(!packs.join("OffPack").exists());
+        drop(held);
+        assert!(toggle_world_datapack_in_root(&fixture.game, "Held", "OffPack.disabled").unwrap().enabled);
     }
 
     #[test]

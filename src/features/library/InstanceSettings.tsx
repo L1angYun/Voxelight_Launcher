@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { command, type Instance } from "../../lib/launcher";
+import { normalizeError } from "../../lib/errors";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
 import { Field } from "../../components/ui/Field";
 import { Segmented } from "../../components/ui/Segmented";
 import { MemoryOverviewHint } from "../settings/MemoryOverviewHint";
 import { Select } from "../../components/ui/Select";
-import type { Loader, LoaderVersion } from "./types";
+import { OptifineManualHint } from "./OptifineManualHint";
+import type { Loader, LoaderResult, LoaderVersion } from "./types";
+import { errorText } from "./utils";
 
 function normalizeLoader(value?: string): Loader {
   const lower = (value ?? "").trim().toLowerCase();
@@ -78,7 +81,8 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
 
   useEffect(() => {
     const request = ++loaderGen.current;
-    if (targetLoader === "vanilla" || !baseGameVersion) {
+    // OptiFine is never installed online, so it has no version list here.
+    if (targetLoader === "vanilla" || targetLoader === "optifine" || !baseGameVersion) {
       setLoaderVersions([]);
       setLoaderLoading(false);
       setLoaderFailed(false);
@@ -110,6 +114,7 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     && (targetLoader === "vanilla" || targetLoaderVersion === (instance.loaderVersion ?? ""));
   const canApplyLoader = Boolean(
     baseGameVersion
+    && targetLoader !== "optifine"
     && !loaderUnchanged
     && !busy
     && (targetLoader === "vanilla" || (!loaderLoading && !loaderFailed && targetLoaderVersion)),
@@ -124,17 +129,39 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     optifine: "OptiFine",
   };
 
+  // A refused pre-switch backup names its reason. The user may then switch
+  // without one, after a second confirmation that says what is at risk.
+  const withBackupChoice = async <T,>(attempt: (skipBackup: boolean) => Promise<T>): Promise<T> => {
+    try {
+      return await attempt(false);
+    } catch (error) {
+      const refused = normalizeError(error);
+      if (!refused.code.startsWith("loader.switchBackup")) throw error;
+      const reason = errorText(refused.code, t, refused.params);
+      if (!window.confirm(t("library:loaderChange.skipBackupConfirm", { reason }))) throw error;
+      return attempt(true);
+    }
+  };
+
+  // The backend takes the Minecraft version from the JAR and refuses one for
+  // another version than this instance's.
   const importOptifineForInstance = () => {
-    if (busy) return;
+    if (busy || !baseGameVersion) return;
+    if (currentLoader !== "optifine" && !window.confirm(t("library:loaderChange.confirm", {
+      name: instance.name,
+      loader: loaderNames.optifine,
+    }))) {
+      return;
+    }
     void run("instance.loader", async () => {
       const path = await pickLauncherPath("optifineInstaller");
       if (!path) return;
-      await command("install_optifine_installer", {
+      const result = await withBackupChoice((skipBackup) => command<LoaderResult>("install_optifine_installer", {
         path,
-        expectedGameVersion: baseGameVersion || undefined,
         instanceId: instance.id,
-      });
-      setNotice("loaderChanged");
+        skipBackup,
+      }));
+      setNotice(result?.backupId ? "loaderChangedBackup" : "loaderChanged");
       await onChanged();
     });
   };
@@ -148,12 +175,13 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
       return;
     }
     void run("instance.loader", async () => {
-      await command<Instance>("change_instance_loader", {
+      const result = await withBackupChoice((skipBackup) => command<Instance & { backupId?: string | null }>("change_instance_loader", {
         instanceId: instance.id,
         loader: targetLoader,
         loaderVersion: targetLoader === "vanilla" ? null : targetLoaderVersion,
-      });
-      setNotice("loaderChanged");
+        skipBackup,
+      }));
+      setNotice(result?.backupId ? "loaderChangedBackup" : "loaderChanged");
       await onChanged();
     });
   };
@@ -226,7 +254,8 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
             label: loaderNames[value],
           }))}
         />
-        {targetLoader !== "vanilla" ? (
+        {targetLoader === "optifine" ? <OptifineManualHint /> : null}
+        {targetLoader !== "vanilla" && targetLoader !== "optifine" ? (
           <Field label={t("library:loaderVersion")} htmlFor="instance-loader-version">
             {loaderFailed ? (
               <div className="vx-action-row">
@@ -252,14 +281,15 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         ) : null}
         <p>{t("library:loaderChange.hint")}</p>
         <div className="vx-action-row">
-          <Button type="button" variant="secondary" disabled={!canApplyLoader} loading={busy === "instance.loader"} onClick={applyLoaderChange}>
-            {t("library:loaderChange.apply")}
-          </Button>
           {targetLoader === "optifine" ? (
-            <Button type="button" variant="ghost" disabled={Boolean(busy)} onClick={importOptifineForInstance}>
+            <Button type="button" variant="secondary" disabled={Boolean(busy) || !baseGameVersion} loading={busy === "instance.loader"} onClick={importOptifineForInstance}>
               {t("library:optifineImportJar")}
             </Button>
-          ) : null}
+          ) : (
+            <Button type="button" variant="secondary" disabled={!canApplyLoader} loading={busy === "instance.loader"} onClick={applyLoaderChange}>
+              {t("library:loaderChange.apply")}
+            </Button>
+          )}
         </div>
       </section>
       <section className="vx-detail-section">

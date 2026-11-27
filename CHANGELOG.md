@@ -9,6 +9,54 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.7.0-beta.2] - 2026-11-27
+
+_Pre-release beta for 0.7.0._
+
+### Security
+- **Lumen**:
+  - Crash wake-ups run read-only.
+  - Installing mods or packs, changing loaders, starting or saving servers and joining a server always ask first, even in Full access.
+  - At most three changes run without approval per message.
+  - Tool output is passed to the model as untrusted data.
+  - Approval cards name the real instance, project and server, run exactly what was shown, and can be decided per action.
+  - Focus no longer lands on the approve button.
+  - A stop you confirm is no longer treated as a crash.
+- **MCP**:
+  - A slow write is no longer abandoned at the 120 s deadline, which could leave the download queue stuck until restart.
+  - Stopping or restarting the server cancels queued writes, and every write rechecks the permission after it gets its turn.
+  - New error texts explain a busy or reserved port.
+- **Log redaction**: masks Minecraft session tokens (including the 1.7/1.8 `Session ID is token:…` line, `--accessToken` arguments and JWTs), provider API keys and the masked key fragments providers echo back, before logs or errors reach the UI, Lumen or diagnostic exports.
+- **Imported Forge/NeoForge servers**: `win_args.txt` is checked against an allowlist of printable-ASCII options. `-XX:VMOptionsFile`, `-XX:Flags` and similar indirections are refused, and application paths must stay inside the server folder.
+- **Online OptiFine installation is turned off**, because there is no trustworthy hash for the mirrored installer. Import the official installer JAR from optifine.net instead.
+
+### Changed
+- **Loader switches**:
+  - Back up the instance before anything is installed.
+  - Explain why a backup is impossible (links, size, file count, free space), and offer to switch without a backup only after a second confirmation.
+  - Keep only the newest two automatic switch backups.
+- **Factory reset**:
+  - Erases saved keys before it commits and finishes account sign-out removal at the next start, so a crash can no longer leave keys behind.
+  - Its texts now say what happened when it could not finish.
+
+### Fixed
+- **Downloads and imports**:
+  - Clearing unfinished downloads keeps only the partial files a paused or retryable task can still resume.
+  - Listing a world's data packs no longer renames files.
+  - Disabling a folder data pack really unloads it.
+  - A new file drop no longer breaks an import from an earlier drop.
+  - Import size limits follow the detected pack format.
+- **Network check**: recognises Clash/mihomo-style TUN tunnels instead of reporting the proxy's address as a direct-connect address, and a local web server is no longer offered as a proxy.
+- **Beta channel**: no longer falls back to the stable feed when GitHub rate-limits.
+- **Interface**:
+  - The empty home page keeps its two actions on one row.
+  - The sound checkbox in Appearance settings sits beside its label.
+  - Discover names vanilla targets in the interface language.
+  - The first-run card no longer half-covers the home page.
+  - Clicking the Lumen permission caption no longer switches it to Read-only.
+  - The file-drop overlay has its shadow again.
+- **Translations**: corrected for Traditional Chinese, Japanese, Korean, Russian and Spanish.
+
 ## [0.7.0-beta.1] - 2026-11-26
 
 _Pre-release beta for 0.7.0._

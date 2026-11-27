@@ -112,6 +112,6 @@
   "retryFailed": "重试失败任务",
   "clearUnfinished": "清理失败和已取消任务",
   "retryFailedNotice_other": "已排队 {{count}} 个任务，跳过 {{skipped}} 个。",
-  "clearConfirm_other": "清理 {{count}} 个失败或已取消的任务，并删除它们保留的下载分片？",
+  "clearConfirm_other": "清理 {{count}} 个失败或已取消的任务，并删除它们保留的下载分片？已暂停或被中断的任务仍可继续使用的分片会保留。",
   "clearNotice_other": "已清理 {{count}} 个任务，释放 {{bytes}}。"
 }

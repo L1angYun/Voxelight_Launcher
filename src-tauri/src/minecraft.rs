@@ -3343,6 +3343,7 @@ async fn launch_prepared(
         .as_ref()
         .and_then(|c| c.xuid.as_deref())
         .unwrap_or("");
+    crate::processes::register_launch_credentials(access_token, player_uuid);
     let variables: HashMap<String, String> = [
         ("auth_player_name", username),
         ("auth_uuid", player_uuid),
@@ -3562,18 +3563,15 @@ async fn launch_prepared(
         // The actor owns the child until exit, including when force was approved.
         // Remove only this identity; the PID may now be used for another game.
         match status {
-            Ok(status) => {
-                crate::processes::unregister(&app_for_exit, &state_for_exit, &id_for_exit, status.code());
+            Ok(exit) => {
+                crate::processes::unregister(&app_for_exit, &state_for_exit, &id_for_exit, exit.code());
                 log(
                     &app_for_exit,
                     &state_for_exit,
-                    if status.success() { "info" } else { "error" },
-                    format!("Minecraft PID {pid} 已退出，退出码 {:?}", status.code()),
+                    if exit.success() { "info" } else { "error" },
+                    format!("Minecraft PID {pid} 已退出，退出码 {:?}", exit.code()),
                 );
-                let _ = app_for_exit.emit(
-                    "launcher://game-exit",
-                    json!({"gameId":id_for_exit,"pid":pid,"code":status.code()}),
-                );
+                let _ = app_for_exit.emit("launcher://game-exit", exit.event_payload(&id_for_exit, pid));
             }
             Err(error) => log(
                 &app_for_exit,

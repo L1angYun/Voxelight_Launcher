@@ -135,6 +135,34 @@ fn retry_plan(job: &DownloadJob, jobs: &[DownloadJob]) -> Result<RetryRequest, &
     }
 }
 
+/// Whether a kept row may still reopen the parts it used: a paused task
+/// resumes in place, and an interrupted one through its retry.
+fn resumes_parts(job: &DownloadJob, jobs: &[DownloadJob]) -> bool {
+    match job.status.as_str() {
+        "paused" => true,
+        "interrupted" => retry_plan(job, jobs).is_ok(),
+        _ => false,
+    }
+}
+
+/// The rows a task was retried from, nearest first; bounded so a corrupt
+/// journal with a cycle cannot loop.
+fn retry_ancestors(id: &str, jobs: &[DownloadJob]) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut current = id;
+    while chain.len() < jobs.len() {
+        let Some(parent) = jobs.iter().find(|job| job.id == current).and_then(|job| job.retried_from.as_deref()) else {
+            break;
+        };
+        if parent == id || chain.iter().any(|seen: &String| seen == parent) {
+            break;
+        }
+        chain.push(parent.to_owned());
+        current = parent;
+    }
+    chain
+}
+
 /// The label of a resource task, the same for a first run and a retry.
 fn resource_label(request: &ResourceRequest) -> &'static str {
     match (&request.source, &request.target) {
@@ -275,6 +303,9 @@ struct ConnectionsState {
 pub(crate) struct Connections {
     state: Mutex<ConnectionsState>,
     notify: tokio::sync::Notify,
+    /// The task whose transfers take these permits now (one runs at a time);
+    /// parts record it, so a clear knows which task may resume each part.
+    owner: Mutex<Option<String>>,
     #[cfg(test)]
     peak: AtomicUsize,
 }
@@ -312,8 +343,21 @@ impl Connections {
                 waiting: 0,
             }),
             notify: tokio::sync::Notify::new(),
+            owner: Mutex::new(None),
             #[cfg(test)]
             peak: AtomicUsize::new(0),
+        }
+    }
+
+    /// The running task the transfers belong to, if any.
+    pub(crate) fn owner(&self) -> Option<String> {
+        self.owner.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+
+    fn set_owner(&self, owner: Option<&str>) {
+        let mut current = self.owner.lock().unwrap_or_else(|error| error.into_inner());
+        if current.as_deref() != owner {
+            *current = owner.map(str::to_owned);
         }
     }
 
@@ -598,6 +642,8 @@ impl DownloadControl {
         let (out, snapshot) = {
             let mut state = self.scheduler.lock().ok()?;
             let out = edit(&mut state)?;
+            // The active task only changes here, under the scheduler lock.
+            self.connections.set_owner(state.active.as_deref());
             state.revision += 1;
             if immediate_save || state.last_save.elapsed() >= Duration::from_millis(750) {
                 state.last_save = Instant::now();
@@ -755,10 +801,15 @@ impl DownloadControl {
 
     /// Removes every failed or cancelled finished task from the history, saves
     /// the journal and publishes the new snapshot. Refused while a task is
-    /// running or queued. The parts of the removed tasks are freed through the
-    /// part store's locks only, so a part anything still holds is kept.
+    /// running or queued. Then frees the parts no kept task can resume: each
+    /// part records the tasks that used it, so a part is kept only while one
+    /// of them is paused or interrupted and retryable (a row already retried,
+    /// or one with no runner, never resumes). A part without that record is
+    /// kept while any such task exists. Removal goes through the store's
+    /// locks, so a part anything still holds is kept.
     pub(crate) fn clear_unfinished(&self, stores: &[crate::parts::PartStore]) -> Result<ClearUnfinishedResult, String> {
         let mut refusal: Option<&'static str> = None;
+        let mut resumable = std::collections::HashSet::new();
         let tasks = self.mutate(true, |state| {
             if state.jobs.iter().any(|job| matches!(job.status.as_str(), "running" | "queued")) {
                 refusal = Some(BUSY);
@@ -766,12 +817,27 @@ impl DownloadControl {
             }
             let before = state.jobs.len();
             state.jobs.retain(|job| !matches!(job.status.as_str(), "failed" | "cancelled"));
+            // Judged on the history that remains: a row whose retry was just
+            // cleared away can be retried (and resume its parts) again.
+            resumable = state
+                .jobs
+                .iter()
+                .filter(|job| resumes_parts(job, &state.jobs))
+                .map(|job| job.id.clone())
+                .collect();
+            // A retry reopens the parts its earlier attempts recorded, so the
+            // whole chain it was retried from counts as resumable too.
+            let ancestors: Vec<String> = resumable
+                .iter()
+                .flat_map(|id| retry_ancestors(id, &state.jobs))
+                .collect();
+            resumable.extend(ancestors);
             Some(before - state.jobs.len())
         });
         match (tasks, refusal) {
             (Some(tasks), _) => {
                 // Nothing was kept by an empty clear: leave every part alone.
-                let bytes = if tasks == 0 { 0 } else { crate::parts::remove_unreferenced(stores) };
+                let bytes = if tasks == 0 { 0 } else { crate::parts::remove_unowned(stores, &resumable) };
                 Ok(ClearUnfinishedResult { tasks, bytes })
             }
             (None, Some(reason)) => Err(reason.into()),
@@ -1907,15 +1973,28 @@ mod tests {
     }
 
     fn kept_part(store: &PartStore, seed: u64, bytes: usize) -> PartKey {
+        owned_part(store, seed, bytes, &[])
+    }
+
+    /// A part of `bytes` that the tasks in `owners` used, as their transfers
+    /// record it; with no owners it has no record (a part from an older build).
+    fn owned_part(store: &PartStore, seed: u64, bytes: usize, owners: &[&str]) -> PartKey {
         let key = PartKey::new(Algo::Sha1, &format!("{seed:040x}"), bytes as u64).unwrap();
         let mut part = store.open(&key, bytes as u64).unwrap().unwrap();
+        for owner in owners {
+            part.note_owner(owner);
+        }
         part.append(&vec![0x5a; bytes]).unwrap();
         drop(part);
         key
     }
 
+    fn gone(store: &PartStore, key: &PartKey) -> bool {
+        ["part", "json", "owners"].iter().all(|extension| !key.file(store.root(), extension).exists())
+    }
+
     #[test]
-    fn clear_removes_only_failed_and_cancelled_tasks_their_parts_and_keeps_the_rest() {
+    fn clear_removes_only_failed_and_cancelled_tasks_and_the_parts_only_they_used() {
         let journal = Journal::new(serde_json::json!([
             row("completed", "install", "1.20.1", "completed"),
             row("failed-1", "install", "1.20.1", "failed"),
@@ -1929,8 +2008,12 @@ mod tests {
         assert_eq!(job(&control, &paused).status, "paused");
 
         let store = PartStore::new(journal.0.join("parts"));
-        let failed = kept_part(&store, 1, 24);
-        let cancelled = kept_part(&store, 2, 16);
+        let failed = owned_part(&store, 1, 24, &["failed-1"]);
+        let cancelled = owned_part(&store, 2, 16, &["cancelled-1"]);
+        let interrupted = owned_part(&store, 3, 20, &["interrupted"]);
+        let shared = owned_part(&store, 6, 8, &["failed-2", "interrupted"]);
+        let unrecorded = kept_part(&store, 7, 4);
+        let paused_owned = owned_part(&store, 8, 10, &[paused.as_str()]);
         let paused_part = {
             let key = PartKey::new(Algo::Sha1, &format!("{:040x}", 4), 12).unwrap();
             let mut part = store.open(&key, 12).unwrap().unwrap();
@@ -1941,16 +2024,19 @@ mod tests {
 
         let result = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
         assert_eq!(result.tasks, 3);
-        assert_eq!(result.bytes, 40, "only the bytes of removed part files are counted");
+        assert_eq!(result.bytes, 40, "only the parts no kept task can resume are freed and counted");
         let listed = control.list();
         let remaining: Vec<&str> = listed.iter().map(|job| job.id.as_str()).collect();
         assert_eq!(remaining, ["completed", "interrupted", paused.as_str()], "kept rows keep their order");
         assert_eq!(job(&control, &paused).status, "paused");
 
         for key in [&failed, &cancelled] {
-            assert!(!key.file(store.root(), "part").exists(), "a failed or cancelled part is removed");
-            assert!(!key.file(store.root(), "json").exists());
+            assert!(gone(&store, key), "a part only a removed task used is removed with its records");
         }
+        assert!(interrupted.file(store.root(), "part").is_file(), "an interrupted task resumes its part");
+        assert!(shared.file(store.root(), "part").is_file(), "a part a resumable task also used stays");
+        assert!(unrecorded.file(store.root(), "part").is_file(), "a part without a record may be needed");
+        assert!(paused_owned.file(store.root(), "part").is_file(), "a paused task resumes its part");
         let (paused_key, paused_part) = paused_part;
         assert!(paused_key.file(store.root(), "part").is_file(), "a part a paused task holds stays");
         assert_eq!(paused_part.done(), 12);
@@ -1963,10 +2049,143 @@ mod tests {
         assert_eq!(disk.iter().map(|job| job.status.as_str()).collect::<Vec<_>>(), ["completed", "interrupted", "paused"]);
 
         // Clearing nothing leaves an unlocked part alone.
-        let untouched = kept_part(&store, 5, 6);
+        let untouched = owned_part(&store, 5, 6, &["completed"]);
         let empty = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
         assert_eq!((empty.tasks, empty.bytes), (0, 0));
         assert!(untouched.file(store.root(), "part").is_file());
+    }
+
+    #[test]
+    fn clear_keeps_an_interrupted_tasks_verified_part_for_retry() {
+        let journal = Journal::new(serde_json::json!([
+            retry_row("failed", "install", "1.20.1", "failed", payload("install")),
+            retry_row("interrupted", "install", "1.20.1", "interrupted", payload("install")),
+        ]));
+        let control = journal.load();
+        let store = PartStore::new(journal.0.join("parts"));
+        let interrupted = owned_part(&store, 11, 32, &["interrupted"]);
+        let failed = owned_part(&store, 12, 16, &["failed"]);
+
+        let result = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
+        assert_eq!((result.tasks, result.bytes), (1, 16));
+        assert_eq!(job(&control, "interrupted").status, "interrupted");
+        assert!(gone(&store, &failed), "the failed task's part is freed");
+        let reopened = store.open(&interrupted, 32).unwrap().expect("the interrupted part is still free");
+        assert_eq!(reopened.done(), 32, "retry resumes the verified bytes");
+    }
+
+    #[test]
+    fn clear_frees_parts_when_no_kept_task_can_resume_them() {
+        // An interrupted row whose retry already completed, and one with no
+        // runner, can never resume: they must not keep anything.
+        let mut retry_done = row("retry-done", "install", "1.20.1", "completed");
+        retry_done["retriedFrom"] = serde_json::json!("retried");
+        let journal = Journal::new(serde_json::json!([
+            row("completed", "install", "1.20.1", "completed"),
+            row("retried", "install", "1.20.1", "interrupted"),
+            retry_done,
+            row("backup", "world-backup", "Survival", "interrupted"),
+            row("failed-1", "install", "1.20.1", "failed"),
+            row("cancelled-1", "loader", "1.20.1", "cancelled"),
+        ]));
+        let control = journal.load();
+        assert!(!job(&control, "retried").retryable && !job(&control, "backup").retryable);
+        let store = PartStore::new(journal.0.join("parts"));
+        let failed = owned_part(&store, 21, 24, &["failed-1"]);
+        let cancelled = owned_part(&store, 22, 16, &["cancelled-1"]);
+        let retried = owned_part(&store, 24, 10, &["retried", "retry-done"]);
+        let unrecorded = kept_part(&store, 25, 6);
+        let held = {
+            let key = PartKey::new(Algo::Sha1, &format!("{:040x}", 23), 12).unwrap();
+            let mut part = store.open(&key, 12).unwrap().unwrap();
+            part.append(&[0x5a; 12]).unwrap();
+            (key, part)
+        };
+
+        let result = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
+        assert_eq!(result.tasks, 2);
+        assert_eq!(result.bytes, 56, "only removed, unlocked part files are counted");
+        assert_eq!(
+            control.list().iter().map(|job| job.id.as_str()).collect::<Vec<_>>(),
+            ["completed", "retried", "retry-done", "backup"]
+        );
+        for key in [&failed, &cancelled, &retried, &unrecorded] {
+            assert!(gone(&store, key));
+        }
+        let (held_key, held_part) = held;
+        assert!(held_key.file(store.root(), "part").is_file(), "a lock still protects its part");
+        assert_eq!(held_part.done(), 12);
+    }
+
+    #[test]
+    fn clear_keeps_parts_recorded_by_the_attempt_a_paused_retry_came_from() {
+        // Interrupted "first" was retried as "second", which paused before it
+        // reached the second file: that file's part names only "first".
+        let mut second = row("second", "install", "1.20.1", "paused");
+        second["retriedFrom"] = serde_json::json!("first");
+        let journal = Journal::new(serde_json::json!([
+            row("first", "install", "1.20.1", "interrupted"),
+            second,
+            row("failed-1", "install", "1.20.1", "failed"),
+        ]));
+        let control = journal.load();
+        let store = PartStore::new(journal.0.join("parts"));
+        let earlier = owned_part(&store, 31, 9, &["first"]);
+        let failed = owned_part(&store, 32, 7, &["failed-1"]);
+
+        let result = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
+        assert_eq!(result.tasks, 1);
+        assert!(!gone(&store, &earlier), "the paused retry still resumes its earlier attempt's part");
+        assert!(gone(&store, &failed));
+    }
+
+    #[test]
+    fn retry_ancestors_stop_at_a_cycle() {
+        let mut a = row("a", "install", "1.20.1", "interrupted");
+        a["retriedFrom"] = serde_json::json!("b");
+        let mut b = row("b", "install", "1.20.1", "interrupted");
+        b["retriedFrom"] = serde_json::json!("a");
+        let journal = Journal::new(serde_json::json!([a, b]));
+        let control = journal.load();
+        let jobs = control.list();
+        assert_eq!(super::retry_ancestors("a", &jobs), vec!["b".to_owned()]);
+    }
+
+    #[test]
+    fn clear_keeps_a_paused_tasks_parts_even_without_their_lock() {
+        let journal = Journal::new(serde_json::json!([row("failed-1", "install", "1.20.1", "failed")]));
+        let control = journal.load();
+        let paused = control.begin_recorded("install", "1.20.1", "Minecraft 1.20.1", None, RetryRequest::Install { version_id: "1.20.1".into() }).unwrap();
+        control.set_paused(&paused, true);
+        let store = PartStore::new(journal.0.join("parts"));
+        let paused_owned = owned_part(&store, 31, 20, &[paused.as_str()]);
+        let unrecorded = kept_part(&store, 32, 8);
+        let failed = owned_part(&store, 33, 12, &["failed-1"]);
+
+        let result = control.clear_unfinished(std::slice::from_ref(&store)).unwrap();
+        assert_eq!((result.tasks, result.bytes), (1, 12));
+        assert!(gone(&store, &failed));
+        assert!(paused_owned.file(store.root(), "part").is_file(), "the paused task resumes this part");
+        assert!(unrecorded.file(store.root(), "part").is_file(), "a part without a record may be the paused task's");
+        control.finish(&paused, Some(CANCELLED));
+    }
+
+    #[test]
+    fn the_running_task_is_the_owner_its_transfers_record() {
+        let control = DownloadControl::default();
+        assert_eq!(control.connections().owner(), None);
+        let queued = control.enqueue("install", "1.20.1", "Minecraft 1.20.1").unwrap();
+        assert_eq!(control.connections().owner(), None, "a queued task transfers nothing yet");
+        assert!(control.activate(&queued));
+        assert_eq!(control.connections().owner().as_deref(), Some(queued.as_str()));
+        control.finish(&queued, None);
+        assert_eq!(control.connections().owner(), None);
+        let begun = control.begin("install", "1.20.1", "Minecraft 1.20.1").unwrap();
+        assert_eq!(control.connections().owner().as_deref(), Some(begun.as_str()));
+        control.set_paused(&begun, true);
+        assert_eq!(control.connections().owner().as_deref(), Some(begun.as_str()), "a paused task still owns its parts");
+        control.finish(&begun, Some(CANCELLED));
+        assert_eq!(control.connections().owner(), None);
     }
 
     #[test]

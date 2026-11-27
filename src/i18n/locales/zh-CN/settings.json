@@ -284,7 +284,7 @@
     "javaNotFound": "没有找到 Java，请安装后指定路径。",
     "assistantKeySaved": "Lumen API Key 已加密保存。",
     "assistantKeyCleared": "已清除保存的 Lumen API Key。",
-    "launcherReset": "启动器已还原为初始状态，你的 Minecraft 游戏文件未被删除。",
+    "launcherReset": "启动器已还原为初始状态，你的 Minecraft 游戏文件未被删除。请重新启动启动器，使登录与网络客户端也应用还原后的设置。",
     "mcpStarted": "本地 MCP 服务已在 127.0.0.1:{{port}} 启动。",
     "mcpStopped": "本地 MCP 服务已停止。",
     "mcpTokenRotated": "MCP 访问令牌已轮换，请更新已连接客户端中的令牌。",
@@ -315,7 +315,7 @@
     "permissionHints": {
       "readOnly": "只查看实例、版本、模组、世界存档、日志、崩溃诊断、下载任务、Java、网络环境和托管服务端，不修改任何内容。",
       "controlled": "只读工具自动执行；Lumen 执行写入操作前会逐项请求你的确认；外部 MCP 客户端仍保持只读。",
-      "fullAccess": "允许 Lumen 及通过认证的本机 MCP 客户端执行全部精选启动器工具（安装版本/模组、创建/克隆/备份实例、调整实例设置、管理下载、启停游戏与服务端等）。"
+      "fullAccess": "Lumen 无需询问即可执行精选启动器工具；但安装模组或资源包、更换加载器、启动服务端、保存服务器和加入服务器仍会先询问你，单条消息内更改较多时也会先询问。通过认证的本机 MCP 客户端可执行全部精选工具。"
     },
     "toolSummary": "已开放精选工具集：共 {{total}} 项启动器工具（{{readOnly}} 项只读、{{controlled}} 项受控写入）。绝不暴露任意 Shell 命令、越界路径或任何密钥读取。",
     "proactive": "游戏异常崩溃时主动唤醒 Lumen",
@@ -365,7 +365,10 @@
       "modelRequired": "请先在「设置 → Lumen 与 MCP」中填写模型名称。",
       "invalidBaseUrl": "Lumen API 基础地址必须使用 HTTPS，或本机回环 HTTP（127.0.0.1 / localhost）。",
       "providerError": "所配置的 AI 服务返回了错误。",
-      "emptyMessage": "发送前请输入消息内容。"
+      "emptyMessage": "发送前请输入消息内容。",
+      "mcpPortUnavailable": "端口 {{port}} 已被占用或被 Windows 保留。请换一个 MCP 端口后重新启动。",
+      "mcpNotRunning": "MCP 服务未运行，请先启动。",
+      "mcpFailed": "MCP 服务出现内部错误，请停止后重新启动。"
     }
   },
   "updates": {

@@ -1454,3 +1454,101 @@ fn a_scanner_backup_copy_is_told_apart_from_the_launcher_files() {
         assert!(!scanner_copy(ours), "{ours}");
     }
 }
+
+/// The hooks of a task that `control` runs: its transfers take that task's
+/// connections, as the install, modpack and resource hooks do.
+struct TaskHooks<'a>(&'a crate::downloads::DownloadControl);
+
+impl Hooks for TaskHooks<'_> {
+    async fn cancellable<F: std::future::Future>(&self, future: F) -> Result<F::Output, String> {
+        Ok(future.await)
+    }
+    async fn checkpoint(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn throttle(&self, _: usize) -> Result<(), String> {
+        Ok(())
+    }
+    fn stall_limit(&self) -> Duration {
+        STALL
+    }
+    fn connections(&self) -> Option<&crate::downloads::Connections> {
+        Some(self.0.connections())
+    }
+}
+
+#[test]
+fn a_tasks_transfer_records_the_task_on_its_part_until_the_part_is_published() {
+    use range_server::{RangeServer, Scripted};
+    let root = Root::new();
+    let whole: Vec<u8> = (0..64u8).collect();
+    let size = whole.len() as u64;
+    let key = PartKey::new(Algo::Sha1, &format!("{:x}", Sha1::digest(&whole)), size).unwrap();
+    let owners = key.file(&root.path().join("parts"), "owners");
+    let control = crate::downloads::DownloadControl::default();
+    let run = |server: &RangeServer, slot: &mut Option<ResumablePart>| {
+        let url = reqwest::Url::parse(&format!("http://{}/file", server.address)).unwrap();
+        let client = crate::storage::test_client();
+        tokio::runtime::Runtime::new().unwrap().block_on(transfer(client.get(url.clone()), &url, slot, size, &TaskHooks(&control), &|_| Ok(()), &mut |_| {}))
+    };
+
+    // The first attempt is cut short: its part names the task that wrote it.
+    let first = control.begin("install", "fixture", "Fixture").unwrap();
+    let server = RangeServer::new(vec![
+        Scripted::ok(&whole[..20], "\"v\"").without_length(),
+        Scripted::partial(&whole, 20, "\"v\""),
+    ]);
+    let mut slot = root.store().open(&key, size).unwrap();
+    assert!(run(&server, &mut slot).is_err());
+    assert_eq!(read_owners(&owners), Some(vec![first.clone()]));
+    drop(slot);
+    control.finish(&first, Some("cut"));
+
+    // A retry is a new task; the part then names both, oldest first.
+    let second = control.begin("install", "fixture", "Fixture").unwrap();
+    let mut slot = root.store().open(&key, size).unwrap();
+    run(&server, &mut slot).unwrap();
+    assert_eq!(server.header(1, "range").as_deref(), Some("bytes=20-"));
+    assert_eq!(read_owners(&owners), Some(vec![first, second.clone()]));
+    let target = root.path().join("file.bin");
+    slot.take().unwrap().publish_replace(&target).unwrap();
+    assert!(!owners.exists(), "a published part leaves no record behind");
+    control.finish(&second, None);
+
+    // Without a running task (a preview), nothing is recorded.
+    let server = RangeServer::new(vec![Scripted::ok(&whole[..20], "\"v\"").without_length()]);
+    let mut slot = root.store().open(&key, size).unwrap();
+    assert!(run(&server, &mut slot).is_err());
+    assert!(!owners.exists());
+}
+
+#[test]
+fn a_part_remembers_a_bounded_list_of_tasks_and_leaves_an_unreadable_record_alone() {
+    let root = Root::new();
+    let store = root.store();
+    let key = key();
+    let owners = key.file(store.root(), "owners");
+    let mut part = store.open(&key, SIZE).unwrap().unwrap();
+    part.append(b"0123").unwrap();
+    for n in 0..OWNERS_MAX + 3 {
+        part.note_owner(&format!("task-{n}"));
+    }
+    part.note_owner("task-5");
+    let tasks = read_owners(&owners).unwrap();
+    assert_eq!(tasks.len(), OWNERS_MAX);
+    assert_eq!(tasks.first().map(String::as_str), Some("task-3"), "the oldest are dropped first");
+    assert_eq!(tasks.last().map(String::as_str), Some(format!("task-{}", OWNERS_MAX + 2).as_str()));
+    // Ids that cannot be a task's are never written.
+    part.note_owner("");
+    part.note_owner(&"x".repeat(65));
+    assert_eq!(read_owners(&owners).unwrap(), tasks);
+    // A record this build cannot read keeps the part "maybe needed".
+    fs::write(&owners, b"{not json").unwrap();
+    part.note_owner("task-new");
+    assert_eq!(fs::read(&owners).unwrap(), b"{not json");
+    drop(part);
+    let resumable: std::collections::HashSet<String> = ["someone".to_owned()].into();
+    assert_eq!(store.remove_unowned(&resumable), 0, "an unreadable record is kept while a task may resume");
+    assert_eq!(store.remove_unowned(&std::collections::HashSet::new()), 4);
+    assert!(!owners.exists());
+}

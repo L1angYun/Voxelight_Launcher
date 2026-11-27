@@ -207,7 +207,7 @@
     "officialDescription": "Usa los servidores oficiales para los archivos del juego, cargadores y metadatos. La verificación de archivos sigue activa.",
     "autoDescription": "Mide la fuente oficial y BMCLAPI la primera vez que esta sesión obtiene la lista de versiones o un archivo. La oficial va primero salvo que no responda o sea claramente más lenta; la otra queda como respaldo. El resultado dura solo esta sesión. Nunca se guarda en tus ajustes ni se envía; se escribe una línea de resumen en el registro local del iniciador.",
     "bmclapiDescription": "Prueba primero con BMCLAPI para los archivos compatibles del juego y del cargador, y recurre a las direcciones oficiales si falla.",
-    "mirrorNotice": "BMCLAPI es una réplica comunitaria, no un servicio oficial de Mojang. Un hash de manifiesto garantiza la coherencia del archivo, no un respaldo oficial independiente.",
+    "mirrorNotice": "BMCLAPI es una réplica comunitaria, no un servicio oficial de Mojang. Un hash de manifiesto garantiza la coherencia del archivo, no un aval oficial independiente.",
     "mirrorLink": "Más información sobre BMCLAPI",
     "scopeNotice": "Forge, NeoForge, Fabric y authlib-injector tienen cobertura parcial en la réplica. Las sumas de comprobación del instalador siguen proviniendo de sus editores oficiales. Quilt, Modrinth y CurseForge no cambian.",
     "verdictPending": "Aún no se ha medido en esta sesión. Ambas fuentes se miden la primera vez que se obtiene la lista de versiones o un archivo.",
@@ -287,7 +287,7 @@
     "javaNotFound": "No se encontró ningún entorno de Java. Instala uno o introduce su ruta.",
     "assistantKeySaved": "Clave de API de Lumen guardada con cifrado del sistema.",
     "assistantKeyCleared": "Clave guardada de API de Lumen borrada.",
-    "launcherReset": "El iniciador se restauró a su estado inicial. No se eliminaron tus archivos de Minecraft.",
+    "launcherReset": "El iniciador se restauró a su estado inicial. No se eliminaron tus archivos de Minecraft. Reinicia el iniciador para aplicar la restauración a los clientes de inicio de sesión y de red.",
     "mcpStarted": "Servidor MCP local iniciado en 127.0.0.1:{{port}}.",
     "mcpStopped": "Servidor MCP local detenido.",
     "mcpTokenRotated": "Token de acceso de MCP rotado. Actualiza los clientes conectados con el nuevo token.",
@@ -296,7 +296,7 @@
   "assistant": {
     "description": "Configura Lumen con tu propia clave de API de IA o expón las herramientas del iniciador mediante un servidor MCP solo en localhost. Mientras no se configure, Lumen permanece completamente oculto en el resto de la app.",
     "providerTitle": "Proveedor de IA y clave de Lumen",
-    "providerDescription": "Las solicitudes se envían directamente al punto de conexión configurado cuando hablas con Lumen o cuando se activa el aviso proactivo ante fallos.",
+    "providerDescription": "Las solicitudes se envían directamente al punto de conexión configurado cuando hablas con Lumen o cuando Lumen se abre proactivamente ante fallos.",
     "provider": "Proveedor",
     "providers": {
       "openai": "Compatible con OpenAI",
@@ -318,7 +318,7 @@
     "permissionHints": {
       "readOnly": "Inspecciona instancias, versiones, mods, mundos, registros, diagnósticos de fallos, descargas, entornos de Java, diagnósticos de red y servidores gestionados sin modificar nada.",
       "controlled": "Las herramientas de solo lectura se ejecutan al instante. Las acciones de escritura en Lumen siempre piden confirmación; los clientes MCP externos siguen siendo de solo lectura.",
-      "fullAccess": "Permite que tanto Lumen como los clientes MCP locales autenticados ejecuten todas las herramientas seleccionadas del iniciador (instalar versiones/mods, crear/clonar/respaldar instancias, ajustar configuración, gestionar descargas e iniciar/detener juegos y servidores)."
+      "fullAccess": "Lumen ejecuta las herramientas del iniciador sin preguntar, pero instalar mods o paquetes, cambiar el cargador, iniciar o guardar servidores y unirse a un servidor siguen pidiendo confirmación, igual que los cambios que superan unos pocos por mensaje. Los clientes MCP locales autenticados pueden ejecutar todas las herramientas seleccionadas."
     },
     "toolSummary": "Conjunto de herramientas seleccionado: {{total}} herramientas del iniciador ({{readOnly}} de solo lectura, {{controlled}} de escritura controlada). Nunca se exponen comandos arbitrarios de consola, rutas externas al iniciador ni lectura de secretos.",
     "proactive": "Activar Lumen proactivamente ante fallos del juego",
@@ -368,7 +368,10 @@
       "modelRequired": "Introduce primero un nombre de modelo en Ajustes → Lumen y MCP.",
       "invalidBaseUrl": "La URL base de la API de Lumen debe usar HTTPS o HTTP en loopback (127.0.0.1 / localhost).",
       "providerError": "El servicio de IA configurado devolvió un error.",
-      "emptyMessage": "Escribe un mensaje antes de enviar."
+      "emptyMessage": "Escribe un mensaje antes de enviar.",
+      "mcpPortUnavailable": "El puerto {{port}} está en uso o reservado por Windows. Elige otro puerto MCP y vuelve a iniciar el servidor.",
+      "mcpNotRunning": "El servidor MCP no está en ejecución. Inícialo primero.",
+      "mcpFailed": "El servidor MCP tuvo un error interno. Detenlo y vuelve a iniciarlo."
     }
   },
   "updates": {

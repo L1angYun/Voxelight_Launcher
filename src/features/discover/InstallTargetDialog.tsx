@@ -14,10 +14,9 @@ import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { Segmented } from "../../components/ui/Segmented";
 import { Select } from "../../components/ui/Select";
 import type { Loader, LoaderVersion } from "../library/types";
-import { errorText } from "../library/utils";
+import { errorText, loaderDisplayName } from "../library/utils";
 import type { ResourceCreateRequest, ResourceTargetFlow, TargetRow } from "./types";
 
-const loaderNames: Record<Loader, string> = { vanilla: "Vanilla", fabric: "Fabric", neoforge: "NeoForge", forge: "Forge", quilt: "Quilt", optifine: "OptiFine" };
 const rowKey = (row: TargetRow) => row.instanceId ? "instance:" + row.instanceId : "version:" + row.versionId;
 
 export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCancel, onCreateInstance, onDownloads }: {
@@ -140,14 +139,14 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCanc
                 const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
                 buttons?.[compatible.indexOf(next)]?.focus();
               }}>
-              <strong>{target.name}</strong><span>{target.gameVersion} · {target.loader || "Vanilla"}</span>
+              <strong>{target.name}</strong><span>{target.gameVersion} · {loaderDisplayName(target.loader, t)}</span>
             </button>)}
           </div>
         </section> : null}
         {incompatible.length ? <details className="vx-install-target__section">
           <summary>{t("discover:installTarget.incompatible", { count: incompatible.length })}</summary>
           <div className="vx-install-target__rows">{incompatible.map(target => <div className="vx-install-target__row" key={rowKey(target)} aria-disabled="true">
-            <strong>{target.name}</strong><span>{target.gameVersion} · {target.loader || "Vanilla"}</span>
+            <strong>{target.name}</strong><span>{target.gameVersion} · {loaderDisplayName(target.loader, t)}</span>
             <small>{t("discover:installTarget.reason." + (target.reason ?? "metadataMissing"))}</small>
           </div>)}</div>
         </details> : null}
@@ -155,7 +154,7 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCanc
           <Button variant={choice === "create" ? "secondary" : "ghost"} aria-expanded={choice === "create"} onClick={() => setChoice("create")}>{t("discover:installTarget.newInstance")}</Button>
           {choice === "create" ? <div className="vx-install-target__create">
             <Field label={t("library:loader")}><Segmented semantic="toggle" label={t("library:loader")} value={loader} onChange={changeLoader}
-              options={matrix.map(entry => ({ value: entry.loader, label: loaderNames[entry.loader] }))} /></Field>
+              options={matrix.map(entry => ({ value: entry.loader, label: loaderDisplayName(entry.loader, t) }))} /></Field>
             <Field label={t("discover:installTarget.gameVersion")}><Select aria-label={t("discover:installTarget.gameVersion")} value={gameVersion} onChange={setGameVersion}
               options={(matrix.find(entry => entry.loader === loader)?.gameVersions ?? []).map(value => ({ value, label: value }))} /></Field>
             {loader !== "vanilla" ? <Field label={t("discover:installTarget.loaderVersion")} error={loaderState.error}>
@@ -168,7 +167,7 @@ export function InstallTargetDialog({ flow, onClose, onInstall, onCreate, onCanc
             <Field label={t("discover:installTarget.name")} htmlFor={id + "-name"}>
               <input id={id + "-name"} name="resource-instance-name" value={name} maxLength={80} onChange={event => setName(event.target.value)} />
             </Field>
-            <p className="vx-install-target__summary">{t("discover:installTarget.summary", { loader: loaderNames[loader], loaderVersion: loader === "vanilla" ? "" : loaderState.selected, gameVersion, title: flow.project.title })}</p>
+            <p className="vx-install-target__summary">{t("discover:installTarget.summary", { loader: loaderDisplayName(loader, t), loaderVersion: loader === "vanilla" ? "" : loaderState.selected, gameVersion, title: flow.project.title })}</p>
           </div> : null}
         </section> : null}
       </div>

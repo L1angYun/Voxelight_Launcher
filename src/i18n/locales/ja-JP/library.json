@@ -179,9 +179,10 @@
   "loaderChange": {
     "title": "ローダー",
     "current": "Minecraft {{version}} · {{loader}}{{loaderVersion}}",
-    "hint": "ワールド、設定、MOD はこのインスタンスフォルダ内に保持されます。別のローダー向けの MOD は無効化または差し替えが必要になる場合があります。",
+    "hint": "ワールド、設定、MOD はこのインスタンスフォルダに残り、変更前にこのインスタンスを自動でバックアップします。別のローダー向けの MOD は無効化または置き換えが必要な場合があります。新しいローダーでワールドを開くと、後で元に戻しても MOD のブロック・アイテム・エンティティ・インベントリが完全に失われることがあります。",
     "apply": "ローダーを変更",
-    "confirm": "「{{name}}」のローダーを {{loader}} に変更しますか？ワールドやファイルは保持されます。"
+    "confirm": "「{{name}}」のローダーを {{loader}} に変更しますか？変更前にこのインスタンスを自動でバックアップします。別のローダーでワールドを開くと、MOD が追加したブロック・アイテム・エンティティ・インベントリが完全に失われます。開く前に元のローダーへ戻せば失われません。",
+    "skipBackupConfirm": "{{reason}}\n\nバックアップなしでローダーを変更しますか？別のローダーでワールドを開くと、MOD が追加したブロック・アイテム・エンティティ・インベントリが完全に失われることがあり、復元できるバックアップもありません。"
   },
   "createModes": "作成方法",
   "versionMode": "バージョンとローダー",
@@ -215,7 +216,8 @@
   "recommended": "推奨",
   "noLoaderVersions": "利用可能なローダーバージョンがありません",
   "optifineImportJar": "OptiFine インストーラー JAR をインポート…",
-  "optifineHint": "BMCLAPI を有効にするとオンラインの OptiFine 一覧を取得できます。ダウンロード済みの OptiFine JAR を直接インポートすることも可能です。",
+  "optifineHint": "Voxelight は OptiFine をダウンロードしません。ダウンロードにはランチャーが検証できるチェックサムがなく、インストーラーはお使いの PC で実行されるプログラムだからです。公式サイトからこの Minecraft バージョン用のインストーラーをダウンロードし、JAR をインポートしてください。",
+  "optifineSite": "OptiFine 公式ダウンロードページ（optifine.net）",
   "instanceNameOptional": "インスタンス名（任意）",
   "instanceNamePlaceholder": "このワールドに名前を付ける",
   "curseforgeKeyOptional": "CurseForge API キー（任意）",
@@ -296,6 +298,7 @@
     "diagnosticsExported": "診断レポートを保存しました。",
     "settingsSaved": "インスタンス設定を保存しました。",
     "loaderChanged": "インスタンスのローダーを更新しました。",
+    "loaderChangedBackup": "インスタンスのローダーを変更しました。変更前のインスタンスは自動でバックアップされています。",
     "runtimeReset": "グローバル実行環境に戻しました。",
     "resourceRecovered": "中断されたリソーストランザクションを復旧しました。"
   },

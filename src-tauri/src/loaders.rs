@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashSet, VecDeque},
@@ -33,12 +34,52 @@ pub struct LoaderInstallResult {
     pub version_id: String,
     pub loader: String,
     pub loader_version: String,
+    /// The backup taken before an OptiFine import switched an instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_id: Option<String>,
 }
 
 fn loader_name(loader: &str) -> Result<&str, String> {
     match loader {
         "fabric" | "quilt" | "forge" | "neoforge" | "optifine" => Ok(loader),
         _ => Err("不支持的加载器；请选择 Fabric、Quilt、Forge、NeoForge 或 OptiFine".into()),
+    }
+}
+
+// Distinct details keep diagnostics useful while errors.rs gives each class a
+// translatable code. The version-mismatch detail carries both versions for the
+// renderer, so its format is part of that mapping.
+pub(crate) const OPTIFINE_READ_FAILED: &str = "无法读取 OptiFine 安装器 JAR";
+pub(crate) const OPTIFINE_SIZE_INVALID: &str = "OptiFine 安装器 JAR 大小无效或超过 256 MiB";
+pub(crate) const OPTIFINE_NAME_INVALID: &str = "OptiFine 文件名无效";
+pub(crate) const OPTIFINE_OPEN_FAILED: &str = "无法打开 OptiFine JAR";
+pub(crate) const OPTIFINE_NOT_JAR: &str = "所选文件不是有效的 OptiFine JAR";
+pub(crate) const OPTIFINE_INVALID: &str = "所选 JAR 不是有效的 OptiFine 安装器（缺少 Patcher/OptiFineTweaker）";
+pub(crate) const OPTIFINE_FILENAME_INVALID: &str = "无法从文件名识别 OptiFine 对应的 Minecraft 版本（应类似 OptiFine_1.20.4_HD_U_I7.jar）";
+pub(crate) const OPTIFINE_CHANGED: &str = "所选 OptiFine 安装器在检查后发生变化，请重新选择文件";
+pub(crate) const OPTIFINE_VERSION_MISMATCH_PREFIX: &str = "所选 OptiFine 安装器适用于 Minecraft ";
+pub(crate) const OPTIFINE_VERSION_MISMATCH_INFIX: &str = "，与目标版本 ";
+pub(crate) const OPTIFINE_VERSION_MISMATCH_SUFFIX: &str = " 不匹配";
+
+pub(crate) fn optifine_version_mismatch(installer: &str, expected: &str) -> String {
+    format!(
+        "{OPTIFINE_VERSION_MISMATCH_PREFIX}{installer}{OPTIFINE_VERSION_MISMATCH_INFIX}{expected}{OPTIFINE_VERSION_MISMATCH_SUFFIX}"
+    )
+}
+
+/// OptiFine is published only on optifine.net, which offers no checksum, and
+/// the one download source the launcher could use (BMCLAPI) has no hash from
+/// OptiFine either. Its installer is code the launcher runs, so it is never
+/// downloaded: the user imports the JAR they got from optifine.net instead.
+pub(crate) const OPTIFINE_ONLINE_UNAVAILABLE: &str = "OptiFine 无法在线安装：其下载没有可校验的官方校验值。请从 optifine.net 下载安装器，再导入本地 JAR";
+
+/// The refusal every online install path gives OptiFine, before anything is
+/// fetched, written or started.
+pub(crate) fn refuse_online_optifine(loader: &str) -> Result<(), String> {
+    if loader.trim().eq_ignore_ascii_case("optifine") {
+        Err(OPTIFINE_ONLINE_UNAVAILABLE.into())
+    } else {
+        Ok(())
     }
 }
 
@@ -63,20 +104,29 @@ fn parse_optifine_filename(file_name: &str) -> Option<(String, String)> {
 }
 
 pub(crate) fn parse_optifine_installer_jar(path: &Path) -> Result<OptifineJarInfo, String> {
-    let meta = fs::metadata(path).map_err(|_| "无法读取 OptiFine 安装器 JAR")?;
+    parse_optifine_installer_jar_named(path, None)
+}
+
+/// A staged copy of an installer is first written under a temporary name. The
+/// caller passes the name the copy will have, so the Minecraft version and
+/// edition come from that name, not from the temporary path.
+fn parse_optifine_installer_jar_named(
+    path: &Path,
+    intended_name: Option<&str>,
+) -> Result<OptifineJarInfo, String> {
+    let meta = fs::metadata(path).map_err(|_| OPTIFINE_READ_FAILED)?;
     if !meta.is_file() || meta.len() == 0 || meta.len() > 256 * 1024 * 1024 {
-        return Err("OptiFine 安装器 JAR 大小无效或超过 256 MiB".into());
+        return Err(OPTIFINE_SIZE_INVALID.into());
     }
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("OptiFine 文件名无效")?;
-    let mut zip = zip::ZipArchive::new(fs::File::open(path).map_err(|_| "无法打开 OptiFine JAR")?)
-        .map_err(|_| "所选文件不是有效的 OptiFine JAR")?;
+    let file_name = intended_name
+        .or_else(|| path.file_name().and_then(|n| n.to_str()))
+        .ok_or(OPTIFINE_NAME_INVALID)?;
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).map_err(|_| OPTIFINE_OPEN_FAILED)?)
+        .map_err(|_| OPTIFINE_NOT_JAR)?;
     let has_patcher = zip.by_name("optifine/Patcher.class").is_ok();
     let has_tweaker = zip.by_name("optifine/OptiFineTweaker.class").is_ok();
     if !has_patcher || !has_tweaker {
-        return Err("所选 JAR 不是有效的 OptiFine 安装器（缺少 Patcher/OptiFineTweaker）".into());
+        return Err(OPTIFINE_INVALID.into());
     }
     let mut launchwrapper_entry = None;
     let mut launchwrapper_version = None;
@@ -91,8 +141,7 @@ pub(crate) fn parse_optifine_installer_jar(path: &Path) -> Result<OptifineJarInf
             }
         }
     }
-    let (mc_version, edition) = parse_optifine_filename(file_name)
-        .ok_or("无法从文件名识别 OptiFine 对应的 Minecraft 版本（应类似 OptiFine_1.20.4_HD_U_I7.jar）")?;
+    let (mc_version, edition) = parse_optifine_filename(file_name).ok_or(OPTIFINE_FILENAME_INVALID)?;
     Ok(OptifineJarInfo {
         mc_version,
         edition,
@@ -176,6 +225,61 @@ fn version_numbers(version: &str) -> Vec<u64> {
         .filter(|p| !p.is_empty())
         .map(|p| p.parse().unwrap_or(0))
         .collect()
+}
+
+/// OptiFine build ids carry their ordering in the build letter, not only in
+/// the digits: `HD_U_G5` is newer than `HD_U_F9`, and `..._preN` is a preview
+/// of the same build. Digits alone would rank `C7` above `G5`.
+fn optifine_version_key(id: &str) -> Option<(u8, u64, bool, u32)> {
+    let lower = id.to_ascii_lowercase();
+    let (base, preview) = match lower.rsplit_once("_pre") {
+        Some((base, digits)) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            (base, digits.parse::<u32>().ok()?)
+        }
+        _ => (lower.as_str(), 0),
+    };
+    let mut newest = None;
+    for segment in base.split('_') {
+        let Some(index) = segment.find(|c: char| c.is_ascii_digit()) else {
+            continue;
+        };
+        let (letters, digits) = segment.split_at(index);
+        if letters.is_empty()
+            || !letters.bytes().all(|b| b.is_ascii_lowercase())
+            || digits.is_empty()
+            || !digits.bytes().all(|b| b.is_ascii_digit())
+        {
+            continue;
+        }
+        let Ok(number) = digits.parse::<u64>() else {
+            continue;
+        };
+        let letter = letters.as_bytes()[letters.len() - 1] - b'a';
+        newest = Some((letter, number));
+    }
+    let (letter, number) = newest?;
+    let stable = preview == 0 && !id.to_ascii_lowercase().contains("_pre");
+    Some((letter, number, stable, preview))
+}
+
+fn order_loader_versions(loader: &str, result: &mut Vec<LoaderVersion>) {
+    result.sort_by(|a, b| {
+        if loader == "optifine" {
+            optifine_version_key(&b.id)
+                .cmp(&optifine_version_key(&a.id))
+                .then(a.id.cmp(&b.id))
+        } else {
+            version_numbers(&b.id)
+                .cmp(&version_numbers(&a.id))
+                .then(a.id.cmp(&b.id))
+        }
+    });
+    if !result.iter().any(|version| version.recommended) {
+        if let Some(version) = result.iter_mut().find(|version| version.stable) {
+            version.recommended = true;
+        }
+    }
+    result.truncate(200);
 }
 
 fn neo_prefix(game_version: &str) -> String {
@@ -343,17 +447,7 @@ pub async fn loader_versions(
     }
     let mut seen = HashSet::new();
     result.retain(|version| seen.insert(version.id.clone()));
-    result.sort_by(|a, b| {
-        version_numbers(&b.id)
-            .cmp(&version_numbers(&a.id))
-            .then(a.id.cmp(&b.id))
-    });
-    if !result.iter().any(|version| version.recommended) {
-        if let Some(version) = result.iter_mut().find(|version| version.stable) {
-            version.recommended = true;
-        }
-    }
-    result.truncate(200);
+    order_loader_versions(loader, &mut result);
     Ok(result)
 }
 
@@ -368,17 +462,19 @@ pub async fn list_loader_versions(
 
 /// Resolves publisher checksums and saves them into the installed child profile, so
 /// subsequent offline launches can verify libraries without fetching sidecars again.
+/// `libraries` is the library root the artifacts are verified in; a staged OptiFine
+/// install prepares them in its stage and commits them only after this succeeds.
+/// `progress` hears (profile id, verified, total) after each library.
 async fn prepare_profile(
     state: &LauncherState,
-    app: &AppHandle,
     profile: &mut Value,
-    root: &Path,
+    libraries: &Path,
+    progress: &LibraryProgress<'_>,
 ) -> Result<(), String> {
     let id = profile["id"]
         .as_str()
         .ok_or("加载器配置缺少 ID")?
         .to_owned();
-    let libraries = safe_join(root, "libraries")?;
     let values = profile["libraries"]
         .as_array_mut()
         .ok_or("加载器配置缺少依赖库数组")?;
@@ -404,19 +500,31 @@ async fn prepare_profile(
             library["downloads"]["artifact"] =
                 json!({"path":relative,"url":download.url,"sha1":download.sha1,"size":size});
         }
+        progress(&id, index + 1, total);
+    }
+    Ok(())
+}
+
+type LibraryProgress<'a> = dyn Fn(&str, usize, usize) + Send + Sync + 'a;
+
+/// Reports library verification as the install's progress in the window.
+fn library_progress<'a>(
+    app: &'a AppHandle,
+    state: &'a LauncherState,
+) -> impl Fn(&str, usize, usize) + Send + Sync + 'a {
+    move |id, done, total| {
         minecraft::progress(
             app,
             state,
-            &id,
+            id,
             "loader-libraries",
-            index + 1,
+            done,
             total,
             0,
             0,
-            format!("验证加载器依赖 {}/{}", index + 1, total),
-        );
+            format!("验证加载器依赖 {done}/{total}"),
+        )
     }
-    Ok(())
 }
 
 fn write_profile(root: &Path, profile: &Value) -> Result<String, String> {
@@ -485,7 +593,7 @@ async fn lightweight_loader(
     if !class.starts_with(expected) {
         return Err("加载器官方 API 返回了非预期启动入口".into());
     }
-    prepare_profile(state, app, &mut profile, root).await?;
+    prepare_profile(state, &mut profile, &safe_join(root, "libraries")?, &library_progress(app, state)).await?;
     profile["launcherMetadata"] = json!({"source":url,"loader":loader,"loaderVersion":version,"officialVanillaBase":game_version});
     write_profile(root, &profile)
 }
@@ -858,11 +966,106 @@ async fn heavyweight_loader(
     commit_staged_libraries(stage, root)?;
     // This also verifies the generated patched/client jars with the checksums
     // carried by the publisher's version.json. A zero exit code alone is insufficient.
-    prepare_profile(state, app, &mut profile, root).await?;
+    prepare_profile(state, &mut profile, &safe_join(root, "libraries")?, &library_progress(app, state)).await?;
     profile["launcherMetadata"] = json!({"loader":loader,"loaderVersion":version,"officialVanillaBase":game_version,"installer":jar.file_name().unwrap_or_default().to_string_lossy()});
     write_profile(root, &profile)
 }
 
+fn sha1_file(path: &Path) -> Result<String, String> {
+    let mut input = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha1::new();
+    let mut buffer = [0; 128 * 1024];
+    loop {
+        let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// A library produced by the loader installer itself. An empty URL is the
+/// generated-file marker: prepare_profile verifies the existing SHA-1 and size
+/// and must not try to fetch a sidecar or file for it.
+fn generated_artifact(path: &Path, libraries: &Path) -> Result<Value, String> {
+    let relative = path
+        .strip_prefix(libraries)
+        .map_err(|_| "加载器生成文件不在暂存依赖目录中")?
+        .to_string_lossy()
+        .replace('\\', "/");
+    if relative.is_empty() {
+        return Err("加载器生成文件路径无效".into());
+    }
+    let size = fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if size == 0 {
+        return Err("加载器生成文件为空".into());
+    }
+    Ok(json!({
+        "path": relative,
+        "sha1": sha1_file(path)?,
+        "size": size,
+        "url": ""
+    }))
+}
+
+fn attach_optifine_artifacts(
+    profile: &mut Value,
+    libraries: &Path,
+    optifine_jar: &Path,
+    launchwrapper_jar: Option<&Path>,
+) -> Result<(), String> {
+    let optifine = generated_artifact(optifine_jar, libraries)?;
+    let launchwrapper = launchwrapper_jar
+        .map(|path| generated_artifact(path, libraries))
+        .transpose()?;
+    let entries = profile["libraries"]
+        .as_array_mut()
+        .ok_or("OptiFine 配置缺少依赖库数组")?;
+    let mut patched = false;
+    let mut wrapper = false;
+    for library in entries {
+        let name = library["name"].as_str().unwrap_or_default();
+        if name.starts_with("optifine:OptiFine:") {
+            library["downloads"] = json!({"artifact": optifine.clone()});
+            patched = true;
+        } else if name.starts_with("optifine:launchwrapper-of:") {
+            if let Some(artifact) = &launchwrapper {
+                library["downloads"] = json!({"artifact": artifact.clone()});
+                wrapper = true;
+            }
+        }
+    }
+    if !patched {
+        return Err("OptiFine 配置缺少补丁库".into());
+    }
+    if launchwrapper_jar.is_some() && !wrapper {
+        return Err("OptiFine 配置缺少 launchwrapper 库".into());
+    }
+    Ok(())
+}
+
+/// Where the Patcher writes the patched client library inside a stage.
+fn optifine_library_path(stage: &Path, info: &OptifineJarInfo) -> Result<PathBuf, String> {
+    safe_join(
+        stage,
+        &format!(
+            "libraries/optifine/OptiFine/{0}_{1}/OptiFine-{0}_{1}.jar",
+            info.mc_version, info.edition
+        ),
+    )
+}
+
+/// Where the launchwrapper bundled in the installer is extracted inside a stage.
+fn launchwrapper_library_path(stage: &Path, version: &str) -> Result<PathBuf, String> {
+    safe_join(
+        stage,
+        &format!("libraries/optifine/launchwrapper-of/{version}/launchwrapper-of-{version}.jar"),
+    )
+}
+
+/// Runs OptiFine's own Patcher and writes the profile. Only the local import
+/// calls it: OptiFine is never downloaded (OPTIFINE_ONLINE_UNAVAILABLE).
 async fn install_optifine_from_jar(
     state: &LauncherState,
     app: &AppHandle,
@@ -876,6 +1079,16 @@ async fn install_optifine_from_jar(
         &format!("installers/staging/optifine-{}", uuid::Uuid::new_v4()),
     )?)?;
     let stage_path = stage.path();
+    // The Patcher runs, and the launchwrapper comes from, the copy inspected
+    // here: the picked file itself could change after it was checked.
+    let (installer, staged) = stage_optifine_installer(
+        &safe_join(stage_path, "installer")?,
+        &format!("OptiFine_{}_{}.jar", info.mc_version, info.edition),
+        jar_path,
+    )?;
+    if staged != *info {
+        return Err(OPTIFINE_CHANGED.into());
+    }
     let vanilla_jar = safe_join(
         root,
         &format!("versions/{}/{}.jar", info.mc_version, info.mc_version),
@@ -883,26 +1096,17 @@ async fn install_optifine_from_jar(
     if !vanilla_jar.is_file() {
         return Err("缺少对应 Minecraft 版本的客户端 JAR".into());
     }
-    let output_jar = safe_join(
-        stage_path,
-        &format!(
-            "libraries/optifine/OptiFine/{0}_{1}/OptiFine-{0}_{1}.jar",
-            info.mc_version, info.edition
-        ),
-    )?;
+    let output_jar = optifine_library_path(stage_path, info)?;
     fs::create_dir_all(output_jar.parent().ok_or("OptiFine 暂存路径无效")?)
         .map_err(|e| e.to_string())?;
 
     if let (Some(entry_name), Some(lw_version)) =
         (&info.launchwrapper_entry, &info.launchwrapper_version)
     {
-        let lw_dest = safe_join(
-            stage_path,
-            &format!("libraries/optifine/launchwrapper-of/{lw_version}/launchwrapper-of-{lw_version}.jar"),
-        )?;
+        let lw_dest = launchwrapper_library_path(stage_path, lw_version)?;
         fs::create_dir_all(lw_dest.parent().ok_or("launchwrapper 路径无效")?)
             .map_err(|e| e.to_string())?;
-        let mut archive = zip::ZipArchive::new(fs::File::open(jar_path).map_err(|e| e.to_string())?)
+        let mut archive = zip::ZipArchive::new(fs::File::open(&installer).map_err(|e| e.to_string())?)
             .map_err(|_| "无法读取 OptiFine 安装器压缩包")?;
         let mut entry = archive
             .by_name(entry_name)
@@ -923,10 +1127,10 @@ async fn install_optifine_from_jar(
         .current_dir(crate::storage::to_process_path(stage_path)?)
         .arg(format!("-Djava.io.tmpdir={}", crate::storage::process_path_text(&temp)?))
         .arg("-cp")
-        .arg(crate::storage::process_path_text(jar_path)?)
+        .arg(crate::storage::process_path_text(&installer)?)
         .arg("optifine.Patcher")
         .arg(crate::storage::process_path_text(&vanilla_jar)?)
-        .arg(crate::storage::process_path_text(jar_path)?)
+        .arg(crate::storage::process_path_text(&installer)?)
         .arg(crate::storage::process_path_text(&output_jar)?)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -978,83 +1182,107 @@ async fn install_optifine_from_jar(
     )
     .await?;
 
+    finish_optifine_install(state, stage_path, root, base, info, &library_progress(app, state)).await
+}
+
+/// Everything after the Patcher. The generated libraries are verified in the
+/// stage, and they reach the game directory only once the whole profile is
+/// ready: a failure here leaves `root` as it was.
+async fn finish_optifine_install(
+    state: &LauncherState,
+    stage: &Path,
+    root: &Path,
+    base: &Value,
+    info: &OptifineJarInfo,
+    progress: &LibraryProgress<'_>,
+) -> Result<String, String> {
+    let output_jar = optifine_library_path(stage, info)?;
     if !output_jar.is_file() || fs::metadata(&output_jar).map_err(|e| e.to_string())?.len() == 0 {
         return Err("OptiFine Patcher 未产出有效的库文件".into());
     }
+    let launchwrapper_jar = info
+        .launchwrapper_version
+        .as_deref()
+        .map(|version| launchwrapper_library_path(stage, version))
+        .transpose()?;
+    let stage_libraries = safe_join(stage, "libraries")?;
     let mut profile = build_optifine_profile(
         base,
         &info.mc_version,
         &info.edition,
         info.launchwrapper_version.as_deref(),
     );
+    attach_optifine_artifacts(
+        &mut profile,
+        &stage_libraries,
+        &output_jar,
+        launchwrapper_jar.as_deref(),
+    )?;
     validate_profile(&profile, &info.mc_version)?;
-    commit_staged_libraries(stage_path, root)?;
-    prepare_profile(state, app, &mut profile, root).await?;
+    prepare_profile(state, &mut profile, &stage_libraries, progress).await?;
+    commit_staged_libraries(stage, root)?;
     write_profile(root, &profile)
 }
 
-async fn optifine_online_loader(
-    state: &LauncherState,
-    app: &AppHandle,
-    game_version: &str,
-    version: &str,
-    root: &Path,
-    base: &Value,
-) -> Result<String, String> {
-    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
-    if source == "official" {
-        return Err("仅官方源模式下无法在线下载 OptiFine；请切换为自动/BMCLAPI 下载源，或导入本地 OptiFine 安装器 JAR".into());
+/// Copies an OptiFine installer into `directory` as `file_name` and inspects
+/// the copy under that name, not its temporary one: the Minecraft version and
+/// edition are read from the file name, and a name such as `.tmp-<uuid>`
+/// would fail every parse. The temporary name keeps the `.jar` suffix too.
+fn stage_optifine_installer(
+    directory: &Path,
+    file_name: &str,
+    source: &Path,
+) -> Result<(PathBuf, OptifineJarInfo), String> {
+    let size = fs::metadata(source).map_err(|_| OPTIFINE_READ_FAILED)?.len();
+    if size == 0 || size > 256 * 1024 * 1024 {
+        return Err(OPTIFINE_SIZE_INVALID.into());
     }
-    let list_url = format!("https://bmclapi2.bangbang93.com/optifine/{game_version}");
-    let bytes = controlled_loader_fetch(&state.control, minecraft::fetch_bytes(state.client()?, &list_url, 4 * 1024 * 1024)).await?;
-    let (kind, patch, _) = optifine_bmclapi_versions(&bytes)?
-        .into_iter()
-        .find(|(_, _, item)| item.id == version)
-        .ok_or("所选 OptiFine 版本不在对应游戏版本的列表中")?;
-    let download_url = format!("https://bmclapi2.bangbang93.com/optifine/{game_version}/{kind}/{patch}");
-    let file_name = format!("OptiFine_{game_version}_{kind}_{patch}.jar");
-    validate_id(&file_name)?;
-    let cache_dir = safe_join(&state.data_dir, "installers/optifine")?;
-    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    let target = safe_join(&cache_dir, &file_name)?;
-    let response = controlled_loader_fetch(
-        &state.control,
-        async {
-            let resp = state
-                .client()?
-                .get(&download_url)
-                .timeout(Duration::from_secs(120))
-                .send()
-                .await
-                .map_err(|e| format!("下载 OptiFine 安装器失败：{e}"))?;
-            if !resp.status().is_success() {
-                return Err(format!("下载 OptiFine 安装器失败（HTTP {}）", resp.status().as_u16()));
-            }
-            let data = resp.bytes().await.map_err(|e| format!("读取 OptiFine 安装器失败：{e}"))?;
-            if data.is_empty() || data.len() > 256 * 1024 * 1024 {
-                return Err("下载的 OptiFine 安装器大小无效".into());
-            }
-            Ok::<_, String>(data)
-        },
-    )
-    .await?;
-    let tmp = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&tmp, &response).map_err(|e| e.to_string())?;
-    let info = match parse_optifine_installer_jar(&tmp) {
-        Ok(info) => info,
-        Err(err) => {
-            let _ = fs::remove_file(&tmp);
-            return Err(err);
+    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let target = safe_join(directory, file_name)?;
+    let temporary = safe_join(
+        directory,
+        &format!(".{}.{file_name}", uuid::Uuid::new_v4()),
+    )?;
+    let result = (|| {
+        fs::copy(source, &temporary).map_err(|_| OPTIFINE_READ_FAILED)?;
+        let info = parse_optifine_installer_jar_named(&temporary, Some(file_name))?;
+        if target.is_file() {
+            fs::remove_file(&target).map_err(|e| e.to_string())?;
         }
-    };
-    if info.mc_version != game_version {
-        let _ = fs::remove_file(&tmp);
-        return Err("下载的 OptiFine 安装器与目标 Minecraft 版本不一致".into());
+        fs::rename(&temporary, &target).map_err(|e| e.to_string())?;
+        Ok((target.clone(), info))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
-    fs::rename(&tmp, &target).map_err(|e| e.to_string())?;
-    install_optifine_from_jar(state, app, &target, &info, root, base).await
+    result
 }
 
+/// The Minecraft version of an OptiFine import is the one its JAR names. An
+/// existing instance must already be on that version, whatever the window
+/// sent; a new version only has to match the version the user picked, if any.
+fn check_optifine_target(
+    state: &LauncherState,
+    current: Option<&crate::models::Instance>,
+    info: &OptifineJarInfo,
+    expected_game_version: Option<&str>,
+) -> Result<(), String> {
+    let target = match current {
+        Some(current) => crate::instances::resolve_instance_game_version(state, current)?,
+        None => match expected_game_version.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(version) => version.to_owned(),
+            None => return Ok(()),
+        },
+    };
+    if target == info.mc_version {
+        Ok(())
+    } else {
+        Err(optifine_version_mismatch(&info.mc_version, &target))
+    }
+}
+
+/// `skip_backup` is the window's second, explicit choice after the backup
+/// before switching an instance to OptiFine was refused.
 #[tauri::command]
 pub async fn install_optifine_installer(
     app: AppHandle,
@@ -1064,29 +1292,31 @@ pub async fn install_optifine_installer(
     path: String,
     expected_game_version: Option<String>,
     instance_id: Option<String>,
+    skip_backup: Option<bool>,
 ) -> crate::errors::AppResult<LoaderInstallResult> {
     let source = grants.consume(PathUse::OptifineInstaller, &path, &window)?;
     let _guard = state
         .operation
         .try_lock()
         .map_err(|_| crate::errors::expected("已有安装或启动准备任务运行"))?;
+    let mut current_instance = None;
     if let Some(ref id) = instance_id {
         crate::instances::require_no_pending_restore(&state, id)?;
         let current = crate::instances::instance(&state.snapshot()?, id)
             .map_err(crate::errors::expected)?;
         crate::resources::require_target_stopped(&state, &current.version_id, Some(id))?;
+        current_instance = Some(current);
     }
     let root = minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)
         .map_err(crate::errors::expected)?;
     let info = parse_optifine_installer_jar(&source).map_err(crate::errors::expected)?;
-    if let Some(expected) = expected_game_version.as_deref().filter(|s| !s.is_empty()) {
-        if expected != info.mc_version {
-            return Err(crate::errors::expected(format!(
-                "所选 OptiFine 安装器适用于 Minecraft {}，与当前所选版本 {} 不匹配",
-                info.mc_version, expected
-            )));
-        }
-    }
+    check_optifine_target(
+        &state,
+        current_instance.as_ref(),
+        &info,
+        expected_game_version.as_deref(),
+    )
+    .map_err(crate::errors::expected)?;
     let task = state
         .control
         .begin_with_display(
@@ -1097,21 +1327,42 @@ pub async fn install_optifine_installer(
         )
         .map_err(crate::errors::expected)?;
     let result = async {
-        let (_, base) = minecraft::install(&state, &app, &info.mc_version).await?;
-        let version_id = install_optifine_from_jar(&state, &app, &source, &info, &root, &base).await?;
-        if let Some(ref id) = instance_id {
-            crate::instances::apply_instance_loader_update(
+        let install = async {
+            let (_, base) = minecraft::install(&state, &app, &info.mc_version).await?;
+            install_optifine_from_jar(&state, &app, &source, &info, &root, &base).await
+        };
+        let Some(current) = current_instance.as_ref() else {
+            return install.await.map(|version_id| LoaderInstallResult {
+                version_id,
+                loader: "optifine".into(),
+                loader_version: info.edition.clone(),
+                backup_id: None,
+            });
+        };
+        // Switching an instance takes its backup before the install starts,
+        // so a refused backup costs nothing.
+        let change = crate::instances::run_loader_switch(
+            state.inner(),
+            current,
+            crate::instances::LoaderSwitchBackup::from_window(skip_backup),
+            "optifine",
+            &info.edition,
+            async { install.await.map(|id| (id, "optifine".to_owned(), info.edition.clone())) },
+        )
+        .await?;
+        if let Some(backup_id) = &change.backup_id {
+            minecraft::log(
+                &app,
                 &state,
-                id,
-                &version_id,
-                "optifine",
-                &info.edition,
-            )?;
+                "info",
+                format!("已为实例 {} 创建加载器切换前备份 {backup_id}", change.instance.id),
+            );
         }
         Ok::<_, String>(LoaderInstallResult {
-            version_id,
+            version_id: change.instance.version_id,
             loader: "optifine".into(),
             loader_version: info.edition.clone(),
+            backup_id: change.backup_id,
         })
     }
     .await;
@@ -1119,6 +1370,11 @@ pub async fn install_optifine_installer(
         .control
         .finish(&task, result.as_ref().err().map(String::as_str));
     if let Err(error) = &result {
+        // A refused backup gives the choice back, so the window can offer to
+        // switch without a backup without asking for the file again.
+        if error.starts_with(crate::instances::LOADER_BACKUP_FAILED_PREFIX) {
+            grants.restore(PathUse::OptifineInstaller, source.clone(), &window);
+        }
         minecraft::log(&app, &state, "error", error);
     }
     result.map_err(crate::errors::expected)
@@ -1145,40 +1401,15 @@ async fn install_loader_resolving(
     loader_version: &str,
     resolved: &(dyn Fn(&str) + Sync),
 ) -> Result<LoaderInstallResult, String> {
-    loader_name(loader)?;
-    validate_id(game_version)?;
-    if matches!(loader, "forge" | "neoforge") {
-        crate::network::Settings::from_config(&state.snapshot()?.config)
-            .and_then(|proxy| proxy.installer_args())
-            .map_err(|error| error.code().to_owned())?;
-    }
-    // Cancellation must interrupt a stalled list request and stop any fallback.
-    let choices = controlled_loader_fetch(&state.control, loader_versions(state, loader, game_version)).await?;
-    let version = if loader_version.is_empty() || loader_version == "latest" {
-        choices
-            .iter()
-            .find(|v| v.recommended)
-            .or_else(|| choices.first())
-            .ok_or("此游戏版本没有可安装的加载器版本")?
-            .id
-            .clone()
-    } else {
-        validate_id(loader_version)?;
-        if !choices.iter().any(|v| v.id == loader_version) {
-            return Err("所选加载器版本不在对应游戏版本的官方列表中".into());
-        }
-        loader_version.to_owned()
-    };
+    let version = resolve_loader_install(state, loader, game_version, loader_version).await?;
     resolved(&version);
     state.control.checkpoint().await?;
     let root = minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
     let (_, base) = minecraft::install(state, app, game_version).await?;
-    let id = if matches!(loader, "fabric" | "quilt") {
-        lightweight_loader(state, app, loader, game_version, &version, &root).await?
-    } else if loader == "optifine" {
-        optifine_online_loader(state, app, game_version, &version, &root, &base).await?
-    } else {
-        heavyweight_loader(state, app, loader, game_version, &version, &root, &base).await?
+    let id = match loader {
+        "fabric" | "quilt" => lightweight_loader(state, app, loader, game_version, &version, &root).await?,
+        "forge" | "neoforge" => heavyweight_loader(state, app, loader, game_version, &version, &root, &base).await?,
+        _ => return Err(OPTIFINE_ONLINE_UNAVAILABLE.into()),
     };
     minecraft::log(
         app,
@@ -1201,7 +1432,43 @@ async fn install_loader_resolving(
         version_id: id,
         loader: loader.into(),
         loader_version: version,
+        backup_id: None,
     })
+}
+
+/// Settles which build a loader install uses, before anything is downloaded
+/// or run. OptiFine is refused first: it is never installed online.
+async fn resolve_loader_install(
+    state: &LauncherState,
+    loader: &str,
+    game_version: &str,
+    loader_version: &str,
+) -> Result<String, String> {
+    loader_name(loader)?;
+    validate_id(game_version)?;
+    refuse_online_optifine(loader)?;
+    if matches!(loader, "forge" | "neoforge") {
+        crate::network::Settings::from_config(&state.snapshot()?.config)
+            .and_then(|proxy| proxy.installer_args())
+            .map_err(|error| error.code().to_owned())?;
+    }
+    // Cancellation must interrupt a stalled list request and stop any fallback.
+    let choices = controlled_loader_fetch(&state.control, loader_versions(state, loader, game_version)).await?;
+    if loader_version.is_empty() || loader_version == "latest" {
+        Ok(choices
+            .iter()
+            .find(|v| v.recommended)
+            .or_else(|| choices.first())
+            .ok_or("此游戏版本没有可安装的加载器版本")?
+            .id
+            .clone())
+    } else {
+        validate_id(loader_version)?;
+        if !choices.iter().any(|v| v.id == loader_version) {
+            return Err("所选加载器版本不在对应游戏版本的官方列表中".into());
+        }
+        Ok(loader_version.to_owned())
+    }
 }
 
 #[tauri::command]
@@ -1212,6 +1479,7 @@ pub async fn install_loader(
     game_version: String,
     loader_version: String,
 ) -> crate::errors::AppResult<LoaderInstallResult> {
+    refuse_online_optifine(&loader).map_err(crate::errors::expected)?;
     let _guard = state
         .operation
         .try_lock()
@@ -1480,6 +1748,24 @@ mod tests {
     }
 
     use super::*;
+
+    fn optifine_installer_bytes() -> Vec<u8> {
+        use std::io::Write;
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("optifine/Patcher.class", options).unwrap();
+            zip.write_all(b"class").unwrap();
+            zip.start_file("optifine/OptiFineTweaker.class", options).unwrap();
+            zip.write_all(b"class").unwrap();
+            zip.start_file("launchwrapper-of-2.3.jar", options).unwrap();
+            zip.write_all(b"lw").unwrap();
+            zip.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
     #[test]
     fn c7_installer_command_rejects_tls_and_keeps_http_credentials_out_of_jvm() {
         use crate::network::Settings;
@@ -1597,5 +1883,433 @@ mod tests {
         assert!(!parsed[1].2.stable);
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn u7_optifine_generated_libraries_carry_verified_artifacts() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/loader-tests")
+            .join(format!("optifine-artifacts-{}", uuid::Uuid::new_v4()));
+        let libraries = root.join("libraries");
+        let patched = libraries.join("optifine/OptiFine/1.20.4_HD_U_I7/OptiFine-1.20.4_HD_U_I7.jar");
+        let wrapper = libraries.join("optifine/launchwrapper-of/2.3/launchwrapper-of-2.3.jar");
+        fs::create_dir_all(patched.parent().unwrap()).unwrap();
+        fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        fs::write(&patched, b"patched").unwrap();
+        fs::write(&wrapper, b"wrapper").unwrap();
+
+        let base = json!({"id":"1.20.4","type":"release","arguments":{"game":[]}});
+        let mut profile = build_optifine_profile(&base, "1.20.4", "HD_U_I7", Some("2.3"));
+        attach_optifine_artifacts(&mut profile, &libraries, &patched, Some(&wrapper)).unwrap();
+        assert!(validate_profile(&profile, "1.20.4").is_ok());
+
+        let entries = profile["libraries"].as_array().unwrap();
+        let patched_artifact = &entries[0]["downloads"]["artifact"];
+        assert_eq!(
+            patched_artifact["path"],
+            "optifine/OptiFine/1.20.4_HD_U_I7/OptiFine-1.20.4_HD_U_I7.jar"
+        );
+        assert_eq!(patched_artifact["url"], "");
+        assert_eq!(patched_artifact["size"], 7);
+        assert_eq!(
+            patched_artifact["sha1"],
+            format!("{:x}", Sha1::digest(b"patched"))
+        );
+        // prepare_profile treats this as a generated file: the path and hash
+        // already verify it, so nothing is fetched for the empty URL.
+        let download = minecraft::download_from(patched_artifact, &libraries, None).unwrap();
+        assert_eq!(download.path, patched);
+        assert_eq!(download.url, "");
+        assert_eq!(download.sha1, patched_artifact["sha1"].as_str().unwrap());
+
+        let wrapper_artifact = &entries[1]["downloads"]["artifact"];
+        assert_eq!(
+            wrapper_artifact["path"],
+            "optifine/launchwrapper-of/2.3/launchwrapper-of-2.3.jar"
+        );
+        assert_eq!(wrapper_artifact["url"], "");
+        assert_eq!(wrapper_artifact["size"], 7);
+        assert_eq!(
+            wrapper_artifact["sha1"],
+            format!("{:x}", Sha1::digest(b"wrapper"))
+        );
+
+        // Without a bundled launchwrapper, the legacy Maven library keeps its
+        // normal URL and must not receive a generated artifact.
+        let mut legacy = build_optifine_profile(&base, "1.20.4", "HD_U_I7", None);
+        attach_optifine_artifacts(&mut legacy, &libraries, &patched, None).unwrap();
+        assert!(legacy["libraries"][1]["downloads"].is_null());
+        assert_eq!(legacy["libraries"][1]["url"], "https://libraries.minecraft.net/");
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A loader-test state: its game directory is the fixture's, the download
+    /// source is fixed (no reachability probe), and every request goes to
+    /// `client`.
+    fn loader_state(root: &Path, client: reqwest::Client) -> LauncherState {
+        loader_state_with_source(root, client, "official")
+    }
+
+    fn loader_state_with_source(root: &Path, client: reqwest::Client, source: &str) -> LauncherState {
+        LauncherState::test_fixture(
+            root.join("data"),
+            crate::models::Persisted {
+                config: crate::models::Config {
+                    game_directory: root.join("game").to_string_lossy().into_owned(),
+                    download_source: source.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            client,
+        )
+    }
+
+    /// A client whose every request goes to a local listener that only counts
+    /// and closes connections: a test sees whether anything was fetched, and
+    /// nothing reaches the network.
+    fn counting_client() -> (reqwest::Client, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = connections.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).unwrap())
+            .build()
+            .unwrap();
+        (client, connections)
+    }
+
+    fn test_root(prefix: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/loader-tests")
+            .join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("game")).unwrap();
+        root
+    }
+
+    #[test]
+    fn u7_generated_optifine_artifact_verifies_without_a_download() {
+        let root = test_root("optifine-generated");
+        let libraries = root.join("libraries");
+        let jar = libraries.join("optifine/OptiFine/1.20.4_HD_U_I7/OptiFine-1.20.4_HD_U_I7.jar");
+        fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        fs::write(&jar, b"patched").unwrap();
+        let artifact = generated_artifact(&jar, &libraries).unwrap();
+        let download = minecraft::download_from(&artifact, &libraries, None).unwrap();
+        let (client, connections) = counting_client();
+        let state = loader_state(&root, client);
+        let downloaded = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(minecraft::ensure_loader_download(
+                &state,
+                &download,
+                "official",
+                None,
+            ))
+            .unwrap();
+        assert!(
+            !downloaded,
+            "the existing generated file is verified without a fetch"
+        );
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(download.url, "");
+        assert_eq!(download.path, jar);
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn patched_info(launchwrapper: Option<&str>) -> OptifineJarInfo {
+        OptifineJarInfo {
+            mc_version: "1.20.4".into(),
+            edition: "HD_U_I7".into(),
+            launchwrapper_entry: launchwrapper.map(|version| format!("launchwrapper-of-{version}.jar")),
+            launchwrapper_version: launchwrapper.map(str::to_owned),
+        }
+    }
+
+    /// What the Patcher leaves in a stage: the patched client library and,
+    /// when the installer bundles one, the extracted launchwrapper.
+    fn fake_patcher_output(stage: &Path, info: &OptifineJarInfo) {
+        let patched = optifine_library_path(stage, info).unwrap();
+        fs::create_dir_all(patched.parent().unwrap()).unwrap();
+        fs::write(&patched, b"patched").unwrap();
+        if let Some(version) = &info.launchwrapper_version {
+            let wrapper = launchwrapper_library_path(stage, version).unwrap();
+            fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+            fs::write(&wrapper, b"wrapper").unwrap();
+        }
+    }
+
+    #[test]
+    fn u7_optifine_install_commits_verified_generated_libraries_and_its_profile() {
+        let root = test_root("optifine-finish");
+        let (stage, game) = (root.join("stage"), root.join("game"));
+        let info = patched_info(Some("2.3"));
+        fake_patcher_output(&stage, &info);
+        let (client, connections) = counting_client();
+        let state = loader_state(&root, client);
+        let base = json!({"id":"1.20.4","type":"release","arguments":{"game":[]}});
+        let verified = std::sync::Mutex::new(Vec::new());
+        let progress = |id: &str, done: usize, total: usize| {
+            verified.lock().unwrap().push((id.to_owned(), done, total));
+        };
+
+        let id = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(finish_optifine_install(&state, &stage, &game, &base, &info, &progress))
+            .unwrap();
+        assert_eq!(id, "1.20.4-OptiFine_HD_U_I7");
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing is fetched");
+        assert_eq!(verified.lock().unwrap().last().cloned(), Some((id.clone(), 2, 2)));
+
+        // The generated files are in the game's libraries, and the written
+        // profile carries their hashes as generated (URL-less) artifacts.
+        let patched_path = "optifine/OptiFine/1.20.4_HD_U_I7/OptiFine-1.20.4_HD_U_I7.jar";
+        let wrapper_path = "optifine/launchwrapper-of/2.3/launchwrapper-of-2.3.jar";
+        assert_eq!(fs::read(game.join("libraries").join(patched_path)).unwrap(), b"patched");
+        assert_eq!(fs::read(game.join("libraries").join(wrapper_path)).unwrap(), b"wrapper");
+        let profile: Value = serde_json::from_slice(
+            &fs::read(game.join(format!("versions/{id}/{id}.json"))).unwrap(),
+        )
+        .unwrap();
+        for (index, path, bytes) in [(0, patched_path, &b"patched"[..]), (1, wrapper_path, &b"wrapper"[..])] {
+            let artifact = &profile["libraries"][index]["downloads"]["artifact"];
+            assert_eq!(artifact["path"], path);
+            assert_eq!(artifact["url"], "");
+            assert_eq!(artifact["size"], bytes.len());
+            assert_eq!(artifact["sha1"], format!("{:x}", Sha1::digest(bytes)));
+        }
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn u7_a_failed_optifine_preparation_leaves_the_game_directory_untouched() {
+        let root = test_root("optifine-finish-failed");
+        let (stage, game) = (root.join("stage"), root.join("game"));
+        // Without a bundled launchwrapper the profile needs Mojang's, whose
+        // checksum must be fetched; the counting client refuses every request.
+        let info = patched_info(None);
+        fake_patcher_output(&stage, &info);
+        let (client, connections) = counting_client();
+        let state = loader_state(&root, client);
+        let base = json!({"id":"1.20.4","type":"release","arguments":{"game":[]}});
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(finish_optifine_install(&state, &stage, &game, &base, &info, &|_, _, _| {}))
+            .unwrap_err();
+        assert!(!error.is_empty());
+        assert!(connections.load(std::sync::atomic::Ordering::SeqCst) > 0, "preparation was reached");
+        assert!(!game.join("libraries").exists(), "no generated library reached the game directory");
+        assert!(!game.join("versions").exists(), "no profile was written");
+        assert!(optifine_library_path(&stage, &info).unwrap().is_file(), "the stage still holds it");
+
+        // A Patcher that produced nothing is refused before anything else.
+        fs::remove_file(optifine_library_path(&stage, &info).unwrap()).unwrap();
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(finish_optifine_install(&state, &stage, &game, &base, &info, &|_, _, _| {}))
+            .unwrap_err();
+        assert_eq!(error, "OptiFine Patcher 未产出有效的库文件");
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn u7_staged_optifine_installer_keeps_its_jar_suffix() {
+        let root = test_root("optifine-staged");
+        let picked = root.join("downloads/OptiFine_1.20.4_HD_U_I7.jar");
+        fs::create_dir_all(picked.parent().unwrap()).unwrap();
+        fs::write(&picked, optifine_installer_bytes()).unwrap();
+        let staged_dir = root.join("stage/installer");
+        let file_name = "OptiFine_1.20.4_HD_U_I7.jar";
+
+        let (target, info) = stage_optifine_installer(&staged_dir, file_name, &picked).unwrap();
+        assert_eq!(target.file_name().unwrap(), file_name);
+        assert_eq!(info, parse_optifine_installer_jar(&picked).unwrap(), "the copy is what was inspected");
+        assert_eq!(info.mc_version, "1.20.4");
+        assert_eq!(info.edition, "HD_U_I7");
+        assert_eq!(fs::read(&target).unwrap(), fs::read(&picked).unwrap());
+        assert_eq!(
+            fs::read_dir(&staged_dir).unwrap().count(),
+            1,
+            "the .jar-suffixed temporary file is gone after the rename"
+        );
+
+        // Staging again replaces the copy rather than failing on it.
+        let (again, _) = stage_optifine_installer(&staged_dir, file_name, &picked).unwrap();
+        assert_eq!(again, target);
+        assert_eq!(fs::read_dir(&staged_dir).unwrap().count(), 1);
+
+        // A file that is not an OptiFine installer leaves no temporary file.
+        let other = root.join("downloads/OptiFine_1.20.4_HD_U_I8.jar");
+        {
+            let mut zip = zip::ZipWriter::new(fs::File::create(&other).unwrap());
+            zip.start_file("META-INF/MANIFEST.MF", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.finish().unwrap();
+        }
+        let error = stage_optifine_installer(&staged_dir, "OptiFine_1.20.4_HD_U_I8.jar", &other).unwrap_err();
+        assert_eq!(error, OPTIFINE_INVALID);
+        assert_eq!(fs::read_dir(&staged_dir).unwrap().count(), 1);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn u7_online_optifine_is_refused_before_anything_is_fetched_or_run() {
+        let root = test_root("optifine-online");
+        let (client, connections) = counting_client();
+        // BMCLAPI is the source the OptiFine list and installer came from, so
+        // without the refusal this state would fetch.
+        let state = loader_state_with_source(&root, client, "bmclapi");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for version in ["", "latest", "HD_U_I7"] {
+            let error = runtime
+                .block_on(resolve_loader_install(&state, "optifine", "1.20.4", version))
+                .unwrap_err();
+            assert_eq!(crate::errors::expected(error).code, "loader.optifineOnlineUnavailable");
+        }
+        assert_eq!(
+            connections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "not even the version list was requested"
+        );
+        // The same client does reach the listener for a loader that is
+        // installed online, so the zero above means nothing was fetched.
+        let _ = runtime.block_on(resolve_loader_install(&state, "fabric", "1.20.4", "latest"));
+        assert!(connections.load(std::sync::atomic::Ordering::SeqCst) > 0);
+
+        // Only the local import runs the Patcher; no online install calls it,
+        // and every online install resolves (and refuses) before installing.
+        let source = crate::storage::executable_source(include_str!("loaders.rs"));
+        let (production, _) = source.split_once("#[cfg(test)]").unwrap();
+        let body = |name: &str| {
+            let (_, rest) = production.split_once(name).expect(name);
+            rest.split_once("\n}").expect(name).0.to_owned()
+        };
+        assert_eq!(
+            production.matches("install_optifine_from_jar(").count(),
+            2,
+            "its definition and the import's call"
+        );
+        assert!(body("pub async fn install_optifine_installer(").contains("install_optifine_from_jar("));
+        assert_eq!(production.matches("\"optifine.Patcher\"").count(), 1);
+        assert!(body("async fn install_optifine_from_jar(").contains(".arg(\"optifine.Patcher\")"));
+        let online = body("async fn install_loader_resolving(");
+        let resolve = online.find("resolve_loader_install(").unwrap();
+        assert!(resolve < online.find("minecraft::install(").unwrap());
+        // Only the publishers' loaders are dispatched to an installer; the
+        // version-list step already refused OptiFine, and any other name ends
+        // in the same refusal rather than reaching an installer.
+        let dispatch = &online[online.find("let id = match loader {").unwrap()..];
+        assert!(dispatch.contains("\"fabric\" | \"quilt\" => lightweight_loader("));
+        assert!(dispatch.contains("\"forge\" | \"neoforge\" => heavyweight_loader("));
+        assert!(dispatch.contains("_ => return Err(OPTIFINE_ONLINE_UNAVAILABLE.into()),"));
+        assert!(!dispatch.contains("optifine"));
+        let command = body("pub async fn install_loader(");
+        let refused = command.find("refuse_online_optifine(&loader)").unwrap();
+        assert!(refused < command.find("state.control.begin_recorded(").unwrap(), "no task is created");
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn u7_optifine_import_into_an_instance_uses_the_jar_version_not_the_window() {
+        let root = test_root("optifine-target");
+        let (client, _) = counting_client();
+        let state = loader_state(&root, client);
+        let instance = crate::models::Instance {
+            id: "survival".into(),
+            version_id: "1.20.1".into(),
+            game_directory: root.join("game/instances/survival").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let newer = OptifineJarInfo {
+            mc_version: "1.21.4".into(),
+            edition: "HD_U_J3".into(),
+            launchwrapper_entry: None,
+            launchwrapper_version: None,
+        };
+        // Whatever the window sends, the instance's own base version decides.
+        for sent in [None, Some(""), Some("1.21.4")] {
+            let error = check_optifine_target(&state, Some(&instance), &newer, sent).unwrap_err();
+            let error = crate::errors::expected(error);
+            assert_eq!(error.code, "loader.optifineVersionMismatch", "{sent:?}");
+            assert_eq!(error.params["installer"], "1.21.4");
+            assert_eq!(error.params["expected"], "1.20.1");
+        }
+        let matching = OptifineJarInfo { mc_version: "1.20.1".into(), ..newer.clone() };
+        assert!(check_optifine_target(&state, Some(&instance), &matching, Some("1.21.4")).is_ok());
+        // An instance whose base version cannot be resolved is refused.
+        let unknown = crate::models::Instance {
+            version_id: "fabric-loader-0.16.9-1.20.1".into(),
+            loader: "fabric".into(),
+            ..instance.clone()
+        };
+        let error = check_optifine_target(&state, Some(&unknown), &matching, Some("1.20.1")).unwrap_err();
+        assert_eq!(crate::errors::expected(error).code, "instance.baseVersionUnknown");
+        // A new version checks the version picked in the dialog, if any.
+        assert!(check_optifine_target(&state, None, &newer, None).is_ok());
+        assert!(check_optifine_target(&state, None, &newer, Some("1.21.4")).is_ok());
+        assert!(check_optifine_target(&state, None, &newer, Some("1.20.1")).is_err());
+
+        let source = crate::storage::executable_source(include_str!("loaders.rs"));
+        let (_, import) = source.split_once("pub async fn install_optifine_installer(").unwrap();
+        let (import, _) = import.split_once("\n}").unwrap();
+        assert!(import.find("check_optifine_target(").unwrap() < import.find("begin_with_display(").unwrap());
+        // A refused backup hands the picked file back, so the window can
+        // retry without a backup without asking for the file again.
+        let refused = import
+            .find("if error.starts_with(crate::instances::LOADER_BACKUP_FAILED_PREFIX) {")
+            .unwrap();
+        assert!(import[refused..].trim_start_matches(|c| c != '\n').trim_start()
+            .starts_with("grants.restore(PathUse::OptifineInstaller, source.clone(), &window);"));
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn u7_optifine_versions_sort_by_build_letter_not_digits_alone() {
+        let version = |id: &str, stable: bool| LoaderVersion {
+            id: id.into(),
+            stable,
+            recommended: false,
+        };
+        let mut versions = ["HD_U_C7", "HD_U_F5", "HD_U_G5", "HD_U_H9", "HD_U_I2"]
+            .map(|id| version(id, true))
+            .to_vec();
+        order_loader_versions("optifine", &mut versions);
+        assert_eq!(
+            versions.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["HD_U_I2", "HD_U_H9", "HD_U_G5", "HD_U_F5", "HD_U_C7"]
+        );
+        assert!(versions[0].recommended, "the newest stable build is recommended");
+        assert!(versions[1..].iter().all(|item| !item.recommended));
+
+        // A preview of a newer build sorts above the previous stable build but
+        // is never the recommended default.
+        let mut previews = [
+            version("HD_U_G5", true),
+            version("HD_U_G6_pre1", false),
+            version("HD_U_G5_pre1", false),
+        ]
+        .to_vec();
+        order_loader_versions("optifine", &mut previews);
+        assert_eq!(
+            previews.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["HD_U_G6_pre1", "HD_U_G5", "HD_U_G5_pre1"]
+        );
+        assert_eq!(
+            previews.iter().find(|item| item.recommended).map(|item| item.id.as_str()),
+            Some("HD_U_G5")
+        );
     }
 }

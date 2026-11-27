@@ -113,8 +113,8 @@
   "clearUnfinished": "Clear failed and cancelled",
   "retryFailedNotice_one": "Queued {{count}} task; {{skipped}} skipped.",
   "retryFailedNotice_other": "Queued {{count}} tasks; {{skipped}} skipped.",
-  "clearConfirm_one": "Clear 1 failed or cancelled task? Its kept partial files will be deleted.",
-  "clearConfirm_other": "Clear {{count}} failed or cancelled tasks? Their kept partial files will be deleted.",
+  "clearConfirm_one": "Clear 1 failed or cancelled task? Its kept partial files will be deleted, unless a paused or interrupted task can still resume them.",
+  "clearConfirm_other": "Clear {{count}} failed or cancelled tasks? Their kept partial files will be deleted, unless a paused or interrupted task can still resume them.",
   "clearNotice_one": "Removed {{count}} task; freed {{bytes}}.",
   "clearNotice_other": "Removed {{count}} tasks; freed {{bytes}}."
 }

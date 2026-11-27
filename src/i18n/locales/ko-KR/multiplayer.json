@@ -172,14 +172,16 @@
       "endpointIndependent": "콘 NAT",
       "addressPortDependent": "대칭형 NAT",
       "behindNat": "NAT 뒤",
-      "unreachable": "연결 불가"
+      "unreachable": "연결 불가",
+      "proxied": "프록시 / VPN 터널"
     },
     "natSummary": {
       "openInternet": "이 PC가 주소나 포트 변환 없이 공인 IPv4 주소를 직접 보유하고 있습니다.",
       "endpointIndependent": "엔드포인트 독립 매핑(콘 NAT): 서로 다른 STUN 서버에서도 동일한 외부 포트가 재사용됩니다.",
       "addressPortDependent": "주소/포트 종속 매핑(대칭형 NAT): 원격 서버마다 서로 다른 외부 포트가 보입니다.",
       "behindNat": "IPv4 트래픽이 NAT로 변환되고 있으며 응답한 STUN 서버가 하나뿐이라 콘 NAT와 대칭형 NAT를 구분할 수 없습니다.",
-      "unreachable": "IPv4 UDP로 응답한 STUN 서버가 없습니다."
+      "unreachable": "IPv4 UDP로 응답한 STUN 서버가 없습니다.",
+      "proxied": "로컬 프록시 또는 VPN 터널(TUN)을 통해 트래픽이 나가므로 STUN이 프록시 출구 주소를 보거나 프록시 경로와 직접 경로가 섞여 보일 수 있습니다. 실제 NAT 유형을 판단할 수 없습니다."
     },
     "cgnatBadge": "로컬 경로에서 통신사급 NAT(100.64.0.0/10)가 감지되었습니다.",
     "directTitle": "직접 연결 주소",
@@ -199,6 +201,8 @@
       "ipv4BehindNatSingleProbe": "IPv4가 NAT 뒤에 있으며 STUN 서버 하나만 응답했습니다. 콘 NAT인지 대칭형 NAT인지 확인하려면 다시 검사하거나 다른 네트워크에서 테스트하세요.",
       "ipv4CgnatDetected": "로컬 경로가 CGNAT 대역(100.64.0.0/10)에 있습니다. IPv4 공유기 포트 포워딩으로는 외부에서 접속할 수 없으므로 IPv6 또는 가상 LAN을 사용하세요.",
       "ipv4Unavailable": "IPv4 UDP 프로브가 응답을 받지 못했습니다. 인터넷 연결 또는 방화벽 UDP 규칙을 확인하세요.",
+      "ipv4TunnelDetected": "로컬 프록시 또는 VPN 터널(TUN 모드)이 이 검사의 UDP 트래픽을 처리하는 것으로 보입니다. TUN 모드를 끄거나 UDP 3478 및 19302가 프록시를 우회하도록 한 뒤 다시 검사하세요. IPv4 직접 연결 주소는 집 네트워크가 아니라 프록시를 가리키므로 표시하지 않습니다.",
+      "ipv4MixedEgress": "STUN 서버마다 서로 다른 공인 IPv4 주소가 확인되었습니다. 듀얼 WAN이나 부하 분산 라우터, 일부 통신사 NAT에서 이런 일이 생기며, 트래픽 일부만 우회시키는 프록시나 VPN도 마찬가지입니다. 사용 중이라면 끈 뒤 다시 검사하세요.",
       "proxyDirectUdpNote": "런처 설정에서 사용자 지정 HTTP 프록시가 활성화되어 있습니다. 이 검사는 HTTP 프록시를 거치지 않고 직접 UDP 트래픽을 측정합니다."
     },
     "stunHosts": "질의한 STUN 호스트: {{hosts}}",

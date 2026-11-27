@@ -143,6 +143,8 @@ export interface LoaderResult {
   versionId: string;
   loader: string;
   loaderVersion: string;
+  /** The backup taken before an OptiFine import switched an instance. */
+  backupId?: string | null;
 }
 export interface PackResult {
   instance: Instance;

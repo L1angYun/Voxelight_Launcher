@@ -8,7 +8,7 @@
     "network": "網路偵測"
   },
   "environment": "遊戲環境",
-  "chooseEnvironment": "選擇已安裝遊戲",
+  "chooseEnvironment": "選擇已安裝版本",
   "environmentRequired": "儲存或加入伺服器前，先選擇遊戲環境。",
   "refresh": "重新整理",
   "addServer": "新增伺服器",
@@ -172,14 +172,16 @@
       "endpointIndependent": "錐型 NAT",
       "addressPortDependent": "對稱型 NAT",
       "behindNat": "位於 NAT 後方",
-      "unreachable": "無法探測"
+      "unreachable": "無法探測",
+      "proxied": "代理 / VPN 通道"
     },
     "natSummary": {
       "openInternet": "本機直接擁有公開 IPv4 位址，無位址或連接埠轉換。",
       "endpointIndependent": "端點無關對應（錐型 NAT）：不同的 STUN 伺服器看到同一個外部連接埠。",
       "addressPortDependent": "位址/連接埠相依對應（對稱型 NAT）：存取不同目標會分配不同的外部連接埠。",
       "behindNat": "目前位於 IPv4 NAT 後方，但僅有一台 STUN 伺服器回應，暫時無法區分錐型與對稱型。",
-      "unreachable": "IPv4 UDP 探測均未收到回應。"
+      "unreachable": "IPv4 UDP 探測均未收到回應。",
+      "proxied": "流量正在經過本機代理或 VPN 通道（TUN），STUN 可能看到代理出口位址，或同時看到代理與直連兩條路徑，因此無法據此判斷真實的 NAT 類型。"
     },
     "cgnatBadge": "本機出口位於電信商級 NAT 網段（100.64.0.0/10）。",
     "directTitle": "直連位址",
@@ -199,6 +201,8 @@
       "ipv4BehindNatSingleProbe": "IPv4 位於 NAT 後方且僅有一台 STUN 伺服器回覆，可重試偵測以確認為錐型或對稱型 NAT。",
       "ipv4CgnatDetected": "本機路由位於電信商級 NAT（100.64.0.0/10）網段，僅做路由器連接埠轉發無法從外部網路連入；請優先使用 IPv6 或虛擬區域網路。",
       "ipv4Unavailable": "IPv4 UDP 探測逾時，請檢查網路連線或防火牆是否封鎖了對外 UDP。",
+      "ipv4TunnelDetected": "偵測到本機代理或 VPN 通道（TUN 模式）接管了本次偵測的 UDP 流量。請關閉 TUN 模式，或讓 UDP 3478 與 19302 繞過代理，然後重新偵測。此處不會顯示 IPv4 直連位址，因為它會指向代理而不是你的家用網路。",
+      "ipv4MixedEgress": "不同 STUN 伺服器看到的公網 IPv4 位址不同。雙線或負載平衡路由器、部分電信業者 NAT 會出現這種情況，只代理部分流量的代理或 VPN 也會。如果開著代理或 VPN，請關閉後重新偵測。",
       "proxyDirectUdpNote": "啟動器目前啟用了自訂 HTTP 代理；網路偵測走直連 UDP，不經過 HTTP 代理。"
     },
     "stunHosts": "探測的 STUN 伺服器：{{hosts}}",

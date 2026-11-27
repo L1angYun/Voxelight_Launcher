@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { Download, KeyRound, RotateCcw, Upload } from "lucide-react";
 import { command, type Config } from "../../lib/launcher";
+import { normalizeError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { useLumen } from "../assistant/LumenContext";
@@ -156,15 +157,28 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
                 loading={resetting}
                 onClick={async () => {
                   setResetting(true);
-                  try {
-                    const fresh = await command<Config>("reset_launcher_state");
+                  const adoptReset = async (fresh: Config) => {
                     setConfigured(false);
                     setKey("");
                     await Promise.all([lumen.refreshStatus(), loadServiceStatus()]);
                     await onPersisted(fresh);
                     setConfirmResetOpen(false);
+                  };
+                  try {
+                    await adoptReset(await command<Config>("reset_launcher_state"));
                     onNotice("launcherReset");
                   } catch (cause) {
+                    // This code means the reset already committed and only an
+                    // account token is left for the next start. The form must
+                    // take the committed config, or a later save would write
+                    // the old one back over the reset.
+                    if (normalizeError(cause).code === "reset.credentialsPending") {
+                      try {
+                        await adoptReset(await command<Config>("get_config"));
+                      } catch {
+                        // The reset error below still tells the user to restart.
+                      }
+                    }
                     onError(cause);
                   } finally {
                     setResetting(false);

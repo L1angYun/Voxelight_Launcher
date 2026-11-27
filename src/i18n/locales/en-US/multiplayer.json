@@ -173,14 +173,16 @@
       "endpointIndependent": "Cone NAT",
       "addressPortDependent": "Symmetric NAT",
       "behindNat": "Behind NAT",
-      "unreachable": "Unreachable"
+      "unreachable": "Unreachable",
+      "proxied": "Proxy / VPN tunnel"
     },
     "natSummary": {
       "openInternet": "Your PC holds a public IPv4 address directly with no address or port translation.",
       "endpointIndependent": "Endpoint-independent mapping (Cone NAT): the same external port is reused across STUN servers.",
       "addressPortDependent": "Address/port-dependent mapping (Symmetric NAT): each remote server sees a different external port.",
       "behindNat": "Your IPv4 traffic is translated by NAT, and only one STUN server replied so Cone vs. Symmetric could not be distinguished.",
-      "unreachable": "No STUN server replied over IPv4 UDP."
+      "unreachable": "No STUN server replied over IPv4 UDP.",
+      "proxied": "Traffic is leaving through a local proxy or VPN tunnel (TUN), so STUN may see the proxy's exit address or a mix of proxied and direct routes. The result cannot describe your real NAT type."
     },
     "cgnatBadge": "Carrier-grade NAT (100.64.0.0/10) detected on the local route.",
     "directTitle": "Direct-connect address",
@@ -200,6 +202,8 @@
       "ipv4BehindNatSingleProbe": "IPv4 is behind NAT, and only one STUN server responded. Run the check again or test from another network to confirm whether NAT is Cone or Symmetric.",
       "ipv4CgnatDetected": "Your local route is inside the CGNAT range (100.64.0.0/10). Router port forwarding on IPv4 will not reach the public internet; prefer IPv6 or a virtual LAN.",
       "ipv4Unavailable": "IPv4 UDP probes did not get a reply. Check your internet connection or firewall UDP rules.",
+      "ipv4TunnelDetected": "A local proxy or VPN tunnel (TUN mode) appears to be handling this check's UDP traffic. Turn off TUN mode, or let UDP 3478 and 19302 bypass the proxy, then run the check again. No direct-connect IPv4 address is shown because it would point at the proxy, not your home network.",
+      "ipv4MixedEgress": "The STUN servers saw different public IPv4 addresses. Dual-WAN or load-balancing routers and some carrier NATs do this, and so does a proxy or VPN that routes only part of your traffic. If one is on, turn it off and run the check again.",
       "proxyDirectUdpNote": "A custom HTTP proxy is enabled in launcher settings. This check probes direct UDP traffic without using the HTTP proxy."
     },
     "stunHosts": "Queried STUN hosts: {{hosts}}",

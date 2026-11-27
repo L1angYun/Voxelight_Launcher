@@ -113,8 +113,8 @@
   "clearUnfinished": "Limpiar fallidas y canceladas",
   "retryFailedNotice_one": "Se puso {{count}} tarea en cola; {{skipped}} omitidas.",
   "retryFailedNotice_other": "Se pusieron {{count}} tareas en cola; {{skipped}} omitidas.",
-  "clearConfirm_one": "¿Limpiar 1 tarea fallida o cancelada? Se eliminarán sus archivos parciales conservados.",
-  "clearConfirm_other": "¿Limpiar {{count}} tareas fallidas o canceladas? Se eliminarán sus archivos parciales conservados.",
+  "clearConfirm_one": "¿Limpiar 1 tarea fallida o cancelada? Se eliminarán sus archivos parciales conservados, salvo los que una tarea pausada o interrumpida aún pueda reanudar.",
+  "clearConfirm_other": "¿Limpiar {{count}} tareas fallidas o canceladas? Se eliminarán sus archivos parciales conservados, salvo los que una tarea pausada o interrumpida aún pueda reanudar.",
   "clearNotice_one": "Se eliminó {{count}} tarea; se liberaron {{bytes}}.",
   "clearNotice_other": "Se eliminaron {{count}} tareas; se liberaron {{bytes}}."
 }

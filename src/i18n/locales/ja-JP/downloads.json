@@ -112,6 +112,6 @@
   "retryFailed": "失敗したタスクを再試行",
   "clearUnfinished": "失敗・キャンセル済みを消去",
   "retryFailedNotice_other": "{{count}} 件のタスクをキューに追加しました（{{skipped}} 件スキップ）。",
-  "clearConfirm_other": "失敗またはキャンセル済みのタスク {{count}} 件を消去しますか？保持されている一時ファイルも削除されます。",
+  "clearConfirm_other": "失敗またはキャンセル済みのタスク {{count}} 件を消去しますか？保持されている一時ファイルも削除されます（一時停止中または中断されたタスクが再開に使えるものは残します）。",
   "clearNotice_other": "{{count}} 件のタスクを消去し、{{bytes}} を解放しました。"
 }

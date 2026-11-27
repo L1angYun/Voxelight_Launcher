@@ -597,11 +597,18 @@ fn u4_importing_a_neoforge_args_file_folder_records_args_file_and_rejects_unsafe
         "-agentlib:jdwp=transport=dt_socket\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
         "-XX:OnError=calc.exe\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
         "-XX:OnOutOfMemoryError=calc.exe\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-XX:VMOptionsFile=jvm.txt\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-XX:Flags=flags.txt\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
         "-Xmx8G\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
         "-p ../outside/evil.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
         "-p C:\\Windows\\evil.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
         "-DlibraryDirectory=\\\\server\\share\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
         "-p libraries/a.jar\n",
+        // Best-fit look-alikes for a space and `:` inside a quoted module path.
+        "-p \"libraries/x.jar\u{2000}-XX\u{FF1A}VMOptionsFile=jvm.txt\"\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-p \u{FF3C}\u{FF3C}host\u{FF3C}share\u{FF3C}evil.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-DlegacyClassPath.file=libraries/cp.txt\n-p libraries/x.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n",
+        "-p libraries/x.jar\ncpw.mods.bootstraplauncher.BootstrapLauncher\n--launchTarget forgeserver\n--universe C:\\Users\\x\n",
     ] {
         fs::write(&args_path, bad).unwrap();
         let err = inspect(ImportKind::Folder, &folder).unwrap_err();
@@ -610,4 +617,291 @@ fn u4_importing_a_neoforge_args_file_folder_records_args_file_and_rejects_unsafe
 
     drop(state);
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn u4_args_allowlist_refuses_unlisted_jvm_options_unsafe_paths_and_two_entry_points() {
+    const ENTRY: &str = "cpw.mods.bootstraplauncher.BootstrapLauncher";
+    let cases: &[&[&str]] = &[
+        // JVM options that were not on the old denylist, or that read more options from a file.
+        &["-XX:VMOptionsFile=jvm.txt", ENTRY],
+        &["-XX:Flags=flags.txt", ENTRY],
+        &[r"-Xlog:all=info:file=C:\x", ENTRY],
+        &[r"-XX:StartFlightRecording=filename=C:\x", ENTRY],
+        &["-XX:MaxHeapSize=8m", ENTRY],
+        &["-Xss4m", ENTRY],
+        &["-Djava.library.path=x", ENTRY],
+        &["-Dhttps.proxyHost=x", ENTRY],
+        &["-Djava.net.preferIPv4Stack=true", ENTRY],
+        &["-Dhelp", ENTRY],
+        // The class path named by legacyClassPath.file would never be checked.
+        &["-DlegacyClassPath.file=libraries/cp.txt", ENTRY],
+        &[r"-DlegacyClassPath.file=..\x.txt", ENTRY],
+        // Path-like system properties must stay inside the server folder.
+        &[r"-DlibraryDirectory=C:\libs", ENTRY],
+        &[r"-DlegacyClassPath=..\x.jar", ENTRY],
+        &["-DlibraryDirectory=.. ", ENTRY],
+        &["-DlibraryDirectory=...", ENTRY],
+        &["-DlibraryDirectory=COM1", ENTRY],
+        &[r"-DmergeModules=jna-5.10.0.jar,..\jna-platform-5.10.0.jar", ENTRY],
+        &["-DignoreList=evil/path.jar", ENTRY],
+        &["-Dfml.pluginLayerLibraries=libraries/a.jar,/x.jar", ENTRY],
+        &[r"-Dfml.gameLayerLibraries=libraries/a.jar,..\x.jar", ENTRY],
+        // Every module/class path spelling checks every element.
+        &["-p", "libraries/NUL.jar", ENTRY],
+        &["-cp", r"libraries\a.jar;C:\x.jar", ENTRY],
+        &["-classpath", "libraries/a.jar;../x.jar", ENTRY],
+        &["--module-path", "/x.jar", ENTRY],
+        &["--class-path", r"\\h\s\x.jar", ENTRY],
+        &[r"--class-path=C:\x.jar", ENTRY],
+        &[r"--module-path=\\h\s\x.jar", ENTRY],
+        &["--module-path=../x.jar", ENTRY],
+        &["--class-path=libraries/a.jar;/x.jar", ENTRY],
+        &["--module-path=", ENTRY],
+        // Module options take module/package specs only, in both spellings.
+        &["--add-opens", "java.base", ENTRY],
+        &["--add-exports", "java.base/sun.security.util", ENTRY],
+        &["--add-reads", "java.base=../x", ENTRY],
+        &["--add-modules", "C:/x", ENTRY],
+        &["--add-opens=java.base", ENTRY],
+        &["--add-exports=java.base/sun.security.util=../x", ENTRY],
+        &["--add-reads=java.base", ENTRY],
+        &["--add-modules=../x", ENTRY],
+        // The entry point is a class name, not a path.
+        &["-p", "libraries/x.jar", r"C:\x.jar"],
+        &["-p", "libraries/x.jar", "x/y.jar"],
+        // Unknown JVM options are refused before the entry point.
+        &["-p", "libraries/x.jar", "--patch-module", "java.base=evil", ENTRY],
+        &["-p", "libraries/x.jar", "--upgrade-module-path", "x.jar", ENTRY],
+        // A second bare token before any application argument is a second entry point.
+        &["-p", "libraries/x.jar", ENTRY, "evil.Second"],
+        // JVM-only options and argument files are refused after the entry point too.
+        &["-p", "libraries/x.jar", ENTRY, "-XX:MaxHeapSize=8m"],
+        &["-p", "libraries/x.jar", ENTRY, "-DlibraryDirectory=libraries"],
+        &["-p", "libraries/x.jar", ENTRY, "--launchTarget", "forgeserver", "--patch-module", "x"],
+        &["-p", "libraries/x.jar", ENTRY, "--launchTarget", "forgeserver", "--module-path", "libraries/x.jar"],
+        &["-p", "libraries/x.jar", ENTRY, "@user_jvm_args.txt"],
+    ];
+    for case in cases {
+        let tokens: Vec<String> = case.iter().map(|token| (*token).to_owned()).collect();
+        let error = validate_args_file_tokens(&tokens).expect_err("must be refused");
+        assert_eq!(crate::errors::expected(error).code, "server.importArgsInvalid", "{case:?}");
+    }
+}
+
+#[test]
+fn u4_args_allowlist_accepts_real_forge_and_neoforge_win_args_files() {
+    const ENTRY: &str = "cpw.mods.bootstraplauncher.BootstrapLauncher";
+    // The shape of Forge 1.20.1-47.2.0 `win_args.txt`: module path, module opens/exports,
+    // then the Bootstraplauncher entry point and the Forge application arguments.
+    let forge_1201 = r#"
+-p libraries/cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar;libraries/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar;libraries/org/ow2/asm/asm/9.5/asm-9.5.jar;libraries/org/ow2/asm/asm-commons/9.5/asm-commons-9.5.jar;libraries/org/ow2/asm/asm-util/9.5/asm-util-9.5.jar;libraries/org/ow2/asm/asm-tree/9.5/asm-tree-9.5.jar;libraries/org/ow2/asm/asm-analysis/9.5/asm-analysis-9.5.jar;libraries/net/minecraftforge/JarJarFileSystems/0.3.19/JarJarFileSystems-0.3.19.jar
+--add-modules ALL-MODULE-PATH
+--add-opens java.base/java.util.jar=cpw.mods.securejarhandler
+--add-opens java.base/java.lang.invoke=cpw.mods.securejarhandler
+--add-exports java.base/sun.security.util=cpw.mods.securejarhandler
+--add-exports jdk.naming.dns/com.sun.jndi.dns=java.naming
+-Djava.net.preferIPv6Addresses=system
+-DignoreList=bootstraplauncher-1.1.2.jar,securejarhandler-2.1.10.jar,asm-9.5.jar,asm-commons-9.5.jar,asm-util-9.5.jar,asm-tree-9.5.jar,asm-analysis-9.5.jar,JarJarFileSystems-0.3.19.jar
+-DlibraryDirectory=libraries
+-DlegacyClassPath=libraries/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar;libraries/net/minecraftforge/fmlloader/1.20.1-47.2.0/fmlloader-1.20.1-47.2.0.jar;libraries/net/minecraft/server/1.20.1-20230612.114412/server-1.20.1-20230612.114412-extra.jar
+cpw.mods.bootstraplauncher.BootstrapLauncher
+--launchTarget forgeserver
+--fml.forgeVersion 47.2.0
+--fml.mcVersion 1.20.1
+--fml.forgeGroup net.minecraftforge
+--fml.mcpVersion 20230612.114412
+"#;
+    // NeoForge 21.1.77 for 1.21.1: the same bootstrap, plus the two (empty) FML layer lists
+    // and the NeoForge/FML versions.
+    let neoforge_211 = r#"
+-p libraries/cpw/mods/bootstraplauncher/2.0.2/bootstraplauncher-2.0.2.jar;libraries/cpw/mods/securejarhandler/3.0.8/securejarhandler-3.0.8.jar;libraries/org/ow2/asm/asm/9.7/asm-9.7.jar;libraries/org/ow2/asm/asm-commons/9.7/asm-commons-9.7.jar;libraries/net/neoforged/JarJarFileSystems/0.4.1/JarJarFileSystems-0.4.1.jar
+--add-modules ALL-MODULE-PATH
+--add-opens java.base/java.util.jar=cpw.mods.securejarhandler
+--add-opens java.base/java.lang.invoke=cpw.mods.securejarhandler
+--add-exports java.base/sun.security.util=cpw.mods.securejarhandler
+--add-exports jdk.naming.dns/com.sun.jndi.dns=java.naming
+-Djava.net.preferIPv6Addresses=system
+-DignoreList=bootstraplauncher-2.0.2.jar,securejarhandler-3.0.8.jar,asm-9.7.jar,asm-commons-9.7.jar,JarJarFileSystems-0.4.1.jar
+-Dfml.pluginLayerLibraries=
+-Dfml.gameLayerLibraries=
+-DlibraryDirectory=libraries
+-DlegacyClassPath=libraries/cpw/mods/securejarhandler/3.0.8/securejarhandler-3.0.8.jar;libraries/net/neoforged/fmlloader/4.0.7/fmlloader-4.0.7.jar;libraries/net/minecraft/server/1.21.1-20240808.144430/server-1.21.1-20240808.144430-extra.jar
+cpw.mods.bootstraplauncher.BootstrapLauncher
+--launchTarget forgeserver
+--fml.neoForgeVersion 21.1.77
+--fml.fmlVersion 4.0.7
+--fml.mcVersion 1.21.1
+--fml.neoFormVersion 20240808.144430
+"#;
+    // NeoForge 21.1.209 for 1.21.11: no module path any more, a plain `-classpath`, the
+    // `ALL-UNNAMED` module target and the newer startup class.
+    let neoforge_21111 = r#"
+--add-opens java.base/java.lang.invoke=ALL-UNNAMED
+--add-exports jdk.naming.dns/com.sun.jndi.dns=java.naming
+-Djava.net.preferIPv6Addresses=system
+-DlibraryDirectory=libraries
+-classpath libraries/net/neoforged/neoforge/21.1.209/neoforge-21.1.209-universal.jar;libraries/net/neoforged/fmlloader/4.0.7/fmlloader-4.0.7.jar;libraries/net/minecraft/server/1.21.11-20251114.120000/server-1.21.11-20251114.120000-extra.jar
+net.neoforged.fml.startup.Server
+--fml.neoForgeVersion 21.1.209
+--fml.mcVersion 1.21.11
+--fml.neoFormVersion 20251114.120000
+"#;
+    for (name, text) in [
+        ("Forge 1.20.1", forge_1201),
+        ("NeoForge 21.1.77", neoforge_211),
+        ("NeoForge 21.1.209", neoforge_21111),
+    ] {
+        let tokens = parse_java_argfile(text).unwrap();
+        assert_eq!(validate_args_file_tokens(&tokens).unwrap(), tokens, "{name}");
+    }
+
+    // The remaining allowlisted server-only properties and option spellings.
+    let extra = [
+        "-DmergeModules=jna-5.10.0.jar,jna-platform-5.10.0.jar",
+        "-Dfml.pluginLayerLibraries=libraries/plugin-layers.jar,libraries/plugin-extra.jar",
+        "-Dfml.gameLayerLibraries=libraries/game-layers.jar",
+        "--add-reads",
+        "java.base=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.jar=cpw.mods.securejarhandler",
+        "--add-exports=java.base/sun.security.util=cpw.mods.securejarhandler",
+        "--add-reads=java.base=ALL-UNNAMED",
+        "--add-modules=ALL-MODULE-PATH",
+        "-p",
+        "libraries/x.jar",
+        "--module-path=libraries/y.jar;./libraries/z.jar",
+        "-cp",
+        r"libraries\a.jar;libraries/b.jar",
+        "--class-path=libraries/c.jar",
+        ENTRY,
+        "--launchTarget",
+        "forgeserver",
+        "--fml.mcVersion=1.20.1",
+    ];
+    let tokens: Vec<String> = extra.iter().map(|token| (*token).to_owned()).collect();
+    assert_eq!(validate_args_file_tokens(&tokens).unwrap(), tokens);
+}
+
+#[test]
+fn u4_args_allowlist_refuses_non_ascii_and_spaces_in_every_token() {
+    const ENTRY: &str = "cpw.mods.bootstraplauncher.BootstrapLauncher";
+    // Each template is accepted with a plain ASCII letter in the marked place.
+    let templates: [&[&str]; 8] = [
+        &["-p", "libraries/x{}y.jar", ENTRY],
+        &["-cp", "libraries/x{}y.jar", ENTRY],
+        &["-DlibraryDirectory=lib{}raries", ENTRY],
+        &["-DlegacyClassPath=libraries/x{}y.jar", ENTRY],
+        &["-DmergeModules=jna{}5.jar,jna-platform.jar", ENTRY],
+        &["-p", "libraries/x.jar", ENTRY, "--launchTarget", "forge{}server"],
+        &["-p", "libraries/x.jar", ENTRY, "--launchTarget", "forgeserver", "--fml.mcVersion=1.20{}1"],
+        &["-p", "libraries/x.jar", ENTRY, "--launchTarget", "forgeserver", "{}Dinjected=yes"],
+    ];
+    let fill = |template: &[&str], with: char| -> Vec<String> {
+        template.iter().map(|token| token.replace("{}", &with.to_string())).collect()
+    };
+    for template in templates {
+        let tokens = fill(template, 'a');
+        assert_eq!(validate_args_file_tokens(&tokens).unwrap(), tokens, "{template:?}");
+        // Best-fit look-alikes of space, `:`, `\`, `"` and `-`, plus ASCII space, tab and DEL.
+        for c in [
+            '\u{2000}', '\u{3000}', '\u{FF1A}', '\u{FF3C}', '\u{FF02}', '\u{00A5}', '\u{20A9}', '\u{00AD}', ' ', '\t',
+            '\u{7F}',
+        ] {
+            let tokens = fill(template, c);
+            let error = validate_args_file_tokens(&tokens).expect_err("must be refused");
+            assert_eq!(crate::errors::expected(error).code, "server.importArgsInvalid", "{tokens:?}");
+        }
+    }
+
+    // The shape of a crafted file: one quoted token that best-fit would split into two options.
+    let text = "-p \"libraries/x.jar\u{2000}-XX\u{FF1A}VMOptionsFile=jvm.txt\"\ncpw.mods.bootstraplauncher.BootstrapLauncher\n";
+    let tokens = parse_java_argfile(text).unwrap();
+    assert_eq!(tokens.len(), 3, "{tokens:?}");
+    assert!(validate_args_file_tokens(&tokens).is_err());
+    for value in ["\u{FF3C}\u{FF3C}host\u{FF3C}share\u{FF3C}evil.jar", "C\u{FF1A}\u{FF3C}Users"] {
+        let tokens = vec!["-p".to_owned(), value.to_owned(), ENTRY.to_owned()];
+        assert!(validate_args_file_tokens(&tokens).is_err(), "{value}");
+        let tokens = vec![format!("-DlibraryDirectory={value}"), ENTRY.to_owned()];
+        assert!(validate_args_file_tokens(&tokens).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn u4_args_allowlist_refuses_an_argument_file_as_an_option_value() {
+    const ENTRY: &str = "cpw.mods.bootstraplauncher.BootstrapLauncher";
+    for option in ["-p", "-cp", "--module-path", "--add-modules"] {
+        let tokens: Vec<String> = [option, "@x.txt", ENTRY].iter().map(|token| (*token).to_owned()).collect();
+        assert!(
+            validate_args_file_tokens(&tokens).is_err(),
+            "{option} @x.txt must be refused: java expands an argument file even as an option value"
+        );
+    }
+}
+
+#[test]
+fn u4_args_allowlist_keeps_application_argument_paths_inside_the_server_folder() {
+    const ENTRY: &str = "cpw.mods.bootstraplauncher.BootstrapLauncher";
+    let with_app_args = |app_args: &[&str]| -> Vec<String> {
+        ["-p", "libraries/x.jar", ENTRY]
+            .iter()
+            .chain(app_args)
+            .map(|token| (*token).to_owned())
+            .collect()
+    };
+    let refused: &[&[&str]] = &[
+        // Absolute, UNC, drive-relative and `..` paths as option values, in both spellings.
+        &["--launchTarget", "forgeserver", "--universe", r"C:\Users\x"],
+        &["--launchTarget", "forgeserver", "--pidFile", r"\\host\share\pid"],
+        &["--launchTarget", "forgeserver", r"--pidFile=..\..\pid"],
+        &["--launchTarget", "forgeserver", "--gameDir", r"C:\elsewhere"],
+        &["--launchTarget", "forgeserver", "--gameDir=/elsewhere"],
+        &["--launchTarget", "forgeserver", "--world", "../world"],
+        &["--launchTarget", "forgeserver", "--universe", "C:worlds"],
+        &["--launchTarget", "forgeserver", "--assetsDir", "//host/share"],
+        // Every element of a list option.
+        &["--launchTarget", "forgeserver", "--fml.mavenRoots", "libraries,/x"],
+        &["--launchTarget", "forgeserver", "--fml.modLists=mods.json;..\\x.json"],
+        // A path option's value is a path even without a separator, also when abbreviated.
+        &["--launchTarget", "forgeserver", "--pidFile", "NUL"],
+        &["--launchTarget", "forgeserver", "--universe=CON"],
+        &["--launchTarget", "forgeserver", "--pid", "COM1"],
+        &["--launchTarget", "forgeserver", "--gamedir", "AUX"],
+        &["--launchTarget", "forgeserver", "--universe", "..."],
+        // Any value that looks like a path, whatever the option, and positional values too.
+        &["--launchTarget", r"C:\x"],
+        &["--launchTarget", "forgeserver", "--fml.extra", "C:x"],
+        // A UNC value with no drive colon and no known path option, as an option value and positional.
+        &["--launchTarget", "forgeserver", "--fml.extra", r"\\h\s\x"],
+        &["--launchTarget", "forgeserver", r"\\h\s\x"],
+        &["--launchTarget", "forgeserver", "--fml.extra", ".."],
+        &["--launchTarget", "forgeserver", "--fml.extra=a,../b"],
+        &["--launchTarget", "forgeserver", "--nogui", r"..\x"],
+        &["--launchTarget", "forgeserver", "--universe", "worlds", "/x"],
+    ];
+    for &case in refused {
+        let tokens = with_app_args(case);
+        let error = validate_args_file_tokens(&tokens).expect_err("must be refused");
+        assert_eq!(crate::errors::expected(error).code, "server.importArgsInvalid", "{case:?}");
+    }
+
+    // Relative paths inside the folder and plain values pass through unchanged.
+    let tokens = with_app_args(&[
+        "--launchTarget",
+        "forgeserver",
+        "--fml.forgeVersion",
+        "47.2.0",
+        "--universe",
+        "worlds",
+        "--world=main",
+        "--pidFile",
+        "run/server.pid",
+        "--gameDir",
+        ".",
+        "--fml.mavenRoots",
+        "libraries,mods",
+        "--fml.modLists=./lists/mods.json",
+        "--nogui",
+        "nogui",
+    ]);
+    assert_eq!(validate_args_file_tokens(&tokens).unwrap(), tokens);
 }

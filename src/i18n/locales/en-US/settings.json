@@ -287,7 +287,7 @@
     "javaNotFound": "No Java environment found. Install one or enter its path.",
     "assistantKeySaved": "Lumen API key saved with system encryption.",
     "assistantKeyCleared": "Saved Lumen API key cleared.",
-    "launcherReset": "Launcher restored to its initial state. Your Minecraft game files were not deleted.",
+    "launcherReset": "Launcher restored to its initial state. Your Minecraft game files were not deleted. Restart the launcher to apply the reset to sign-in and network clients.",
     "mcpStarted": "Local MCP server started on 127.0.0.1:{{port}}.",
     "mcpStopped": "Local MCP server stopped.",
     "mcpTokenRotated": "MCP access token rotated. Update connected clients with the new token.",
@@ -318,7 +318,7 @@
     "permissionHints": {
       "readOnly": "Inspect instances, versions, mods, worlds, logs, crash diagnostics, downloads, Java runtimes, network diagnostics, and managed servers without changing anything.",
       "controlled": "Read-only tools run immediately. Write actions in Lumen always ask for your confirmation; external MCP clients stay read-only.",
-      "fullAccess": "Allows both Lumen and authenticated local MCP clients to run all curated launcher tools (installing versions/mods, creating/cloning/backing up instances, tuning settings, managing downloads, launching/stopping games and servers)."
+      "fullAccess": "Lumen runs curated launcher tools without asking. Installing mods or packs, changing loaders, starting servers, saving servers and joining servers still ask first, as do changes beyond a few per message. Authenticated local MCP clients can run all curated tools."
     },
     "toolSummary": "Curated toolset: {{total}} launcher tools ({{readOnly}} read-only, {{controlled}} controlled write). Arbitrary shell commands, paths outside launcher directories, and secret reads are never exposed.",
     "proactive": "Proactively wake Lumen on game crashes",
@@ -368,7 +368,10 @@
       "modelRequired": "Enter a model name in Settings → Lumen & MCP first.",
       "invalidBaseUrl": "The Lumen API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
       "providerError": "The configured AI service returned an error.",
-      "emptyMessage": "Enter a message before sending."
+      "emptyMessage": "Enter a message before sending.",
+      "mcpPortUnavailable": "Port {{port}} is in use or reserved by Windows. Choose another MCP port and start the server again.",
+      "mcpNotRunning": "The MCP server is not running. Start it first.",
+      "mcpFailed": "The MCP server ran into an internal error. Stop it and start it again."
     }
   },
   "updates": {

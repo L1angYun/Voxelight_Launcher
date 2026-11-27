@@ -366,17 +366,6 @@ pub(crate) fn forget_abandoned_credentials(
         .map_err(|_| Error::InvalidCredentials)
 }
 
-pub(crate) fn forget_current_credentials(
-    data_dir: &std::path::Path,
-    config: &crate::models::Config,
-) -> Result<(), Error> {
-    let Some(endpoint) = draft_endpoint(config) else {
-        return Ok(());
-    };
-    crate::secrets::save_service_secret(data_dir, &endpoint.credential_key(), "")
-        .map_err(|_| Error::InvalidCredentials)
-}
-
 /// `proxy.authentication` when a request failed because the proxy wants
 /// credentials (an expired password, say); other failures keep their message.
 pub(crate) fn proxy_auth_code(error: &reqwest::Error) -> Option<String> {
@@ -735,21 +724,47 @@ pub(crate) async fn probe_local_http_proxy(port: u16) -> Option<Endpoint> {
     .await
     .ok()?
     .ok()?;
-    let request = b"HEAD http://127.0.0.1:1/ HTTP/1.1\r\nHost: 127.0.0.1:1\r\nProxy-Connection: close\r\nConnection: close\r\n\r\n";
+    // A CONNECT to a closed loopback port is the cheapest request that only a
+    // forward proxy answers as a proxy. An ordinary origin server answers
+    // 400/404/405/501, which must not be mistaken for a proxy, as it would
+    // break every later manifest, asset and assistant request through it.
+    let request = b"CONNECT 127.0.0.1:1 HTTP/1.1\r\nHost: 127.0.0.1:1\r\nProxy-Connection: close\r\nConnection: close\r\n\r\n";
     tokio::time::timeout(Duration::from_millis(180), stream.write_all(request))
         .await
         .ok()?
         .ok()?;
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; 128];
     let n = tokio::time::timeout(Duration::from_millis(220), stream.read(&mut buf))
         .await
         .ok()?
         .ok()?;
-    if n >= 7 && buf[..7].eq_ignore_ascii_case(b"HTTP/1.") {
-        Endpoint::parse("http", "127.0.0.1", port).ok()
-    } else {
-        None
+    let status = proxy_connect_status(&buf[..n])?;
+    proxy_connect_status_is_proxy(status)
+        .then(|| Endpoint::parse("http", "127.0.0.1", port).ok())
+        .flatten()
+}
+
+/// The status code of a proxy's CONNECT reply. A non-HTTP listener, a
+/// malformed status line and HTTP/2 or later are all "not a probe answer".
+fn proxy_connect_status(reply: &[u8]) -> Option<u16> {
+    let line = reply.split(|byte| matches!(byte, b'\r' | b'\n')).next()?;
+    let mut fields = line.split(|byte| *byte == b' ').filter(|field| !field.is_empty());
+    let version = fields.next()?;
+    if !version.eq_ignore_ascii_case(b"HTTP/1.1") && !version.eq_ignore_ascii_case(b"HTTP/1.0") {
+        return None;
     }
+    let status = fields.next()?;
+    if status.len() != 3 || !status.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(status).ok()?.parse().ok()
+}
+
+/// Only a forward proxy's CONNECT outcome counts: it either authenticated,
+/// could not reach the deliberately closed target, or established the tunnel.
+/// An origin server answers 400/403/404/405/501, which is not evidence.
+fn proxy_connect_status_is_proxy(status: u16) -> bool {
+    matches!(status, 200 | 407 | 502 | 503 | 504)
 }
 
 pub(crate) async fn detect_local_proxies_inner(exclude_ports: &[u16]) -> LocalProxyReport {

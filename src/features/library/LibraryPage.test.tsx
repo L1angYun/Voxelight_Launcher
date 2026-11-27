@@ -986,6 +986,39 @@ describe("library and instance details", () => {
     expect(manifest).toHaveBeenCalledTimes(1);
   });
 
+  it("offers OptiFine only as a local JAR import with the official download page, never as an online install", async () => {
+    mockLauncher.manifest = versionFixture();
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    commandMock.mockImplementation(async (name) => {
+      if (name === "list_versions") return mockLauncher.manifest;
+      if (name === "list_loader_versions") return [{ id: "HD_U_J3", stable: true, recommended: true }];
+      if (name === "choose_launcher_path") return ["C:\\SyntheticFixture\\OptiFine_1.21.11_HD_U_J3.jar"];
+      if (name === "install_optifine_installer") return { versionId: "1.21.11-OptiFine_HD_U_J3", loader: "optifine", loaderVersion: "HD_U_J3" };
+      return null;
+    });
+    const onInstalled = vi.fn();
+    await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled }), "en-US");
+    const optifine = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "OptiFine")!;
+    await act(async () => optifine.click());
+    const slot = container.querySelector(".vx-create-loader-slot")!;
+    expect(commandMock.mock.calls.some(([name]) => name === "list_loader_versions")).toBe(false);
+    expect(slot.querySelector('[id$="-create-loader-version"]')).toBeNull();
+    expect(installButton().disabled).toBe(true);
+    expect(slot.textContent).toContain("Voxelight does not download OptiFine");
+    const site = [...slot.querySelectorAll<HTMLAnchorElement>("a")].find(link => link.textContent === "OptiFine downloads (optifine.net)")!;
+    await act(async () => site.click());
+    expect(openUrl).toHaveBeenCalledWith("https://optifine.net/downloads");
+
+    const importJar = [...slot.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Import OptiFine installer JAR…")!;
+    await act(async () => importJar.click());
+    expect(commandMock).toHaveBeenCalledWith("install_optifine_installer", {
+      path: "C:\\SyntheticFixture\\OptiFine_1.21.11_HD_U_J3.jar",
+      expectedGameVersion: "1.21.11",
+    });
+    expect(commandMock.mock.calls.some(([name]) => name === "install_loader")).toBe(false);
+    expect(onInstalled).toHaveBeenCalledWith("1.21.11-OptiFine_HD_U_J3", undefined);
+  });
+
   it("distinguishes an empty Modrinth release list from a failed request and retries just the pack", async () => {
     const mystery = pack("mystery");
     let attempts = 0;

@@ -1020,6 +1020,40 @@ describe("Settings review request", () => {
     expect(container.textContent).toContain("Stopped.");
   });
 
+  it("does not change the Lumen permission when its caption is clicked", async () => {
+    await render();
+    await click("Lumen & MCP");
+    await click("Controlled");
+    const field = container.querySelector<HTMLElement>('[data-settings-target="assistant-permission"]')!;
+    expect(field.closest("label")).toBeNull();
+    const caption = [...field.querySelectorAll<HTMLElement>("span")].find((node) => node.textContent?.trim() === "Tool permission" || node.textContent?.trim() === field.querySelector("span")?.textContent?.trim())!;
+    await act(async () => caption.click());
+    expect(button("Controlled").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("explains why the local MCP server could not start", async () => {
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "start_mcp_server") throw new LauncherError("assistant.mcpPortUnavailable", { port: 25590 });
+      return base(name, args);
+    });
+    await render();
+    await click("Lumen & MCP");
+    await click("Start MCP server");
+    expect(container.querySelector(".vx-settings-error")?.textContent).toBe(
+      "Port 25590 is in use or reserved by Windows. Choose another MCP port and start the server again.",
+    );
+
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "start_mcp_server") throw new LauncherError("assistant.mcpFailed");
+      return base(name, args);
+    });
+    await click("Start MCP server");
+    expect(container.querySelector(".vx-settings-error")?.textContent).toBe(
+      "The MCP server ran into an internal error. Stop it and start it again.",
+    );
+  });
+
   it("restores initial launcher state from Settings → General after confirmation", async () => {
     await render();
     await click("Restore initial state");
@@ -1033,6 +1067,66 @@ describe("Settings review request", () => {
     expect(commandMock).toHaveBeenCalledWith("reset_launcher_state");
     expect(mockLauncher.reload).toHaveBeenCalled();
     expect(container.textContent).toContain("Launcher restored to its initial state.");
+    expect(container.textContent).toContain("Restart the launcher");
+  });
+
+  it("names paused downloads when a reset is refused", async () => {
+    await render();
+    await click("Restore initial state");
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!;
+    const confirm = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+      (candidate) => candidate.textContent?.trim() === "Restore now",
+    )!;
+    commandMock.mockRejectedValueOnce(new LauncherError("reset.downloadsActive"));
+    await act(async () => confirm.click());
+    expect(commandMock).toHaveBeenCalledWith("reset_launcher_state");
+    expect(container.textContent).toContain("Downloads are still running, queued, or paused.");
+    expect(container.textContent).not.toContain("Something went wrong. Open diagnostics for details.");
+  });
+
+  async function confirmReset(outcome: LauncherError, committed?: Config) {
+    await render();
+    await click("Restore initial state");
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!;
+    const confirm = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+      (candidate) => candidate.textContent?.trim() === "Restore now",
+    )!;
+    const fallback = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "reset_launcher_state") throw outcome;
+      if (name === "get_config" && committed) return committed;
+      return fallback(name, args);
+    });
+    await act(async () => confirm.click());
+  }
+
+  it("adopts the committed reset when only account-token cleanup is left, so a later save cannot undo it", async () => {
+    const committed: Config = { ...defaults, tourCompleted: false };
+    await confirmReset(new LauncherError("reset.credentialsPending"), committed);
+    expect(commandMock).toHaveBeenCalledWith("get_config");
+    expect(mockLauncher.reload).toHaveBeenCalled();
+    expect(document.querySelector("dialog[open]")).toBeNull();
+    expect(container.textContent).toContain("Restart the launcher to finish erasing it.");
+
+    await click("Downloads");
+    await fill("Download limit (KiB/s)", "1024");
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        downloadLimitKib: 1024,
+        gameDirectory: committed.gameDirectory,
+        microsoftClientId: committed.microsoftClientId,
+      }),
+      { preserveAppearance: true },
+    );
+  });
+
+  it("keeps the current settings when a saved key stops the reset before it changes anything", async () => {
+    await confirmReset(new LauncherError("reset.secretsLocked"));
+    expect(commandMock).not.toHaveBeenCalledWith("get_config");
+    expect(mockLauncher.reload).not.toHaveBeenCalled();
+    expect(document.querySelector("dialog[open]")).not.toBeNull();
+    expect(container.textContent).toContain("so settings and accounts were not reset.");
   });
 
   it("auto-detects local proxy listeners in Downloads settings and applies them with one click", async () => {

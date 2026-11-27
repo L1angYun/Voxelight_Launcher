@@ -23,7 +23,7 @@
 
 ## 核心特性
 
-- **版本与加载器** — 覆盖全部正式版、快照、远古版（Beta/Alpha）与愚人节版；支持 Fabric、Quilt、Forge、NeoForge 与 OptiFine（本地安装器 JAR 或镜像），并支持在保留存档与模组的前提下为已有实例更换加载器。
+- **版本与加载器** — 覆盖全部正式版、快照、远古版（Beta/Alpha）与愚人节版；支持 Fabric、Quilt、Forge、NeoForge 与 OptiFine（导入官方安装器 JAR），并可为已有实例更换加载器（更换前自动备份）。
 - **实例与内容管理** — 独立实例目录，可按实例覆盖 Java、自动/手动内存、JVM 参数、窗口尺寸与游戏代理；支持实例备份恢复、克隆、个人备份或 Modrinth `.mrpack` 导出；支持世界导入备份、按世界管理数据包、截图浏览、可搜索筛选的实时游戏日志与崩溃诊断报告。
 - **模组与整合包生态** — 对接 Modrinth（自动拉取必需依赖、事务更新与回退）与 CurseForge，支持模组、资源包、光影与整合包搜索安装；支持导入 `.mrpack`、CurseForge、MultiMC / Prism 及 MCBBS 整合包；支持在线整合包差异计划更新与自动备份；支持拖放导入模组、整合包与皮肤，以及本地资源批量启停与删除。
 - **下载中心与本机代理** — 统一任务队列，支持断点续传、多连接、哈希校验、暂停/恢复/取消、全部重试与清理未完成项；支持仅官方源、自动测速优选与 BMCLAPI 优先；代理默认跟随系统，并支持自动检测 Windows 系统代理、环境变量与常见本机 HTTP 代理端口一键采用。
@@ -56,7 +56,7 @@
 | 用途 | 目标地址 |
 | --- | --- |
 | 游戏文件、版本清单、Java | Mojang；下载源允许时也使用 BMCLAPI |
-| 加载器 | Fabric、Quilt、Forge、NeoForge 官方服务；OptiFine 支持本地 JAR 或允许时使用 BMCLAPI |
+| 加载器 | Fabric、Quilt、Forge、NeoForge 官方服务；OptiFine 需导入自行下载的官方安装器 JAR |
 | 微软 / 第三方账号 | Microsoft、Xbox Live、Minecraft 服务；你填写的 Authlib 服务器与 `authlib-injector.yushi.moe` |
 | 资源与整合包 | Modrinth、CurseForge；整合包清单声明的外部文件来源（如 GitHub / GitLab） |
 | 启动器更新 | GitHub、Gitee |

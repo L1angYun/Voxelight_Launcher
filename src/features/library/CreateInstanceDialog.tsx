@@ -11,6 +11,7 @@ import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
+import { OptifineManualHint } from "./OptifineManualHint";
 import type { Loader, LoaderResult, LoaderVersion, ModpackVersion, PackResult } from "./types";
 import { formatDate } from "../../i18n/format";
 import { catalogVersions, categoryCounts, VERSION_CATEGORIES, VERSION_SORTS, visibleVersions, type VersionCategory, type VersionSort } from "./versionCatalog";
@@ -98,7 +99,8 @@ export function CreateInstanceDialog({
   const loaderReady = loaderResponseKey === loaderKey && !loaderLoading && loaderFailure !== loaderKey;
   // Keep the mounted control's previous text during its collapse; it remains inert and cannot submit.
   const displayLoaderChoice = loaderReady || loader === "vanilla";
-  const validSelection = Boolean(chosenVersion && (loader === "vanilla" || loaderReady && loaderVersion));
+  // OptiFine is only imported from a JAR, never installed from a list.
+  const validSelection = Boolean(chosenVersion && (loader === "vanilla" || loader !== "optifine" && loaderReady && loaderVersion));
   const noManifestVersions = manifestState === "ready" && !manifestChoices;
   const noPackVersions = packState === "ready" && packVersions.length === 0;
   const retry = (handler: () => void) => <Button type="button" size="sm" variant="ghost" onClick={handler}>{t("common:actions.retry")}</Button>;
@@ -178,7 +180,7 @@ export function CreateInstanceDialog({
 
   useEffect(() => {
     const request = ++loaderGeneration.current;
-    if (!isOpen || mode !== "version" || loader === "vanilla" || !chosenVersion) return;
+    if (!isOpen || mode !== "version" || loader === "vanilla" || loader === "optifine" || !chosenVersion) return;
     const current = () => request === loaderGeneration.current && requestContext.current.isOpen
       && requestContext.current.mode === "version" && requestContext.current.loaderKey === loaderKey;
     setLoaderFailure("");
@@ -353,6 +355,12 @@ export function CreateInstanceDialog({
           <div className="vx-create-loader-slot" data-expanded={loader !== "vanilla"}
             inert={loader === "vanilla" || !isOpen || undefined} aria-hidden={loader === "vanilla" || !isOpen || undefined}>
           <div className="vx-create-loader-slot__content">
+          {loader === "optifine" ? <div className="vx-form-stack">
+            <OptifineManualHint />
+            <div className="vx-action-row">
+              <Button type="button" size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => void importOptifineJar()}>{t("library:optifineImportJar")}</Button>
+            </div>
+          </div> : <>
           <Field label={t("library:loaderVersion")} htmlFor={`${modeId}-create-loader-version`}><Select id={`${modeId}-create-loader-version`} aria-label={t("library:loaderVersion")} value={displayLoaderChoice ? loaderVersion : ""} onChange={setLoaderVersion} disabled={!isOpen || loader === "vanilla" || !loaderReady || !loaderVersions.length} required options={[
             { value: "", label: displayLoaderChoice ? t("library:noLoaderVersions") : "\u00a0" },
             ...(displayLoaderChoice ? loaderVersions.map((version) => ({ value: version.id, label: `${version.id}${version.recommended ? ` / ${t("library:recommended")}` : ""}` })) : []),
@@ -361,10 +369,7 @@ export function CreateInstanceDialog({
           {loader !== "vanilla" && (loaderFailure === loaderKey || loaderReady && !loaderVersions.length) ? <div className="vx-action-row">
             {loaderFailure === loaderKey ? <span role="alert">{t("library:createMetadata.failedLoader", { loader: names[loader] })}</span> : null}
             {retry(() => retryLoader(value => value + 1))}</div> : null}
-          {loader === "optifine" ? <div className="vx-action-row">
-            <Button type="button" size="sm" variant="secondary" disabled={Boolean(busy)} onClick={() => void importOptifineJar()}>{t("library:optifineImportJar")}</Button>
-            <small className="vx-muted">{t("library:optifineHint")}</small>
-          </div> : null}
+          </>}
           </div>
           </div>
           </div>

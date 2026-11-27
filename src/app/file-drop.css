@@ -23,7 +23,7 @@
     background: var(--surface-solid);
     color: var(--text-primary);
     text-align: center;
-    box-shadow: var(--shadow-dialog);
+    box-shadow: var(--shadow-glass);
   }
 
   .vx-file-drop-overlay__card svg {

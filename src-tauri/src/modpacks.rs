@@ -1478,13 +1478,23 @@ fn find_multimc_prefix(path: &Path) -> Result<Option<String>, String> {
     for n in 0..zip.len() {
         let entry = zip.by_index(n).map_err(|e| e.to_string())?;
         let name = entry.name().map_err(|e| e.to_string())?;
+        let directory = entry.is_dir() || name.ends_with('/');
         let trimmed = name.trim_end_matches('/');
         if trimmed.is_empty() {
             continue;
         }
-        let Some((first, _)) = trimmed.split_once('/') else {
-            return Ok(None);
+        // 7-Zip and Windows Explorer add an explicit `TechPack/` entry, and
+        // macOS adds `__MACOSX/` metadata. A directory entry without a slash
+        // is still the candidate wrapper root, not a reason to give up.
+        let first = match trimmed.split_once('/') {
+            Some((first, _)) => first,
+            None if directory => trimmed,
+            None if matches!(trimmed, ".DS_Store" | "Thumbs.db" | "desktop.ini") => continue,
+            None => return Ok(None),
         };
+        if first == "__MACOSX" {
+            continue;
+        }
         match &common_root {
             None => common_root = Some(first.to_owned()),
             Some(existing) if existing == first => {}
@@ -1752,6 +1762,46 @@ async fn mcbbs_into(
     })
 }
 
+/// What kind of archive `import_inner` was given, after the limits for that
+/// kind have been enforced. `personal_only` is true only when no other format
+/// matched: a `launcher-backup.json` marker must not relax the limits for a
+/// MultiMC, MCBBS, Modrinth or CurseForge archive that also carries it.
+#[derive(Debug)]
+struct ImportMarkers {
+    personal_only: bool,
+    modrinth: bool,
+    curse: bool,
+    mcbbs_entry: Option<&'static str>,
+    multimc_prefix: Option<String>,
+}
+
+fn inspect_import_archive(
+    source: &Path,
+    state: Option<&LauncherState>,
+) -> Result<ImportMarkers, String> {
+    // First a structural pass under the personal-backup ceiling. Nothing is
+    // extracted during detection, so this only bounds inspection work.
+    inspect_zip_limits_controlled(source, MAX_ZIP_BYTES, MAX_ZIP_BYTES, MAX_ZIP_BYTES, state)?;
+    let personal = has_entry(source, "launcher-backup.json")?;
+    let modrinth = has_entry(source, "modrinth.index.json")?;
+    let mcbbs_entry = has_mcbbs_manifest(source)?;
+    let has_manifest = has_entry(source, "manifest.json")?;
+    let curse = has_manifest && mcbbs_entry != Some("manifest.json");
+    let multimc_prefix = find_multimc_prefix(source)?;
+    // The branch actually taken decides the budget. Every non-personal
+    // branch extracts into the instance root, so it must fit the archive and
+    // expanded limits before any file is written.
+    let personal_only = personal
+        && !modrinth
+        && !curse
+        && mcbbs_entry.is_none()
+        && multimc_prefix.is_none();
+    if !personal_only {
+        inspect_zip_limits_controlled(source, MAX_ARCHIVE_BYTES, MAX_PACK_BYTES, MAX_ARCHIVE_BYTES, state)?;
+    }
+    Ok(ImportMarkers { personal_only, modrinth, curse, mcbbs_entry, multimc_prefix })
+}
+
 async fn import_inner(
     app: &AppHandle,
     state: &Arc<LauncherState>,
@@ -1766,21 +1816,13 @@ async fn import_inner(
     crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
     let source = archive.to_owned();
     let inspect_state = state.clone();
-    let (personal, modrinth, curse, mcbbs_entry, multimc_prefix) = tokio::task::spawn_blocking(move || {
+    let markers = tokio::task::spawn_blocking(move || {
         instances::sync_checkpoint(&inspect_state)?;
-        inspect_zip_limits_controlled(&source, MAX_ZIP_BYTES, MAX_ZIP_BYTES, MAX_ZIP_BYTES, Some(&inspect_state))?;
-        let personal = has_entry(&source, "launcher-backup.json")?;
-        if !personal {
-            inspect_zip_limits_controlled(&source, MAX_ARCHIVE_BYTES, MAX_PACK_BYTES, MAX_ARCHIVE_BYTES, Some(&inspect_state))?;
-        }
+        let markers = inspect_import_archive(&source, Some(&inspect_state))?;
         instances::sync_checkpoint(&inspect_state)?;
-        let modrinth = has_entry(&source, "modrinth.index.json")?;
-        let mcbbs_entry = has_mcbbs_manifest(&source)?;
-        let has_manifest = has_entry(&source, "manifest.json")?;
-        let curse = has_manifest && mcbbs_entry != Some("manifest.json");
-        let multimc_prefix = find_multimc_prefix(&source)?;
-        Ok::<_, String>((personal, modrinth, curse, mcbbs_entry, multimc_prefix))
+        Ok::<_, String>(markers)
     }).await.map_err(|error| error.to_string())??;
+    let ImportMarkers { personal_only: personal, modrinth, curse, mcbbs_entry, multimc_prefix } = markers;
     let root = instances::instance_root(state)?;
     let token = uuid::Uuid::new_v4().to_string();
     let stage_name = safe_join(&root, &format!(".pack-staging-{token}"))?;
@@ -2717,6 +2759,48 @@ mod tests {
         ZipArchive::new(std::io::Cursor::new(bytes)).unwrap()
     }
 
+    fn write_zip_entries(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut zip = ZipWriter::new(fs::File::create(path).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, bytes) in entries {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// Rewrites an entry's declared uncompressed size in both headers, leaving
+    /// the archive tiny on disk. The import inspections read these declared
+    /// sizes, so a >8 GiB expansion can be tested without writing it.
+    fn declare_uncompressed_size(path: &Path, name: &str, declared: u32) {
+        let mut bytes = fs::read(path).unwrap();
+        let mut at = 0usize;
+        let mut patched = false;
+        while let Some(found) = bytes[at..].windows(4).position(|window| window == b"PK\x01\x02") {
+            let central = at + found;
+            let name_len = u16::from_le_bytes([bytes[central + 28], bytes[central + 29]]) as usize;
+            let extra_len = u16::from_le_bytes([bytes[central + 30], bytes[central + 31]]) as usize;
+            let comment_len = u16::from_le_bytes([bytes[central + 32], bytes[central + 33]]) as usize;
+            let entry_name = &bytes[central + 46..central + 46 + name_len];
+            if entry_name == name.as_bytes() {
+                bytes[central + 24..central + 28].copy_from_slice(&declared.to_le_bytes());
+                let local = u32::from_le_bytes([
+                    bytes[central + 42],
+                    bytes[central + 43],
+                    bytes[central + 44],
+                    bytes[central + 45],
+                ]) as usize;
+                if bytes.get(local..local + 4) == Some(b"PK\x03\x04") {
+                    bytes[local + 22..local + 26].copy_from_slice(&declared.to_le_bytes());
+                }
+                patched = true;
+            }
+            at = central + 46 + name_len + extra_len + comment_len;
+        }
+        assert!(patched, "entry {name} not found");
+        fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     fn c6_zip_entry_cap_is_inclusive_at_the_limit() {
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -2783,6 +2867,65 @@ mod tests {
     }
 
     #[test]
+    fn u6_import_limits_follow_the_detected_format_not_a_launcher_backup_marker() {
+        fn entry(name: &'static str, bytes: &'static [u8]) -> (&'static str, &'static [u8]) {
+            (name, bytes)
+        }
+        let root = instances::StagingDirectory::create(test_root()).unwrap();
+        let backup = entry("launcher-backup.json", br#"{"formatVersion":1,"files":[],"instance":{}}"#);
+        let mmc: &[u8] = br#"{"formatVersion":1,"components":[{"uid":"net.minecraft","version":"1.21.1"}]}"#;
+        // Every format, each with the personal-backup marker as well. Only
+        // the personal backup itself may use the 32 GiB personal limits.
+        let formats = [
+            ("personal", vec![backup], "personal", ""),
+            ("modrinth", vec![backup, entry("modrinth.index.json", b"{}")], "modrinth", ""),
+            ("curseforge", vec![backup, entry("manifest.json", br#"{"minecraft":{"version":"1.21.1"},"files":[]}"#)], "curse", ""),
+            ("mcbbs-packmeta", vec![backup, entry("mcbbs.packmeta", b"{}")], "mcbbs:mcbbs.packmeta", ""),
+            ("mcbbs-addons", vec![backup, entry("manifest.json", br#"{"addons":[{"id":"game","version":"1.21.1"}]}"#)], "mcbbs:manifest.json", ""),
+            ("multimc", vec![backup, entry("mmc-pack.json", mmc)], "multimc", ""),
+            // A wrapped Prism export from macOS: `.DS_Store` beside the folder.
+            ("wrapped", vec![entry(".DS_Store", b"finder"), entry("TechPack/mmc-pack.json", mmc)], "multimc", "TechPack/"),
+        ];
+        let detected = |markers: &ImportMarkers| {
+            let mut found = Vec::new();
+            if markers.personal_only { found.push("personal".to_owned()); }
+            if markers.modrinth { found.push("modrinth".to_owned()); }
+            if markers.curse { found.push("curse".to_owned()); }
+            if let Some(entry) = markers.mcbbs_entry { found.push(format!("mcbbs:{entry}")); }
+            if markers.multimc_prefix.is_some() { found.push("multimc".to_owned()); }
+            found
+        };
+        for (name, entries, format, prefix) in formats {
+            let payloads = (0..5).map(|n| format!("{prefix}payload-{n}.bin")).collect::<Vec<_>>();
+            let mut all: Vec<(&str, &[u8])> = entries;
+            all.extend(payloads.iter().map(|payload| (payload.as_str(), &b""[..])));
+
+            // Small: detected as exactly this format, inside every limit.
+            let small = root.path().join(format!("{name}-small.zip"));
+            write_zip_entries(&small, &all);
+            let markers = inspect_import_archive(&small, None).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(detected(&markers), [format], "{name}");
+            if format == "multimc" {
+                assert_eq!(markers.multimc_prefix.as_deref(), Some(prefix), "{name}");
+            }
+
+            // Five 2 GiB entries: 10 GiB expanded, below the 32 GiB personal
+            // ceiling but above the 8 GiB limit for every other format.
+            let large = root.path().join(format!("{name}-large.zip"));
+            write_zip_entries(&large, &all);
+            for payload in &payloads {
+                declare_uncompressed_size(&large, payload, 2 * 1024 * 1024 * 1024);
+            }
+            let result = inspect_import_archive(&large, None);
+            if format == "personal" {
+                assert!(result.unwrap().personal_only, "{name}");
+            } else {
+                assert_eq!(result.unwrap_err(), "ZIP 解压大小超过限制", "{name} must be refused before extraction");
+            }
+        }
+    }
+
+    #[test]
     fn u6_multimc_and_prism_packs_stage_flat_and_wrapped_archives_safely() {
         let root = instances::StagingDirectory::create(test_root()).unwrap();
         let (state, _) = shared_export_fixture(root.path());
@@ -2816,10 +2959,17 @@ mod tests {
         assert_eq!(fs::read(stage1.join("config/sodium.json")).unwrap(), b"{}");
 
         // 2. Single-folder wrapped Prism ZIP using `minecraft/` and NeoForge.
+        // Real archivers add explicit directory entries; macOS also adds
+        // `__MACOSX/`, which must not defeat the wrapper detection.
         let wrapped = root.path().join("wrapped-prism.zip");
         {
             let mut zip = ZipWriter::new(fs::File::create(&wrapped).unwrap());
             let opts = SimpleFileOptions::default();
+            zip.add_directory("TechPack/", opts).unwrap();
+            zip.add_directory("__MACOSX/", opts).unwrap();
+            zip.add_directory("__MACOSX/TechPack/", opts).unwrap();
+            zip.start_file("__MACOSX/TechPack/._mmc-pack.json", opts).unwrap();
+            zip.write_all(b"macos metadata").unwrap();
             zip.start_file("TechPack/mmc-pack.json", opts).unwrap();
             zip.write_all(br#"{"formatVersion":1,"components":[{"uid":"net.minecraft","version":"1.21.1"},{"uid":"net.neoforged","version":"21.1.77"}]}"#).unwrap();
             zip.start_file("TechPack/minecraft/options.txt", opts).unwrap();
@@ -3368,8 +3518,12 @@ mod tests {
         };
         let import = body("async fn import_inner(");
         let guard = import.find("crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;").unwrap();
-        assert!(guard < import.find("inspect_zip_limits_controlled(").unwrap());
+        assert!(guard < import.find("inspect_import_archive(").unwrap());
         assert!(guard < import.find("instances::StagingDirectory::create(stage_name)?").unwrap());
+        // The shared inspection applies the ZIP limits before detection decides
+        // which import branch (and which budget) the archive belongs to.
+        let inspect = body("fn inspect_import_archive(");
+        assert!(inspect.contains("inspect_zip_limits_controlled("));
         // The command takes the operation lock, then runs the shared body; a
         // retried install reaches the same body behind the lock (run_queued).
         let online = body("pub async fn install_modrinth_modpack(");

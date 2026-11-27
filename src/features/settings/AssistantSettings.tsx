@@ -259,8 +259,8 @@ export function AssistantSettings({
           </p>
         ) : null}
 
-        <label data-settings-target="assistant-permission">
-          {t("settings:assistant.permission")}
+        <div className="vx-settings-labelled" data-settings-target="assistant-permission">
+          <span>{t("settings:assistant.permission")}</span>
           <Segmented
             semantic="toggle"
             label={t("settings:assistant.permission")}
@@ -272,7 +272,7 @@ export function AssistantSettings({
               { value: "fullAccess", label: t("settings:assistant.permissions.fullAccess") },
             ]}
           />
-        </label>
+        </div>
         <p>{t(`settings:assistant.permissionHints.${config.assistantPermission}`)}</p>
         {tools.length > 0 ? (
           <p>

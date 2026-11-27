@@ -11,7 +11,7 @@ use std::{
     io::{self, Write},
     io::{Read, Seek},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock, RwLock},
     time::Instant,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -486,6 +486,91 @@ fn classify(text: &str) -> DiagnosisKind {
         DiagnosisKind::Unknown
     }
 }
+const REGISTERED_SECRET_LIMIT: usize = 64;
+const MIN_REGISTERED_SECRET_LEN: usize = 16;
+const REDACTED_MARKER: &str = "<redacted>";
+
+/// Short values and the offline placeholder are not credentials.
+fn is_registrable_secret(value: &str) -> bool {
+    value.len() >= MIN_REGISTERED_SECRET_LEN && value != "0"
+}
+
+/// Credentials that [`redact`] masks by value, least recently registered first.
+#[derive(Default)]
+struct SecretRegistry {
+    values: Vec<String>,
+}
+
+impl SecretRegistry {
+    /// The registry is bounded so a long-running process cannot grow it without
+    /// limit. A value registered again becomes the newest, and the oldest one
+    /// is dropped first, so the credentials of the latest launch always stay.
+    fn insert(&mut self, value: &str) {
+        let value = value.trim();
+        if !is_registrable_secret(value) {
+            return;
+        }
+        if let Some(index) = self.values.iter().position(|secret| secret == value) {
+            let existing = self.values.remove(index);
+            self.values.push(existing);
+            return;
+        }
+        if self.values.len() >= REGISTERED_SECRET_LIMIT {
+            self.values.remove(0);
+        }
+        self.values.push(value.to_owned());
+    }
+
+    /// The access token a launch passes to the game, and the
+    /// `token:<token>:<uuid>` session string that 1.7 and 1.8 clients log. An
+    /// offline launch has no credential, so nothing is registered for it.
+    fn insert_launch_credentials(&mut self, access_token: &str, player_uuid: &str) {
+        if !is_registrable_secret(access_token.trim()) {
+            return;
+        }
+        self.insert(access_token);
+        self.insert(&format!("token:{access_token}:{player_uuid}"));
+    }
+
+    /// Longest value first, so a session string is not left as a partially
+    /// replaced token.
+    fn mask(&self, text: &str) -> String {
+        let mut secrets: Vec<&str> = self.values.iter().map(String::as_str).collect();
+        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        let mut text = text.to_owned();
+        for secret in secrets {
+            if text.contains(secret) {
+                text = text.replace(secret, REDACTED_MARKER);
+            }
+        }
+        text
+    }
+}
+
+fn secret_registry() -> &'static RwLock<SecretRegistry> {
+    static SECRETS: OnceLock<RwLock<SecretRegistry>> = OnceLock::new();
+    SECRETS.get_or_init(|| RwLock::new(SecretRegistry::default()))
+}
+
+/// Remember the credentials of a launch before the game can print them, so
+/// [`redact`] masks them even when a log line contains a bare value without a
+/// key or a recognizable token shape.
+pub fn register_launch_credentials(access_token: &str, player_uuid: &str) {
+    secret_registry()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert_launch_credentials(access_token, player_uuid);
+}
+
+/// Remember another credential the launcher holds (for example the Lumen API key
+/// while it is in use), so anything that echoes it back is masked by value.
+pub fn register_secret(value: &str) {
+    secret_registry()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(value);
+}
+
 pub fn redact(text: &str) -> String {
     use std::sync::LazyLock;
     static PROXY_AUTH: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -506,19 +591,61 @@ pub fn redact(text: &str) -> String {
         regex::Regex::new(r#"(?i)(\bbearer\s+)["']?([^\s,;"']+)["']?"#)
             .expect("constant regex")
     });
+    static TOKEN_ARGUMENT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        // Vanilla passes --accessToken as a separate argument; legacy loaders
+        // also print --session or comma-separated forms.
+        regex::Regex::new(r#"(?i)(--(?:access[_-]?token|session)[\s,'\"=]+)([^\s,;\"'\]]+)"#)
+            .expect("constant regex")
+    });
+    static SESSION_ID: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\(Session ID is [^)]*\)").expect("constant regex")
+    });
+    static TOKEN_SESSION: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\btoken:[^:\s]+:[0-9a-fA-F-]{32,36}").expect("constant regex")
+    });
+    static API_KEY: LazyLock<regex::Regex> = LazyLock::new(|| {
+        // OpenAI-style keys (OpenAI, DeepSeek, Anthropic `sk-ant-`), including the partly
+        // masked form a provider echoes back in an authentication error.
+        regex::Regex::new(r"\bsk-[A-Za-z0-9_*-]{8,}").expect("constant regex")
+    });
+    static JWT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        // The payload and signature alone (header cut off) still rebuild a
+        // token, because the header of a services token is a known constant.
+        regex::Regex::new(r"\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){1,2}")
+            .expect("constant regex")
+    });
     static SECRET: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r#"(?i)((?:access[_-]?token|refresh[_-]?token|authorization|client[_-]?secret|password|x-api-key)[\s"':=]+)([^\s,;"']+)"#)
+        // A comma is accepted only for token keys so ordinary prose such as
+        // "authorization, ..." is not mistaken for a credential.
+        regex::Regex::new(r#"(?i)((?:(?:access[_-]?token|refresh[_-]?token)[\s"':=,]+|(?:authorization|client[_-]?secret|password|x-api-key)[\s"':=]+))([^\s,;"']+)"#)
             .expect("constant regex")
     });
     static CLIENT_ID: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"(?i)(--clientId[\s,'\"=]+|clientid=)([^\s,;\"'\]]+)"#)
             .expect("constant regex")
     });
-    let text = URL_USERINFO.replace_all(text, "${1}[已隐藏]@");
+    let text = secret_registry()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .mask(text);
+    let text = URL_USERINFO.replace_all(&text, "${1}[已隐藏]@");
     let text = PROXY_AUTH.replace_all(&text, "${1}[已隐藏]");
     let text = BEARER.replace_all(&text, "${1}[已隐藏]");
     let text = BARE_BEARER.replace_all(&text, "${1}[已隐藏]");
-    let text = SECRET.replace_all(&text, "${1}[已隐藏]");
+    let text = TOKEN_ARGUMENT.replace_all(&text, "${1}<redacted>");
+    let text = SESSION_ID.replace_all(&text, "(Session ID is <redacted>)");
+    let text = TOKEN_SESSION.replace_all(&text, "token:<redacted>");
+    let text = API_KEY.replace_all(&text, "sk-<redacted>");
+    let text = JWT.replace_all(&text, "<redacted>");
+    // An exact marker left by the rules above is already masked; anything else
+    // after a key, including a value that contains or starts with '<', is not.
+    let text = SECRET.replace_all(&text, |captures: &regex::Captures| {
+        if &captures[2] == REDACTED_MARKER {
+            captures[0].to_owned()
+        } else {
+            format!("{}[已隐藏]", &captures[1])
+        }
+    });
     CLIENT_ID.replace_all(&text, "${1}[已隐藏]").into_owned()
 }
 #[tauri::command]
@@ -564,13 +691,7 @@ pub(crate) fn diagnose_instance_inner(
     let text = if let Some(path) = &path {
         let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let size = file.metadata().map_err(|e| e.to_string())?.len();
-        file.seek(std::io::SeekFrom::Start(size.saturating_sub(256 * 1024)))
-            .map_err(|e| e.to_string())?;
-        let mut bytes = Vec::new();
-        file.take(256 * 1024)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        String::from_utf8_lossy(&bytes).into_owned()
+        read_tail_lines(&mut file, size, DIAGNOSTIC_TAIL_BYTES).map_err(|e| e.to_string())?
     } else {
         String::new()
     };
@@ -581,6 +702,38 @@ pub(crate) fn diagnose_instance_inner(
         excerpt,
     })
 }
+const DIAGNOSTIC_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Read at most `max_bytes` from the end of a file of `size` bytes. When that
+/// window starts in the middle of a line, the fragment is dropped: it is not a
+/// whole log record, and a credential cut at the window edge would no longer
+/// match any redaction rule.
+fn read_tail_lines(file: &mut std::fs::File, size: u64, max_bytes: u64) -> io::Result<String> {
+    let tail_bytes = size.min(max_bytes);
+    let start = size - tail_bytes;
+    let mut partial_first_line = false;
+    if start > 0 {
+        // The tail starts in the middle of a line only when the byte before it
+        // is not a newline. At an exact line boundary the first line is whole.
+        let mut previous = [0u8; 1];
+        file.seek(std::io::SeekFrom::Start(start - 1))?;
+        file.read_exact(&mut previous)?;
+        partial_first_line = previous[0] != b'\n';
+    }
+    file.seek(std::io::SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity(tail_bytes as usize);
+    file.take(tail_bytes).read_to_end(&mut bytes)?;
+    if partial_first_line {
+        match bytes.iter().position(|&byte| byte == b'\n') {
+            Some(end) => {
+                bytes.drain(..=end);
+            }
+            None => bytes.clear(),
+        }
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 const GAME_LOG_TAIL_BYTES: u64 = 2 * 1024 * 1024;
 const GAME_LOG_MAX_LINES: usize = 5000;
 
@@ -679,37 +832,13 @@ fn read_game_log_file(root: &Path) -> Result<GameLog, String> {
         }
         Err(error) => return Err(error.to_string()),
     };
-    let tail_bytes = size.min(GAME_LOG_TAIL_BYTES);
-    let start = size - tail_bytes;
     let mut file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
-    let truncated = size > tail_bytes;
-    let mut partial_first_line = false;
-    if truncated && start > 0 {
-        // The tail starts in the middle of a line only when the byte before it
-        // is not a newline. At an exact line boundary the first line is whole.
-        let mut previous = [0u8; 1];
-        file.seek(std::io::SeekFrom::Start(start - 1))
-            .and_then(|_| file.read_exact(&mut previous))
-            .map_err(|error| error.to_string())?;
-        partial_first_line = previous[0] != b'\n';
-    }
-    file.seek(std::io::SeekFrom::Start(start))
+    // A partial first line is not a log record and must not become a synthetic
+    // first entry.
+    let text = read_tail_lines(&mut file, size, GAME_LOG_TAIL_BYTES)
         .map_err(|error| error.to_string())?;
-    let mut bytes = Vec::with_capacity(tail_bytes as usize);
-    file.take(tail_bytes)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    let mut text = String::from_utf8_lossy(&bytes).into_owned();
-    if partial_first_line {
-        // That fragment is not a log record and must not become a synthetic
-        // first entry.
-        match text.find('\n') {
-            Some(end) => { text.drain(..=end); }
-            None => text.clear(),
-        }
-    }
     let mut lines: Vec<&str> = text.lines().collect();
-    let mut truncated = truncated;
+    let mut truncated = size > GAME_LOG_TAIL_BYTES;
     if lines.len() > GAME_LOG_MAX_LINES {
         let extra = lines.len() - GAME_LOG_MAX_LINES;
         lines.drain(..extra);
@@ -1479,6 +1608,292 @@ mod tests {
             !value.contains("secret123")
                 && !value.contains("Bearer123")
                 && !value.contains("private")
+        );
+    }
+
+    const VANILLA_SESSION_TOKEN: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlLXVzZXIiLCJ4dWlkIjoiMDEyMyJ9.Zml4dHVyZS1zaWduYXR1cmU";
+    const VANILLA_SESSION_UUID: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn redact_masks_vanilla_session_id_log_lines() {
+        let line = format!(
+            "[12:00:00] [Client thread/INFO]: (Session ID is token:{VANILLA_SESSION_TOKEN}:{VANILLA_SESSION_UUID})"
+        );
+        let clean = redact(&line);
+        assert!(!clean.contains(VANILLA_SESSION_TOKEN), "{clean}");
+        assert!(!clean.contains("eyJhbGciOiJIUzI1NiJ9"), "{clean}");
+        assert!(clean.contains("(Session ID is <redacted>)"), "{clean}");
+        assert!(clean.contains("[12:00:00] [Client thread/INFO]:"), "{clean}");
+    }
+
+    #[test]
+    fn redact_masks_token_session_strings_and_standalone_jwts() {
+        let session = redact(&format!(
+            "joined token:{VANILLA_SESSION_TOKEN}:{VANILLA_SESSION_UUID}"
+        ));
+        assert_eq!(session, "joined token:<redacted>");
+        let jwt = redact(&format!("payload {VANILLA_SESSION_TOKEN} received"));
+        assert_eq!(jwt, "payload <redacted> received");
+    }
+
+    #[test]
+    fn redact_masks_a_jwt_whose_header_was_cut_off() {
+        let (_, payload_and_signature) = VANILLA_SESSION_TOKEN.split_once('.').unwrap();
+        let fragment = format!("ImFsZyI6IkhTMjU2In0.{payload_and_signature}:{VANILLA_SESSION_UUID})");
+        assert_eq!(
+            redact(&fragment),
+            format!("ImFsZyI6IkhTMjU2In0.<redacted>:{VANILLA_SESSION_UUID})"),
+        );
+    }
+
+    #[test]
+    fn redact_masks_access_token_and_session_launch_arguments() {
+        // An authlib-injector token can be a bare hex string, which only the
+        // argument rule recognizes.
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        for (input, expected) in [
+            (format!("--accessToken, {token}"), "--accessToken, <redacted>"),
+            (format!("--accessToken {token}"), "--accessToken <redacted>"),
+            (format!("--accessToken={token}"), "--accessToken=<redacted>"),
+            (format!("--session {token}"), "--session <redacted>"),
+            (format!("--session, {token}"), "--session, <redacted>"),
+            (format!("--session={token}"), "--session=<redacted>"),
+            (
+                format!("[--username, Steve, --accessToken, {token}, --version, 1.8.9]"),
+                "[--username, Steve, --accessToken, <redacted>, --version, 1.8.9]",
+            ),
+        ] {
+            assert_eq!(redact(&input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn redact_fully_masks_values_that_contain_or_start_with_an_angle_bracket() {
+        for (input, expected) in [
+            (
+                "jdbc:mysql://db/mc?user=mc&password=ab<cdefgh",
+                "jdbc:mysql://db/mc?user=mc&password=[已隐藏]",
+            ),
+            ("password=<hunter2>", "password=[已隐藏]"),
+            ("x-api-key: <k3y>", "x-api-key: [已隐藏]"),
+            (r#"client_secret="x<yz123""#, r#"client_secret="[已隐藏]""#),
+            ("-Dhttp.proxyPassword=p<ss", "-Dhttp.proxyPassword=[已隐藏]"),
+        ] {
+            assert_eq!(redact(input), expected, "{input}");
+        }
+        // Only the exact marker left by the earlier rules is kept as it is.
+        assert_eq!(redact("access_token=<redacted>"), "access_token=<redacted>");
+        assert_eq!(redact("access_token=<redacted>tail"), "access_token=[已隐藏]");
+    }
+
+    #[test]
+    fn redact_masks_comma_separated_token_assignments() {
+        for input in [
+            "access_token, fixture-access-value",
+            "refresh_token, fixture-refresh-value",
+        ] {
+            let clean = redact(input);
+            assert!(!clean.contains("fixture-"), "{clean}");
+            assert!(clean.contains("[已隐藏]"), "{clean}");
+        }
+        assert_eq!(redact("authorization, of course"), "authorization, of course");
+    }
+
+    #[test]
+    fn registered_launch_credentials_are_masked_without_a_key() {
+        let token = format!("fixture-registered-token-{}", uuid::Uuid::new_v4().simple());
+        let session = format!("token:{token}:{VANILLA_SESSION_UUID}");
+        register_launch_credentials(&token, VANILLA_SESSION_UUID);
+        assert_eq!(redact(&format!("random text {token} more")), "random text <redacted> more");
+        assert_eq!(redact(&format!("random text {session} more")), "random text <redacted> more");
+
+        let unregistered = format!("fixture-unregistered-token-{}", uuid::Uuid::new_v4());
+        assert_eq!(
+            redact(&format!("random text {unregistered} more")),
+            format!("random text {unregistered} more"),
+        );
+    }
+
+    #[test]
+    fn secret_registry_ignores_short_values_and_offline_launches() {
+        let mut registry = SecretRegistry::default();
+        registry.insert("short-secret");
+        registry.insert("0");
+        registry.insert_launch_credentials("0", VANILLA_SESSION_UUID);
+        assert!(registry.values.is_empty(), "{:?}", registry.values);
+        assert_eq!(
+            registry.mask("random text short-secret and 0 more"),
+            "random text short-secret and 0 more",
+        );
+    }
+
+    #[test]
+    fn secret_registry_is_bounded_and_drops_the_oldest_value_first() {
+        let mut registry = SecretRegistry::default();
+        let fill: Vec<String> = (0..REGISTERED_SECRET_LIMIT)
+            .map(|index| format!("fixture-bounded-secret-{index:04}"))
+            .collect();
+        for value in &fill {
+            registry.insert(value);
+        }
+        assert_eq!(registry.values, fill);
+
+        // A launch registers its token and then the session string; both must
+        // survive in a full registry.
+        let token = "fixture-bounded-launch-token";
+        let session = format!("token:{token}:{VANILLA_SESSION_UUID}");
+        registry.insert_launch_credentials(token, VANILLA_SESSION_UUID);
+        assert_eq!(registry.values.len(), REGISTERED_SECRET_LIMIT, "the registry must stay bounded");
+        assert_eq!(
+            registry.values[REGISTERED_SECRET_LIMIT - 2..].to_vec(),
+            vec![token.to_owned(), session.clone()],
+        );
+        assert_eq!(registry.values[0], fill[2], "the two oldest values are dropped");
+        assert_eq!(registry.mask(&format!("{token} {session}")), "<redacted> <redacted>");
+        assert_eq!(registry.mask(&fill[1]), fill[1]);
+
+        // A value registered again becomes the newest and outlives older ones.
+        registry.insert(&fill[2]);
+        registry.insert("fixture-bounded-secret-next");
+        assert!(registry.values.contains(&fill[2]), "{:?}", registry.values);
+        assert!(!registry.values.contains(&fill[3]), "{:?}", registry.values);
+    }
+
+    #[test]
+    fn launch_registers_its_credentials_before_passing_them_to_the_game() {
+        let source = crate::storage::executable_source(include_str!("minecraft.rs"));
+        let (_, launch) = source.split_once("async fn launch_prepared(").unwrap();
+        let (launch, _) = launch.split_once("\n}").unwrap();
+        let registered = launch
+            .find("crate::processes::register_launch_credentials(access_token, player_uuid);")
+            .expect("launch registers the token it passes to the game");
+        assert!(registered < launch.find("(\"auth_access_token\", access_token)").unwrap());
+        assert!(registered < launch.find("(\"auth_session\", access_token)").unwrap());
+    }
+
+    #[test]
+    fn tail_reading_drops_only_a_partial_first_line() {
+        let fixture = GameLogFixture::new(Some(b"first line\nsecond line\nthird"));
+        let path = fixture.game.join("logs/latest.log");
+        let read = |max_bytes: usize| {
+            let mut file = std::fs::File::open(&path).unwrap();
+            let size = file.metadata().unwrap().len();
+            read_tail_lines(&mut file, size, max_bytes as u64).unwrap()
+        };
+        assert_eq!(read(1024), "first line\nsecond line\nthird");
+        assert_eq!(
+            read("second line\nthird".len()),
+            "second line\nthird",
+            "a window that starts at a line keeps that line",
+        );
+        assert_eq!(read("cond line\nthird".len()), "third");
+        assert_eq!(read("hird".len()), "");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn diagnostic_excerpt_starts_at_a_line_so_a_cut_session_line_leaks_nothing() {
+        let (_, payload_and_signature) = VANILLA_SESSION_TOKEN.split_once('.').unwrap();
+        let (payload, signature) = payload_and_signature.split_once('.').unwrap();
+        // An authlib-injector token is a bare hex string and is not in the
+        // registry after a launcher restart.
+        let hex_token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let prefix = "[12:00:00] [Client thread/INFO]: (Session ID is ";
+        let filler = "[12:00:01] [Client thread/INFO]: filler line for the diagnostic window\n";
+        for (token, window_start, secrets) in [
+            // The window starts inside "token:".
+            (hex_token.as_str(), prefix.len() + "tok".len(), vec![hex_token.as_str()]),
+            // The window starts inside the JWT header.
+            (
+                VANILLA_SESSION_TOKEN,
+                prefix.len() + "token:eyJhb".len(),
+                vec![VANILLA_SESSION_TOKEN, payload, signature],
+            ),
+        ] {
+            let total = window_start + DIAGNOSTIC_TAIL_BYTES as usize;
+            let mut content = format!("{prefix}token:{token}:{VANILLA_SESSION_UUID})\n");
+            while content.len() + filler.len() < total {
+                content.push_str(filler);
+            }
+            content.push_str(&"x".repeat(total - content.len() - 1));
+            content.push('\n');
+            assert_eq!(content.len(), total);
+
+            let fixture = GameLogFixture::new(Some(content.as_bytes()));
+            let diagnosis = diagnose_instance_inner(&fixture.state, "1.21.1".into(), None).unwrap();
+            fixture.cleanup();
+            let head: String = diagnosis.excerpt.chars().take(120).collect();
+            for secret in secrets {
+                assert!(!diagnosis.excerpt.contains(secret), "{head}");
+            }
+            assert!(diagnosis.excerpt.starts_with(filler), "{head}");
+        }
+    }
+
+    #[test]
+    fn game_log_and_diagnostics_redact_vanilla_session_lines() {
+        let line = format!(
+            "[12:00:00] [Client thread/INFO]: (Session ID is token:{VANILLA_SESSION_TOKEN}:{VANILLA_SESSION_UUID})"
+        );
+        let records = parse_game_log([line.as_str()]);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].message, "(Session ID is <redacted>)");
+
+        let fixture = GameLogFixture::new(Some(format!("{line}\n").as_bytes()));
+        let log = fixture.read().unwrap();
+        assert_eq!(log.lines.len(), 1);
+        assert!(!log.lines[0].message.contains(VANILLA_SESSION_TOKEN), "{:?}", log.lines);
+        assert!(log.lines[0].message.contains("(Session ID is <redacted>)"), "{:?}", log.lines);
+        let diagnosis = diagnose_instance_inner(&fixture.state, "1.21.1".into(), None).unwrap();
+        assert!(!diagnosis.excerpt.contains(VANILLA_SESSION_TOKEN), "{}", diagnosis.excerpt);
+        assert!(diagnosis.excerpt.contains("(Session ID is <redacted>)"), "{}", diagnosis.excerpt);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn a_registered_service_key_is_masked_in_any_shape() {
+        let key = format!("svc-{}", uuid::Uuid::new_v4().simple());
+        register_secret(&key);
+        assert_eq!(redact(&format!("echo {key}!")), "echo <redacted>!");
+    }
+
+    #[test]
+    fn redact_masks_provider_api_keys_and_their_echoed_fragments() {
+        let echoed = "Incorrect API key provided: sk-dd7cb***********************537f. You can find your API key at https://platform.example.invalid/api-keys.";
+        let clean = redact(echoed);
+        assert!(!clean.contains("dd7cb") && !clean.contains("537f"), "{clean}");
+        assert!(clean.contains("sk-<redacted>"), "{clean}");
+        for key in ["sk-proj-AbCdEfGh12345678", "sk-ant-api03-ZyXwVu98765432", "sk-0123456789abcdef0123"] {
+            assert_eq!(redact(&format!("key {key} end")), "key sk-<redacted> end", "{key}");
+        }
+        assert_eq!(redact("task-runner started"), "task-runner started");
+        assert_eq!(redact("Desk-lamp model"), "Desk-lamp model");
+    }
+
+    #[test]
+    fn redaction_leaves_ordinary_log_lines_unchanged() {
+        for line in [
+            "Loading tokens from mod list",
+            "UUID of player Steve is 069a79f4-44e9-4726-a5be-fca90e38aaf5",
+            "Pack hash: q2V4YW1wbGUtcmVzb3VyY2UtcGFjay1oYXNo==",
+            "[main/INFO]: Setting user: Steve",
+            "Texture property eyJ0aW1lc3RhbXAiOjE2NzAwMDAwMDB9. Loaded.",
+            "at com.example.config.KeyJsonSerializer.deserialize(KeyJsonSerializer.java:42)",
+            "net.example.HockeyJerseyRenderer.renderModel(HockeyJerseyRenderer.java:7)",
+        ] {
+            assert_eq!(redact(line), line, "{line}");
+        }
+        // Keep the new token rules active while checking that they do not consume
+        // the ordinary text above.
+        assert_eq!(
+            redact(&format!(
+                "(Session ID is token:{VANILLA_SESSION_TOKEN}:{VANILLA_SESSION_UUID})"
+            )),
+            "(Session ID is <redacted>)",
         );
     }
 

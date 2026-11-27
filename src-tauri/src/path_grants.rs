@@ -87,8 +87,29 @@ impl PathUse {
     }
 }
 
+type GrantKey = (PathUse, PathBuf, String);
+
+/// An OS-drop grant: when it expires and which drop of its window it came
+/// from (a dialog peeking at it moves it to the window's latest drop).
+#[derive(Clone, Copy)]
+struct DropGrant {
+    expiry: Instant,
+    serial: u64,
+}
+
+/// Native picker grants and OS-drop grants live in separate, bounded pools.
+/// A drop needs no native dialog approval, so an unconsumed drop must never
+/// use up the room a later native picker needs (and vice versa).
 #[derive(Default)]
-pub struct PathGrants(Mutex<HashMap<(PathUse, PathBuf, String), Instant>>);
+struct GrantTable {
+    native: HashMap<GrantKey, Instant>,
+    dropped: HashMap<GrantKey, DropGrant>,
+    /// The number of each window's latest drop.
+    drops: HashMap<String, u64>,
+}
+
+#[derive(Default)]
+pub struct PathGrants(Mutex<GrantTable>);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,34 +123,101 @@ pub struct DroppedFiles {
 
 const LIFE: Duration = Duration::from_secs(300);
 const MAX_GRANTS: usize = 256;
+/// A window keeps the grants of its latest drops only. A dialog still holding
+/// an earlier drop (a dropped modpack waiting for its name, a previewed skin)
+/// survives a few unrelated drops, and repeated drops cannot pile up.
+const RECENT_DROPS: u64 = 8;
+/// Every drop grant together. One drop mints at most 101 (100 files plus a
+/// second PackRead grant for a single ZIP), so a window's recent drops always
+/// fit; only several busy windows at once can overflow it.
+const MAX_DROP_GRANTS: usize = 1024;
+
+impl GrantTable {
+    fn prune(&mut self, now: Instant) {
+        self.native.retain(|_, expiry| *expiry > now);
+        self.dropped.retain(|_, grant| grant.expiry > now);
+    }
+
+    fn matching<'a>(
+        mut entries: impl Iterator<Item = (&'a GrantKey, Instant)>,
+        purpose: PathUse,
+        value: &str,
+        window: &str,
+        now: Instant,
+    ) -> Option<&'a GrantKey> {
+        entries.find(|((use_, path, label), expiry)| {
+            *use_ == purpose
+                && label == window
+                && *expiry > now
+                && crate::storage::display_profile_path(path) == value
+        }).map(|(key, _)| key)
+    }
+
+    fn native_matching(&self, purpose: PathUse, value: &str, window: &str, now: Instant) -> Option<&GrantKey> {
+        Self::matching(self.native.iter().map(|(key, expiry)| (key, *expiry)), purpose, value, window, now)
+    }
+
+    fn dropped_matching(&self, purpose: PathUse, value: &str, window: &str, now: Instant) -> Option<&GrantKey> {
+        Self::matching(self.dropped.iter().map(|(key, grant)| (key, grant.expiry)), purpose, value, window, now)
+    }
+}
 
 impl PathGrants {
     fn insert_all(&self, purpose: PathUse, paths: &[PathBuf], window: &str, now: Instant) -> AppResult<()> {
         if paths.len() > 100 { return Err(AppError::new("storage.pathAuthorizationRequired")); }
         let mut grants = self.0.lock().map_err(|_| AppError::new("storage.pathAuthorizationRequired"))?;
-        grants.retain(|_, expiry| *expiry > now);
-        if grants.len() + paths.len() > MAX_GRANTS {
+        grants.prune(now);
+        // Only native choices count against the native limit.
+        if grants.native.len() + paths.len() > MAX_GRANTS {
             return Err(AppError::new("storage.pathAuthorizationRequired"));
         }
-        for path in paths { grants.insert((purpose, path.clone(), window.into()), now + LIFE); }
+        for path in paths { grants.native.insert((purpose, path.clone(), window.into()), now + LIFE); }
+        Ok(())
+    }
+
+    /// Starts a new OS drop in `window` and returns its number. The grants of
+    /// the window's drops before the latest `RECENT_DROPS` are released, even
+    /// when this drop has nothing usable.
+    fn begin_drop(&self, window: &str) -> u64 {
+        let Ok(mut grants) = self.0.lock() else { return 0 };
+        let serial = grants.drops.get(window).map_or(1, |latest| latest + 1);
+        grants.drops.insert(window.into(), serial);
+        grants.dropped.retain(|(_, _, label), grant| label != window || grant.serial + RECENT_DROPS > serial);
+        serial
+    }
+
+    fn insert_dropped_all(&self, purpose: PathUse, paths: &[PathBuf], window: &str, serial: u64, now: Instant) -> AppResult<()> {
+        if paths.is_empty() { return Ok(()); }
+        let mut grants = self.0.lock().map_err(|_| AppError::new("storage.pathAuthorizationRequired"))?;
+        grants.prune(now);
+        let keys = paths.iter().map(|path| (purpose, path.clone(), window.to_owned())).collect::<Vec<_>>();
+        let added = keys.iter().filter(|key| !grants.dropped.contains_key(*key)).count();
+        if grants.dropped.len() + added > MAX_DROP_GRANTS {
+            return Err(AppError::new("storage.pathAuthorizationRequired"));
+        }
+        for key in keys { grants.dropped.insert(key, DropGrant { expiry: now + LIFE, serial }); }
         Ok(())
     }
 
     fn consume_all(&self, purpose: PathUse, values: &[&str], window: &str, now: Instant) -> AppResult<Vec<PathBuf>> {
         if values.is_empty() || values.len() > 100 { return Err(AppError::new("storage.pathAuthorizationRequired")); }
         let mut grants = self.0.lock().map_err(|_| AppError::new("storage.pathAuthorizationRequired"))?;
-        grants.retain(|_, expiry| *expiry > now);
+        grants.prune(now);
         let mut keys = Vec::with_capacity(values.len());
         for value in values {
             // Check the exact display value against previously selected names
             // before touching a renderer-supplied path on disk.
-            let key = grants.keys().find(|(use_, path, label)| *use_ == purpose
-                && label == window && crate::storage::display_profile_path(path) == *value)
-                .ok_or_else(|| AppError::new("storage.pathAuthorizationRequired"))?;
-            if keys.contains(key) { return Err(AppError::new("storage.pathAuthorizationRequired")); }
-            keys.push(key.clone());
+            let key = grants.native_matching(purpose, value, window, now)
+                .or_else(|| grants.dropped_matching(purpose, value, window, now))
+                .ok_or_else(|| AppError::new("storage.pathAuthorizationRequired"))?
+                .clone();
+            if keys.contains(&key) { return Err(AppError::new("storage.pathAuthorizationRequired")); }
+            keys.push(key);
         }
-        for key in &keys { grants.remove(key); }
+        for key in &keys {
+            grants.native.remove(key);
+            grants.dropped.remove(key);
+        }
         drop(grants);
         keys.into_iter().zip(values).map(|((_, path, _), value)| {
             let current = purpose.resolve(Path::new(value))?;
@@ -143,15 +231,30 @@ impl PathGrants {
     /// time spent filling in the rest of a form does not expire it.
     fn peek_at(&self, purpose: PathUse, value: &str, window: &str, now: Instant) -> AppResult<PathBuf> {
         let mut grants = self.0.lock().map_err(|_| AppError::new("storage.pathAuthorizationRequired"))?;
-        let (key, expiry) = grants.iter_mut().find(|((use_, path, label), expiry)| *use_ == purpose && label == window
-            && **expiry > now && crate::storage::display_profile_path(path) == value)
-            .ok_or_else(|| AppError::new("storage.pathAuthorizationRequired"))?;
-        *expiry = now + LIFE;
-        let path = key.1.clone();
-        drop(grants);
-        let current = purpose.resolve(Path::new(value))?;
-        if current != path { return Err(AppError::new("storage.pathAuthorizationRequired")); }
-        Ok(current)
+        // Do not prune here: a look at a later time must not erase a choice
+        // that is still valid for the caller's current time (tests use
+        // simulated clocks; production clocks only move forward).
+        // Search native first, then drop grants; a path approved both ways is
+        // renewed in the native pool.
+        if let Some(key) = grants.native_matching(purpose, value, window, now).cloned() {
+            grants.native.insert(key.clone(), now + LIFE);
+            let path = key.1;
+            drop(grants);
+            let current = purpose.resolve(Path::new(value))?;
+            if current != path { return Err(AppError::new("storage.pathAuthorizationRequired")); }
+            return Ok(current);
+        }
+        if let Some(key) = grants.dropped_matching(purpose, value, window, now).cloned() {
+            // A dialog is using it: it counts as part of the latest drop.
+            let serial = grants.drops.get(window).copied().unwrap_or(0);
+            grants.dropped.insert(key.clone(), DropGrant { expiry: now + LIFE, serial });
+            let path = key.1;
+            drop(grants);
+            let current = purpose.resolve(Path::new(value))?;
+            if current != path { return Err(AppError::new("storage.pathAuthorizationRequired")); }
+            return Ok(current);
+        }
+        Err(AppError::new("storage.pathAuthorizationRequired"))
     }
 
     pub(crate) fn peek(&self, purpose: PathUse, value: &str, window: &WebviewWindow) -> AppResult<PathBuf> {
@@ -181,6 +284,7 @@ impl PathGrants {
 
     fn grant_dropped_at(&self, paths: &[PathBuf], window: &str, now: Instant) -> DroppedFiles {
         let mut payload = DroppedFiles::default();
+        let serial = self.begin_drop(window);
         let mut mods = Vec::new();
         let mut zips = Vec::new();
         let mut modpacks = Vec::new();
@@ -223,8 +327,12 @@ impl PathGrants {
                 payload.unsupported += 1;
             }
         }
-        let grant_list = |purpose: PathUse, items: &[PathBuf]| -> Vec<String> {
-            if items.is_empty() || self.insert_all(purpose, items, window, now).is_err() {
+        let grant_list = |purpose: PathUse, items: &[PathBuf], unsupported: &mut usize| -> Vec<String> {
+            if items.is_empty() { return Vec::new(); }
+            if self.insert_dropped_all(purpose, items, window, serial, now).is_err() {
+                // Overflow is reported as unsupported instead of silently
+                // dropping files while claiming they were granted.
+                *unsupported += items.len();
                 return Vec::new();
             }
             items.iter().map(|path| crate::storage::display_profile_path(path)).collect()
@@ -232,16 +340,20 @@ impl PathGrants {
         let mut resource_items = Vec::with_capacity(mods.len() + zips.len());
         resource_items.extend(mods.iter().cloned());
         resource_items.extend(zips.iter().cloned());
-        if !resource_items.is_empty() && self.insert_all(PathUse::LocalResources, &resource_items, window, now).is_ok() {
-            payload.mods = mods.iter().map(|path| crate::storage::display_profile_path(path)).collect();
-            payload.zips = zips.iter().map(|path| crate::storage::display_profile_path(path)).collect();
-            // A single dropped .zip may be a CurseForge modpack dropped on Home/Library.
-            if zips.len() == 1 {
-                let _ = self.insert_all(PathUse::PackRead, &zips, window, now);
+        if !resource_items.is_empty() {
+            if self.insert_dropped_all(PathUse::LocalResources, &resource_items, window, serial, now).is_ok() {
+                payload.mods = mods.iter().map(|path| crate::storage::display_profile_path(path)).collect();
+                payload.zips = zips.iter().map(|path| crate::storage::display_profile_path(path)).collect();
+                // A single dropped .zip may be a CurseForge modpack dropped on Home/Library.
+                if zips.len() == 1 {
+                    let _ = self.insert_dropped_all(PathUse::PackRead, &zips, window, serial, now);
+                }
+            } else {
+                payload.unsupported += resource_items.len();
             }
         }
-        payload.modpacks = grant_list(PathUse::PackRead, &modpacks);
-        payload.skins = grant_list(PathUse::Skin, &skins);
+        payload.modpacks = grant_list(PathUse::PackRead, &modpacks, &mut payload.unsupported);
+        payload.skins = grant_list(PathUse::Skin, &skins, &mut payload.unsupported);
         payload
     }
 
@@ -479,5 +591,120 @@ mod tests {
         assert!(table.consume_all(PathUse::Skin, &[&dropped.skins[0]], "main", now).is_ok());
         // Wrong window or purpose is refused.
         assert!(table.peek_at(PathUse::Skin, &dropped.skins[0], "main", now).is_err());
+    }
+
+    fn drop_fixture() -> crate::instances::StagingDirectory {
+        crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        ).unwrap()
+    }
+
+    fn fixture_file(root: &crate::instances::StagingDirectory, name: &str) -> PathBuf {
+        let path = root.path().join(name);
+        fs::write(&path, name.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn u3_a_later_drop_keeps_the_grants_an_open_dialog_still_uses() {
+        let root = drop_fixture();
+        let pack = fixture_file(&root, "pack.mrpack");
+        let skin = fixture_file(&root, "skin.png");
+        let note = fixture_file(&root, "readme.txt");
+        let jar = fixture_file(&root, "sodium.jar");
+        let folder = root.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        let table = PathGrants::default();
+        let now = Instant::now();
+
+        // The import dialog keeps the dropped pack; the skin panel previews a skin.
+        let packs = table.grant_dropped_at(&[pack], "main", now);
+        let skins = table.grant_dropped_at(&[skin], "main", now);
+        table.peek_at(PathUse::Skin, &skins.skins[0], "main", now).unwrap();
+        // Then the user drops things those dialogs ignore.
+        assert_eq!(table.grant_dropped_at(&[note], "main", now).unsupported, 1);
+        assert_eq!(table.grant_dropped_at(&[jar], "main", now).mods.len(), 1);
+        assert_eq!(table.grant_dropped_at(&[folder], "main", now).unsupported, 1);
+        assert!(table.consume_all(PathUse::PackRead, &[&packs.modpacks[0]], "main", now).is_ok());
+        assert!(table.consume_all(PathUse::Skin, &[&skins.skins[0]], "main", now).is_ok());
+    }
+
+    #[test]
+    fn u3_a_window_keeps_only_its_latest_drops_and_a_peek_counts_as_recent() {
+        let root = drop_fixture();
+        let packs = ["a", "b", "c"].map(|name| fixture_file(&root, &format!("{name}.mrpack")));
+        let other = fixture_file(&root, "other.mrpack");
+        let note = fixture_file(&root, "readme.txt");
+        let table = PathGrants::default();
+        let now = Instant::now();
+        let unrelated = |count: u64| {
+            for _ in 0..count {
+                assert_eq!(table.grant_dropped_at(std::slice::from_ref(&note), "main", now).unsupported, 1);
+            }
+        };
+
+        let first = table.grant_dropped_at(&packs, "main", now).modpacks;
+        let elsewhere = table.grant_dropped_at(&[other], "other", now).modpacks;
+        unrelated(RECENT_DROPS - 1);
+        // The first drop is still one of the window's latest.
+        assert!(table.consume_all(PathUse::PackRead, &[&first[0]], "main", now).is_ok());
+        // A dialog looking at a grant keeps it with the latest drop.
+        table.peek_at(PathUse::PackRead, &first[2], "main", now).unwrap();
+        unrelated(1);
+        assert!(
+            table.consume_all(PathUse::PackRead, &[&first[1]], "main", now).is_err(),
+            "a drop older than the latest {RECENT_DROPS} is released"
+        );
+        unrelated(RECENT_DROPS - 2);
+        assert!(table.consume_all(PathUse::PackRead, &[&first[2]], "main", now).is_ok());
+        // Another window's drops are its own.
+        assert!(table.consume_all(PathUse::PackRead, &[&elsewhere[0]], "other", now).is_ok());
+    }
+
+    #[test]
+    fn u3_drop_grants_are_bounded_report_overflow_and_never_block_native_grants() {
+        let root = drop_fixture();
+        let groups = (0..RECENT_DROPS + 3)
+            .map(|group| (0..100).map(|n| fixture_file(&root, &format!("g{group}-{n}.jar"))).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let skin = fixture_file(&root, "skin.png");
+        let pack = fixture_file(&root, "pack.mrpack");
+        let zip = fixture_file(&root, "pack.zip");
+        let table = PathGrants::default();
+        let now = Instant::now();
+
+        let first = table.grant_dropped_at(&groups[0], "main", now);
+        assert_eq!(first.mods.len(), 100);
+        // Unconsumed drop grants do not occupy the native picker's 256 slots.
+        let native = (0..MAX_GRANTS)
+            .map(|n| PathUse::Background.resolve(&fixture_file(&root, &format!("native-{n}.png"))).unwrap())
+            .collect::<Vec<_>>();
+        for chunk in native.chunks(100) {
+            table.insert_all(PathUse::Background, chunk, "main", now).unwrap();
+        }
+
+        // Large drops one after another never overflow: older drops are released.
+        for group in &groups[1..] {
+            let dropped = table.grant_dropped_at(group, "main", now);
+            assert_eq!((dropped.mods.len(), dropped.unsupported), (100, 0));
+        }
+        assert!(table.consume_all(PathUse::LocalResources, &[&first.mods[0]], "main", now).is_err());
+
+        // Several busy windows together can fill the pool: 800 grants for
+        // main's latest drops, then 224 more fill it exactly.
+        assert_eq!(table.grant_dropped_at(&groups[0], "w1", now).mods.len(), 100);
+        assert_eq!(table.grant_dropped_at(&groups[1], "w2", now).mods.len(), 100);
+        assert_eq!(table.grant_dropped_at(&groups[2][..24], "w3", now).mods.len(), 24);
+        // Every refused file is reported as unsupported, of every kind,
+        // instead of empty lists that look handled.
+        let overflow = table.grant_dropped_at(&[skin, pack, zip, groups[3][0].clone()], "w4", now);
+        assert!(overflow.skins.is_empty() && overflow.modpacks.is_empty());
+        assert!(overflow.mods.is_empty() && overflow.zips.is_empty());
+        assert_eq!(overflow.unsupported, 4);
+        // Native choices still work with the drop pool full.
+        let chosen = crate::storage::display_profile_path(&native[0]);
+        assert_eq!(table.consume_all(PathUse::Background, &[&chosen], "main", now).unwrap(), vec![native[0].clone()]);
+        table.insert_all(PathUse::Background, &native[..1], "main", now).unwrap();
     }
 }

@@ -26,6 +26,25 @@ const MAX_TREE_DEPTH: usize = 64;
 /// match what was read; the server import names these for its own users.
 pub(crate) const COPY_CHANGED: &str = "复制期间实例文件发生变化，请关闭游戏后重试。原实例未改变。";
 pub(crate) const COPY_MISMATCH: &str = "实例副本校验失败，原实例未改变";
+pub(crate) const BASE_VERSION_UNKNOWN: &str = "无法确定此实例的基础 Minecraft 版本，请先确认对应版本配置文件存在";
+pub(crate) const LOADER_BACKUP_FAILED_PREFIX: &str = "更换加载器前备份实例失败：";
+/// Why an instance inventory or archive cannot be made. errors.rs gives each
+/// a loader-switch code, so the user learns why the backup was refused.
+pub(crate) const LINKS_REFUSED: &str = "拒绝通过符号链接或目录联接访问实例文件";
+pub(crate) const TREE_SPECIAL_FILE: &str = "实例包含不支持的特殊文件";
+pub(crate) const TREE_TOO_DEEP: &str = "实例目录层级超过 64，拒绝继续扫描";
+pub(crate) const TREE_TOO_MANY_ENTRIES: &str = "实例文件和目录超过 200000 项，请先整理后重试";
+pub(crate) const TREE_TOO_MANY_FILES: &str = "实例文件超过 100000 个，请先整理后重试";
+pub(crate) const TREE_TOO_LARGE: &str = "实例超过 32 GiB，请使用系统备份工具处理";
+pub(crate) const BACKUP_CHANGED: &str = "备份期间实例文件发生变化，请关闭游戏后重试";
+pub(crate) const BACKUP_NO_SPACE_PREFIX: &str = "备份所在磁盘可用空间不足：";
+const BACKUP_NO_SPACE_NEEDED: &str = "需要约 ";
+const BACKUP_NO_SPACE_AVAILABLE: &str = " MB，可用 ";
+const MIB: u64 = 1024 * 1024;
+/// Left free on the backup drive, so a backup never fills the system drive.
+const BACKUP_SPACE_RESERVE: u64 = 256 * MIB;
+/// Automatic pre-switch backups kept per instance, the newest first.
+const LOADER_SWITCH_BACKUPS_KEPT: usize = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct FileRecord {
@@ -34,7 +53,7 @@ pub(crate) struct FileRecord {
     pub sha256: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceBackup {
     pub id: String,
@@ -43,6 +62,38 @@ pub struct InstanceBackup {
     pub created_at: String,
     pub path: String,
     pub size: u64,
+}
+
+/// A recorded loader switch. `backup_id` names the backup taken before it, or
+/// is null when none was needed (same loader and version), the switch left the
+/// loader install unchanged, or the user chose to switch without one. The
+/// instance fields stay flattened so existing callers still receive an
+/// instance document, now with one extra `backupId` property.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceLoaderChange {
+    #[serde(flatten)]
+    pub instance: Instance,
+    pub backup_id: Option<String>,
+}
+
+/// Whether a loader switch takes its backup. Only the window's confirmed
+/// second choice skips it; the assistant and MCP never do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LoaderSwitchBackup {
+    Required,
+    SkippedByUser,
+}
+
+impl LoaderSwitchBackup {
+    /// The window's `skipBackup` flag: only an explicit `true` skips.
+    pub(crate) fn from_window(skip_backup: Option<bool>) -> Self {
+        if skip_backup == Some(true) {
+            Self::SkippedByUser
+        } else {
+            Self::Required
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,6 +105,10 @@ struct BackupManifest {
     files: Vec<FileRecord>,
     #[serde(default)]
     dependencies: BTreeMap<String, String>,
+    /// Marks the automatic backups taken before a loader switch, the only
+    /// ones the launcher prunes. Absent (false) for every other backup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    loader_switch: bool,
 }
 
 pub(crate) fn sync_checkpoint(state: &LauncherState) -> Result<(), String> {
@@ -87,7 +142,7 @@ pub(crate) fn checked_absolute(path: &Path) -> Result<PathBuf, String> {
                 link |= metadata.file_attributes() & 0x400 != 0;
             }
             if link {
-                return Err("拒绝通过符号链接或目录联接访问实例文件".into());
+                return Err(LINKS_REFUSED.into());
             }
         }
     }
@@ -311,7 +366,7 @@ fn collect_files_in_scope(
         control: Option<&LauncherState>,
     ) -> Result<(), String> {
         if depth > MAX_TREE_DEPTH {
-            return Err("实例目录层级超过 64，拒绝继续扫描".into());
+            return Err(TREE_TOO_DEEP.into());
         }
         for entry in fs::read_dir(dir).map_err(|e| format!("无法读取实例目录：{e}"))? {
             if let Some(state) = control {
@@ -319,7 +374,7 @@ fn collect_files_in_scope(
             }
             *walked += 1;
             if *walked > MAX_TREE_FILES * 2 {
-                return Err("实例文件和目录超过 200000 项，请先整理后重试".into());
+                return Err(TREE_TOO_MANY_ENTRIES.into());
             }
             let path = entry.map_err(|e| e.to_string())?.path();
             checked_absolute(&path)?;
@@ -331,11 +386,11 @@ fn collect_files_in_scope(
                 visit(root, &path, depth + 1, files, total, walked, scope, control)?;
             } else if metadata.is_file() {
                 if files.len() >= MAX_TREE_FILES {
-                    return Err("实例文件超过 100000 个，请先整理后重试".into());
+                    return Err(TREE_TOO_MANY_FILES.into());
                 }
                 *total = total.checked_add(metadata.len()).ok_or("实例大小溢出")?;
                 if *total > MAX_TREE_BYTES {
-                    return Err("实例超过 32 GiB，请使用系统备份工具处理".into());
+                    return Err(TREE_TOO_LARGE.into());
                 }
                 let relative = path
                     .strip_prefix(root)
@@ -351,7 +406,7 @@ fn collect_files_in_scope(
                     sha256: sha256(&path)?,
                 });
             } else {
-                return Err("实例包含不支持的特殊文件".into());
+                return Err(TREE_SPECIAL_FILE.into());
             }
         }
         Ok(())
@@ -728,10 +783,12 @@ pub(crate) fn resolve_instance_game_version(
         validate_id(&current.version_id)?;
         return Ok(current.version_id.clone());
     }
-    Err("无法确定此实例的基础 Minecraft 版本，请先确认对应版本配置文件存在".into())
+    Err(BASE_VERSION_UNKNOWN.into())
 }
 
-pub(crate) fn apply_instance_loader_update(
+/// The loader metadata write. Only record_loader_change calls it, after the
+/// loader is installed and its pre-switch backup (if any) is on disk.
+fn apply_instance_loader_update(
     state: &LauncherState,
     instance_id: &str,
     new_version_id: &str,
@@ -760,6 +817,222 @@ pub(crate) fn apply_instance_loader_update(
         replace_metadata(value, &changes)?;
         Ok(value.clone())
     })
+}
+
+/// Files are kept during a loader switch, but worlds opened with a different
+/// loader can permanently lose modded blocks, items, entities and inventories.
+/// Reinstalling the loader and version the instance already uses changes
+/// neither, so it needs no backup. An empty or "latest" version may resolve to
+/// another build, so it counts as a change; when it resolves to the build the
+/// instance already has, record_loader_change removes that backup again.
+fn loader_switch_needs_backup(
+    current: &Instance,
+    target_loader: &str,
+    target_version: &str,
+) -> bool {
+    let current_loader = match current.loader.trim().to_ascii_lowercase() {
+        loader if loader.is_empty() => "vanilla".to_owned(),
+        loader => loader,
+    };
+    let target_loader = target_loader.trim().to_ascii_lowercase();
+    if current_loader != target_loader {
+        return true;
+    }
+    if target_loader == "vanilla" {
+        return false;
+    }
+    let target_version = target_version.trim();
+    target_version.is_empty() || target_version == "latest" || target_version != current.loader_version
+}
+
+/// A cancelled backup is the user's Cancel, not a backup failure; every other
+/// error keeps its reason behind the prefix that errors.rs turns into a code.
+pub(crate) fn loader_backup_error(error: String) -> String {
+    if error == crate::downloads::CANCELLED {
+        error
+    } else {
+        format!("{LOADER_BACKUP_FAILED_PREFIX}{error}")
+    }
+}
+
+/// The backup taken before a loader switch, before anything is downloaded or
+/// installed: a refusal costs nothing, and the reason reaches the user.
+async fn backup_before_loader_change(
+    state: &Arc<LauncherState>,
+    value: &Instance,
+) -> Result<InstanceBackup, String> {
+    let state = state.clone();
+    let value = value.clone();
+    tokio::task::spawn_blocking(move || loader_switch_backup(&state, &value, &available_space))
+        .await
+        .map_err(|e| format!("备份任务异常：{e}"))
+        .and_then(|result| result)
+        .map_err(loader_backup_error)
+}
+
+/// The loader install a registration names, as a switch compares it: the
+/// version id, the loader (empty is vanilla) and, for a loader, its version.
+fn installed_loader(value: &Instance) -> (&str, String, &str) {
+    let loader = match value.loader.trim().to_ascii_lowercase() {
+        loader if loader.is_empty() => "vanilla".to_owned(),
+        loader => loader,
+    };
+    let version = if loader == "vanilla" { "" } else { value.loader_version.trim() };
+    (value.version_id.trim(), loader, version)
+}
+
+/// The only writer for a loader change. `installed` is the outcome of the
+/// install (version id, loader, loader version). Only a switch that changed
+/// the loader install keeps its backup, and only then are older pre-switch
+/// backups pruned, never the one it took. One that failed, or that resolved
+/// to the install the instance already had (an empty or "latest" version),
+/// left the instance as the backup recorded it, so that backup is removed and
+/// no backup id is returned.
+async fn record_loader_change(
+    state: &Arc<LauncherState>,
+    current: &Instance,
+    backup: Option<InstanceBackup>,
+    installed: Result<(String, String, String), String>,
+) -> Result<InstanceLoaderChange, String> {
+    let result = installed.and_then(|(new_version_id, new_loader, new_loader_version)| {
+        apply_instance_loader_update(
+            state,
+            &current.id,
+            &new_version_id,
+            &new_loader,
+            &new_loader_version,
+        )
+    });
+    let changed = matches!(&result, Ok(updated) if installed_loader(updated) != installed_loader(current));
+    let mut backup_id = None;
+    if let Some(backup) = backup {
+        if changed {
+            backup_id = Some(backup.id.clone());
+        }
+        let state = state.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if changed {
+                prune_loader_switch_backups(&state, &backup.instance_id, &backup.id).map(|_| ())
+            } else {
+                discard_backup(&state, &backup)
+            }
+        })
+        .await;
+    }
+    Ok(InstanceLoaderChange {
+        instance: result?,
+        backup_id,
+    })
+}
+
+/// Every loader switch, from the window, the assistant or an OptiFine import:
+/// the backup first, then `install`, then the record. `install` is a future,
+/// so nothing in it runs until the backup is on disk; a refused or cancelled
+/// backup returns before it starts, with nothing downloaded or run. `install`
+/// yields the new version id, loader and loader version.
+pub(crate) async fn run_loader_switch(
+    state: &Arc<LauncherState>,
+    current: &Instance,
+    backup: LoaderSwitchBackup,
+    target_loader: &str,
+    target_version: &str,
+    install: impl std::future::Future<Output = Result<(String, String, String), String>>,
+) -> Result<InstanceLoaderChange, String> {
+    let snapshot = if backup == LoaderSwitchBackup::Required
+        && loader_switch_needs_backup(current, target_loader, target_version)
+    {
+        Some(backup_before_loader_change(state, current).await?)
+    } else {
+        None
+    };
+    record_loader_change(state, current, snapshot, install.await).await
+}
+
+/// What a loader switch was asked to do, checked before anything starts.
+pub(crate) struct LoaderSwitchPlan {
+    current: Instance,
+    target_loader: String,
+    game_version: String,
+    requested_version: String,
+}
+
+/// Every refusal a loader switch can give before its task starts. OptiFine is
+/// refused here for the window and the assistant alike: it is never
+/// downloaded, only imported from a JAR the user picked.
+pub(crate) fn plan_loader_switch(
+    state: &LauncherState,
+    instance_id: &str,
+    loader: &str,
+    loader_version: Option<String>,
+) -> AppResult<LoaderSwitchPlan> {
+    let target_loader = normalize_target_loader(loader)?;
+    crate::loaders::refuse_online_optifine(&target_loader)?;
+    require_no_pending_restore(state, instance_id)?;
+    let current = instance(&state.snapshot()?, instance_id)?;
+    crate::resources::require_target_stopped(state, &current.version_id, Some(instance_id))?;
+    crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
+    let game_version = resolve_instance_game_version(state, &current)?;
+    let requested_version = loader_version.unwrap_or_default().trim().to_owned();
+    if target_loader != "vanilla" && !requested_version.is_empty() && requested_version != "latest" {
+        validate_id(&requested_version)?;
+    }
+    Ok(LoaderSwitchPlan {
+        current,
+        target_loader,
+        game_version,
+        requested_version,
+    })
+}
+
+/// One loader switch from the window or the assistant, run as a loader task.
+async fn switch_instance_loader(
+    app: &tauri::AppHandle,
+    state: &Arc<LauncherState>,
+    plan: LoaderSwitchPlan,
+    backup: LoaderSwitchBackup,
+) -> Result<InstanceLoaderChange, String> {
+    let LoaderSwitchPlan {
+        current,
+        target_loader,
+        game_version,
+        requested_version,
+    } = plan;
+    let task = state.control.begin_with_display(
+        "loader",
+        &game_version,
+        &format!("更换实例加载器 {}", current.name),
+        &current.name,
+    )?;
+    let install = async {
+        if target_loader == "vanilla" {
+            crate::minecraft::install(state, app, &game_version)
+                .await
+                .map(|_| (game_version.clone(), "vanilla".to_owned(), String::new()))
+        } else {
+            crate::loaders::install_loader_inner(
+                state,
+                app,
+                &target_loader,
+                &game_version,
+                &requested_version,
+            )
+            .await
+            .map(|installed| (installed.version_id, installed.loader, installed.loader_version))
+        }
+    };
+    let result = run_loader_switch(
+        state,
+        &current,
+        backup,
+        &target_loader,
+        &requested_version,
+        install,
+    )
+    .await;
+    state
+        .control
+        .finish(&task, result.as_ref().err().map(String::as_str));
+    result
 }
 
 pub(crate) async fn update_instance_safe_settings(
@@ -841,60 +1114,21 @@ pub(crate) async fn update_instance_safe_settings(
     })
 }
 
+/// The assistant and MCP entry point. It has no way to skip the backup.
 pub(crate) async fn change_instance_loader_for_state(
     app: &tauri::AppHandle,
     state: &Arc<LauncherState>,
     instance_id: &str,
     loader: &str,
     loader_version: Option<String>,
-) -> Result<Instance, String> {
-    let target_loader = normalize_target_loader(loader)?;
+) -> Result<InstanceLoaderChange, String> {
     let _operation = state
         .operation
         .try_lock()
         .map_err(|_| "已有安装或启动准备任务运行".to_owned())?;
-    require_no_pending_restore(state, instance_id)?;
-    let current = instance(&state.snapshot()?, instance_id)?;
-    crate::resources::require_target_stopped(state, &current.version_id, Some(instance_id))
+    let plan = plan_loader_switch(state, instance_id, loader, loader_version)
         .map_err(|error| error.detail.unwrap_or(error.code))?;
-    crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
-    let game_version = resolve_instance_game_version(state, &current)?;
-    let requested_version = loader_version.unwrap_or_default().trim().to_owned();
-    if target_loader != "vanilla" && !requested_version.is_empty() && requested_version != "latest" {
-        validate_id(&requested_version)?;
-    }
-    let task = state.control.begin_with_display(
-        "loader",
-        &game_version,
-        &format!("更换实例加载器 {}", current.name),
-        &current.name,
-    )?;
-    let install_result: Result<(String, String, String), String> = if target_loader == "vanilla" {
-        crate::minecraft::install(state, app, &game_version)
-            .await
-            .map(|_| (game_version.clone(), "vanilla".to_owned(), String::new()))
-    } else {
-        crate::loaders::install_loader_inner(
-            state,
-            app,
-            &target_loader,
-            &game_version,
-            &requested_version,
-        )
-        .await
-        .map(|installed| (installed.version_id, installed.loader, installed.loader_version))
-    };
-    state
-        .control
-        .finish(&task, install_result.as_ref().err().map(String::as_str));
-    let (new_version_id, new_loader, new_loader_version) = install_result?;
-    apply_instance_loader_update(
-        state,
-        instance_id,
-        &new_version_id,
-        &new_loader,
-        &new_loader_version,
-    )
+    switch_instance_loader(app, state, plan, LoaderSwitchBackup::Required).await
 }
 
 pub(crate) async fn clone_instance_for_state(
@@ -953,6 +1187,8 @@ pub(crate) fn list_instance_backups_for_state(
     Ok(history)
 }
 
+/// `skip_backup` is the window's second, explicit choice after a backup was
+/// refused: the switch then goes ahead without one.
 #[tauri::command]
 pub async fn change_instance_loader(
     app: tauri::AppHandle,
@@ -960,60 +1196,17 @@ pub async fn change_instance_loader(
     instance_id: String,
     loader: String,
     loader_version: Option<String>,
-) -> AppResult<Instance> {
-    let target_loader = normalize_target_loader(&loader).map_err(crate::errors::expected)?;
+    skip_backup: Option<bool>,
+) -> AppResult<InstanceLoaderChange> {
     let _operation = state
         .operation
         .try_lock()
         .map_err(|_| crate::errors::expected("已有安装或启动准备任务运行"))?;
-    require_no_pending_restore(&state, &instance_id)?;
-    let current = instance(&state.snapshot()?, &instance_id).map_err(crate::errors::expected)?;
-    crate::resources::require_target_stopped(&state, &current.version_id, Some(&instance_id))?;
-    crate::minecraft::require_install_root_stopped(&state, &state.snapshot()?.config)
-        .map_err(crate::errors::expected)?;
-    let game_version = resolve_instance_game_version(&state, &current).map_err(crate::errors::expected)?;
-    let requested_version = loader_version.unwrap_or_default().trim().to_owned();
-    if target_loader != "vanilla" && !requested_version.is_empty() && requested_version != "latest" {
-        validate_id(&requested_version).map_err(crate::errors::expected)?;
-    }
-
-    let task = state
-        .control
-        .begin_with_display(
-            "loader",
-            &game_version,
-            &format!("更换实例加载器 {}", current.name),
-            &current.name,
-        )
-        .map_err(crate::errors::expected)?;
-    let install_result: Result<(String, String, String), String> = if target_loader == "vanilla" {
-        crate::minecraft::install(&state, &app, &game_version)
-            .await
-            .map(|_| (game_version.clone(), "vanilla".to_owned(), String::new()))
-    } else {
-        crate::loaders::install_loader_inner(
-            &state,
-            &app,
-            &target_loader,
-            &game_version,
-            &requested_version,
-        )
+    let plan = plan_loader_switch(&state, &instance_id, &loader, loader_version)?;
+    let backup = LoaderSwitchBackup::from_window(skip_backup);
+    switch_instance_loader(&app, state.inner(), plan, backup)
         .await
-        .map(|installed| (installed.version_id, installed.loader, installed.loader_version))
-    };
-    state
-        .control
-        .finish(&task, install_result.as_ref().err().map(String::as_str));
-    let (new_version_id, new_loader, new_loader_version) =
-        install_result.map_err(crate::errors::expected)?;
-    apply_instance_loader_update(
-        &state,
-        &instance_id,
-        &new_version_id,
-        &new_loader,
-        &new_loader_version,
-    )
-    .map_err(crate::errors::expected)
+        .map_err(crate::errors::expected)
 }
 
 #[tauri::command]
@@ -1154,7 +1347,7 @@ fn write_archive_controlled(
             .sync_all()
             .map_err(|e| e.to_string())?;
         if collect_instance_files_controlled(source, control)? != files {
-            return Err("备份期间实例文件发生变化，请关闭游戏后重试".into());
+            return Err(BACKUP_CHANGED.into());
         }
         if output.exists() {
             return Err("导出期间出现同名文件，已保留该文件".into());
@@ -1196,6 +1389,28 @@ pub(crate) fn backup_inner(
     state: &LauncherState,
     value: &Instance,
 ) -> Result<InstanceBackup, String> {
+    write_backup(state, value, false, &|_| None)
+}
+
+/// The automatic backup before a loader switch. Unlike the others it checks
+/// the free space of its drive first: it runs without the user asking for it,
+/// and it must never fill the system drive.
+fn loader_switch_backup(
+    state: &LauncherState,
+    value: &Instance,
+    free_space: &dyn Fn(&Path) -> Option<u64>,
+) -> Result<InstanceBackup, String> {
+    write_backup(state, value, true, free_space)
+}
+
+/// `free_space` reports what the backup folder's drive has free; `None`
+/// skips the check (unknown, or a backup the user asked for).
+fn write_backup(
+    state: &LauncherState,
+    value: &Instance,
+    loader_switch: bool,
+    free_space: &dyn Fn(&Path) -> Option<u64>,
+) -> Result<InstanceBackup, String> {
     let source = stopped_instance_directory(state, value)?;
     let files = collect_instance_files_controlled(&source, Some(state))?;
     validate_id(&value.id)?;
@@ -1214,13 +1429,16 @@ pub(crate) fn backup_inner(
         created_at: created.clone(),
         files: files.clone(),
         dependencies: crate::modpacks::instance_dependencies(state, value).unwrap_or_default(),
+        loader_switch,
     };
+    let manifest = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?;
+    require_backup_space(backup_space_needed(&files, manifest.len()), free_space(&folder))?;
     write_archive_controlled(
         &source,
         &path,
         &files,
         "launcher-backup.json",
-        &serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?,
+        &manifest,
         Some(state),
     )?;
     Ok(InstanceBackup {
@@ -1231,6 +1449,150 @@ pub(crate) fn backup_inner(
         size: fs::metadata(&path).map_err(|e| e.to_string())?.len(),
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+/// An upper bound for the archive: the content stored or deflated (deflate
+/// can grow incompressible data a little), two ZIP headers per file, the
+/// manifest, and the reserve left free on the drive.
+fn backup_space_needed(files: &[FileRecord], manifest: usize) -> u64 {
+    let content = files
+        .iter()
+        .fold(0u64, |total, file| total.saturating_add(file.size));
+    let headers = files.iter().fold(0u64, |total, file| {
+        total.saturating_add(2 * file.relative.len() as u64 + 128)
+    });
+    content
+        .saturating_add(content / 100)
+        .saturating_add(headers)
+        .saturating_add(manifest as u64)
+        .saturating_add(BACKUP_SPACE_RESERVE)
+}
+
+fn require_backup_space(needed: u64, available: Option<u64>) -> Result<(), String> {
+    match available {
+        Some(available) if available < needed => Err(format!(
+            "{BACKUP_NO_SPACE_PREFIX}{BACKUP_NO_SPACE_NEEDED}{}{BACKUP_NO_SPACE_AVAILABLE}{} MB",
+            needed.div_ceil(MIB),
+            available / MIB
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The needed and available MB a free-space refusal names, for errors.rs.
+pub(crate) fn backup_space_shortfall(reason: &str) -> Option<(u64, u64)> {
+    let rest = reason
+        .strip_prefix(BACKUP_NO_SPACE_PREFIX)?
+        .strip_prefix(BACKUP_NO_SPACE_NEEDED)?;
+    let (needed, available) = rest.split_once(BACKUP_NO_SPACE_AVAILABLE)?;
+    Some((needed.parse().ok()?, available.strip_suffix(" MB")?.parse().ok()?))
+}
+
+/// Free bytes the current user may write on the drive holding `directory`
+/// (an existing folder), or `None` when it cannot be read. The archive write
+/// then still fails safely and removes its partial file.
+#[cfg(windows)]
+fn available_space(directory: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            available_to_caller: *mut u64,
+            total: *mut u64,
+            total_free: *mut u64,
+        ) -> i32;
+    }
+    let mut wide = directory.as_os_str().encode_wide().collect::<Vec<_>>();
+    if wide.is_empty() || wide.contains(&0) {
+        return None;
+    }
+    if wide.last() != Some(&u16::from(b'\\')) {
+        wide.push(u16::from(b'\\'));
+    }
+    wide.push(0);
+    let mut available = 0u64;
+    // A live, terminated UTF-16 string and one writable output; the two
+    // totals are optional and passed as null.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(available)
+}
+
+#[cfg(not(windows))]
+fn available_space(_directory: &Path) -> Option<u64> {
+    None
+}
+
+/// Keeps LOADER_SWITCH_BACKUPS_KEPT automatic pre-switch backups of one
+/// instance, `keep` (the one the switch just took) and the newest of the
+/// others, and deletes older ones of that kind. `keep` is never a candidate,
+/// since a clock set back after the earlier backups dates it before them.
+/// Nothing is pruned unless `keep` is one of them. Manual, restore and
+/// modpack-update backups are never touched, and nothing is pruned while a
+/// restore record exists, since that record names backups. Returns how many
+/// were removed.
+fn prune_loader_switch_backups(
+    state: &LauncherState,
+    instance_id: &str,
+    keep: &str,
+) -> Result<usize, String> {
+    let folder = backup_folder(state, instance_id)?;
+    if !directory_present(&folder)? || !matches!(read_intent(&folder), Ok(None)) {
+        return Ok(0);
+    }
+    let mut kept = false;
+    let mut switches = Vec::new();
+    for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if path.extension().and_then(|s| s.to_str()) != Some("zip") || Uuid::parse_str(id).is_err() {
+            continue;
+        }
+        if !checked_absolute(&path).is_ok_and(|_| path.is_file()) {
+            continue;
+        }
+        let Ok(manifest) = read_backup(&path) else {
+            continue;
+        };
+        if !manifest.loader_switch || manifest.instance.id != instance_id {
+            continue;
+        }
+        if id == keep {
+            kept = true;
+        } else {
+            switches.push((manifest.created_at, id.to_owned(), path.clone()));
+        }
+    }
+    if !kept {
+        return Ok(0);
+    }
+    switches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut removed = 0;
+    for (_, _, path) in switches
+        .into_iter()
+        .skip(LOADER_SWITCH_BACKUPS_KEPT.saturating_sub(1))
+    {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+/// Removes a backup this launcher just wrote whose operation did not happen.
+fn discard_backup(state: &LauncherState, backup: &InstanceBackup) -> Result<(), String> {
+    Uuid::parse_str(&backup.id).map_err(|_| "备份标识无效")?;
+    let path = safe_join(&backup_folder(state, &backup.instance_id)?, &format!("{}.zip", backup.id))?;
+    checked_absolute(&path)?;
+    fs::remove_file(path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2330,6 +2692,7 @@ fn export_zip_inner(
         created_at: chrono::Utc::now().to_rfc3339(),
         files: files.clone(),
         dependencies,
+        loader_switch: false,
     };
     write_archive_controlled(
         &source,
@@ -2478,6 +2841,7 @@ mod backup_recovery_tests {
             created_at: "2026-11-16T12:01:00Z".into(),
             files: records,
             dependencies: BTreeMap::new(),
+            loader_switch: false,
         }
     }
 
@@ -3965,19 +4329,22 @@ mod backup_recovery_tests {
         assert_eq!(code(require_no_pending_restore(&state, "test").unwrap_err()), "instance.restorePending");
 
         // Edits made through a window run the same check after taking the
-        // lock and before they write.
-        for (source, function, lock, write) in [
-            (include_str!("instances.rs"), "pub async fn update_instance(", "let _operation = state.operation.lock().await;", "state.update(|data| {"),
-            (include_str!("instances.rs"), "pub async fn change_instance_loader(", "let _operation = state", "apply_instance_loader_update("),
-            (include_str!("content.rs"), "pub async fn import_world(", "let _guard = state.operation.lock().await;", "tokio::task::spawn_blocking"),
-            (include_str!("content.rs"), "pub async fn import_local_resources(", "let _guard = state.operation.lock().await;", "tokio::task::spawn_blocking"),
-            (include_str!("resources.rs"), "fn recover_resource_update_inner(", "let data = state.snapshot()?;", "resource_transactions::recover_one("),
+        // lock and before they write. A loader switch runs it in its plan.
+        let pending = "require_no_pending_restore(";
+        for (source, function, lock, guard, write) in [
+            (include_str!("instances.rs"), "pub async fn update_instance(", "let _operation = state.operation.lock().await;", pending, "state.update(|data| {"),
+            (include_str!("instances.rs"), "pub async fn change_instance_loader(", "let _operation = state", "plan_loader_switch(", "switch_instance_loader("),
+            (include_str!("instances.rs"), "pub(crate) async fn change_instance_loader_for_state(", "let _operation = state", "plan_loader_switch(", "switch_instance_loader("),
+            (include_str!("instances.rs"), "pub(crate) fn plan_loader_switch(", "normalize_target_loader(", pending, "Ok(LoaderSwitchPlan {"),
+            (include_str!("content.rs"), "pub async fn import_world(", "let _guard = state.operation.lock().await;", pending, "tokio::task::spawn_blocking"),
+            (include_str!("content.rs"), "pub async fn import_local_resources(", "let _guard = state.operation.lock().await;", pending, "tokio::task::spawn_blocking"),
+            (include_str!("resources.rs"), "fn recover_resource_update_inner(", "let data = state.snapshot()?;", pending, "resource_transactions::recover_one("),
         ] {
             let (_, body) = source.split_once(function).unwrap();
             let (body, _) = body.split_once("\n}").unwrap();
             let body = crate::storage::executable_source(body);
             let lock = body.find(lock).expect(function);
-            let guard = lock + body[lock..].find("require_no_pending_restore(").expect(function);
+            let guard = lock + body[lock..].find(guard).expect(function);
             let write = body.find(write).expect(function);
             assert!(guard < write, "{function}");
         }
@@ -4040,5 +4407,642 @@ mod backup_recovery_tests {
 
         drop(state);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A registered Fabric 1.21.1 instance with a world and a mod, in a state
+    /// whose game directory and data directory both live in the fixture.
+    fn loader_switch_fixture(prefix: &str) -> (StagingDirectory, Arc<LauncherState>, Instance) {
+        let root = StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/instance-tests")
+                .join(format!("{prefix}-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let game_dir = root.path().join("game");
+        let inst_dir = game_dir.join("instances/survival");
+        fs::create_dir_all(game_dir.join("versions/1.21.1")).unwrap();
+        fs::create_dir_all(game_dir.join("versions/fabric-loader-0.16.9-1.21.1")).unwrap();
+        fs::write(
+            game_dir.join("versions/1.21.1/1.21.1.json"),
+            r#"{"id":"1.21.1","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            game_dir.join("versions/fabric-loader-0.16.9-1.21.1/fabric-loader-0.16.9-1.21.1.json"),
+            r#"{"id":"fabric-loader-0.16.9-1.21.1","inheritsFrom":"1.21.1","launcherMetadata":{"loader":"fabric"},"libraries":[]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(inst_dir.join("saves/world")).unwrap();
+        fs::create_dir_all(inst_dir.join("mods")).unwrap();
+        fs::write(inst_dir.join("saves/world/level.dat"), b"world").unwrap();
+        fs::write(inst_dir.join("mods/create.jar"), b"mod").unwrap();
+        let state = Arc::new(LauncherState::test_fixture(
+            root.path().join("data"),
+            Persisted {
+                config: crate::models::Config {
+                    game_directory: game_dir.to_string_lossy().into_owned(),
+                    download_source: "official".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        ));
+        let registered = register(
+            &state,
+            build_instance(
+                "Survival",
+                "fabric-loader-0.16.9-1.21.1",
+                &inst_dir,
+                "fabric",
+                "0.16.9",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        (root, state, registered)
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn forge_install() -> Result<(String, String, String), String> {
+        Ok(("1.21.1-forge-52.0.10".into(), "forge".into(), "52.0.10".into()))
+    }
+
+    /// The install the fixture's instance starts with.
+    fn fabric_install() -> Result<(String, String, String), String> {
+        Ok(("fabric-loader-0.16.9-1.21.1".into(), "fabric".into(), "0.16.9".into()))
+    }
+
+    /// An install that changes the loader of `before`, Fabric and Forge in turn.
+    fn other_install(before: &Instance) -> Result<(String, String, String), String> {
+        if before.loader == "forge" {
+            fabric_install()
+        } else {
+            forge_install()
+        }
+    }
+
+    /// An automatic pre-switch backup of `value` dated `created_at`, as one
+    /// written while the clock read that time. Returns its file name.
+    fn dated_switch_backup(state: &LauncherState, value: &Instance, created_at: &str) -> String {
+        let id = Uuid::new_v4().to_string();
+        let folder = backup_folder(state, &value.id).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        let manifest = serde_json::to_vec(&BackupManifest {
+            format_version: 1,
+            instance: value.clone(),
+            created_at: created_at.into(),
+            files: Vec::new(),
+            dependencies: BTreeMap::new(),
+            loader_switch: true,
+        })
+        .unwrap();
+        let name = format!("{id}.zip");
+        let mut zip = ZipWriter::new(fs::File::create(folder.join(&name)).unwrap());
+        zip.start_file("launcher-backup.json", backup_file_options(manifest.len() as u64))
+            .unwrap();
+        zip.write_all(&manifest).unwrap();
+        zip.finish().unwrap();
+        name
+    }
+
+    fn current(state: &LauncherState, id: &str) -> Instance {
+        instance(&state.snapshot().unwrap(), id).unwrap()
+    }
+
+    /// Every file in the instance's backup folder, sorted.
+    fn backup_files(state: &LauncherState, instance_id: &str) -> Vec<String> {
+        let folder = backup_folder(state, instance_id).unwrap();
+        let mut names = fs::read_dir(folder)
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    fn blocking<T: Send + 'static>(
+        runtime: &tokio::runtime::Runtime,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        runtime.block_on(async { tokio::task::spawn_blocking(work).await.unwrap() })
+    }
+
+    #[test]
+    fn u7_loader_switch_backup_records_the_old_loader_before_the_metadata_changes() {
+        let (_root, state, registered) = loader_switch_fixture("loader-switch-backup");
+        let runtime = runtime();
+        let backup = runtime
+            .block_on(backup_before_loader_change(&state, &registered))
+            .unwrap();
+        // The backup is complete while the registration still names the old
+        // loader: nothing has been installed or recorded yet.
+        assert_eq!(current(&state, &registered.id).version_id, "fabric-loader-0.16.9-1.21.1");
+        let manifest = read_backup(Path::new(&backup.path)).unwrap();
+        assert!(manifest.loader_switch, "marked as an automatic pre-switch backup");
+        assert_eq!(manifest.instance.version_id, "fabric-loader-0.16.9-1.21.1");
+        assert_eq!(manifest.instance.loader, "fabric");
+        for file in ["saves/world/level.dat", "mods/create.jar"] {
+            assert!(manifest.files.iter().any(|record| record.relative == file), "{file}");
+        }
+
+        let change = runtime
+            .block_on(record_loader_change(&state, &registered, Some(backup.clone()), forge_install()))
+            .unwrap();
+        assert_eq!(change.instance.version_id, "1.21.1-forge-52.0.10");
+        assert_eq!(change.instance.loader, "forge");
+        assert_eq!(change.backup_id.as_deref(), Some(backup.id.as_str()));
+        assert!(Path::new(&backup.path).is_file(), "a recorded switch keeps its backup");
+        assert_eq!(current(&state, &registered.id).version_id, "1.21.1-forge-52.0.10");
+
+        // Other backups are not marked, so pruning never counts them.
+        let (state2, value) = (state.clone(), current(&state, &registered.id));
+        let manual = blocking(&runtime, move || backup_inner(&state2, &value)).unwrap();
+        assert!(!read_backup(Path::new(&manual.path)).unwrap().loader_switch);
+    }
+
+    #[test]
+    fn u7_a_switch_that_does_not_happen_removes_its_unused_backup() {
+        let (_root, state, registered) = loader_switch_fixture("loader-switch-failed-install");
+        let runtime = runtime();
+        let backup = runtime
+            .block_on(backup_before_loader_change(&state, &registered))
+            .unwrap();
+        let error = runtime
+            .block_on(record_loader_change(
+                &state,
+                &registered,
+                Some(backup.clone()),
+                Err("加载器安装失败".into()),
+            ))
+            .unwrap_err();
+        assert_eq!(error, "加载器安装失败");
+        let unchanged = current(&state, &registered.id);
+        assert_eq!(unchanged.version_id, "fabric-loader-0.16.9-1.21.1");
+        assert_eq!(unchanged.loader, "fabric");
+        assert_eq!(unchanged.loader_version, "0.16.9");
+        assert!(!Path::new(&backup.path).exists(), "the instance is as the backup recorded it");
+        assert!(backup_files(&state, &registered.id).is_empty());
+
+        // A switch without a backup (same loader, or skipped by the user) is
+        // recorded with no backup id.
+        let change = runtime
+            .block_on(record_loader_change(&state, &registered, None, forge_install()))
+            .unwrap();
+        assert_eq!(change.backup_id, None);
+        assert_eq!(change.instance.loader, "forge");
+    }
+
+    #[test]
+    fn u7_only_the_newest_two_loader_switch_backups_are_kept() {
+        let (_root, state, registered) = loader_switch_fixture("loader-switch-prune");
+        let runtime = runtime();
+        let (state2, value) = (state.clone(), registered.clone());
+        let manual = blocking(&runtime, move || backup_inner(&state2, &value)).unwrap();
+        let mut switches = Vec::new();
+        for _ in 0..3 {
+            let before = current(&state, &registered.id);
+            let backup = runtime
+                .block_on(backup_before_loader_change(&state, &before))
+                .unwrap();
+            switches.push(format!("{}.zip", backup.id));
+            let change = runtime
+                .block_on(record_loader_change(&state, &before, Some(backup), other_install(&before)))
+                .unwrap();
+            assert_ne!(change.instance.loader, before.loader, "each switch changes the loader");
+        }
+        let mut expected = vec![
+            format!("{}.zip", manual.id),
+            switches[1].clone(),
+            switches[2].clone(),
+        ];
+        expected.sort();
+        assert_eq!(
+            backup_files(&state, &registered.id),
+            expected,
+            "the oldest pre-switch backup is removed, the manual backup is kept"
+        );
+
+        // Nothing is pruned while a restore record exists: it names backups.
+        let folder = backup_folder(&state, &registered.id).unwrap();
+        fs::write(folder.join(RESTORE_INTENT), b"not a restore record").unwrap();
+        let before = current(&state, &registered.id);
+        let backup = runtime
+            .block_on(backup_before_loader_change(&state, &before))
+            .unwrap();
+        runtime
+            .block_on(record_loader_change(&state, &before, Some(backup), other_install(&before)))
+            .unwrap();
+        let zips = backup_files(&state, &registered.id)
+            .into_iter()
+            .filter(|name| name.ends_with(".zip"))
+            .count();
+        assert_eq!(zips, 4);
+        fs::remove_file(folder.join(RESTORE_INTENT)).unwrap();
+    }
+
+    #[test]
+    fn u7_a_switch_that_changes_nothing_keeps_every_earlier_backup() {
+        let (_root, state, registered) = loader_switch_fixture("loader-switch-no-op");
+        let runtime = runtime();
+        // Two real switches, Fabric to Forge and back, leave two restore points.
+        let mut kept = Vec::new();
+        for _ in 0..2 {
+            let before = current(&state, &registered.id);
+            let target = if before.loader == "forge" { "fabric" } else { "forge" };
+            let change = runtime
+                .block_on(run_loader_switch(
+                    &state,
+                    &before,
+                    LoaderSwitchBackup::Required,
+                    target,
+                    "",
+                    async { other_install(&before) },
+                ))
+                .unwrap();
+            let backup_id = change.backup_id.expect("a real switch names its backup");
+            kept.push(format!("{backup_id}.zip"));
+        }
+        kept.sort();
+        let fabric = current(&state, &registered.id);
+        assert_eq!(installed_loader(&fabric), ("fabric-loader-0.16.9-1.21.1", "fabric".into(), "0.16.9"));
+        assert_eq!(backup_files(&state, &registered.id), kept);
+
+        // Asking for the newest Fabric without a version, or for "latest", as
+        // the assistant and MCP may, backs up first, since it may resolve to
+        // another build. Here it resolves to the build the instance has.
+        for requested in ["", "latest"] {
+            let change = runtime
+                .block_on(run_loader_switch(
+                    &state,
+                    &fabric,
+                    LoaderSwitchBackup::Required,
+                    "fabric",
+                    requested,
+                    async {
+                        assert_eq!(backup_files(&state, &registered.id).len(), 3, "backed up first");
+                        fabric_install()
+                    },
+                ))
+                .unwrap();
+            assert_eq!(change.backup_id, None, "{requested:?}: no backup is reported");
+            assert_eq!(installed_loader(&change.instance), installed_loader(&fabric));
+            assert_eq!(
+                backup_files(&state, &registered.id),
+                kept,
+                "{requested:?}: its backup is removed and no earlier one is pruned"
+            );
+        }
+    }
+
+    #[test]
+    fn u7_pruning_keeps_the_backup_the_switch_just_took() {
+        let (_root, state, registered) = loader_switch_fixture("loader-switch-clock");
+        let runtime = runtime();
+        // Two pre-switch backups written while the clock was ahead, so the one
+        // this switch takes is dated before both.
+        let _older = dated_switch_backup(&state, &registered, "2999-01-01T00:00:00+00:00");
+        let newer = dated_switch_backup(&state, &registered, "2999-01-02T00:00:00+00:00");
+        let change = runtime
+            .block_on(run_loader_switch(
+                &state,
+                &registered,
+                LoaderSwitchBackup::Required,
+                "forge",
+                "52.0.10",
+                async { forge_install() },
+            ))
+            .unwrap();
+        let taken = format!("{}.zip", change.backup_id.expect("the switch names its backup"));
+        let folder = backup_folder(&state, &registered.id).unwrap();
+        let manifest = read_backup(&folder.join(&taken)).expect("the reported backup exists");
+        assert_eq!(installed_loader(&manifest.instance), installed_loader(&registered));
+        let mut expected = vec![taken, newer];
+        expected.sort();
+        assert_eq!(
+            backup_files(&state, &registered.id),
+            expected,
+            "the new backup and the newest other one are kept"
+        );
+
+        // Nothing is pruned for a backup that is not among them.
+        dated_switch_backup(&state, &registered, "2999-01-03T00:00:00+00:00");
+        let unknown = Uuid::new_v4().to_string();
+        assert_eq!(prune_loader_switch_backups(&state, &registered.id, &unknown), Ok(0));
+        assert_eq!(backup_files(&state, &registered.id).len(), 3);
+    }
+
+    #[test]
+    fn u7_a_refused_pre_switch_backup_names_its_reason_and_keeps_nothing() {
+        let (root, state, registered) = loader_switch_fixture("loader-switch-refused");
+        let runtime = runtime();
+
+        // Too little free space on the backup drive: refused before the
+        // archive is written.
+        let (state2, value) = (state.clone(), registered.clone());
+        let error = blocking(&runtime, move || loader_switch_backup(&state2, &value, &|_| Some(0)))
+            .unwrap_err();
+        let error = crate::errors::expected(loader_backup_error(error));
+        assert_eq!(error.code, "loader.switchBackupNoSpace");
+        assert!(error.params["needed"].as_u64().unwrap() >= BACKUP_SPACE_RESERVE / MIB);
+        assert_eq!(error.params["available"], 0);
+        assert!(backup_files(&state, &registered.id).is_empty(), "no archive or partial file");
+        let (state2, value) = (state.clone(), registered.clone());
+        let fits = blocking(&runtime, move || {
+            loader_switch_backup(&state2, &value, &|_| Some(u64::MAX))
+        })
+        .unwrap();
+        fs::remove_file(&fits.path).unwrap();
+
+        // A Cancel pressed while the backup runs is the user's Cancel.
+        let task = state
+            .control
+            .begin_with_display("loader", "1.21.1", "更换实例加载器 Survival", "Survival")
+            .unwrap();
+        state.control.cancel(&task);
+        let error = runtime
+            .block_on(backup_before_loader_change(&state, &registered))
+            .unwrap_err();
+        assert_eq!(crate::errors::expected(error).code, "download.cancelled");
+        state.control.finish(&task, Some(crate::downloads::CANCELLED));
+        assert!(backup_files(&state, &registered.id).is_empty());
+
+        // A directory junction inside the instance, as used to share saves
+        // or mods, cannot be backed up, and the error says so.
+        #[cfg(windows)]
+        {
+            let outside = root.path().join("shared-saves");
+            fs::create_dir_all(&outside).unwrap();
+            let linked = Path::new(&registered.game_directory).join("shared");
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(linked.to_string_lossy().replace('/', r"\"))
+                .arg(outside.to_string_lossy().replace('/', r"\"))
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let error = runtime.block_on(backup_before_loader_change(&state, &registered));
+            let _ = fs::remove_dir(&linked);
+            assert_eq!(
+                crate::errors::expected(error.unwrap_err()).code,
+                "loader.switchBackupLinks"
+            );
+            assert!(backup_files(&state, &registered.id).is_empty());
+        }
+    }
+
+    #[test]
+    fn u7_backup_space_estimate_and_free_space_check() {
+        let files = [
+            FileRecord { relative: "saves/world/level.dat".into(), size: 100 * MIB, sha256: String::new() },
+            FileRecord { relative: "mods/create.jar".into(), size: 20 * MIB, sha256: String::new() },
+        ];
+        let needed = backup_space_needed(&files, 4096);
+        assert!(needed >= 120 * MIB + BACKUP_SPACE_RESERVE, "content plus the reserve");
+        assert!(needed < 130 * MIB + BACKUP_SPACE_RESERVE, "a bounded overhead");
+        assert!(require_backup_space(needed, None).is_ok(), "an unknown free space does not refuse");
+        assert!(require_backup_space(needed, Some(needed)).is_ok());
+        let refused = require_backup_space(needed, Some(needed - 1)).unwrap_err();
+        assert_eq!(
+            backup_space_shortfall(&refused),
+            Some((needed.div_ceil(MIB), (needed - 1) / MIB))
+        );
+        #[cfg(windows)]
+        assert!(available_space(Path::new(env!("CARGO_MANIFEST_DIR"))).is_some_and(|free| free > 0));
+        // The automatic backup reads the real free space; the manual one, which
+        // the user asked for, does not refuse on an estimate.
+        let source = crate::storage::executable_source(include_str!("instances.rs"));
+        let body = |name: &str| {
+            let (_, rest) = source.split_once(name).expect(name);
+            rest.split_once("\n}").expect(name).0.to_owned()
+        };
+        assert!(body("async fn backup_before_loader_change(")
+            .contains("loader_switch_backup(&state, &value, &available_space)"));
+        assert!(body("fn loader_switch_backup(").contains("write_backup(state, value, true, free_space)"));
+        assert!(body("pub(crate) fn backup_inner(").contains("write_backup(state, value, false, &|_| None)"));
+    }
+
+    #[test]
+    fn u7_reinstalling_the_same_loader_and_version_needs_no_backup() {
+        let with = |loader: &str, version: &str| Instance {
+            loader: loader.into(),
+            loader_version: version.into(),
+            ..Instance::default()
+        };
+        let fabric = with("fabric", "0.16.9");
+        assert!(!loader_switch_needs_backup(&fabric, "fabric", "0.16.9"));
+        assert!(!loader_switch_needs_backup(&fabric, " Fabric ", " 0.16.9 "));
+        for (loader, version) in [
+            ("fabric", "0.16.10"),
+            ("fabric", "latest"),
+            ("fabric", ""),
+            ("forge", "0.16.9"),
+            ("vanilla", ""),
+        ] {
+            assert!(loader_switch_needs_backup(&fabric, loader, version), "{loader} {version}");
+        }
+        let vanilla = with("", "");
+        assert!(!loader_switch_needs_backup(&vanilla, "vanilla", ""));
+        assert!(loader_switch_needs_backup(&vanilla, "optifine", "HD_U_I7"));
+        let optifine = with("optifine", "HD_U_I7");
+        assert!(!loader_switch_needs_backup(&optifine, "optifine", "HD_U_I7"));
+        assert!(loader_switch_needs_backup(&optifine, "optifine", "HD_U_J1"));
+    }
+
+    #[test]
+    fn u7_a_loader_switch_to_optifine_is_refused_before_it_starts() {
+        let (_root, state, registered) = loader_switch_fixture("loader-switch-optifine");
+        for loader in ["optifine", " OptiFine "] {
+            let Err(error) = plan_loader_switch(&state, &registered.id, loader, Some("HD_U_I7".into())) else {
+                panic!("{loader} was accepted");
+            };
+            assert_eq!(error.code, "loader.optifineOnlineUnavailable", "{loader}");
+            // The assistant's entry point flattens the error to this text.
+            assert_eq!(error.detail.as_deref(), Some(crate::loaders::OPTIFINE_ONLINE_UNAVAILABLE));
+        }
+        assert!(backup_files(&state, &registered.id).is_empty());
+        let plan = plan_loader_switch(&state, &registered.id, "Forge", Some(" 52.0.10 ".into()))
+            .map_err(|error| error.code)
+            .unwrap();
+        assert_eq!(plan.target_loader, "forge");
+        assert_eq!(plan.game_version, "1.21.1");
+        assert_eq!(plan.requested_version, "52.0.10");
+    }
+
+    #[test]
+    fn u7_a_loader_switch_backs_up_before_its_install_starts() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_root, state, registered) = loader_switch_fixture("loader-switch-order");
+        let runtime = runtime();
+
+        // The install starts only once the backup is on disk, while the
+        // registration still names the old loader.
+        let started = AtomicBool::new(false);
+        let change = runtime
+            .block_on(run_loader_switch(
+                &state,
+                &registered,
+                LoaderSwitchBackup::Required,
+                "forge",
+                "52.0.10",
+                async {
+                    started.store(true, Ordering::SeqCst);
+                    let files = backup_files(&state, &registered.id);
+                    assert!(files.len() == 1 && files[0].ends_with(".zip"), "{files:?}");
+                    assert_eq!(current(&state, &registered.id).loader, "fabric");
+                    forge_install()
+                },
+            ))
+            .unwrap();
+        assert!(started.load(Ordering::SeqCst));
+        let backup_id = change.backup_id.expect("the switch names its backup");
+        assert_eq!(backup_files(&state, &registered.id), vec![format!("{backup_id}.zip")]);
+        assert_eq!(current(&state, &registered.id).version_id, "1.21.1-forge-52.0.10");
+
+        // Reinstalling the loader and version it now has takes no backup.
+        let forge = current(&state, &registered.id);
+        let change = runtime
+            .block_on(run_loader_switch(
+                &state,
+                &forge,
+                LoaderSwitchBackup::Required,
+                "forge",
+                "52.0.10",
+                async { forge_install() },
+            ))
+            .unwrap();
+        assert_eq!(change.backup_id, None);
+        assert_eq!(backup_files(&state, &registered.id).len(), 1);
+
+        // A refused backup ends the switch before its install starts, so
+        // nothing is downloaded or run, and the old loader stays recorded.
+        let fabric = || Ok(("fabric-loader-0.16.9-1.21.1".to_owned(), "fabric".to_owned(), "0.16.9".to_owned()));
+        let folder = backup_folder(&state, &registered.id).unwrap();
+        fs::remove_dir_all(&folder).unwrap();
+        fs::write(&folder, b"not a directory").unwrap();
+        let started = AtomicBool::new(false);
+        let error = runtime
+            .block_on(run_loader_switch(
+                &state,
+                &forge,
+                LoaderSwitchBackup::Required,
+                "fabric",
+                "0.16.9",
+                async {
+                    started.store(true, Ordering::SeqCst);
+                    fabric()
+                },
+            ))
+            .unwrap_err();
+        assert!(!started.load(Ordering::SeqCst), "the install never started");
+        assert_eq!(crate::errors::expected(error).code, "loader.switchBackupFailed");
+        assert_eq!(current(&state, &registered.id).loader, "forge");
+
+        // The user's explicit second choice switches without one.
+        let change = runtime
+            .block_on(run_loader_switch(
+                &state,
+                &forge,
+                LoaderSwitchBackup::SkippedByUser,
+                "fabric",
+                "0.16.9",
+                async { fabric() },
+            ))
+            .unwrap();
+        assert_eq!(change.backup_id, None);
+        assert_eq!(change.instance.loader, "fabric");
+        fs::remove_file(&folder).unwrap();
+
+        // A Cancel pressed during the backup also ends it before the install.
+        let task = state
+            .control
+            .begin_with_display("loader", "1.21.1", "更换实例加载器 Survival", "Survival")
+            .unwrap();
+        state.control.cancel(&task);
+        let started = AtomicBool::new(false);
+        let error = runtime
+            .block_on(run_loader_switch(
+                &state,
+                &change.instance,
+                LoaderSwitchBackup::Required,
+                "forge",
+                "52.0.10",
+                async {
+                    started.store(true, Ordering::SeqCst);
+                    forge_install()
+                },
+            ))
+            .unwrap_err();
+        state.control.finish(&task, Some(crate::downloads::CANCELLED));
+        assert!(!started.load(Ordering::SeqCst));
+        assert_eq!(crate::errors::expected(error).code, "download.cancelled");
+        assert_eq!(current(&state, &registered.id).loader, "fabric");
+        assert!(backup_files(&state, &registered.id).is_empty());
+    }
+
+    #[test]
+    fn u7_only_the_window_can_skip_the_backup() {
+        assert_eq!(LoaderSwitchBackup::from_window(None), LoaderSwitchBackup::Required);
+        assert_eq!(LoaderSwitchBackup::from_window(Some(false)), LoaderSwitchBackup::Required);
+        assert_eq!(LoaderSwitchBackup::from_window(Some(true)), LoaderSwitchBackup::SkippedByUser);
+
+        let source = crate::storage::executable_source(include_str!("instances.rs"));
+        let (production, _) = source.split_once("#[cfg(test)]").unwrap();
+        let body = |name: &str| {
+            let (_, rest) = production.split_once(name).expect(name);
+            rest.split_once("\n}").expect(name).0.to_owned()
+        };
+        // The backup, the install and the metadata write happen in one place.
+        // Its helpers are private, so no caller can record a switch without it.
+        for (call, count) in [
+            ("apply_instance_loader_update(", 2),
+            ("record_loader_change(", 2),
+            ("backup_before_loader_change(", 2),
+            ("run_loader_switch(", 2),
+        ] {
+            assert_eq!(production.matches(call).count(), count, "{call}");
+        }
+        assert!(body("async fn record_loader_change(").contains("apply_instance_loader_update("));
+        let run = body("pub(crate) async fn run_loader_switch(");
+        let backup = run.find("backup_before_loader_change(state, current)").unwrap();
+        assert!(backup < run.find("install.await").unwrap());
+        let switch = body("async fn switch_instance_loader(");
+        assert!(switch.contains("run_loader_switch(") && !switch.contains("install.await"));
+
+        // The assistant and MCP entry point always takes the backup; only the
+        // window's command passes the user's choice to skip it.
+        let assistant = body("pub(crate) async fn change_instance_loader_for_state(");
+        assert!(assistant.contains("switch_instance_loader(app, state, plan, LoaderSwitchBackup::Required)"));
+        assert!(!assistant.contains("SkippedByUser") && !assistant.contains("from_window"));
+        let window = body("pub async fn change_instance_loader(");
+        assert!(window.contains("let backup = LoaderSwitchBackup::from_window(skip_backup);"));
+        assert!(window.contains("switch_instance_loader(&app, state.inner(), plan, backup)"));
+        assert!(body("pub(crate) fn plan_loader_switch(").contains("crate::loaders::refuse_online_optifine(&target_loader)?"));
+    }
+
+    #[test]
+    fn u7_an_optifine_import_backs_up_through_the_same_switch() {
+        // The OptiFine import into an instance hands its install, unstarted,
+        // to the same switch, with the window's choice; only a new version
+        // (no instance) awaits it directly.
+        let loaders = crate::storage::executable_source(include_str!("loaders.rs"));
+        let (_, import) = loaders.split_once("pub async fn install_optifine_installer(").unwrap();
+        let (import, _) = import.split_once("\n}").unwrap();
+        let switch = import.find("crate::instances::run_loader_switch(").unwrap();
+        assert!(import[switch..].contains("crate::instances::LoaderSwitchBackup::from_window(skip_backup),"));
+        let patch = import.find("install_optifine_from_jar(").unwrap();
+        let no_instance = import.find("let Some(current) = current_instance.as_ref() else {").unwrap();
+        let awaits = import.match_indices("install.await").map(|(at, _)| at).collect::<Vec<_>>();
+        assert_eq!(awaits.len(), 2, "{awaits:?}");
+        assert!(patch < no_instance && no_instance < awaits[0] && awaits[0] < switch && switch < awaits[1]);
     }
 }

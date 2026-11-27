@@ -181,9 +181,10 @@
   "loaderChange": {
     "title": "Cargador",
     "current": "Minecraft {{version}} · {{loader}}{{loaderVersion}}",
-    "hint": "Los mundos, configuraciones y mods permanecen en la carpeta de esta instancia. Es posible que debas desactivar o sustituir los mods hechos para otro cargador.",
+    "hint": "Los mundos, la configuración y los mods permanecen en la carpeta de esta instancia, y antes del cambio se crea una copia de seguridad. Puede que haya que desactivar o sustituir los mods hechos para otro cargador. Si abres un mundo con el nuevo cargador, los bloques, objetos, entidades e inventarios de los mods pueden perderse de forma permanente, aunque después vuelvas al cargador anterior.",
     "apply": "Cambiar cargador",
-    "confirm": "¿Cambiar el cargador de «{{name}}» a {{loader}}? Se conservarán tus mundos y archivos."
+    "confirm": "¿Cambiar el cargador de «{{name}}» a {{loader}}? Antes se crea una copia de seguridad de esta instancia. Si abres un mundo con un cargador distinto, los bloques, objetos, entidades e inventarios añadidos por mods se perderán de forma permanente. Si vuelves al cargador anterior antes de abrirlo, no se pierde nada.",
+    "skipBackupConfirm": "{{reason}}\n\n¿Cambiar el cargador sin copia de seguridad? Si abres un mundo con un cargador distinto, los bloques, objetos, entidades e inventarios añadidos por mods pueden perderse de forma permanente, y no habrá copia de seguridad para restaurarlos."
   },
   "createModes": "Método de creación",
   "versionMode": "Versión y cargador",
@@ -197,7 +198,7 @@
     "release": "Lanzamientos",
     "snapshot": "Snapshots",
     "old": "Beta y Alpha",
-    "aprilFools": "April Fools"
+    "aprilFools": "Bromas de abril"
   },
   "versionSearch": "Buscar versiones",
   "versionSearchPlaceholder": "Buscar, por ejemplo 1.20",
@@ -217,7 +218,8 @@
   "recommended": "Recomendada",
   "noLoaderVersions": "No hay versiones de cargador disponibles",
   "optifineImportJar": "Importar JAR instalador de OptiFine…",
-  "optifineHint": "Las listas en línea de OptiFine usan BMCLAPI cuando está activado, o bien importa directamente un JAR de OptiFine descargado.",
+  "optifineHint": "Voxelight no descarga OptiFine: sus descargas no tienen una suma de comprobación que el launcher pueda verificar, y el instalador es un programa que se ejecuta en tu equipo. Descarga el instalador para esta versión de Minecraft desde el sitio oficial e importa el JAR.",
+  "optifineSite": "Descargas de OptiFine (optifine.net)",
   "instanceNameOptional": "Nombre de la instancia (opcional)",
   "instanceNamePlaceholder": "Pon nombre a este mundo",
   "curseforgeKeyOptional": "Clave de API de CurseForge (opcional)",
@@ -299,6 +301,7 @@
     "diagnosticsExported": "Diagnóstico guardado.",
     "settingsSaved": "Ajustes de la instancia guardados.",
     "loaderChanged": "Cargador de la instancia actualizado.",
+    "loaderChangedBackup": "Cargador de la instancia actualizado; antes se guardó una copia de seguridad de la instancia.",
     "runtimeReset": "Entorno global restaurado.",
     "resourceRecovered": "Se recuperó la transacción de recursos interrumpida."
   },

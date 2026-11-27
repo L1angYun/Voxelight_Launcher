@@ -641,61 +641,126 @@ pub(crate) async fn reset_launcher_state_inner(
         .map_err(|_| "已有安装或启动准备任务运行，请等待完成后修改配置".to_owned())?;
     let _server_hold = servers
         .try_hold()
-        .ok_or_else(|| "有托管服务端正在运行，请先停止服务端后再还原初始状态。".to_owned())?;
+        .ok_or_else(|| crate::errors::RESET_SERVER_RUNNING.to_owned())?;
     if !state.games.snapshot()?.is_empty() {
-        return Err("有游戏正在运行，请先退出游戏后再还原初始状态。".into());
+        return Err(crate::errors::RESET_GAME_RUNNING.into());
     }
     if servers.any_running() {
-        return Err("有托管服务端正在运行，请先停止服务端后再还原初始状态。".into());
+        return Err(crate::errors::RESET_SERVER_RUNNING.into());
     }
     let snapshot = state.snapshot()?;
     let shared_for_clear = state.clone();
     let old_game_dir = snapshot.config.game_directory.clone();
-    tokio::task::spawn_blocking(move || {
+    let cleared = tokio::task::spawn_blocking(move || {
         let game_root = crate::processes::configured_game_root(Path::new(&old_game_dir)).ok();
         let stores = crate::parts::startup_stores(&shared_for_clear.data_dir, game_root.as_deref());
         shared_for_clear.control.clear_all_history(&stores)
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|error| error.to_string())?;
+    // `clear_all_history` refuses on paused tasks too. The generic download
+    // message is not shown by the reset dialog, so name the actual condition.
+    if matches!(&cleared, Err(error) if error == crate::downloads::BUSY) {
+        return Err(crate::errors::RESET_DOWNLOADS_ACTIVE.into());
+    }
+    cleared?;
 
     mcp.stop();
-    let mut account_ids: Vec<String> = snapshot
-        .accounts
-        .iter()
-        .map(|account| account.id.clone())
-        .collect();
-    for pending_id in &snapshot.pending_credential_removals {
-        if !account_ids.iter().any(|id| id == pending_id) {
-            account_ids.push(pending_id.clone());
-        }
-    }
-    auth.clear_all_credentials(&account_ids)?;
-    crate::secrets::save_service_secret(
-        &state.data_dir,
-        crate::curseforge_key::CURSEFORGE_SECRET_KEY,
-        "",
-    )?;
-    crate::secrets::save_service_secret(
-        &state.data_dir,
-        crate::assistant::ASSISTANT_SECRET_KEY,
-        "",
-    )?;
-    let _ = crate::network::forget_current_credentials(&state.data_dir, &snapshot.config);
 
+    // Everything runs under the credential lock that a login commit takes, so
+    // the accounts read here are exactly the ones the commit clears.
+    //
+    // 1. Every secret that is not an account token (the CurseForge and Lumen
+    //    keys, proxy credentials of any endpoint, leftovers) is erased before
+    //    the commit. A file that cannot be deleted aborts the reset with the
+    //    old state intact, so a retry still sees everything it has to erase.
+    // 2. The commit clears the accounts and queues every account id in
+    //    `pending_credential_removals` in the same durable revision.
+    // 3. The tokens are deleted after the commit. One that cannot be deleted,
+    //    or a crash at this point, leaves only queued ids, which startup
+    //    recovery finishes. Nothing else can be left behind.
     let fresh = Config::default();
-    let saved = state.update(|data| {
-        data.config = fresh.clone();
-        data.accounts.clear();
-        data.instances.clear();
-        data.pending_credential_removals.clear();
-        data.update_highest_seen = None;
-        data.update_highest_seen_beta = None;
-        Ok(data.config.clone())
-    })?;
+    let data_dir = state.data_dir.clone();
+    let mut committed = None;
+    let result = auth.reset_all_credentials(|| {
+        let live = state.snapshot()?;
+        let mut account_ids: std::collections::BTreeSet<String> =
+            live.accounts.iter().map(|account| account.id.clone()).collect();
+        account_ids.extend(live.pending_credential_removals.iter().cloned());
+        erase_secrets_except_account_tokens(&data_dir, &account_ids)?;
+        let pending = account_ids.clone();
+        let saved = state.update(|data| {
+            data.config = fresh.clone();
+            data.accounts.clear();
+            data.instances.clear();
+            data.pending_credential_removals = pending;
+            data.update_highest_seen = None;
+            data.update_highest_seen_beta = None;
+            Ok(data.config.clone())
+        })?;
+        committed = Some(saved.clone());
+        Ok((saved, account_ids))
+    });
+    let Some(saved) = committed else {
+        return result;
+    };
     state.control.set_limit(saved.download_limit_kib);
     state.control.set_concurrency(saved.download_concurrency);
+    // Clears the queued ids once their tokens are gone, and retries a token
+    // the transaction could not delete.
+    let recovered = auth.recover_credential_removals(state);
+    if result.is_err() && recovered.is_err() {
+        return Err(format!(
+            "{}：无法删除账号凭据",
+            crate::errors::RESET_CREDENTIALS_PENDING
+        ));
+    }
+    // Only an empty folder is removed: a login that commits after the lock was
+    // released keeps its token.
+    let _ = std::fs::remove_dir(data_dir.join("secrets"));
     Ok(saved)
+}
+
+/// Erases every file in the secrets folder except the tokens of
+/// `account_ids`, which the reset deletes after its commit. Every file is
+/// tried; a file that cannot be deleted fails the reset before it commits.
+fn erase_secrets_except_account_tokens(
+    data_dir: &Path,
+    account_ids: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let locked = |what: &str| format!("{}：{what}", crate::errors::RESET_SECRETS_LOCKED);
+    let tokens: std::collections::HashSet<std::ffi::OsString> = account_ids
+        .iter()
+        .map(|id| crate::secrets::file_name(&format!("account:{id}")).into())
+        .collect();
+    let entries = match std::fs::read_dir(data_dir.join("secrets")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(locked("无法读取加密凭据目录")),
+    };
+    let mut failed = false;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            failed = true;
+            continue;
+        };
+        if tokens.contains(&entry.file_name()) {
+            continue;
+        }
+        let path = entry.path();
+        let removed = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => std::fs::remove_dir_all(&path),
+            Ok(kind) if kind.is_symlink() => {
+                std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path))
+            }
+            _ => std::fs::remove_file(&path),
+        };
+        failed |= removed.is_err_and(|error| error.kind() != std::io::ErrorKind::NotFound);
+    }
+    if failed {
+        return Err(locked("部分加密凭据文件无法删除"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1026,6 +1091,546 @@ mod tests {
             let error = validate_default_skin(skin).unwrap_err();
             assert!(!error.contains("lumen") && error.contains("steve") && error.contains("alex"));
         }
+    }
+
+    fn reset_fixture() -> (crate::instances::StagingDirectory, LauncherState) {
+        let root = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/command-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let game = root.path().join("game");
+        std::fs::create_dir_all(game.join("mods")).unwrap();
+        std::fs::write(game.join("mods/sodium.jar"), b"keep").unwrap();
+        let state = LauncherState::test_fixture(
+            root.path().join("profile"),
+            Persisted {
+                config: Config {
+                    game_directory: game.display().to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        (root, state)
+    }
+
+    /// A launcher for reset tests whose game directory is inside the fixture.
+    /// Fields drop in order, so `root` is last: the state still holds the
+    /// profile lock, and the directory cannot be removed until it is gone.
+    struct ResetFixture {
+        state: Arc<LauncherState>,
+        auth: crate::auth::AuthService,
+        servers: crate::server_manager::ServerRegistry,
+        mcp: crate::assistant::McpService,
+        root: crate::instances::StagingDirectory,
+    }
+
+    impl ResetFixture {
+        fn new() -> Self {
+            let (root, state) = reset_fixture();
+            let auth = crate::auth::AuthService::new(
+                state.data_dir.clone(),
+                &state.snapshot().unwrap().config,
+            );
+            Self {
+                state: Arc::new(state),
+                auth,
+                servers: Default::default(),
+                mcp: Default::default(),
+                root,
+            }
+        }
+
+        /// Runs a reset only while the configured game directory is inside the
+        /// fixture, because a reset clears that directory's part folder. A
+        /// reset that commits `Config::default()` points the config at the
+        /// real default game directory, so the config is sent back to the
+        /// fixture before anything else in the test can use it.
+        async fn reset(&self) -> Result<Config, String> {
+            let game = self.state.snapshot().unwrap().config.game_directory;
+            assert!(
+                Path::new(&game).starts_with(self.root.path()),
+                "a reset test must not reach a game directory outside its fixture: {game}"
+            );
+            let result =
+                reset_launcher_state_inner(&self.state, &self.auth, &self.servers, &self.mcp)
+                    .await;
+            let after = self.state.snapshot().unwrap().config.game_directory;
+            if !Path::new(&after).starts_with(self.root.path()) {
+                self.state
+                    .update(|data| {
+                        data.config.game_directory = game.clone();
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            result
+        }
+
+        fn secret_path(&self, key: &str) -> std::path::PathBuf {
+            self.state
+                .data_dir
+                .join("secrets")
+                .join(crate::secrets::file_name(key))
+        }
+
+        fn persisted(&self) -> Persisted {
+            serde_json::from_slice(&std::fs::read(self.state.data_dir.join("state.json")).unwrap())
+                .unwrap()
+        }
+    }
+
+    fn config_json(config: &Config) -> serde_json::Value {
+        serde_json::to_value(config).unwrap()
+    }
+
+    #[test]
+    fn reset_tests_never_run_against_a_game_directory_outside_the_fixture() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let fixture = ResetFixture::new();
+        let outside = std::env::temp_dir().join("voxelight-reset-guard-never-created");
+        fixture
+            .state
+            .update(|data| {
+                data.config.game_directory = outside.display().to_string();
+                Ok(())
+            })
+            .unwrap();
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(fixture.reset())
+        }));
+        assert!(refused.is_err(), "the guard refuses before the reset runs");
+        assert_eq!(
+            fixture.state.snapshot().unwrap().config.game_directory,
+            outside.display().to_string(),
+            "the refused reset changed nothing"
+        );
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn reset_fixture_removes_its_directory_when_a_test_ends() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let fixture = ResetFixture::new();
+        let directory = fixture.root.path().to_path_buf();
+        assert!(fixture.state.data_dir.join("launcher-profile.lock").is_file());
+        rt.block_on(fixture.reset()).unwrap();
+        drop(fixture);
+        assert!(!directory.exists(), "{} is left behind", directory.display());
+    }
+
+    #[test]
+    fn reset_points_a_committed_default_config_back_at_the_fixture() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let fixture = ResetFixture::new();
+            let before = fixture.state.snapshot().unwrap().config.game_directory;
+            let saved = fixture.reset().await.unwrap();
+            assert_eq!(saved.game_directory, Config::default().game_directory);
+            assert_eq!(fixture.state.snapshot().unwrap().config.game_directory, before);
+            // A second reset is therefore still confined to the fixture.
+            fixture.reset().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn reset_refuses_a_running_game_and_changes_nothing() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let fixture = ResetFixture::new();
+            let state = &fixture.state;
+            let game = Path::new(&state.snapshot().unwrap().config.game_directory).to_path_buf();
+            state.games.fixture_running_directory(&game, None);
+            let before = state.snapshot().unwrap();
+            let error = fixture.reset().await.unwrap_err();
+            assert_eq!(crate::errors::expected(error).code, "reset.gameRunning");
+            let after = state.snapshot().unwrap();
+            assert_eq!(
+                config_json(&before.config),
+                config_json(&after.config),
+                "a refused reset must not change the config"
+            );
+            assert_eq!(after.accounts.len(), before.accounts.len());
+            assert!(std::fs::read(
+                Path::new(&after.config.game_directory).join("mods/sodium.jar")
+            )
+            .is_ok());
+        });
+    }
+
+    #[test]
+    fn reset_refuses_while_an_install_or_launch_holds_the_operation_lock() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let fixture = ResetFixture::new();
+            let state = &fixture.state;
+            let before = state.snapshot().unwrap();
+            let operation = state.operation.try_lock().unwrap();
+            let error = fixture.reset().await.unwrap_err();
+            assert_eq!(crate::errors::expected(error).code, "config.busy");
+            let after = state.snapshot().unwrap();
+            assert_eq!(
+                config_json(&before.config),
+                config_json(&after.config),
+                "a refused reset must not change the config"
+            );
+            assert_eq!(after.instances.len(), before.instances.len());
+            drop(operation);
+        });
+    }
+
+    #[test]
+    fn reset_refuses_running_queued_and_paused_downloads_by_name() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for status in ["running", "queued", "paused"] {
+            rt.block_on(async {
+                let fixture = ResetFixture::new();
+                let state = &fixture.state;
+                let id = if status == "queued" {
+                    state
+                        .control
+                        .enqueue("install", "1.20.1", "Minecraft 1.20.1")
+                        .unwrap()
+                } else {
+                    let id = state
+                        .control
+                        .begin("install", "1.20.1", "Minecraft 1.20.1")
+                        .unwrap();
+                    if status == "paused" {
+                        state.control.set_paused(&id, true);
+                    }
+                    id
+                };
+                assert_eq!(
+                    state
+                        .control
+                        .list()
+                        .iter()
+                        .find(|job| job.id == id)
+                        .map(|job| job.status.as_str()),
+                    Some(status)
+                );
+                let before = state.snapshot().unwrap();
+                let error = fixture.reset().await.unwrap_err();
+                assert_eq!(
+                    crate::errors::expected(error).code,
+                    "reset.downloadsActive",
+                    "{status}"
+                );
+                let after = state.snapshot().unwrap();
+                assert_eq!(
+                    config_json(&before.config),
+                    config_json(&after.config),
+                    "a refused reset must not change the config ({status})"
+                );
+                assert_eq!(state.control.list().len(), 1, "the task history stays ({status})");
+            });
+        }
+    }
+
+    #[test]
+    fn clear_all_history_refuses_running_queued_and_paused_jobs() {
+        for status in ["running", "queued", "paused"] {
+            let (_root, state) = reset_fixture();
+            let id = if status == "queued" {
+                state
+                    .control
+                    .enqueue("install", "1.20.1", "Minecraft 1.20.1")
+                    .unwrap()
+            } else {
+                let id = state
+                    .control
+                    .begin("install", "1.20.1", "Minecraft 1.20.1")
+                    .unwrap();
+                if status == "paused" {
+                    state.control.set_paused(&id, true);
+                }
+                id
+            };
+            let error = state.control.clear_all_history(&[]).unwrap_err();
+            assert_eq!(crate::errors::expected(error).code, "download.busy", "{status}");
+            assert_eq!(state.control.list().len(), 1, "nothing is cleared ({status})");
+            assert_eq!(
+                state
+                    .control
+                    .list()
+                    .iter()
+                    .find(|job| job.id == id)
+                    .map(|job| job.status.as_str()),
+                Some(status)
+            );
+        }
+    }
+
+    fn fixture_part_key() -> crate::parts::PartKey {
+        crate::parts::PartKey::new(crate::parts::Algo::Sha1, &format!("{:040x}", 7), 11).unwrap()
+    }
+
+    fn write_part_triple(folder: &Path) -> crate::parts::PartKey {
+        let key = fixture_part_key();
+        std::fs::write(key.file(folder, "part"), vec![0x5a; 11]).unwrap();
+        std::fs::write(key.file(folder, "json"), b"{}").unwrap();
+        std::fs::write(key.file(folder, "lock"), b"").unwrap();
+        key
+    }
+
+    #[test]
+    fn clear_all_history_removes_only_exact_part_names_and_keeps_game_files() {
+        let (root, state) = reset_fixture();
+        let parts = state.data_dir.join(".launcher-temp").join("parts");
+        std::fs::create_dir_all(&parts).unwrap();
+        let stem = format!("sha1-{:040x}-11", 7);
+        let key = write_part_triple(&parts);
+        std::fs::write(parts.join("notes.part"), b"keep").unwrap();
+        std::fs::write(parts.join(format!("{stem}.txt")), b"keep").unwrap();
+        let store = crate::parts::PartStore::new(parts.clone());
+        let cleared = state.control.clear_all_history(std::slice::from_ref(&store)).unwrap();
+        assert_eq!(cleared.bytes, 11);
+        for extension in ["part", "json", "lock"] {
+            assert!(!key.file(&parts, extension).exists(), "{extension} removed");
+        }
+        assert!(parts.join("notes.part").is_file(), "a foreign .part name stays");
+        assert!(
+            parts.join(format!("{stem}.txt")).is_file(),
+            "only the exact part extensions are touched"
+        );
+        assert!(
+            root.path().join("game/mods/sodium.jar").is_file(),
+            "game files are never touched"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn clear_all_history_does_not_follow_a_junctioned_parts_folder() {
+        let (root, state) = reset_fixture();
+        let outside = root.path().join("outside-parts");
+        std::fs::create_dir_all(&outside).unwrap();
+        // A complete, unlocked part: only the link check keeps it, since the
+        // sweep would delete exactly this group in an ordinary folder.
+        let key = write_part_triple(&outside);
+        std::fs::create_dir_all(state.data_dir.join(".launcher-temp")).unwrap();
+        let link = state.data_dir.join(".launcher-temp").join("parts");
+        let output = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link.to_string_lossy().replace('/', r"\"))
+            .arg(outside.to_string_lossy().replace('/', r"\"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(key.file(&link, "part").is_file(), "the junction reaches the part");
+        let stores = crate::parts::startup_stores(
+            &state.data_dir,
+            crate::processes::configured_game_root(Path::new(
+                &state.snapshot().unwrap().config.game_directory,
+            ))
+            .ok()
+            .as_deref(),
+        );
+        let cleared = state.control.clear_all_history(&stores).unwrap();
+        let _ = std::fs::remove_dir(&link);
+        assert_eq!(cleared.bytes, 0);
+        for extension in ["part", "json", "lock"] {
+            assert!(
+                key.file(&outside, extension).is_file(),
+                "the {extension} file behind the junction stays"
+            );
+        }
+        assert_eq!(std::fs::read(key.file(&outside, "part")).unwrap(), vec![0x5a; 11]);
+        assert!(root.path().join("game/mods/sodium.jar").is_file());
+    }
+
+    const PROXY_KEY: &str = "download-proxy-credentials:http://proxy.example.invalid:8080";
+    const OLD_PROXY_KEY: &str = "download-proxy-credentials:http://old.example.invalid:3128";
+
+    /// Saves every kind of secret a launcher keeps: a custom proxy endpoint
+    /// with credentials, an orphaned record of an earlier endpoint, the
+    /// CurseForge and Lumen keys, a leftover temporary file and a signed-in
+    /// account. Returns the account's session generation.
+    fn save_every_secret(fixture: &ResetFixture) -> crate::auth::AccountGeneration {
+        let state = &fixture.state;
+        state
+            .update(|data| {
+                data.config.proxy_mode = "custom".into();
+                data.config.proxy_scheme = "http".into();
+                data.config.proxy_host = "proxy.example.invalid".into();
+                data.config.proxy_port = 8080;
+                Ok(())
+            })
+            .unwrap();
+        for (key, value) in [
+            (PROXY_KEY, "{\"username\":\"u\",\"password\":\"p\"}"),
+            (OLD_PROXY_KEY, "{\"username\":\"old\",\"password\":\"old\"}"),
+            (crate::curseforge_key::CURSEFORGE_SECRET_KEY, "cf-fixture-key"),
+            (crate::assistant::ASSISTANT_SECRET_KEY, "sk-fixture-key"),
+        ] {
+            crate::secrets::save_service_secret(&state.data_dir, key, value).unwrap();
+        }
+        std::fs::write(
+            state.data_dir.join("secrets").join(format!("{}.tmp", uuid::Uuid::new_v4())),
+            b"partial",
+        )
+        .unwrap();
+        fixture.auth.sign_in_fixture(state, "microsoft-reset-a").unwrap()
+    }
+
+    fn service_secret_keys() -> [String; 4] {
+        [
+            format!("service:{PROXY_KEY}"),
+            format!("service:{OLD_PROXY_KEY}"),
+            format!("service:{}", crate::curseforge_key::CURSEFORGE_SECRET_KEY),
+            format!("service:{}", crate::assistant::ASSISTANT_SECRET_KEY),
+        ]
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reset_erases_every_saved_secret_and_ends_old_sessions() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let fixture = ResetFixture::new();
+            let generation = save_every_secret(&fixture);
+            let second = fixture
+                .auth
+                .sign_in_fixture(&fixture.state, "microsoft-reset-b")
+                .unwrap();
+            let saved = fixture.reset().await.unwrap();
+            assert_eq!(saved.proxy_mode, "system");
+            let store = crate::secrets::SecretStore::new(fixture.state.data_dir.clone());
+            for key in service_secret_keys() {
+                assert_eq!(store.get(&key).unwrap(), None, "{key} is erased");
+            }
+            for id in ["microsoft-reset-a", "microsoft-reset-b"] {
+                assert_eq!(store.get(&format!("account:{id}")).unwrap(), None, "{id} token");
+            }
+            assert!(
+                !fixture.state.data_dir.join("secrets").exists(),
+                "no secret file of any kind is left"
+            );
+            let after = fixture.state.snapshot().unwrap();
+            assert!(after.accounts.is_empty());
+            assert!(
+                after.pending_credential_removals.is_empty(),
+                "the cleanup markers are cleared once the tokens are gone"
+            );
+            assert!(fixture.persisted().pending_credential_removals.is_empty());
+            for (id, generation) in [("microsoft-reset-a", &generation), ("microsoft-reset-b", &second)] {
+                assert_eq!(
+                    fixture
+                        .auth
+                        .update_current_account(id, generation, || Ok(()))
+                        .unwrap_err(),
+                    crate::errors::ACCOUNT_SESSION_CHANGED,
+                    "work started before the reset cannot write {id}'s token back"
+                );
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    fn lock_file(path: &Path) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reset_stops_before_its_commit_when_a_saved_key_cannot_be_erased() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let fixture = ResetFixture::new();
+            let generation = save_every_secret(&fixture);
+            let before = fixture.state.snapshot().unwrap();
+            let curseforge = fixture.secret_path(&format!(
+                "service:{}",
+                crate::curseforge_key::CURSEFORGE_SECRET_KEY
+            ));
+            let locked = lock_file(&curseforge);
+            let error = fixture.reset().await.unwrap_err();
+            assert_eq!(
+                crate::errors::expected(error).code,
+                "reset.secretsLocked",
+                "a key that survives must not be reported as erased"
+            );
+            let after = fixture.state.snapshot().unwrap();
+            assert_eq!(
+                config_json(&before.config),
+                config_json(&after.config),
+                "nothing is committed, so a retry still knows the old proxy endpoint"
+            );
+            assert_eq!(after.accounts.len(), 1, "the account stays listed");
+            assert!(fixture.persisted().pending_credential_removals.is_empty());
+            fixture
+                .auth
+                .update_current_account("microsoft-reset-a", &generation, || Ok(()))
+                .expect("the account's session is untouched");
+            assert!(
+                fixture.secret_path("account:microsoft-reset-a").is_file(),
+                "account tokens are only deleted after the commit"
+            );
+            assert!(curseforge.is_file(), "the locked key is still there");
+            // Secret files are visited in name order, so check keys on both
+            // sides of the locked one: erasing must not stop at the first failure.
+            for key in service_secret_keys() {
+                if fixture.secret_path(&key) != curseforge {
+                    assert!(!fixture.secret_path(&key).exists(), "every other key was still tried: {key}");
+                }
+            }
+            drop(locked);
+            fixture.reset().await.unwrap();
+            assert!(!fixture.state.data_dir.join("secrets").exists(), "a retry finishes");
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_token_left_by_a_failed_reset_is_finished_by_startup_recovery() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let fixture = ResetFixture::new();
+            let generation = save_every_secret(&fixture);
+            let token = fixture.secret_path("account:microsoft-reset-a");
+            let locked = lock_file(&token);
+            let error = fixture.reset().await.unwrap_err();
+            assert_eq!(crate::errors::expected(error).code, "reset.credentialsPending");
+            let after = fixture.state.snapshot().unwrap();
+            assert_eq!(after.config.proxy_mode, "system", "the reset itself committed");
+            assert!(after.accounts.is_empty());
+            let persisted = fixture.persisted();
+            assert!(
+                persisted.pending_credential_removals.contains("microsoft-reset-a"),
+                "the token's id survives a crash in the durable revision"
+            );
+            assert!(persisted.accounts.is_empty());
+            for key in service_secret_keys() {
+                assert!(!fixture.secret_path(&key).exists(), "{key} went before the commit");
+            }
+            assert!(
+                fixture
+                    .auth
+                    .update_current_account("microsoft-reset-a", &generation, || Ok(()))
+                    .is_err(),
+                "the old session cannot use the token that is still on disk"
+            );
+            assert!(token.is_file());
+            drop(locked);
+
+            let restarted = crate::auth::AuthService::new(
+                fixture.state.data_dir.clone(),
+                &fixture.state.snapshot().unwrap().config,
+            );
+            restarted.recover_credential_removals(&fixture.state).unwrap();
+            assert!(!token.exists(), "startup recovery deletes the leftover token");
+            assert!(fixture.state.snapshot().unwrap().pending_credential_removals.is_empty());
+            assert!(fixture.persisted().pending_credential_removals.is_empty());
+        });
     }
 }
 

@@ -24,9 +24,7 @@ impl SecretStore {
         if key.is_empty() || key.len() > 1024 {
             return Err("凭据键无效".into());
         }
-        Ok(self
-            .directory
-            .join(format!("{:x}.dpapi", Sha256::digest(key.as_bytes()))))
+        Ok(self.directory.join(file_name(key)))
     }
     pub fn get(&self, key: &str) -> Result<Option<String>, String> {
         <Self as SecretBackend>::get(self, key)
@@ -84,6 +82,11 @@ impl SecretBackend for SecretStore {
             Err(_) => Err("无法删除加密凭据".into()),
         }
     }
+}
+
+/// The name of the file that holds `key` inside the secrets directory.
+pub(crate) fn file_name(key: &str) -> String {
+    format!("{:x}.dpapi", Sha256::digest(key.as_bytes()))
 }
 
 pub fn load_service_secret(

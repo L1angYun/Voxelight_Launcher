@@ -1104,6 +1104,12 @@ export async function installLauncherFixture(
                 name: "update_instance_notes",
                 arguments: { instanceId: instances[0]?.id ?? "fixture-instance-1", notes: "测试备注" },
                 description: "Update the notes and/or category metadata of a registered instance.",
+                details: [
+                  { field: "instance", value: instances[0]?.name ?? "fixture-instance-1", unresolved: !instances[0] },
+                  { field: "notes", value: "测试备注", unresolved: false },
+                ],
+                unresolved: !instances[0],
+                reason: "controlled",
               };
               return {
                 reply: "我已检查你的实例，准备写入备注。",

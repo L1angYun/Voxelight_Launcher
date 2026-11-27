@@ -38,15 +38,56 @@ export interface ToolTraceItem {
   name: string;
   arguments: Record<string, unknown>;
   tier: string;
-  status: "executed" | "approved" | "denied" | "blocked" | "error";
+  status: "executed" | "approved" | "denied" | "blocked" | "expired" | "error";
   summary: string;
 }
+
+/** Fields the backend resolves for an approval card; each has a translated label. */
+export type ApprovalDetailField =
+  | "instance"
+  | "project"
+  | "resourceType"
+  | "resourceVersion"
+  | "loader"
+  | "serverName"
+  | "serverAddress"
+  | "managedServer"
+  | "game"
+  | "gameVersion"
+  | "name"
+  | "notes"
+  | "category"
+  | "worldFolder"
+  | "fileName"
+  | "memoryMode"
+  | "maxMemory"
+  | "minMemory"
+  | "clearMinMemory"
+  | "screenWidth"
+  | "screenHeight"
+  | "gameProxyMode"
+  | "resetRuntime"
+  | "retryCount"
+  | "retryTask";
+
+export interface ApprovalDetail {
+  field: ApprovalDetailField;
+  value: string;
+  /** True when the backend could not confirm this ID or the pairing it names. */
+  unresolved: boolean;
+}
+
+/** Why a call waits: Controlled mode, a tool that always asks, or the per-message write limit. */
+export type ApprovalReason = "controlled" | "alwaysAsk" | "limit";
 
 export interface PendingToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
   description: string;
+  details: ApprovalDetail[];
+  unresolved: boolean;
+  reason: ApprovalReason;
 }
 
 export interface PendingContinuation {
@@ -55,6 +96,17 @@ export interface PendingContinuation {
   completedResults: unknown[];
   pendingCalls: PendingToolCall[];
   round: number;
+  wake?: boolean;
+  unapprovedWrites?: number;
+}
+
+export interface AssistantTurnRequest {
+  messages: ChatMessage[];
+  approvedCallIds?: string[];
+  deniedCallIds?: string[];
+  pendingContinuation?: PendingContinuation;
+  /** Set only for a prompt the launcher sends by itself; the backend keeps that turn read-only. */
+  wake?: boolean;
 }
 
 export interface AssistantTurnResponse {

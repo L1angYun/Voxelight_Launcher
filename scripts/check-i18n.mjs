@@ -34,10 +34,12 @@ function flatten(value, prefix, output) {
 }
 
 const translationKeys = new Set();
+const localeKeys = new Map();
 for (const locale of locales) {
   const directory = path.join(localeRoot, locale);
   const namespaces = fs.readdirSync(directory).filter((file) => file.endsWith(".json")).sort();
   const keys = new Set();
+  localeKeys.set(locale, keys);
   for (const namespace of namespaces) {
     const values = new Map();
     flatten(readJson(path.join(directory, namespace)), "", values);
@@ -70,16 +72,158 @@ function flattenNamespaces(locale) {
   return keys;
 }
 
-const backendSource = fs.readFileSync(path.join(root, "src-tauri", "src", "errors.rs"), "utf8");
-const backendCodes = new Set(
-  [...backendSource.matchAll(/["']((?:instance|backup|resource|auth|download|server|config|skin|version|storage|game|internal|modpack|install)\.[A-Za-z][A-Za-z0-9]*)["']/g)]
-    .map((match) => match[1]),
-);
-for (const code of backendCodes) {
-  const special = code === "internal.unexpected" && translationKeys.has("common.errors.internalUnexpected");
-  if (!special && ![...translationKeys].some((key) => key.endsWith(`.${code}`) || key === code)) {
-    errors.push(`Missing translation for backend error code: ${code}`);
+// Splits Rust source into code with comments and literals blanked (offsets kept)
+// and the string literals it contains.
+function lexRust(text) {
+  const blank = (from, to) => text.slice(from, to).replace(/[^\n]/g, " ");
+  const literals = [];
+  let code = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text.startsWith("//", i)) {
+      const newline = text.indexOf("\n", i);
+      const end = newline < 0 ? text.length : newline;
+      code += blank(i, end);
+      i = end;
+      continue;
+    }
+    if (text.startsWith("/*", i)) {
+      let depth = 0;
+      let j = i;
+      while (j < text.length) {
+        if (text.startsWith("/*", j)) { depth++; j += 2; }
+        else if (text.startsWith("*/", j)) { depth--; j += 2; if (!depth) break; }
+        else j++;
+      }
+      code += blank(i, j);
+      i = j;
+      continue;
+    }
+    const afterIdentifier = /[A-Za-z0-9_]/.test(text[i - 1] ?? "");
+    const raw = afterIdentifier ? null : /^b?r(#*)"/.exec(text.slice(i, i + 260));
+    if (raw || text[i] === '"' || (!afterIdentifier && text.startsWith('b"', i))) {
+      const valueStart = i + (raw ? raw[0].length : text[i] === '"' ? 1 : 2);
+      let valueEnd = valueStart;
+      if (raw) {
+        valueEnd = text.indexOf(`"${raw[1]}`, valueStart);
+        if (valueEnd < 0) valueEnd = text.length;
+      } else {
+        while (valueEnd < text.length && text[valueEnd] !== '"') valueEnd += text[valueEnd] === "\\" ? 2 : 1;
+      }
+      const end = Math.min(text.length, valueEnd + 1 + (raw ? raw[1].length : 0));
+      literals.push({ value: text.slice(valueStart, valueEnd), start: i, end });
+      code += `""${blank(i + 2, end)}`;
+      i = end;
+      continue;
+    }
+    const character = text[i] === "'" && /^'(?:\\u\{[0-9A-Fa-f]{1,6}\}|\\x[0-9A-Fa-f]{2}|\\.|[^\\'\n])'/u.exec(text.slice(i, i + 12));
+    if (character) {
+      code += `'${" ".repeat(character[0].length - 2)}'`;
+      i += character[0].length;
+      continue;
+    }
+    code += text[i];
+    i++;
   }
+  return { code, literals };
+}
+
+// Offset ranges of items that only exist in test builds.
+function testOnlyRanges(code) {
+  if (/#!\[\s*cfg\(\s*test\s*\)\s*\]/.test(code)) return [[0, code.length]];
+  const ranges = [];
+  for (const match of code.matchAll(/#\[\s*(?:cfg\(\s*(?:test|all\(\s*test\b[^\]]*)\s*\)|(?:tokio::)?test)\s*\]/g)) {
+    let i = match.index + match[0].length;
+    for (;;) {
+      while (/\s/.test(code[i] ?? "")) i++;
+      if (!code.startsWith("#[", i)) break;
+      let depth = 0;
+      for (; i < code.length; i++) {
+        if (code[i] === "[") depth++;
+        else if (code[i] === "]" && --depth === 0) { i++; break; }
+      }
+    }
+    const item = /^(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async|const|unsafe|extern(?:\s+"")?)\s+)*(?:fn|mod|impl|struct|enum|trait|union|const|static|use|type|macro_rules!)\b/
+      .test(code.slice(i, i + 120));
+    let depth = 0;
+    let end = code.length;
+    for (; i < code.length; i++) {
+      const c = code[i];
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") {
+        depth--;
+        if (depth < 0) { end = i; break; }
+        if (depth === 0 && c === "}") { end = i + 1; break; }
+      } else if (depth === 0 && (c === ";" || (c === "," && !item))) { end = i + 1; break; }
+    }
+    ranges.push([match.index, end]);
+  }
+  return ranges;
+}
+
+// Every Rust file compiled into the launcher, following `mod` declarations
+// from the crate roots and skipping test-only items and modules.
+function productionRustSources(sourceRoot) {
+  const sources = [];
+  const problems = [];
+  const owners = new Set();
+  const queue = ["lib.rs", "main.rs"].map((name) => path.join(sourceRoot, name)).filter((file) => fs.existsSync(file));
+  if (!queue.length) problems.push(`Missing Rust crate root: ${path.relative(root, path.join(sourceRoot, "lib.rs"))}`);
+  for (const file of queue) owners.add(file);
+  const seen = new Set();
+  while (queue.length) {
+    const file = queue.shift();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const { code, literals } = lexRust(fs.readFileSync(file, "utf8"));
+    const ranges = testOnlyRanges(code);
+    const testOnly = (offset) => ranges.some(([start, end]) => offset >= start && offset < end);
+    sources.push({ file, code, literals: literals.filter((literal) => !testOnly(literal.start)) });
+    const directory = owners.has(file) || path.basename(file) === "mod.rs" ? path.dirname(file) : file.slice(0, -3);
+    for (const match of code.matchAll(/((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g)) {
+      if (testOnly(match.index + match[0].lastIndexOf("mod"))) continue;
+      const attributes = match[1];
+      const pathLiteral = /#\[\s*path\s*=/.test(attributes)
+        ? literals.find((literal) => literal.start >= match.index && literal.start < match.index + attributes.length)
+        : undefined;
+      let target;
+      if (pathLiteral) {
+        target = path.join(path.dirname(file), pathLiteral.value);
+        owners.add(target);
+      } else {
+        const direct = path.join(directory, `${match[2]}.rs`);
+        target = fs.existsSync(direct) ? direct : path.join(directory, match[2], "mod.rs");
+      }
+      if (fs.existsSync(target)) queue.push(target);
+      else problems.push(`Rust module ${match[2]} declared in ${path.relative(root, file)} has no file: ${path.relative(root, target)}`);
+    }
+  }
+  return { sources, problems };
+}
+
+// A backend error code looks like `family.name`. A family is an error family
+// once one of its codes is passed to AppError::new, returned from a match arm
+// or is the value of a block; every other literal of that family is then a
+// code too, except file and host names.
+const nonCodeSuffixes = new Set([
+  "args", "bat", "bin", "cfg", "cmd", "com", "dat", "dll", "exe", "gif", "html", "ico", "info", "ini", "io", "jar",
+  "jpeg", "jpg", "js", "json", "localhost", "lock", "log", "md", "mcmeta", "mrpack", "net", "org", "packmeta", "part",
+  "png", "properties", "ps1", "rs", "sh", "tmp", "toml", "txt", "webp", "xml", "yaml", "yml", "zip",
+]);
+function backendErrorCodes(sources) {
+  const shaped = [];
+  for (const { code, literals } of sources) {
+    for (const literal of literals) {
+      const match = /^([a-z][A-Za-z0-9]*)\.([a-z][A-Za-z0-9]*)$/.exec(literal.value);
+      if (!match || nonCodeSuffixes.has(match[2])) continue;
+      const before = code.slice(Math.max(0, literal.start - 80), literal.start).trimEnd();
+      const after = code.slice(literal.end, literal.end + 16).trimStart();
+      const producesCode = /\bAppError::new\($/.test(before) || before.endsWith("=>") || (before.endsWith("{") && after.startsWith("}"));
+      shaped.push({ value: literal.value, family: match[1], producesCode });
+    }
+  }
+  const families = new Set(shaped.filter((item) => item.producesCode).map((item) => item.family));
+  return new Set(shaped.filter((item) => families.has(item.family)).map((item) => item.value));
 }
 
 const allowedLiterals = new Set([
@@ -131,6 +275,25 @@ function sourceFiles(directory) {
 }
 
 const files = sourceFiles(path.join(root, "src"));
+
+const rust = productionRustSources(path.join(root, "src-tauri", "src"));
+errors.push(...rust.problems);
+const backendCodes = backendErrorCodes(rust.sources);
+// The namespaces the UI looks backend codes up in, such as `shell:errors.${code}`.
+const errorNamespaces = [...new Set(files.flatMap((file) =>
+  [...fs.readFileSync(file, "utf8").matchAll(/[`"']([a-z][A-Za-z0-9]*):errors\.\$\{/g)].map((match) => match[1])))].sort();
+if (backendCodes.size && !errorNamespaces.length) errors.push("No UI lookup of backend error codes (`<namespace>:errors.${code}`) was found");
+const pluralBase = (key) => key.replace(/_(?:zero|one|two|few|many|other)$/, "");
+const localeBaseKeys = new Map(locales.map((locale) => [locale, new Set([...localeKeys.get(locale)].map(pluralBase))]));
+for (const code of [...backendCodes].sort()) {
+  const lookups = code === "internal.unexpected"
+    ? ["common.errors.internalUnexpected"]
+    : errorNamespaces.map((namespace) => `${namespace}.errors.${code}`);
+  const missing = locales.filter((locale) => !lookups.some((key) => localeBaseKeys.get(locale).has(key)));
+  if (missing.length && lookups.length) {
+    errors.push(`Missing translation for backend error code ${code} in ${missing.join(", ")} (looked up as ${lookups.join(" or ")})`);
+  }
+}
 
 for (const file of files) {
   const text = fs.readFileSync(file, "utf8");

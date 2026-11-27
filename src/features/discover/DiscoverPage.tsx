@@ -17,7 +17,7 @@ import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
 import { useToast } from "../../components/ui/ToastProvider";
-import { errorText } from "../library/utils";
+import { errorText, loaderDisplayName } from "../library/utils";
 import { formatNumber } from "../../i18n/format";
 import type { ResourceContext } from "./types";
 import type { FittableInstance } from "./versionFits";
@@ -119,7 +119,7 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
             </label>
             <dl className="vx-discover-context">
               <div><dt>{t("library:version")}</dt><dd>{context?.gameVersion || "—"}</dd></div>
-              <div><dt>{t("library:loader")}</dt><dd>{context?.loader || (context ? "Vanilla" : "—")}</dd></div>
+              <div><dt>{t("library:loader")}</dt><dd>{context ? loaderDisplayName(context.loader, t) : "—"}</dd></div>
             </dl>
             {!selectedVersionId ? <Button variant="secondary" onClick={() => setCreating(true)}>{t("library:createInstance")}</Button> : null}
             {resourceType === "shader" ? <p className="vx-install-target__warning" role="note">{t("discover:installTarget.shaderWarning")}</p> : null}

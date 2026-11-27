@@ -44,6 +44,19 @@ pub(crate) const RESOURCE_RECOVERY_NOT_NEEDED: &str = "resource.recoveryNotNeede
 pub(crate) const RESOURCE_RECOVERY_REQUIRED: &str = "存在未完成的资源事务，请先在更新历史中恢复。";
 pub(crate) const RESTORE_PENDING: &str = "此实例有未完成的备份恢复或整合包更新，请先在实例备份中恢复，再启动或修改实例。";
 pub(crate) const INSTALL_GAME_RUNNING: &str = "同一游戏目录中有游戏正在运行。请先退出游戏，再安装版本或加载器。";
+/// Factory-reset refusals. These deliberately do not reuse the launcher-update
+/// texts: the user is restoring the launcher, not installing an update.
+pub(crate) const RESET_GAME_RUNNING: &str = "有游戏正在运行，请先退出游戏后再还原初始状态。";
+pub(crate) const RESET_SERVER_RUNNING: &str = "有托管服务端正在运行，请先停止服务端后再还原初始状态。";
+pub(crate) const RESET_DOWNLOADS_ACTIVE: &str =
+    "有下载任务正在运行、排队或已暂停，请先完成或取消这些任务后再还原初始状态。";
+/// A saved key, proxy credential or other non-account secret could not be
+/// erased, so the reset stopped before it changed any state. The detail after
+/// the colon names the failing operation.
+pub(crate) const RESET_SECRETS_LOCKED: &str = "无法删除已保存的密钥，启动器未被还原";
+/// The reset committed its new state, but an account token could not be erased
+/// yet. Its id stays queued, so the next start finishes the deletion.
+pub(crate) const RESET_CREDENTIALS_PENDING: &str = "还原初始状态时未能删除全部加密凭据";
 
 pub(crate) const LOADER_REINSTALL_PREFIX: &str = "加载器版本元数据损坏，需重新安装：";
 pub(crate) const PROFILE_CONFLICT_PREFIX: &str = "版本配置的来源无法确认，原文件已保留：";
@@ -88,20 +101,67 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             .with_param("files", files)
             .with_detail(detail);
     }
+    if let Some(port) = crate::assistant::mcp::unavailable_port(&detail) {
+        return AppError::new("assistant.mcpPortUnavailable")
+            .with_param("port", port)
+            .with_detail(detail);
+    }
+    if let Some(reason) = detail.strip_prefix(crate::instances::LOADER_BACKUP_FAILED_PREFIX) {
+        return loader_backup_failure(reason).with_detail(detail);
+    }
+    for invalid in [
+        crate::loaders::OPTIFINE_READ_FAILED,
+        crate::loaders::OPTIFINE_SIZE_INVALID,
+        crate::loaders::OPTIFINE_NAME_INVALID,
+        crate::loaders::OPTIFINE_OPEN_FAILED,
+        crate::loaders::OPTIFINE_NOT_JAR,
+        crate::loaders::OPTIFINE_INVALID,
+        crate::loaders::OPTIFINE_FILENAME_INVALID,
+        crate::loaders::OPTIFINE_CHANGED,
+    ] {
+        if detail.starts_with(invalid) {
+            return AppError::new("loader.optifineInvalid").with_detail(detail);
+        }
+    }
+    if detail.starts_with("所选 JAR 不是有效的 OptiFine 安装器") {
+        return AppError::new("loader.optifineInvalid").with_detail(detail);
+    }
+    if let Some(rest) = detail.strip_prefix(crate::loaders::OPTIFINE_VERSION_MISMATCH_PREFIX) {
+        let mut error = AppError::new("loader.optifineVersionMismatch");
+        let split = rest
+            .split_once(crate::loaders::OPTIFINE_VERSION_MISMATCH_INFIX)
+            .or_else(|| rest.split_once("，与当前所选版本 "));
+        if let Some((installer, expected)) = split {
+            error = error
+                .with_param("installer", installer)
+                .with_param(
+                    "expected",
+                    expected
+                        .strip_suffix(crate::loaders::OPTIFINE_VERSION_MISMATCH_SUFFIX)
+                        .unwrap_or(expected),
+                );
+        }
+        return error.with_detail(detail);
+    }
     let code = if detail.starts_with("预设 JSON 无效") {
         "config.presetInvalid"
     } else if detail.starts_with(crate::modpacks::PLATFORM_REFUSED) {
         "modpack.platformUnavailable"
     } else if detail.starts_with(crate::assistant::ASSISTANT_PROVIDER_ERROR) {
         "assistant.providerError"
-    } else if detail.starts_with("无法在 127.0.0.1:") {
-        "server.portInUse"
+    } else if detail.starts_with(RESET_CREDENTIALS_PENDING) {
+        "reset.credentialsPending"
+    } else if detail.starts_with(RESET_SECRETS_LOCKED) {
+        "reset.secretsLocked"
+    } else if detail.starts_with(crate::assistant::mcp::MCP_FAILED) {
+        "assistant.mcpFailed"
     } else {
         match detail.as_str() {
             crate::assistant::ASSISTANT_API_KEY_REQUIRED => "assistant.apiKeyRequired",
             crate::assistant::ASSISTANT_MODEL_REQUIRED => "assistant.modelRequired",
             crate::assistant::ASSISTANT_INVALID_BASE_URL => "assistant.invalidBaseUrl",
             crate::assistant::ASSISTANT_EMPTY_MESSAGE => "assistant.emptyMessage",
+            crate::assistant::mcp::MCP_NOT_RUNNING => "assistant.mcpNotRunning",
             "助手提供商配置已变更，请重新发送消息"
             | "助手工具调用上下文已达上限，请重新发送消息" => "assistant.providerError",
             STORAGE_STATE_CHANGED => "storage.stateChanged",
@@ -123,6 +183,7 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             RESTORE_PENDING => "instance.restorePending",
             INSTALL_GAME_RUNNING => "install.gameRunning",
             crate::server_manager::import::IMPORT_INSTALLER => "server.importInstaller",
+            "所选参数文件不在导入的内容中" => "server.importArgsFileMismatch",
             crate::server_manager::import::IMPORT_ARGS_FILE => "server.importArgsFile",
             crate::server_manager::import::IMPORT_ARGS_INVALID => "server.importArgsInvalid",
             crate::server_manager::import::IMPORT_NO_JAR => "server.importNoJar",
@@ -163,12 +224,15 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             crate::content::DATAPACK_INVALID => "datapack.invalid",
             crate::content::DATAPACK_EXISTS => "datapack.exists",
             crate::content::DATAPACK_NOT_FOUND => "datapack.notFound",
+            crate::content::DATAPACK_MANIFEST_CONFLICT => "datapack.manifestConflict",
             "请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。" => {
                 "auth.serviceKeyMissing"
             }
             "任务不存在" => "download.notFound",
             "任务已取消，已校验文件保留供下次复用" => "download.cancelled",
             "此游戏版本没有可安装的加载器版本" => "resource.loaderUnavailable",
+            crate::loaders::OPTIFINE_ONLINE_UNAVAILABLE => "loader.optifineOnlineUnavailable",
+            crate::instances::BASE_VERSION_UNKNOWN => "instance.baseVersionUnknown",
             "请回到对应资源、整合包或备份页面重新执行；已校验文件会复用" => {
                 "download.retryUnsupported"
             }
@@ -229,8 +293,9 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             "已有安装或启动准备任务运行，请等待完成后修改配置" => {
                 "config.busy"
             }
-            "有游戏正在运行，请先退出游戏后再还原初始状态。" => "update.gameRunning",
-            "有托管服务端正在运行，请先停止服务端后再还原初始状态。" => "update.serverRunning",
+            RESET_GAME_RUNNING => "reset.gameRunning",
+            RESET_SERVER_RUNNING => "reset.serverRunning",
+            RESET_DOWNLOADS_ACTIVE => "reset.downloadsActive",
             "背景图片需要本地绝对路径"
             | "请选择不超过 12 MB 的背景图片"
             | "PNG 图片不完整"
@@ -263,6 +328,27 @@ pub fn expected(detail: impl Into<String>) -> AppError {
     AppError::new(code).with_detail(detail)
 }
 
+/// The reason a pre-switch backup was refused, so the user can decide whether
+/// to switch without one. The free-space refusal carries both sizes in MB.
+fn loader_backup_failure(reason: &str) -> AppError {
+    use crate::instances::{
+        backup_space_shortfall, BACKUP_CHANGED, LINKS_REFUSED, TREE_SPECIAL_FILE, TREE_TOO_DEEP,
+        TREE_TOO_LARGE, TREE_TOO_MANY_ENTRIES, TREE_TOO_MANY_FILES,
+    };
+    if let Some((needed, available)) = backup_space_shortfall(reason) {
+        return AppError::new("loader.switchBackupNoSpace")
+            .with_param("needed", needed)
+            .with_param("available", available);
+    }
+    AppError::new(match reason {
+        LINKS_REFUSED | TREE_SPECIAL_FILE => "loader.switchBackupLinks",
+        TREE_TOO_DEEP | TREE_TOO_MANY_ENTRIES | TREE_TOO_MANY_FILES => "loader.switchBackupTooManyFiles",
+        TREE_TOO_LARGE => "loader.switchBackupTooLarge",
+        BACKUP_CHANGED => "loader.switchBackupChanged",
+        _ => "loader.switchBackupFailed",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,10 +372,30 @@ mod tests {
     }
 
     #[test]
+    fn reset_refusals_do_not_reuse_the_launcher_update_texts() {
+        for (detail, code) in [
+            (RESET_GAME_RUNNING, "reset.gameRunning"),
+            (RESET_SERVER_RUNNING, "reset.serverRunning"),
+            (RESET_DOWNLOADS_ACTIVE, "reset.downloadsActive"),
+        ] {
+            assert_eq!(expected(detail).code, code, "{detail}");
+        }
+        let pending = format!("{RESET_CREDENTIALS_PENDING}：无法删除账号凭据");
+        let error = expected(pending.clone());
+        assert_eq!(error.code, "reset.credentialsPending");
+        assert_eq!(error.detail.as_deref(), Some(pending.as_str()));
+        let locked = format!("{RESET_SECRETS_LOCKED}：部分加密凭据文件无法删除");
+        let error = expected(locked.clone());
+        assert_eq!(error.code, "reset.secretsLocked");
+        assert_eq!(error.detail.as_deref(), Some(locked.as_str()));
+    }
+
+    #[test]
     fn datapack_errors_map_to_stable_codes() {
         assert_eq!(expected(crate::content::DATAPACK_INVALID).code, "datapack.invalid");
         assert_eq!(expected(crate::content::DATAPACK_EXISTS).code, "datapack.exists");
         assert_eq!(expected(crate::content::DATAPACK_NOT_FOUND).code, "datapack.notFound");
+        assert_eq!(expected(crate::content::DATAPACK_MANIFEST_CONFLICT).code, "datapack.manifestConflict");
     }
 
     #[test]
@@ -446,6 +552,107 @@ mod tests {
         assert_eq!(error.code, "server.importProperties");
         assert_eq!(error.params["key"], "view-distance", "the page names the key");
         assert_eq!(error.detail.as_deref(), Some(detail.as_str()));
+    }
+
+    #[test]
+    fn mcp_server_failures_have_their_own_codes() {
+        use crate::assistant::mcp::{bind_failed, MCP_FAILED, MCP_NOT_RUNNING};
+        for error in [
+            std::io::Error::from(std::io::ErrorKind::AddrInUse),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        ] {
+            let detail = bind_failed(25590, &error);
+            let mapped = expected(detail.clone());
+            assert_eq!(mapped.code, "assistant.mcpPortUnavailable", "{detail}");
+            assert_eq!(mapped.params["port"], 25590);
+            assert_eq!(mapped.detail.as_deref(), Some(detail.as_str()));
+        }
+        assert_eq!(expected(MCP_NOT_RUNNING).code, "assistant.mcpNotRunning");
+        assert_eq!(expected(format!("{MCP_FAILED}服务锁异常")).code, "assistant.mcpFailed");
+        // A managed server's own port conflict keeps its multiplayer code.
+        assert_eq!(
+            expected("另一个由启动器管理的服务端已使用此端口，请先更换端口").code,
+            "server.portInUse"
+        );
+    }
+
+    #[test]
+    fn u7_optifine_loader_switch_and_args_file_errors_have_stable_codes() {
+        use crate::loaders::{
+            optifine_version_mismatch, OPTIFINE_CHANGED, OPTIFINE_FILENAME_INVALID,
+            OPTIFINE_INVALID, OPTIFINE_NAME_INVALID, OPTIFINE_NOT_JAR, OPTIFINE_ONLINE_UNAVAILABLE,
+            OPTIFINE_OPEN_FAILED, OPTIFINE_READ_FAILED, OPTIFINE_SIZE_INVALID,
+        };
+        for detail in [
+            OPTIFINE_READ_FAILED,
+            OPTIFINE_SIZE_INVALID,
+            OPTIFINE_NAME_INVALID,
+            OPTIFINE_OPEN_FAILED,
+            OPTIFINE_NOT_JAR,
+            OPTIFINE_INVALID,
+            OPTIFINE_FILENAME_INVALID,
+            OPTIFINE_CHANGED,
+        ] {
+            let error = expected(detail);
+            assert_eq!(error.code, "loader.optifineInvalid", "{detail}");
+            assert_eq!(error.detail.as_deref(), Some(detail), "{detail}");
+        }
+        assert_eq!(
+            expected("所选 JAR 不是有效的 OptiFine 安装器").code,
+            "loader.optifineInvalid"
+        );
+        let mismatch = optifine_version_mismatch("1.21.4", "1.20.4");
+        let error = expected(mismatch.clone());
+        assert_eq!(error.code, "loader.optifineVersionMismatch");
+        assert_eq!(error.params["installer"], "1.21.4");
+        assert_eq!(error.params["expected"], "1.20.4");
+        assert_eq!(error.detail.as_deref(), Some(mismatch.as_str()));
+        let legacy = expected(
+            "所选 OptiFine 安装器适用于 Minecraft 1.21.4，与当前所选版本 1.20.4 不匹配",
+        );
+        assert_eq!(legacy.code, "loader.optifineVersionMismatch");
+        assert_eq!(legacy.params["installer"], "1.21.4");
+        assert_eq!(legacy.params["expected"], "1.20.4");
+        let online = expected(OPTIFINE_ONLINE_UNAVAILABLE);
+        assert_eq!(online.code, "loader.optifineOnlineUnavailable");
+        assert_eq!(online.detail.as_deref(), Some(OPTIFINE_ONLINE_UNAVAILABLE));
+        assert_eq!(
+            expected(crate::instances::BASE_VERSION_UNKNOWN).code,
+            "instance.baseVersionUnknown"
+        );
+        assert_eq!(
+            expected("所选参数文件不在导入的内容中").code,
+            "server.importArgsFileMismatch"
+        );
+    }
+
+    #[test]
+    fn u7_refused_pre_switch_backups_name_their_reason() {
+        use crate::instances::{
+            loader_backup_error, BACKUP_CHANGED, LINKS_REFUSED, TREE_SPECIAL_FILE, TREE_TOO_DEEP,
+            TREE_TOO_LARGE, TREE_TOO_MANY_ENTRIES, TREE_TOO_MANY_FILES,
+        };
+        for (reason, code) in [
+            (LINKS_REFUSED, "loader.switchBackupLinks"),
+            (TREE_SPECIAL_FILE, "loader.switchBackupLinks"),
+            (TREE_TOO_DEEP, "loader.switchBackupTooManyFiles"),
+            (TREE_TOO_MANY_ENTRIES, "loader.switchBackupTooManyFiles"),
+            (TREE_TOO_MANY_FILES, "loader.switchBackupTooManyFiles"),
+            (TREE_TOO_LARGE, "loader.switchBackupTooLarge"),
+            (BACKUP_CHANGED, "loader.switchBackupChanged"),
+            ("Access is denied. (os error 5)", "loader.switchBackupFailed"),
+        ] {
+            let detail = loader_backup_error(reason.to_owned());
+            let error = expected(detail.clone());
+            assert_eq!(error.code, code, "{reason}");
+            assert_eq!(error.detail.as_deref(), Some(detail.as_str()), "{reason}");
+        }
+        // A Cancel pressed while the backup runs is the user's choice, not a
+        // refused backup.
+        assert_eq!(
+            expected(loader_backup_error(crate::downloads::CANCELLED.to_owned())).code,
+            "download.cancelled"
+        );
     }
 
     #[test]

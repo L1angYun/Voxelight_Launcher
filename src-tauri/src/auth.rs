@@ -6,7 +6,7 @@ use crate::secrets::{SecretBackend, SecretStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     future::Future,
     path::PathBuf,
     pin::Pin,
@@ -1137,16 +1137,59 @@ impl AuthService {
         Ok(())
     }
 
-    pub(crate) fn clear_all_credentials(&self, account_ids: &[String]) -> Result<(), String> {
+    /// Factory reset of every account credential. `commit_reset` runs under
+    /// the credential lock, so no login can commit between the accounts it
+    /// reads and the durable revision it writes. It returns the ids it queued
+    /// in `pending_credential_removals`. Every session is then invalidated and
+    /// the ids are blocked before any token is deleted, so work that started
+    /// before the reset cannot write a token back. A token that cannot be
+    /// deleted stays queued for `recover_credential_removals`.
+    pub(crate) fn reset_all_credentials<T>(
+        &self,
+        commit_reset: impl FnOnce() -> Result<(T, BTreeSet<String>), String>,
+    ) -> Result<T, String> {
         let mut guard = self
             .secret_mutation_lock
             .lock()
             .map_err(|_| "凭据更新锁异常")?;
-        for account_id in account_ids {
-            self.secrets.remove(&format!("account:{account_id}"))?;
-        }
+        let (value, queued) = commit_reset()?;
         guard.generations.clear();
-        Ok(())
+        guard.pending_removals.extend(queued.iter().cloned());
+        let mut failed = false;
+        for id in &queued {
+            failed |= self.secrets.remove(&format!("account:{id}")).is_err();
+        }
+        if failed {
+            return Err(crate::errors::CREDENTIAL_CLEANUP_PENDING.into());
+        }
+        Ok(value)
+    }
+
+    /// Signs a fixture account in through the real login commit and returns
+    /// its session generation.
+    #[cfg(test)]
+    pub(crate) fn sign_in_fixture(
+        &self,
+        state: &crate::storage::LauncherState,
+        account_id: &str,
+    ) -> Result<AccountGeneration, String> {
+        let record = CredentialRecord {
+            account_id: account_id.into(),
+            account_type: "microsoft".into(),
+            username: "FixturePlayer".into(),
+            uuid: uuid::Uuid::new_v4().simple().to_string(),
+            expires_at: None,
+            access_token: format!("fixture-token-{account_id}"),
+            refresh_token: Some("fixture-refresh".into()),
+            microsoft_client_id: None,
+            xuid: None,
+            authlib_server: None,
+            client_token: None,
+        };
+        self.commit_login(&record, &PlayerProfile::default(), |account| {
+            crate::auth_commands::remember(state, account)
+        })?;
+        self.account_generation(account_id)
     }
 
     /// Metadata is removed and the cleanup ID is committed before the credential
@@ -1733,6 +1776,68 @@ mod tests {
             still_has_credentials,
             "a failed removal must not revoke credentials"
         );
+    }
+
+    #[test]
+    fn reset_all_credentials_ends_every_session_and_deletes_the_queued_tokens() {
+        let (auth, _, secrets) = service(vec![]);
+        let queued = ms_record();
+        let unlisted = auth_record();
+        auth.save_record(&queued).unwrap();
+        auth.save_record(&unlisted).unwrap();
+        let queued_generation = auth.account_generation(&queued.account_id).unwrap();
+        let unlisted_generation = auth.account_generation(&unlisted.account_id).unwrap();
+        let ids = BTreeSet::from([queued.account_id.clone()]);
+        auth.reset_all_credentials(|| Ok(((), ids))).unwrap();
+        assert_eq!(secrets.get(&format!("account:{}", queued.account_id)).unwrap(), None);
+        for (id, generation) in [
+            (&queued.account_id, &queued_generation),
+            (&unlisted.account_id, &unlisted_generation),
+        ] {
+            assert_eq!(
+                auth.update_current_account(id, generation, || Ok(())).unwrap_err(),
+                crate::errors::ACCOUNT_SESSION_CHANGED,
+                "{id}: no session started before the reset survives it"
+            );
+        }
+    }
+
+    #[test]
+    fn reset_all_credentials_blocks_a_token_it_could_not_delete() {
+        let (auth, _, secrets) = service(vec![]);
+        let record = ms_record();
+        let id = record.account_id.clone();
+        auth.save_record(&record).unwrap();
+        secrets.fail_remove.store(true, Ordering::Relaxed);
+        let error = auth
+            .reset_all_credentials(|| Ok(((), BTreeSet::from([id.clone()]))))
+            .unwrap_err();
+        assert_eq!(error, crate::errors::CREDENTIAL_CLEANUP_PENDING);
+        assert!(secrets.get(&format!("account:{id}")).unwrap().is_some());
+        assert_eq!(
+            auth.load_record(&id).err().as_deref(),
+            Some(crate::errors::ACCOUNT_SESSION_CHANGED),
+            "a reset account's leftover token is never handed out again"
+        );
+    }
+
+    #[test]
+    fn reset_all_credentials_changes_nothing_when_its_commit_fails() {
+        let (auth, _, secrets) = service(vec![]);
+        let record = ms_record();
+        let id = record.account_id.clone();
+        auth.save_record(&record).unwrap();
+        let generation = auth.account_generation(&id).unwrap();
+        let error = auth
+            .reset_all_credentials::<()>(|| Err("synthetic commit failure".into()))
+            .unwrap_err();
+        assert_eq!(error, "synthetic commit failure");
+        assert!(secrets.get(&format!("account:{id}")).unwrap().is_some());
+        auth.update_current_account(&id, &generation, || Ok(()))
+            .expect("the session outlives a reset that did not commit");
+        assert!(auth
+            .load_record(&id)
+            .is_ok_and(|kept| kept.access_token == record.access_token));
     }
 
     #[test]

@@ -7,7 +7,7 @@ import { command } from "../../lib/launcher";
 import { LauncherError } from "../../lib/errors";
 import { createLauncherI18n } from "../../i18n";
 import { AssistantDialog } from "./AssistantDialog";
-import type { AssistantStatus, AssistantTurnResponse } from "./types";
+import type { AssistantStatus, AssistantTurnResponse, PendingToolCall } from "./types";
 
 const commandMock = vi.mocked(command);
 
@@ -108,6 +108,18 @@ describe("AssistantDialog", () => {
 
   it("handles tool traces and Controlled-mode approval confirmation", async () => {
     const onMutated = vi.fn(async () => {});
+    const notesCall: PendingToolCall = {
+      id: "call_write_1",
+      name: "update_instance_notes",
+      arguments: { instanceId: "inst-1", notes: "Modded 1.21" },
+      description: "Update the notes and/or category metadata of a registered instance.",
+      details: [
+        { field: "instance", value: "Fabric Test · 1.21.1 · fabric 0.16.5", unresolved: false },
+        { field: "notes", value: "Modded 1.21", unresolved: false },
+      ],
+      unresolved: false,
+      reason: "controlled",
+    };
     const pendingTurn: AssistantTurnResponse = {
       reply: "I can update the instance notes for you.",
       traces: [
@@ -120,26 +132,12 @@ describe("AssistantDialog", () => {
           summary: "{\"count\":1}",
         },
       ],
-      pendingApprovals: [
-        {
-          id: "call_write_1",
-          name: "update_instance_notes",
-          arguments: { instanceId: "inst-1", notes: "Modded 1.21" },
-          description: "Update the notes and/or category metadata of a registered instance.",
-        },
-      ],
+      pendingApprovals: [notesCall],
       continuation: {
         provider: "openai",
         providerMessages: [],
         completedResults: [],
-        pendingCalls: [
-          {
-            id: "call_write_1",
-            name: "update_instance_notes",
-            arguments: { instanceId: "inst-1", notes: "Modded 1.21" },
-            description: "Update the notes and/or category metadata of a registered instance.",
-          },
-        ],
+        pendingCalls: [notesCall],
         round: 0,
       },
       model: "gpt-4o-mini",
@@ -188,6 +186,30 @@ describe("AssistantDialog", () => {
     expect(document.body.textContent).toContain("update_instance_notes");
     expect(onMutated).not.toHaveBeenCalled();
 
+    // Resolved details come first with translated labels; raw arguments stay in a closed disclosure.
+    const card = document.querySelector<HTMLElement>('[data-testid="lumen-approval"]')!;
+    const rows = [...card.querySelectorAll(".vx-assistant-approval__details > div")].map((row) => [
+      row.querySelector("dt")?.textContent,
+      row.querySelector("dd")?.textContent,
+    ]);
+    expect(rows).toEqual([
+      ["Instance", "Fabric Test · 1.21.1 · fabric 0.16.5"],
+      ["Notes", "Modded 1.21"],
+    ]);
+    const technical = card.querySelector<HTMLDetailsElement>("details.vx-assistant-approval__technical")!;
+    expect(technical.open).toBe(false);
+    expect(technical.querySelector("summary")?.textContent).toBe("Technical details");
+    expect(technical.textContent).toContain("instanceId");
+    expect(card.querySelector('[role="note"]')).toBeNull();
+    expect(card.querySelector('input[type="checkbox"]')).toBeNull();
+
+    // Focus lands on the card heading so a stray Enter or Space cannot approve.
+    const heading = card.querySelector("h3")!;
+    expect(document.activeElement).toBe(heading);
+    expect(heading.tabIndex).toBe(-1);
+    expect(card.getAttribute("role")).toBe("region");
+    expect(card.getAttribute("aria-labelledby")).toBe(heading.id);
+
     await act(async () => buttonByText("Approve & run").click());
     expect(commandMock).toHaveBeenLastCalledWith("assistant_chat", {
       request: expect.objectContaining({
@@ -227,9 +249,207 @@ describe("AssistantDialog", () => {
     expect(document.querySelector('[data-testid="lumen-wake-banner"]')?.textContent).toContain("exit code 1");
     expect(onConsumeWake).toHaveBeenCalledTimes(1);
     expect(commandMock).toHaveBeenCalledWith("assistant_chat", {
-      request: { messages: [{ role: "user", content: "Diagnose the crash for Modded 1.21" }] },
+      request: { messages: [{ role: "user", content: "Diagnose the crash for Modded 1.21" }], wake: true },
     });
     expect(document.body.textContent).toContain("Crash caused by missing Fabric API dependency.");
+  });
+
+  it("lets the user allow calls one by one and sends the rest as denied", async () => {
+    const call = (id: string, name: string, overrides: Partial<PendingToolCall> = {}): PendingToolCall => ({
+      id,
+      name,
+      arguments: { instanceId: "inst-1" },
+      description: "",
+      details: [{ field: "instance", value: "Fabric Test · 1.21.1", unresolved: false }],
+      unresolved: false,
+      reason: "alwaysAsk",
+      ...overrides,
+    });
+    const calls = [
+      call("c_install", "install_modrinth_resource", {
+        details: [
+          { field: "instance", value: "Fabric Test · 1.21.1", unresolved: false },
+          { field: "project", value: "Sodium (sodium)", unresolved: false },
+          { field: "resourceVersion", value: "Totally Sodium (9.9.9)", unresolved: true },
+        ],
+        unresolved: true,
+      }),
+      call("c_save", "save_multiplayer_server"),
+      call("c_loader", "change_instance_loader"),
+    ];
+    const pendingTurn: AssistantTurnResponse = {
+      reply: "These need your approval.",
+      traces: [],
+      pendingApprovals: calls,
+      continuation: { provider: "openai", providerMessages: [], completedResults: [], pendingCalls: calls, round: 0 },
+      model: "gpt-4o-mini",
+      provider: "openai",
+    };
+    const doneTurn: AssistantTurnResponse = {
+      reply: "Saved the server only.",
+      traces: [],
+      pendingApprovals: [],
+      continuation: null,
+      model: "gpt-4o-mini",
+      provider: "openai",
+    };
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_assistant_status") return statusFixture({ permission: "fullAccess" });
+      if (name === "assistant_chat") {
+        const req = (args as { request?: { pendingContinuation?: unknown } })?.request;
+        return req?.pendingContinuation ? doneTurn : pendingTurn;
+      }
+      return null;
+    });
+
+    await renderDialog();
+    await act(async () => buttonByText("List my running games and managed servers.").click());
+
+    const card = document.querySelector<HTMLElement>('[data-testid="lumen-approval"]')!;
+    expect(card.textContent).toContain("Full access still asks before these actions.");
+    expect(card.textContent).toContain("This kind of action always asks first.");
+    expect(document.activeElement).toBe(card.querySelector("h3"));
+    expect([...document.querySelectorAll("button")].some((item) => item.textContent?.trim() === "Approve & run")).toBe(false);
+
+    const install = card.querySelector<HTMLElement>('[data-call-id="c_install"]')!;
+    expect(install.querySelector('[role="note"]')?.textContent).toBe(
+      "Some details could not be confirmed. Check the technical details before you approve.",
+    );
+    const flagged = install.querySelector('[data-unresolved="true"]')!;
+    expect(flagged.querySelector("dt")?.textContent).toBe("Version");
+    expect(flagged.textContent).toContain("not confirmed");
+    expect(card.querySelector('[data-call-id="c_save"] [role="note"]')).toBeNull();
+
+    const boxes = [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+    expect(boxes).toHaveLength(3);
+    expect(boxes.every((box) => !box.checked)).toBe(true);
+    expect(buttonByText("Run allowed").disabled).toBe(true);
+
+    const saveBox = card.querySelector<HTMLInputElement>('[data-call-id="c_save"] input[type="checkbox"]')!;
+    await act(async () => saveBox.click());
+    expect(saveBox.checked).toBe(true);
+    expect(buttonByText("Run allowed").disabled).toBe(false);
+
+    await act(async () => buttonByText("Run allowed").click());
+    expect(commandMock).toHaveBeenLastCalledWith("assistant_chat", {
+      request: expect.objectContaining({
+        approvedCallIds: ["c_save"],
+        deniedCallIds: ["c_install", "c_loader"],
+      }),
+    });
+    expect(document.body.textContent).toContain("Saved the server only.");
+  });
+
+  it("denies every pending call with Deny all and never sends a wake flag for typed prompts", async () => {
+    const calls: PendingToolCall[] = ["a", "b"].map((id) => ({
+      id,
+      name: "update_instance_notes",
+      arguments: { instanceId: "inst-1", notes: id },
+      description: "",
+      details: [],
+      unresolved: false,
+      reason: "limit",
+    }));
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_assistant_status") return statusFixture({ permission: "fullAccess" });
+      if (name === "assistant_chat") {
+        const req = (args as { request?: { pendingContinuation?: unknown } })?.request;
+        return {
+          reply: req?.pendingContinuation ? "Nothing changed." : "More changes need approval.",
+          traces: [],
+          pendingApprovals: req?.pendingContinuation ? [] : calls,
+          continuation: req?.pendingContinuation
+            ? null
+            : { provider: "openai", providerMessages: [], completedResults: [], pendingCalls: calls, round: 1 },
+          model: "gpt-4o-mini",
+          provider: "openai",
+        } satisfies AssistantTurnResponse;
+      }
+      return null;
+    });
+
+    await renderDialog({ wakeRequest: { id: 7, reason: "Check this", prompt: "Look at my crash", autoSend: false } });
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message for Lumen"]')!;
+    expect(textarea.value).toBe("Look at my crash");
+    await act(async () => buttonByText("Send").click());
+    expect(commandMock).toHaveBeenCalledWith("assistant_chat", {
+      request: { messages: [{ role: "user", content: "Look at my crash" }] },
+    });
+    expect(document.body.textContent).toContain("Lumen already made several changes for this message");
+
+    await act(async () => buttonByText("Deny all").click());
+    expect(commandMock).toHaveBeenLastCalledWith("assistant_chat", {
+      request: expect.objectContaining({ approvedCallIds: [], deniedCallIds: ["a", "b"] }),
+    });
+    const lastRequest = (commandMock.mock.lastCall?.[1] as { request: Record<string, unknown> }).request;
+    expect(lastRequest).not.toHaveProperty("wake");
+    expect(document.body.textContent).toContain("Nothing changed.");
+  });
+
+  it("labels every instance setting and retried task on a card and shows a cleared value", async () => {
+    const calls: PendingToolCall[] = [
+      {
+        id: "c_settings",
+        name: "update_instance_settings",
+        arguments: { instanceId: "inst-1", notes: "", maxMemoryMb: 4096, gameProxyMode: "off", resetRuntime: true },
+        description: "",
+        details: [
+          { field: "instance", value: "Fabric Test · 1.21.1", unresolved: false },
+          { field: "notes", value: "", unresolved: false },
+          { field: "maxMemory", value: "4096 MB", unresolved: false },
+          { field: "gameProxyMode", value: "off", unresolved: false },
+          { field: "resetRuntime", value: "true", unresolved: false },
+        ],
+        unresolved: false,
+        reason: "controlled",
+      },
+      {
+        id: "c_retry",
+        name: "retry_failed_downloads",
+        arguments: {},
+        description: "",
+        details: [
+          { field: "retryCount", value: "1", unresolved: false },
+          { field: "retryTask", value: "resource · Sodium", unresolved: false },
+        ],
+        unresolved: false,
+        reason: "alwaysAsk",
+      },
+    ];
+    commandMock.mockImplementation(async (name) => {
+      if (name === "get_assistant_status") return statusFixture();
+      if (name === "assistant_chat") {
+        return {
+          reply: "These need your approval.",
+          traces: [],
+          pendingApprovals: calls,
+          continuation: { provider: "openai", providerMessages: [], completedResults: [], pendingCalls: calls, round: 0 },
+          model: "gpt-4o-mini",
+          provider: "openai",
+        } satisfies AssistantTurnResponse;
+      }
+      return null;
+    });
+
+    await renderDialog();
+    await act(async () => buttonByText("List my running games and managed servers.").click());
+
+    const rows = (id: string) =>
+      [...document.querySelectorAll(`[data-call-id="${id}"] .vx-assistant-approval__details > div`)].map((row) => [
+        row.querySelector("dt")?.textContent,
+        row.querySelector("dd")?.textContent,
+      ]);
+    expect(rows("c_settings")).toEqual([
+      ["Instance", "Fabric Test · 1.21.1"],
+      ["Notes", "(empty)"],
+      ["Maximum memory", "4096 MB"],
+      ["Game network proxy", "off"],
+      ["Reset memory, Java, JVM arguments, window size and proxy", "true"],
+    ]);
+    expect(rows("c_retry")).toEqual([
+      ["Failed tasks to retry", "1"],
+      ["Retry", "resource · Sodium"],
+    ]);
   });
 
   it("renders localized Lumen errors cleanly", async () => {

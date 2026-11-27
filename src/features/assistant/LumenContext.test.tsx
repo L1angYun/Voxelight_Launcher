@@ -173,6 +173,31 @@ describe("LumenContext", () => {
     expect(latest.wakeRequest?.autoSend).toBe(true);
   });
 
+  it("does not wake Lumen when the launcher itself stopped the game", async () => {
+    let gameExitHandler: ((payload: { gameId: string; pid: number; code: number | null; requestedStop?: boolean }) => void) | null = null;
+    eventsMock.mockImplementationOnce(async (name: string, handler: (payload: unknown) => void) => {
+      if (name === "launcher://game-exit") {
+        gameExitHandler = handler as typeof gameExitHandler;
+      }
+      return () => {};
+    });
+    commandMock.mockResolvedValue(readyStatus);
+    await mountProvider();
+    expect(gameExitHandler).not.toBeNull();
+
+    await act(async () => {
+      gameExitHandler!({ gameId: "g-forced", pid: 200, code: 1, requestedStop: true });
+    });
+    expect(latest.open).toBe(false);
+    expect(latest.wakeRequest).toBeNull();
+
+    await act(async () => {
+      gameExitHandler!({ gameId: "g-crash", pid: 201, code: 1, requestedStop: false });
+    });
+    expect(latest.open).toBe(true);
+    expect(latest.wakeRequest?.autoSend).toBe(true);
+  });
+
   it("does not subscribe to crash wake-up when proactive mode is disabled", async () => {
     commandMock.mockResolvedValue({ ...readyStatus, proactive: false });
     await mountProvider();

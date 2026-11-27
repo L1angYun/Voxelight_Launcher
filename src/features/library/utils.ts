@@ -10,6 +10,14 @@ export function noticeText(code: string, t: TFunction, params?: Record<string, u
   return t(`library:notice.${code}`, params);
 }
 
+const LOADER_NAMES: Record<string, string> = { fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge", optifine: "OptiFine" };
+
+/** Display name of a loader id; vanilla (or no loader) is translated, the rest are product names. */
+export function loaderDisplayName(loader: string | null | undefined, t: TFunction): string {
+  if (!loader || loader.toLowerCase() === "vanilla") return t("library:vanilla");
+  return LOADER_NAMES[loader.toLowerCase()] ?? loader;
+}
+
 export function sizeText(bytes: number, locale: string): string {
   return formatBytes(bytes, locale);
 }

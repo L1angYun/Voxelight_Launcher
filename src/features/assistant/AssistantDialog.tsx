@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Send, Settings, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, Send, Settings, Sparkles, Trash2, X } from "lucide-react";
 import { command } from "../../lib/launcher";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { useLumen, type LumenWakeRequest } from "./LumenContext";
 import type {
+  ApprovalDetailField,
   AssistantStatus,
+  AssistantTurnRequest,
   AssistantTurnResponse,
   ChatMessage,
   PendingContinuation,
@@ -51,6 +53,7 @@ export function AssistantDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LauncherError | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<PendingToolCall[]>([]);
+  const [allowedIds, setAllowedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [continuation, setContinuation] = useState<PendingContinuation | null>(null);
   const [wakeReason, setWakeReason] = useState<string | null>(null);
   const entriesRef = useRef<TranscriptEntry[]>(entries);
@@ -60,6 +63,8 @@ export function AssistantDialog({
   const handledWakeId = useRef<number>(0);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const approvalHeadingRef = useRef<HTMLHeadingElement>(null);
+  const approvalBaseId = useId();
   const prevBusyRef = useRef(false);
   const prevPendingCountRef = useRef(0);
   const prevProviderRef = useRef<string | undefined>(status?.provider);
@@ -72,6 +77,7 @@ export function AssistantDialog({
   useEffect(() => {
     if (status?.provider && prevProviderRef.current && status.provider !== prevProviderRef.current) {
       setPendingApprovals([]);
+      setAllowedIds(new Set());
       setContinuation(null);
     }
     if (status?.provider) {
@@ -109,7 +115,8 @@ export function AssistantDialog({
     prevPendingCountRef.current = pendingApprovals.length;
     if (!open || busy) return;
     if (pendingApprovals.length > 0 && (wasBusy || prevPending === 0)) {
-      transcriptRef.current?.querySelector<HTMLButtonElement>("[data-lumen-approve]")?.focus();
+      // Focus the card heading, never an action button, so a stray key press cannot approve.
+      approvalHeadingRef.current?.focus();
     } else if (wasBusy && pendingApprovals.length === 0) {
       textareaRef.current?.focus();
     }
@@ -145,6 +152,7 @@ export function AssistantDialog({
       ]);
     }
     setPendingApprovals(response.pendingApprovals);
+    setAllowedIds(new Set());
     setContinuation(response.continuation);
     if (response.traces.some((item) => item.tier === "controlled" && (item.status === "approved" || item.status === "executed"))) {
       try {
@@ -155,7 +163,7 @@ export function AssistantDialog({
     }
   }, [onMutated]);
 
-  const sendPrompt = useCallback(async (rawPrompt: string) => {
+  const sendPrompt = useCallback(async (rawPrompt: string, options: { wake?: boolean } = {}) => {
     const content = rawPrompt.trim();
     if (!content || inFlightRef.current) return;
     inFlightRef.current = true;
@@ -175,9 +183,8 @@ export function AssistantDialog({
       const messages: ChatMessage[] = nextEntries
         .filter((item) => item.content.trim().length > 0)
         .map(({ role, content: text }) => ({ role, content: text }));
-      const response = await command<AssistantTurnResponse>("assistant_chat", {
-        request: { messages },
-      });
+      const request: AssistantTurnRequest = options.wake ? { messages, wake: true } : { messages };
+      const response = await command<AssistantTurnResponse>("assistant_chat", { request });
       await applyResponse(response);
     } catch (cause) {
       if (mountedRef.current) setError(normalizeError(cause));
@@ -195,31 +202,32 @@ export function AssistantDialog({
     onConsumeWake?.();
     if (wakeRequest.prompt) {
       if (wakeRequest.autoSend && !busy && pendingApprovals.length === 0) {
-        void sendPrompt(wakeRequest.prompt);
+        // A prompt the launcher sends by itself runs as a read-only wake turn.
+        void sendPrompt(wakeRequest.prompt, { wake: true });
       } else {
         setInput(wakeRequest.prompt);
       }
     }
   }, [open, wakeRequest, status?.ready, busy, pendingApprovals.length, onConsumeWake, sendPrompt]);
 
-  async function resolveApprovals(approve: boolean) {
+  async function resolveApprovals(approvedIds: readonly string[]) {
     if (!continuation || inFlightRef.current) return;
     inFlightRef.current = true;
     setError(null);
     setBusy(true);
     const ids = pendingApprovals.map((item) => item.id);
+    const approved = new Set(approvedIds);
     try {
       const messages: ChatMessage[] = entriesRef.current
         .filter((item) => item.content.trim().length > 0)
         .map(({ role, content: text }) => ({ role, content: text }));
-      const response = await command<AssistantTurnResponse>("assistant_chat", {
-        request: {
-          messages,
-          approvedCallIds: approve ? ids : [],
-          deniedCallIds: approve ? [] : ids,
-          pendingContinuation: continuation,
-        },
-      });
+      const request: AssistantTurnRequest = {
+        messages,
+        approvedCallIds: ids.filter((id) => approved.has(id)),
+        deniedCallIds: ids.filter((id) => !approved.has(id)),
+        pendingContinuation: continuation,
+      };
+      const response = await command<AssistantTurnResponse>("assistant_chat", { request });
       await applyResponse(response);
     } catch (cause) {
       if (mountedRef.current) setError(normalizeError(cause));
@@ -243,10 +251,31 @@ export function AssistantDialog({
     }
   }
 
+  function toggleAllowed(id: string, allowed: boolean) {
+    setAllowedIds((current) => {
+      const next = new Set(current);
+      if (allowed) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function detailLabel(field: ApprovalDetailField): string {
+    const key = `shell:assistant.approvalFields.${field}`;
+    return i18n.exists(key) ? t(key) : field;
+  }
+
+  function reasonNote(call: PendingToolCall): string | null {
+    if (call.reason === "alwaysAsk") return t("shell:assistant.approvalReason.alwaysAsk");
+    if (call.reason === "limit") return t("shell:assistant.approvalReason.limit");
+    return null;
+  }
+
   function clearConversation() {
     entriesRef.current = [];
     setEntries([]);
     setPendingApprovals([]);
+    setAllowedIds(new Set());
     setContinuation(null);
     setError(null);
     setWakeReason(null);
@@ -389,53 +418,129 @@ export function AssistantDialog({
           ) : null}
 
           {pendingApprovals.length > 0 ? (
-            <section className="vx-assistant-approval" aria-label={t("shell:assistant.approvalTitle")}>
-              <h3>{t("shell:assistant.approvalTitle")}</h3>
-              <p>{t("shell:assistant.approvalDescription")}</p>
+            <section
+              className="vx-assistant-approval"
+              role="region"
+              aria-labelledby={`${approvalBaseId}-heading`}
+              data-testid="lumen-approval"
+            >
+              <h3 id={`${approvalBaseId}-heading`} ref={approvalHeadingRef} tabIndex={-1}>
+                {t("shell:assistant.approvalTitle")}
+              </h3>
+              <p>
+                {pendingApprovals.every((call) => (call.reason ?? "controlled") === "controlled")
+                  ? t("shell:assistant.approvalDescription")
+                  : t("shell:assistant.approvalDescriptionFullAccess")}
+              </p>
               <ul className="vx-assistant-approval__list">
-                {pendingApprovals.map((call) => {
+                {pendingApprovals.map((call, index) => {
                   const argEntries = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
                     ? Object.entries(call.arguments as Record<string, unknown>)
                     : [];
+                  const details = call.details ?? [];
+                  const itemId = `${approvalBaseId}-call-${index}`;
+                  const note = reasonNote(call);
                   return (
-                    <li className="vx-assistant-approval__item" key={call.id}>
-                      <span className="vx-assistant-trace__name">{call.name}</span>
+                    <li className="vx-assistant-approval__item" key={call.id} data-call-id={call.id}>
+                      <div className="vx-assistant-approval__head">
+                        <span className="vx-assistant-trace__name" id={`${itemId}-name`}>{call.name}</span>
+                        {pendingApprovals.length > 1 ? (
+                          <label className="vx-assistant-approval__allow">
+                            <input
+                              type="checkbox"
+                              checked={allowedIds.has(call.id)}
+                              disabled={busy}
+                              aria-labelledby={`${itemId}-allow ${itemId}-name`}
+                              onChange={(event) => toggleAllowed(call.id, event.target.checked)}
+                            />
+                            <span id={`${itemId}-allow`}>{t("shell:assistant.approvalAllow")}</span>
+                          </label>
+                        ) : null}
+                      </div>
                       {call.description ? <p>{call.description}</p> : null}
-                      {argEntries.length > 0 ? (
-                        <dl className="vx-assistant-approval__args">
-                          {argEntries.map(([key, value]) => (
-                            <div key={key}>
-                              <dt>{key}</dt>
-                              <dd>{formatArgValue(value)}</dd>
+                      {note ? <p className="vx-assistant-approval__reason">{note}</p> : null}
+                      {details.length > 0 ? (
+                        <dl className="vx-assistant-approval__details">
+                          {details.map((detail, detailIndex) => (
+                            <div key={`${detail.field}-${detailIndex}`} data-unresolved={detail.unresolved ? "true" : undefined}>
+                              <dt>{detailLabel(detail.field)}</dt>
+                              <dd>
+                                {detail.value === "" ? t("shell:assistant.approvalEmptyValue") : detail.value}
+                                {detail.unresolved ? (
+                                  <span className="vx-assistant-approval__unconfirmed">
+                                    {t("shell:assistant.approvalUnconfirmed")}
+                                  </span>
+                                ) : null}
+                              </dd>
                             </div>
                           ))}
                         </dl>
-                      ) : (
-                        <pre>{JSON.stringify(call.arguments, null, 2)}</pre>
-                      )}
+                      ) : null}
+                      {call.unresolved ? (
+                        <p className="vx-assistant-approval__warning" role="note">
+                          <AlertTriangle size={14} aria-hidden="true" />
+                          <span>{t("shell:assistant.approvalUnresolved")}</span>
+                        </p>
+                      ) : null}
+                      <details className="vx-assistant-approval__technical">
+                        <summary>{t("shell:assistant.approvalTechnical")}</summary>
+                        {argEntries.length > 0 ? (
+                          <dl className="vx-assistant-approval__args">
+                            {argEntries.map(([key, value]) => (
+                              <div key={key}>
+                                <dt>{key}</dt>
+                                <dd>{formatArgValue(value)}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : (
+                          <pre>{JSON.stringify(call.arguments, null, 2)}</pre>
+                        )}
+                      </details>
                     </li>
                   );
                 })}
               </ul>
-              <div className="vx-action-row">
-                <Button
-                  variant="primary"
-                  data-lumen-approve=""
-                  icon={<Check size={14} />}
-                  loading={busy}
-                  onClick={() => void resolveApprovals(true)}
-                >
-                  {t("shell:assistant.approveAction")}
-                </Button>
-                <Button
-                  variant="secondary"
-                  icon={<X size={14} />}
-                  disabled={busy}
-                  onClick={() => void resolveApprovals(false)}
-                >
-                  {t("shell:assistant.denyAction")}
-                </Button>
-              </div>
+              {pendingApprovals.length === 1 ? (
+                <div className="vx-action-row">
+                  <Button
+                    variant="primary"
+                    icon={<Check size={14} />}
+                    loading={busy}
+                    onClick={() => void resolveApprovals([pendingApprovals[0].id])}
+                  >
+                    {t("shell:assistant.approveAction")}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    icon={<X size={14} />}
+                    disabled={busy}
+                    onClick={() => void resolveApprovals([])}
+                  >
+                    {t("shell:assistant.denyAction")}
+                  </Button>
+                </div>
+              ) : (
+                <div className="vx-action-row">
+                  <Button
+                    variant="primary"
+                    icon={<Check size={14} />}
+                    loading={busy}
+                    disabled={allowedIds.size === 0}
+                    onClick={() => void resolveApprovals([...allowedIds])}
+                  >
+                    {t("shell:assistant.approvalRunAllowed")}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    icon={<X size={14} />}
+                    disabled={busy}
+                    onClick={() => void resolveApprovals([])}
+                  >
+                    {t("shell:assistant.approvalDenyAll")}
+                  </Button>
+                </div>
+              )}
             </section>
           ) : null}
         </div>

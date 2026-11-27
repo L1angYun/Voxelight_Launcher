@@ -191,6 +191,26 @@ describe("NetworkCheckPanel", () => {
     expect(container.textContent).toContain("Copied");
   });
 
+  it("shows a tunnel warning and no direct address when a TUN handles the probes", async () => {
+    mockReport = {
+      ...mockReport,
+      natType: "proxied",
+      directConnectIpv4: null,
+      directConnectIpv6: null,
+      advice: [
+        { code: "ipv6Unavailable", severity: "info" },
+        { code: "ipv4TunnelDetected", severity: "warn" },
+      ],
+    };
+    await renderPage();
+    await act(async () => findButton("Network check").click());
+    await act(async () => findButton("Run network check").click());
+
+    expect(container.textContent).toContain("Proxy / VPN tunnel");
+    expect(container.textContent).toContain("A local proxy or VPN tunnel (TUN mode) appears");
+    expect(container.querySelector(".vx-network-addresses")).toBeNull();
+  });
+
   it("shows symmetric NAT and CGNAT warnings without fabricating direct IPv4", async () => {
     mockReport = {
       ...mockReport,
@@ -211,6 +231,27 @@ describe("NetworkCheckPanel", () => {
 
     expect(container.textContent).toContain("Symmetric NAT");
     expect(container.textContent).toContain("Carrier-grade NAT (100.64.0.0/10)");
+    expect(container.querySelector(".vx-network-addresses")).toBeNull();
+  });
+
+  it("explains differing egress IPs without calling them a tunnel", async () => {
+    mockReport = {
+      ...mockReport,
+      natType: "addressPortDependent",
+      directConnectIpv4: null,
+      directConnectIpv6: null,
+      advice: [
+        { code: "ipv6Unavailable", severity: "info" },
+        { code: "ipv4SymmetricWarn", severity: "warn" },
+        { code: "ipv4MixedEgress", severity: "info" },
+      ],
+    };
+    await renderPage();
+    await act(async () => findButton("Network check").click());
+    await act(async () => findButton("Run network check").click());
+
+    expect(container.textContent).toContain("The STUN servers saw different public IPv4 addresses.");
+    expect(container.textContent).not.toContain("Proxy / VPN tunnel");
     expect(container.querySelector(".vx-network-addresses")).toBeNull();
   });
 });

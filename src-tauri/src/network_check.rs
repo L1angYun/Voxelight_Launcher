@@ -34,6 +34,7 @@ pub enum NatType {
     AddressPortDependent,
     BehindNat,
     Unreachable,
+    Proxied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -208,7 +209,22 @@ pub fn is_cgnat_v4(ip: Ipv4Addr) -> bool {
     a == 100 && (64..=127).contains(&b)
 }
 
+/// Clash/mihomo/sing-box TUN mode commonly uses 198.18.0.0/15 as its local
+/// route and fake-IP DNS range. Nothing else uses this benchmarking range, so
+/// a local route or a STUN host resolving there is a tunnel signal.
+///
+/// The v2rayN and NekoBox default TUN addresses (172.18.0.1/30, 172.19.0.1)
+/// are deliberately not matched: they sit in 172.16.0.0/12, which ordinary
+/// office and home LANs, Docker networks and WSL/Hyper-V switches also use.
+/// Telling them apart needs the route's adapter type (Wintun) and prefix
+/// length, which this check does not read.
+pub fn is_tunnel_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    a == 198 && (b == 18 || b == 19)
+}
+
 pub fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
     !(ip.is_private()
         || ip.is_loopback()
         || ip.is_link_local()
@@ -216,7 +232,15 @@ pub fn is_public_v4(ip: Ipv4Addr) -> bool {
         || ip.is_broadcast()
         || ip.is_multicast()
         || ip.is_documentation()
-        || is_cgnat_v4(ip))
+        || is_cgnat_v4(ip)
+        // "This network" 0.0.0.0/8
+        || a == 0
+        // IETF protocol assignments 192.0.0.0/24
+        || (a == 192 && b == 0 && c == 0)
+        // Benchmarking 198.18.0.0/15 (also the TUN route range above)
+        || is_tunnel_v4(ip)
+        // Reserved 240.0.0.0/4 (includes limited broadcast)
+        || a >= 240)
 }
 
 pub fn is_global_unicast_v6(ip: Ipv6Addr) -> bool {
@@ -308,10 +332,41 @@ fn probe_endpoint(socket: &UdpSocket, remote: SocketAddr) -> Option<(SocketAddr,
     None
 }
 
-fn run_family_probes(want_v6: bool) -> (Option<u16>, Vec<ProbeObservation>, Vec<String>) {
+fn resolved_contains_tunnel_v4(addrs: impl IntoIterator<Item = SocketAddr>) -> bool {
+    addrs.into_iter().any(|addr| match addr.ip() {
+        IpAddr::V4(ip) => is_tunnel_v4(ip),
+        IpAddr::V6(_) => false,
+    })
+}
+
+/// What one address family's STUN probes saw.
+#[derive(Default)]
+struct FamilyProbes {
+    local_port: Option<u16>,
+    observations: Vec<ProbeObservation>,
+    queried_hosts: Vec<String>,
+    /// A STUN host resolved into the fake-IP range (IPv4 probes only).
+    tunnel_resolved: bool,
+}
+
+fn run_family_probes(want_v6: bool) -> FamilyProbes {
+    run_family_probes_with(
+        want_v6,
+        STUN_ENDPOINTS,
+        |host, port| (host, port).to_socket_addrs().ok().map(Iterator::collect),
+        probe_endpoint,
+    )
+}
+
+fn run_family_probes_with(
+    want_v6: bool,
+    endpoints: &[(&str, u16)],
+    resolve: impl Fn(&str, u16) -> Option<Vec<SocketAddr>>,
+    probe: impl Fn(&UdpSocket, SocketAddr) -> Option<(SocketAddr, u64)>,
+) -> FamilyProbes {
     let bind_addr = if want_v6 { "[::]:0" } else { "0.0.0.0:0" };
     let Ok(socket) = UdpSocket::bind(bind_addr) else {
-        return (None, Vec::new(), Vec::new());
+        return FamilyProbes::default();
     };
     let _ = socket.set_read_timeout(Some(STUN_TIMEOUT));
     let _ = socket.set_write_timeout(Some(STUN_TIMEOUT));
@@ -320,12 +375,18 @@ fn run_family_probes(want_v6: bool) -> (Option<u16>, Vec<ProbeObservation>, Vec<
     let mut observations = Vec::new();
     let mut queried_hosts = Vec::new();
     let mut seen_remote_ips = HashSet::new();
+    let mut tunnel_resolved = false;
 
-    'outer: for &(host, port) in STUN_ENDPOINTS {
-        let Ok(resolved) = (host, port).to_socket_addrs() else {
+    'outer: for &(host, port) in endpoints {
+        let Some(resolved) = resolve(host, port) else {
             continue;
         };
+        // Fake-IP DNS in TUN mode resolves STUN hostnames to 198.18.0.0/15.
+        if !want_v6 && resolved_contains_tunnel_v4(resolved.iter().copied()) {
+            tunnel_resolved = true;
+        }
         let candidates: Vec<SocketAddr> = resolved
+            .into_iter()
             .filter(|addr| addr.is_ipv6() == want_v6)
             .filter(|addr| seen_remote_ips.insert(addr.ip()))
             .take(2)
@@ -338,7 +399,7 @@ fn run_family_probes(want_v6: bool) -> (Option<u16>, Vec<ProbeObservation>, Vec<
             queried_hosts.push(endpoint_label.clone());
         }
         for remote in candidates {
-            if let Some((mapped, rtt_ms)) = probe_endpoint(&socket, remote) {
+            if let Some((mapped, rtt_ms)) = probe(&socket, remote) {
                 if mapped.is_ipv6() == want_v6 {
                     observations.push(ProbeObservation {
                         host: endpoint_label.clone(),
@@ -355,7 +416,12 @@ fn run_family_probes(want_v6: bool) -> (Option<u16>, Vec<ProbeObservation>, Vec<
         }
     }
 
-    (local_port, observations, queried_hosts)
+    FamilyProbes {
+        local_port,
+        observations,
+        queried_hosts,
+        tunnel_resolved,
+    }
 }
 
 fn classify_ipv4_nat(
@@ -413,6 +479,7 @@ fn classify_ipv6(local_ip: Option<Ipv6Addr>, observations: &[ProbeObservation]) 
 fn build_advice(
     nat_type: &NatType,
     cgnat_suspected: bool,
+    mixed_egress: bool,
     ipv6_status: &Ipv6Status,
     custom_proxy_enabled: bool,
 ) -> Vec<NetworkAdvice> {
@@ -453,6 +520,17 @@ fn build_advice(
             code: "ipv4Unavailable".into(),
             severity: AdviceSeverity::Warn,
         }),
+        NatType::Proxied => advice.push(NetworkAdvice {
+            code: "ipv4TunnelDetected".into(),
+            severity: AdviceSeverity::Warn,
+        }),
+    }
+
+    if mixed_egress {
+        advice.push(NetworkAdvice {
+            code: "ipv4MixedEgress".into(),
+            severity: AdviceSeverity::Info,
+        });
     }
 
     if cgnat_suspected {
@@ -472,6 +550,27 @@ fn build_advice(
     advice
 }
 
+/// Whether the STUN servers saw different public IPv4 addresses. A proxy that
+/// routes only some servers causes this, but so do dual-WAN and load-balancing
+/// routers and carrier NATs that pool addresses per destination, so on its own
+/// it is not a tunnel signal. Different ports on one IP are ordinary symmetric
+/// NAT.
+fn has_mixed_mapped_ipv4_ips(observations: &[ProbeObservation]) -> bool {
+    let mut first_ip: Option<Ipv4Addr> = None;
+    for observation in observations {
+        let SocketAddr::V4(mapped) = observation.mapped else {
+            continue;
+        };
+        let ip = *mapped.ip();
+        match first_ip {
+            Some(previous) if previous != ip => return true,
+            Some(_) => {}
+            None => first_ip = Some(ip),
+        }
+    }
+    false
+}
+
 fn assemble_report(
     local_v4: Option<Ipv4Addr>,
     local_port_v4: Option<u16>,
@@ -479,9 +578,21 @@ fn assemble_report(
     local_v6: Option<Ipv6Addr>,
     v6_obs: Vec<ProbeObservation>,
     mut stun_hosts_queried: Vec<String>,
+    tunnel_resolved: bool,
     custom_proxy_enabled: bool,
 ) -> NetworkCheckReport {
-    let (nat_type, cgnat_suspected) = classify_ipv4_nat(local_v4, local_port_v4, &v4_obs);
+    let (mut nat_type, cgnat_suspected) = classify_ipv4_nat(local_v4, local_port_v4, &v4_obs);
+    let tunnel_detected = local_v4.is_some_and(is_tunnel_v4) || tunnel_resolved;
+    if tunnel_detected {
+        // The IPv4 reflection is a proxy exit (or the route is a local TUN),
+        // so neither advertised direct-connect address nor NAT-type advice
+        // describes a reachable direct path.
+        nat_type = NatType::Proxied;
+    }
+    // Without a tunnel signal, different egress IPs keep the classification
+    // (address-dependent, so no direct-connect address is offered) and only
+    // add a note about what can cause them.
+    let mixed_egress = !tunnel_detected && has_mixed_mapped_ipv4_ips(&v4_obs);
     let ipv6_status = classify_ipv6(local_v6, &v6_obs);
 
     let v4_first = v4_obs.first();
@@ -515,7 +626,13 @@ fn assemble_report(
         stun_hosts_queried.retain(|host| seen.insert(host.clone()));
     }
 
-    let advice = build_advice(&nat_type, cgnat_suspected, &ipv6_status, custom_proxy_enabled);
+    let advice = build_advice(
+        &nat_type,
+        cgnat_suspected,
+        mixed_egress,
+        &ipv6_status,
+        custom_proxy_enabled,
+    );
 
     NetworkCheckReport {
         checked_at: Utc::now().to_rfc3339(),
@@ -546,26 +663,35 @@ fn assemble_report(
 }
 
 pub(crate) fn run_network_check_blocking(custom_proxy_enabled: bool) -> NetworkCheckReport {
-    let local_v4 = detect_local_ipv4();
-    let local_v6 = detect_local_ipv6();
-    let ((local_port_v4, v4_obs, v4_hosts), (_local_port_v6, v6_obs, v6_hosts)) =
-        std::thread::scope(|scope| {
-            let h4 = scope.spawn(|| run_family_probes(false));
-            let h6 = scope.spawn(|| run_family_probes(true));
-            (
-                h4.join().unwrap_or((None, Vec::new(), Vec::new())),
-                h6.join().unwrap_or((None, Vec::new(), Vec::new())),
-            )
-        });
-    let mut hosts = v4_hosts;
-    hosts.extend(v6_hosts);
+    run_network_check_with(
+        detect_local_ipv4(),
+        detect_local_ipv6(),
+        run_family_probes,
+        custom_proxy_enabled,
+    )
+}
+
+fn run_network_check_with(
+    local_v4: Option<Ipv4Addr>,
+    local_v6: Option<Ipv6Addr>,
+    probes: impl Fn(bool) -> FamilyProbes + Sync,
+    custom_proxy_enabled: bool,
+) -> NetworkCheckReport {
+    let (v4, v6) = std::thread::scope(|scope| {
+        let h4 = scope.spawn(|| probes(false));
+        let h6 = scope.spawn(|| probes(true));
+        (h4.join().unwrap_or_default(), h6.join().unwrap_or_default())
+    });
+    let mut hosts = v4.queried_hosts;
+    hosts.extend(v6.queried_hosts);
     assemble_report(
         local_v4,
-        local_port_v4,
-        v4_obs,
+        v4.local_port,
+        v4.observations,
         local_v6,
-        v6_obs,
+        v6.observations,
         hosts,
+        v4.tunnel_resolved,
         custom_proxy_enabled,
     )
 }
@@ -791,6 +917,7 @@ mod tests {
             Some(global_v6),
             v6_obs,
             vec!["stun.cloudflare.com:3478".into(), "stun.miwifi.com:3478".into()],
+            false,
             true,
         );
 
@@ -805,6 +932,237 @@ mod tests {
         assert!(codes.contains(&"ipv6DirectReady"));
         assert!(codes.contains(&"ipv4SymmetricWarn"));
         assert!(codes.contains(&"proxyDirectUdpNote"));
+    }
+
+    fn v4_observation(host: &str, octets: [u8; 4], port: u16, rtt_ms: u64) -> ProbeObservation {
+        ProbeObservation {
+            host: host.into(),
+            mapped: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), port),
+            rtt_ms,
+        }
+    }
+
+    fn advice_codes(report: &NetworkCheckReport) -> Vec<&str> {
+        report.advice.iter().map(|item| item.code.as_str()).collect()
+    }
+
+    #[test]
+    fn reserved_ipv4_ranges_are_not_public() {
+        for ip in [
+            Ipv4Addr::new(198, 18, 0, 1),
+            Ipv4Addr::new(198, 19, 255, 1),
+            Ipv4Addr::new(0, 1, 2, 3),
+            Ipv4Addr::new(192, 0, 0, 8),
+            Ipv4Addr::new(240, 0, 0, 1),
+        ] {
+            assert!(!is_public_v4(ip), "{ip} must not count as public");
+        }
+        assert!(is_public_v4(Ipv4Addr::new(1, 1, 1, 1)));
+
+        assert!(is_tunnel_v4(Ipv4Addr::new(198, 18, 0, 1)));
+        assert!(is_tunnel_v4(Ipv4Addr::new(198, 19, 255, 255)));
+        assert!(!is_tunnel_v4(Ipv4Addr::new(198, 17, 255, 255)));
+        assert!(!is_tunnel_v4(Ipv4Addr::new(198, 20, 0, 1)));
+    }
+
+    #[test]
+    fn tun_local_address_forces_proxied_and_suppresses_direct_ipv4() {
+        let report = assemble_report(
+            Some(Ipv4Addr::new(198, 18, 0, 1)),
+            Some(50000),
+            vec![
+                v4_observation("stun.cloudflare.com:3478", [203, 0, 113, 9], 40000, 25),
+                v4_observation("stun.miwifi.com:3478", [203, 0, 113, 9], 40000, 30),
+            ],
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+            true,
+        );
+
+        assert_eq!(report.nat_type, NatType::Proxied);
+        assert_eq!(report.direct_connect_ipv4, None);
+        assert!(!report.cgnat_suspected);
+        let tunnel_advice = report
+            .advice
+            .iter()
+            .find(|item| item.code == "ipv4TunnelDetected")
+            .expect("tunnel advice");
+        assert_eq!(tunnel_advice.severity, AdviceSeverity::Warn);
+        let codes = advice_codes(&report);
+        assert!(codes.contains(&"proxyDirectUdpNote"));
+        assert!(!codes.contains(&"ipv4ConeForward"));
+        assert!(!codes.contains(&"ipv4SymmetricWarn"));
+        assert!(!codes.contains(&"ipv4BehindNatSingleProbe"));
+        assert!(!codes.contains(&"ipv4Unavailable"));
+    }
+
+    #[test]
+    fn mixed_public_ips_without_a_tunnel_signal_stay_address_port_dependent() {
+        // A dual-WAN router or a carrier NAT that pools addresses per
+        // destination, with no proxy involved.
+        let report = assemble_report(
+            Some(Ipv4Addr::new(192, 168, 1, 20)),
+            Some(50000),
+            vec![
+                v4_observation("stun.cloudflare.com:3478", [8, 8, 8, 8], 40000, 20),
+                v4_observation("stun.miwifi.com:3478", [1, 1, 1, 1], 40001, 25),
+            ],
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+            false,
+        );
+
+        assert_eq!(report.nat_type, NatType::AddressPortDependent);
+        assert_eq!(report.direct_connect_ipv4, None, "no direct address is offered");
+        let codes = advice_codes(&report);
+        assert!(codes.contains(&"ipv4SymmetricWarn"));
+        let mixed = report
+            .advice
+            .iter()
+            .find(|item| item.code == "ipv4MixedEgress")
+            .expect("the differing egress IPs are explained");
+        assert_eq!(mixed.severity, AdviceSeverity::Info);
+        assert!(!codes.contains(&"ipv4TunnelDetected"));
+        assert!(!codes.contains(&"ipv4ConeForward"));
+    }
+
+    #[test]
+    fn mixed_public_ips_behind_a_tun_route_are_proxied() {
+        let report = assemble_report(
+            Some(Ipv4Addr::new(198, 18, 0, 1)),
+            Some(50000),
+            vec![
+                v4_observation("stun.cloudflare.com:3478", [8, 8, 8, 8], 40000, 20),
+                v4_observation("stun.miwifi.com:3478", [1, 1, 1, 1], 40001, 25),
+            ],
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+            false,
+        );
+
+        assert_eq!(report.nat_type, NatType::Proxied);
+        assert_eq!(report.direct_connect_ipv4, None);
+        let codes = advice_codes(&report);
+        assert!(codes.contains(&"ipv4TunnelDetected"));
+        assert!(!codes.contains(&"ipv4SymmetricWarn"));
+        assert!(!codes.contains(&"ipv4MixedEgress"), "the tunnel advice already covers it");
+    }
+
+    #[test]
+    fn fake_ip_resolution_alone_marks_a_cone_looking_result_as_proxied() {
+        // Fake-IP DNS without a TUN default route: the local address is an
+        // ordinary LAN address and both servers see the proxy's one exit.
+        let observations = || {
+            vec![
+                v4_observation("stun.cloudflare.com:3478", [203, 0, 113, 9], 40000, 25),
+                v4_observation("stun.miwifi.com:3478", [203, 0, 113, 9], 40000, 30),
+            ]
+        };
+        let report = |tunnel_resolved| {
+            assemble_report(
+                Some(Ipv4Addr::new(192, 168, 1, 20)),
+                Some(50000),
+                observations(),
+                None,
+                Vec::new(),
+                Vec::new(),
+                tunnel_resolved,
+                false,
+            )
+        };
+
+        let direct = report(false);
+        assert_eq!(direct.nat_type, NatType::EndpointIndependent);
+        assert_eq!(direct.direct_connect_ipv4.as_deref(), Some("203.0.113.9:25565"));
+
+        let proxied = report(true);
+        assert_eq!(proxied.nat_type, NatType::Proxied);
+        assert_eq!(proxied.direct_connect_ipv4, None, "the proxy exit is not offered");
+        let codes = advice_codes(&proxied);
+        assert!(codes.contains(&"ipv4TunnelDetected"));
+        assert!(!codes.contains(&"ipv4ConeForward"));
+    }
+
+    /// Probes that answer every STUN server with one fixed mapping, with the
+    /// STUN hosts resolving to `resolved`.
+    fn scripted_probes(resolved: [u8; 4], want_v6: bool) -> FamilyProbes {
+        if want_v6 {
+            return FamilyProbes::default();
+        }
+        run_family_probes_with(
+            false,
+            &[("stun.one.invalid", 3478), ("stun.two.invalid", 3478)],
+            |host, port| {
+                let last = if host == "stun.one.invalid" { 1 } else { 2 };
+                let [a, b, c, _] = resolved;
+                Some(vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::new(a, b, c, last)), port)])
+            },
+            |_, _| {
+                Some((SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 40000), 20))
+            },
+        )
+    }
+
+    #[test]
+    fn stun_hosts_resolving_into_fake_ips_reach_the_report_as_a_tunnel() {
+        let local = Some(Ipv4Addr::new(192, 168, 1, 20));
+        let real = run_network_check_with(local, None, |v6| scripted_probes([1, 0, 0, 0], v6), false);
+        assert_eq!(real.nat_type, NatType::EndpointIndependent);
+        assert_eq!(real.ipv4.probes_succeeded, 2);
+        assert_eq!(
+            real.stun_hosts_queried,
+            vec!["stun.one.invalid:3478".to_owned(), "stun.two.invalid:3478".to_owned()]
+        );
+
+        let fake = run_network_check_with(local, None, |v6| scripted_probes([198, 18, 0, 0], v6), false);
+        assert_eq!(fake.nat_type, NatType::Proxied);
+        assert_eq!(fake.direct_connect_ipv4, None);
+        assert!(advice_codes(&fake).contains(&"ipv4TunnelDetected"));
+    }
+
+    #[test]
+    fn same_ip_different_ports_remains_address_port_dependent() {
+        let report = assemble_report(
+            Some(Ipv4Addr::new(192, 168, 1, 20)),
+            Some(50000),
+            vec![
+                v4_observation("stun.cloudflare.com:3478", [1, 1, 1, 1], 40000, 20),
+                v4_observation("stun.miwifi.com:3478", [1, 1, 1, 1], 40001, 25),
+            ],
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+            false,
+        );
+
+        assert_eq!(report.nat_type, NatType::AddressPortDependent);
+        assert_eq!(report.direct_connect_ipv4, None);
+        let codes = advice_codes(&report);
+        assert!(codes.contains(&"ipv4SymmetricWarn"));
+        assert!(!codes.contains(&"ipv4TunnelDetected"));
+        assert!(!codes.contains(&"ipv4MixedEgress"), "one egress IP is not mixed");
+    }
+
+    #[test]
+    fn tunnel_resolution_helper_only_flags_ipv4_benchmarking_addresses() {
+        let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 3478);
+        let tunnel = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2)), 3478);
+        let v6 = SocketAddr::new(
+            IpAddr::V6("2001:4860:4860::8888".parse().unwrap()),
+            3478,
+        );
+
+        assert!(resolved_contains_tunnel_v4(vec![public, tunnel]));
+        assert!(!resolved_contains_tunnel_v4(Vec::new()));
+        assert!(!resolved_contains_tunnel_v4(vec![public]));
+        assert!(!resolved_contains_tunnel_v4(vec![v6]));
     }
 
     #[test]

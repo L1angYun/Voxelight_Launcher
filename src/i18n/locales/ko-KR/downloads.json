@@ -112,6 +112,6 @@
   "retryFailed": "실패 항목 다시 시도",
   "clearUnfinished": "실패 및 취소 항목 정리",
   "retryFailedNotice_other": "{{count}}개 작업을 대기열에 추가했습니다({{skipped}}개 건너뜀).",
-  "clearConfirm_other": "실패하거나 취소된 작업 {{count}}개를 정리할까요? 보관된 부분 파일도 삭제됩니다.",
+  "clearConfirm_other": "실패하거나 취소된 작업 {{count}}개를 정리할까요? 보관된 부분 파일도 삭제됩니다. 단, 일시 중지되었거나 중단된 작업이 이어서 사용할 수 있는 파일은 유지됩니다.",
   "clearNotice_other": "{{count}}개 작업을 제거하여 {{bytes}}를 확보했습니다."
 }

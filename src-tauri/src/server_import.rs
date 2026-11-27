@@ -496,115 +496,379 @@ pub(crate) fn parse_java_argfile(text: &str) -> Result<Vec<String>, String> {
     Ok(tokens)
 }
 
-fn has_unsafe_path_segment(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.starts_with("\\\\") || trimmed.starts_with('/') || trimmed.starts_with('\\') {
-        return true;
-    }
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return true;
-    }
-    trimmed.split(['/', '\\']).any(|part| part == "..")
+/// System properties that the generated Forge/NeoForge server `win_args.txt` files set.
+/// Every other `-D` key is refused, including every `-Djava.*` key not listed here and
+/// BootstrapLauncher's `legacyClassPath.file`: no generated server file uses it, and the class
+/// path inside the file it names could not be checked.
+const ALLOWED_SYSTEM_PROPERTIES: &[&str] = &[
+    "java.net.preferIPv6Addresses",
+    "ignoreList",
+    "mergeModules",
+    "libraryDirectory",
+    "legacyClassPath",
+    "fml.pluginLayerLibraries",
+    "fml.gameLayerLibraries",
+];
+
+/// Application options whose value names a file or folder: ModLauncher's `--gameDir` and
+/// `--assetsDir`, FML's `--fml.mavenRoots` and `--fml.modLists`, and the Minecraft server's
+/// `--universe`, `--world` and `--pidFile`.
+const APP_PATH_OPTIONS: &[&str] = &[
+    "gameDir",
+    "assetsDir",
+    "universe",
+    "world",
+    "pidFile",
+    "fml.mavenRoots",
+    "fml.modLists",
+];
+
+/// Generated loader argument files contain only printable ASCII, with no space inside a token.
+/// Anything else is refused: a `java.exe` without JDK-8337506 reads its Windows command line
+/// through the ANSI code page, whose best-fit mapping turns look-alikes such as U+2000, U+FF1A,
+/// U+FF3C or U+00AD into a space, `:`, `\` or `-` after these checks have run. A token that
+/// starts with `@` would be read as another argument file.
+fn is_plain_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
+        && !token.starts_with('@')
 }
 
+/// A Windows device name such as `NUL`, `COM1` or `CONOUT$`, also with an extension.
+fn is_windows_device_name(component: &str) -> bool {
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or(component)
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|prefix| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|number| number.len() == 1 && number.as_bytes()[0].is_ascii_digit())
+    })
+}
+
+/// One part of a Java class or module name. Generated loader arguments use ASCII names.
+fn is_java_identifier_part(part: &str) -> bool {
+    let mut chars = part.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || matches!(first, '_' | '$') => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
+}
+
+fn is_dotted_identifier(value: &str) -> bool {
+    !value.is_empty() && value.split('.').all(is_java_identifier_part)
+}
+
+/// A relative path inside the server folder: no drive, root, UNC or device path, no `..`, no
+/// `:` anywhere and no Windows device name (`NUL`, `COM1`, ...) as a component. Windows drops
+/// trailing dots in a component, so components made only of dots (`...`) are refused as
+/// disguised traversal; `.` itself stays a valid path. Tokens never contain spaces.
+fn is_relative_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains(':')
+        && !value.starts_with(['/', '\\'])
+        && !value.split(['/', '\\']).any(|part| {
+            part.is_empty()
+                || part == ".."
+                || (part != "." && part.chars().all(|c| c == '.'))
+                || is_windows_device_name(part)
+        })
+}
+
+/// A list of paths split at any of `separators`. Every element must stay inside the server folder.
+fn validate_paths(value: &str, separators: &[char]) -> Result<(), String> {
+    if value.split(separators).all(is_relative_path) {
+        Ok(())
+    } else {
+        Err(IMPORT_ARGS_INVALID.into())
+    }
+}
+
+/// A `;`-separated class/module path. Every element must stay inside the server folder.
 fn validate_path_list(value: &str) -> Result<(), String> {
-    for entry in value.split(';') {
-        if entry.is_empty() {
-            continue;
-        }
-        if has_unsafe_path_segment(entry) {
+    validate_paths(value, &[';'])
+}
+
+fn validate_ignore_list(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    for name in value.split(',') {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '$'))
+        {
             return Err(IMPORT_ARGS_INVALID.into());
         }
     }
     Ok(())
 }
 
-/// Validate tokens parsed from a Forge/NeoForge `win_args.txt` before importing or launching.
-pub(crate) fn validate_args_file_tokens(tokens: &[String]) -> Result<Vec<String>, String> {
-    if tokens.is_empty() || tokens.len() > MAX_ARGS_TOKENS {
+/// BootstrapLauncher's module merge list: `path,path;path,path`.
+fn validate_merge_modules(value: &str) -> Result<(), String> {
+    if value.is_empty() {
         return Err(IMPORT_ARGS_INVALID.into());
     }
-    let mut expect_path_list = false;
-    let mut has_entry_point = false;
-
-    for token in tokens {
-        if token.is_empty() || token.chars().any(char::is_control) {
+    for group in value.split(';') {
+        if group.is_empty() {
             return Err(IMPORT_ARGS_INVALID.into());
         }
-        if token.starts_with('@') {
-            return Err(IMPORT_ARGS_INVALID.into());
-        }
-        if expect_path_list {
-            validate_path_list(token)?;
-            expect_path_list = false;
-            continue;
-        }
-
-        let lower = token.to_ascii_lowercase();
-        let forbidden_prefixes = [
-            "-javaagent",
-            "-agentlib",
-            "-agentpath",
-            "-xrun",
-            "-xbootclasspath",
-            "-xx:onerror",
-            "-xx:onoutofmemoryerror",
-            "-xx:errorfile",
-            "-xx:heapdumppath",
-            "-xms",
-            "-xmx",
-            "-djava.io.tmpdir",
-            "-dhttp.proxy",
-            "-dhttps.proxy",
-            "-dsocksproxy",
-        ];
-        if forbidden_prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
-            return Err(IMPORT_ARGS_INVALID.into());
-        }
-
-        if matches!(
-            token.as_str(),
-            "-p" | "--module-path" | "-cp" | "-classpath" | "--class-path" | "--upgrade-module-path"
-        ) {
-            expect_path_list = true;
-            continue;
-        }
-        for prefix in ["--module-path=", "--class-path=", "--upgrade-module-path="] {
-            if let Some(rest) = token.strip_prefix(prefix) {
-                validate_path_list(rest)?;
-            }
-        }
-        for prop in [
-            "-DlibraryDirectory=",
-            "-DlegacyClassPath.file=",
-            "-Djava.library.path=",
-            "-Djava.ext.dirs=",
-        ] {
-            if let Some(rest) = token.strip_prefix(prop) {
-                validate_path_list(rest)?;
-            }
-        }
-        // Reject path traversal or absolute paths anywhere in any argument token.
-        if has_unsafe_path_segment(token) {
-            return Err(IMPORT_ARGS_INVALID.into());
-        }
-        if let Some((_, rhs)) = token.split_once('=') {
-            if has_unsafe_path_segment(rhs) {
+        for entry in group.split(',') {
+            if !is_relative_path(entry) {
                 return Err(IMPORT_ARGS_INVALID.into());
             }
         }
-        if !token.starts_with('-') {
-            has_entry_point = true;
-        }
     }
+    Ok(())
+}
 
-    if expect_path_list || !has_entry_point {
+fn validate_module_targets(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .split(',')
+            .all(|target| target == "ALL-UNNAMED" || is_dotted_identifier(target))
+}
+
+/// `--add-modules`, `--add-opens`, `--add-exports` and `--add-reads` values.
+/// NeoForge's generated server argument files do not use `--enable-native-access`, so it is
+/// deliberately not allowlisted.
+fn validate_module_option(option: &str, value: &str) -> Result<(), String> {
+    let valid = match option {
+        "--add-modules" => value.split(',').all(|module| {
+            matches!(module, "ALL-MODULE-PATH" | "ALL-DEFAULT" | "ALL-SYSTEM")
+                || is_dotted_identifier(module)
+        }),
+        "--add-opens" | "--add-exports" => value.split_once('=').is_some_and(|(left, targets)| {
+            left.split_once('/').is_some_and(|(module, package)| {
+                is_dotted_identifier(module)
+                    && is_dotted_identifier(package)
+                    && validate_module_targets(targets)
+            })
+        }),
+        "--add-reads" => value.split_once('=').is_some_and(|(module, targets)| {
+            is_dotted_identifier(module) && validate_module_targets(targets)
+        }),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(IMPORT_ARGS_INVALID.into())
+    }
+}
+
+fn validate_system_property(token: &str) -> Result<(), String> {
+    let Some((key, value)) = token
+        .strip_prefix("-D")
+        .and_then(|property| property.split_once('='))
+    else {
+        return Err(IMPORT_ARGS_INVALID.into());
+    };
+    if !ALLOWED_SYSTEM_PROPERTIES.contains(&key) {
         return Err(IMPORT_ARGS_INVALID.into());
     }
+    match key {
+        "java.net.preferIPv6Addresses" => {
+            if matches!(value, "system" | "true" | "false") {
+                Ok(())
+            } else {
+                Err(IMPORT_ARGS_INVALID.into())
+            }
+        }
+        "ignoreList" => validate_ignore_list(value),
+        "mergeModules" => validate_merge_modules(value),
+        "libraryDirectory" => {
+            if is_relative_path(value) {
+                Ok(())
+            } else {
+                Err(IMPORT_ARGS_INVALID.into())
+            }
+        }
+        "legacyClassPath" => validate_path_list(value),
+        // NeoForge 1.20.4-1.21.8 writes these keys with empty values; in a populated value
+        // every `;`- or `,`-separated element must be a path inside the server folder.
+        "fml.pluginLayerLibraries" | "fml.gameLayerLibraries" => {
+            if value.is_empty() {
+                Ok(())
+            } else {
+                validate_paths(value, &[';', ','])
+            }
+        }
+        _ => Err(IMPORT_ARGS_INVALID.into()),
+    }
+}
+
+/// A long JVM option (without its leading `--`) that must never be accepted as an
+/// application argument either.
+fn is_jvm_only_long_option(name: &str) -> bool {
+    matches!(
+        name,
+        "module-path"
+            | "class-path"
+            | "add-modules"
+            | "add-opens"
+            | "add-exports"
+            | "add-reads"
+            | "patch-module"
+            | "upgrade-module-path"
+            | "enable-native-access"
+    )
+}
+
+/// The name of an application option (after `--`, before any `=`): ASCII letters, digits,
+/// `.`, `_` and `-`, starting with a letter or digit, and never a JVM-only long option.
+fn is_app_option_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && !is_jvm_only_long_option(name)
+}
+
+/// A path option from `APP_PATH_OPTIONS`, also when shortened: ModLauncher, FML and the
+/// Minecraft server parse their options with jopt-simple, which accepts any unambiguous
+/// abbreviation (`--pid` for `--pidFile`).
+fn is_app_path_option(name: &str) -> bool {
+    APP_PATH_OPTIONS.iter().any(|option| {
+        option
+            .get(..name.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
+    })
+}
+
+/// A value Windows or Java would read as a path: it has a `/` or `\` separator, a drive or
+/// stream colon, or an element of a `,`/`;` list that starts with `.`.
+fn looks_like_path(value: &str) -> bool {
+    value.contains(['/', '\\', ':'])
+        || value
+            .split([',', ';'])
+            .any(|element| element.starts_with('.'))
+}
+
+/// A value after the main class. Plain values (`forgeserver`, `47.2.0`) pass through; the value
+/// of a path option, and any value that looks like a path, must stay inside the server folder,
+/// element by element for `,`/`;` lists such as `--fml.mavenRoots`.
+fn validate_app_value(option: Option<&str>, value: &str) -> Result<(), String> {
+    if option.is_some_and(is_app_path_option) || looks_like_path(value) {
+        validate_paths(value, &[',', ';'])
+    } else {
+        Ok(())
+    }
+}
+
+/// Arguments after the single main class: `--launchTarget forgeserver`, `--fml.*` values and
+/// similar application arguments. They are passed through, but only after one `--` app option
+/// has started the application arguments; a second bare token before that is a second main class.
+/// Values, both `--opt value` and `--opt=value`, are checked by `validate_app_value`.
+fn validate_app_args(tokens: &[String]) -> Result<(), String> {
+    let mut app_args_started = false;
+    let mut option: Option<&str> = None;
+    for token in tokens {
+        let Some(rest) = token.strip_prefix("--") else {
+            if token.starts_with('-') || !app_args_started {
+                return Err(IMPORT_ARGS_INVALID.into());
+            }
+            validate_app_value(option.take(), token)?;
+            continue;
+        };
+        let (name, value) = match rest.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (rest, None),
+        };
+        if !is_app_option_name(name) {
+            return Err(IMPORT_ARGS_INVALID.into());
+        }
+        option = match value {
+            Some(value) => {
+                validate_app_value(Some(name), value)?;
+                None
+            }
+            None => Some(name),
+        };
+        app_args_started = true;
+    }
+    Ok(())
+}
+
+/// Validate tokens parsed from a Forge/NeoForge `win_args.txt` before importing or launching.
+///
+/// This is an allowlist, not a denylist. Every token must be printable ASCII without spaces and
+/// must not start with `@` (`is_plain_token`). Before the single main class only the module/class
+/// path options, `--add-*` module options and the fixed `-D` properties that generated loader
+/// files use are accepted, and every path they name must stay inside the server folder. Every
+/// other JVM option (all `-X`/`-XX`, agents, `-jar`, proxy properties, ...) is refused. After the
+/// main class only application arguments follow; a value that looks like a path, or belongs to
+/// a path option such as `--universe` or `--pidFile`, must stay inside the server folder too.
+/// The same tokens are checked again on every launch.
+pub(crate) fn validate_args_file_tokens(tokens: &[String]) -> Result<Vec<String>, String> {
+    if tokens.is_empty()
+        || tokens.len() > MAX_ARGS_TOKENS
+        || !tokens.iter().all(|token| is_plain_token(token))
+    {
+        return Err(IMPORT_ARGS_INVALID.into());
+    }
+    let mut index = 0;
+    let entry;
+    loop {
+        let Some(token) = tokens.get(index) else {
+            return Err(IMPORT_ARGS_INVALID.into());
+        };
+
+        if token.starts_with("-D") {
+            validate_system_property(token)?;
+            index += 1;
+            continue;
+        }
+
+        match token.as_str() {
+            "-p" | "-cp" | "-classpath" | "--module-path" | "--class-path" => {
+                let Some(value) = tokens.get(index + 1) else {
+                    return Err(IMPORT_ARGS_INVALID.into());
+                };
+                validate_path_list(value)?;
+                index += 2;
+                continue;
+            }
+            "--add-modules" | "--add-opens" | "--add-exports" | "--add-reads" => {
+                let Some(value) = tokens.get(index + 1) else {
+                    return Err(IMPORT_ARGS_INVALID.into());
+                };
+                validate_module_option(token, value)?;
+                index += 2;
+                continue;
+            }
+            _ => {}
+        }
+
+        if let Some((option, value)) = token.split_once('=') {
+            if matches!(option, "--module-path" | "--class-path") {
+                validate_path_list(value)?;
+                index += 1;
+                continue;
+            }
+            if matches!(option, "--add-modules" | "--add-opens" | "--add-exports" | "--add-reads") {
+                validate_module_option(option, value)?;
+                index += 1;
+                continue;
+            }
+        }
+
+        if token.starts_with('-') || !is_dotted_identifier(token) {
+            return Err(IMPORT_ARGS_INVALID.into());
+        }
+        entry = index;
+        break;
+    }
+
+    validate_app_args(&tokens[entry + 1..])?;
     Ok(tokens.to_vec())
 }
 

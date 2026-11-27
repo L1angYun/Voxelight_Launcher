@@ -82,7 +82,7 @@
 .vx-home__stage:has(.vx-home__empty) .vx-home__console-name { margin-block-end: 0; }
 .vx-home .vx-home__empty.vx-empty { display: grid; gap: var(--space-4); padding: 0; text-align: start; }
 .vx-home__empty > p { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.65; }
-.vx-home__empty .vx-empty__actions { display: flex; gap: var(--space-2); flex-wrap: wrap; inline-size: auto; max-inline-size: 100%; }
+.vx-home__empty .vx-empty__actions { display: flex; gap: var(--space-2); flex-wrap: wrap; inline-size: max-content; max-inline-size: calc(100vw - var(--page-gutter) * 2); }
 
 /* A separate row gives the floating controls space above every canvas size. */
 .vx-home__char-col {

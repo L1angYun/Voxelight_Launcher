@@ -18,7 +18,11 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
   const [portInput, setPortInput] = useState(() => String(managedPort ?? 25565));
   const [copiedTarget, setCopiedTarget] = useState<string>("");
   const needsNatHelp = Boolean(
-    report && (report.cgnatSuspected || report.natType === "addressPortDependent" || report.natType === "unreachable"),
+    report &&
+      (report.cgnatSuspected ||
+        report.natType === "addressPortDependent" ||
+        report.natType === "unreachable" ||
+        report.natType === "proxied"),
   );
 
   useEffect(() => {
@@ -87,7 +91,9 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
             data-tone={
               report.natType === "openInternet"
                 ? "good"
-                : report.natType === "addressPortDependent" || report.natType === "unreachable"
+                : report.natType === "addressPortDependent" ||
+                    report.natType === "unreachable" ||
+                    report.natType === "proxied"
                   ? "warn"
                   : "info"
             }
@@ -169,7 +175,9 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
               data-tone={
                 report.natType === "openInternet"
                   ? "good"
-                  : report.natType === "addressPortDependent" || report.natType === "unreachable"
+                  : report.natType === "addressPortDependent" ||
+                      report.natType === "unreachable" ||
+                      report.natType === "proxied"
                     ? "warn"
                     : "info"
               }
@@ -181,7 +189,9 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
                   data-tone={
                     report.natType === "openInternet"
                       ? "good"
-                      : report.natType === "addressPortDependent" || report.natType === "unreachable"
+                      : report.natType === "addressPortDependent" ||
+                          report.natType === "unreachable" ||
+                          report.natType === "proxied"
                         ? "warn"
                         : "info"
                   }

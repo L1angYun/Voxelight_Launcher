@@ -172,14 +172,16 @@
       "endpointIndependent": "锥型 NAT",
       "addressPortDependent": "对称型 NAT",
       "behindNat": "处于 NAT 后",
-      "unreachable": "无法探测"
+      "unreachable": "无法探测",
+      "proxied": "代理 / VPN 隧道"
     },
     "natSummary": {
       "openInternet": "本机直接拥有公网 IPv4 地址，无地址或端口转换。",
       "endpointIndependent": "端点无关映射（锥型 NAT）：不同 STUN 服务器看到同一个外部端口。",
       "addressPortDependent": "地址/端口相关映射（对称型 NAT）：访问不同目标会分配不同的外部端口。",
       "behindNat": "当前处于 IPv4 NAT 后，但仅一台 STUN 服务器响应，暂无法区分锥型与对称型。",
-      "unreachable": "IPv4 UDP 探测均未收到响应。"
+      "unreachable": "IPv4 UDP 探测均未收到响应。",
+      "proxied": "流量正在经过本地代理或 VPN 隧道（TUN），STUN 可能看到代理出口地址，或同时看到代理与直连两条路径，因此无法据此判断真实的 NAT 类型。"
     },
     "cgnatBadge": "本机出口位于运营商级 NAT 网段（100.64.0.0/10）。",
     "directTitle": "直连地址",
@@ -199,6 +201,8 @@
       "ipv4BehindNatSingleProbe": "IPv4 处于 NAT 后且仅一台 STUN 服务器有回复，可重试检测以确认是锥型还是对称型 NAT。",
       "ipv4CgnatDetected": "本机路由处于运营商级 NAT（100.64.0.0/10）网段，仅做路由器端口转发无法从公网连入；请优先使用 IPv6 或虚拟局域网。",
       "ipv4Unavailable": "IPv4 UDP 探测超时，请检查网络连接或防火墙是否拦截了出站 UDP。",
+      "ipv4TunnelDetected": "检测到本地代理或 VPN 隧道（TUN 模式）接管了本次检测的 UDP 流量。请关闭 TUN 模式，或让 UDP 3478 与 19302 绕过代理，然后重新检测。此处不会显示 IPv4 直连地址，因为它会指向代理而不是你的家庭网络。",
+      "ipv4MixedEgress": "不同 STUN 服务器看到的公网 IPv4 地址不同。双线或负载均衡路由器、部分运营商 NAT 会出现这种情况，只代理部分流量的代理或 VPN 也会。如果开着代理或 VPN，请关闭后重新检测。",
       "proxyDirectUdpNote": "启动器当前启用了自定义 HTTP 代理；网络检测走直连 UDP，不经过 HTTP 代理。"
     },
     "stunHosts": "探测的 STUN 服务器：{{hosts}}",

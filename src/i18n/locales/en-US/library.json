@@ -181,9 +181,10 @@
   "loaderChange": {
     "title": "Loader",
     "current": "Minecraft {{version}} · {{loader}}{{loaderVersion}}",
-    "hint": "Worlds, configs and mods stay in this instance folder. Mods built for another loader may need to be disabled or replaced.",
+    "hint": "Worlds, configs and mods stay in this instance folder, and a backup of this instance is made before the switch. Mods built for another loader may need to be disabled or replaced. Worlds opened with the new loader can permanently lose modded blocks, items, entities and inventories, even if you switch back later.",
     "apply": "Change loader",
-    "confirm": "Change the loader of \"{{name}}\" to {{loader}}? Your worlds and files will be kept."
+    "confirm": "Change the loader of \"{{name}}\" to {{loader}}? A backup of this instance is made before the change. Worlds opened with a different loader can permanently lose blocks, items, entities and inventories added by mods; switching back before opening them loses nothing.",
+    "skipBackupConfirm": "{{reason}}\n\nChange the loader without a backup? Worlds opened with a different loader can permanently lose blocks, items, entities and inventories added by mods, and there will be no backup to restore them from."
   },
   "createModes": "Create method",
   "versionMode": "Version and loader",
@@ -217,7 +218,8 @@
   "recommended": "Recommended",
   "noLoaderVersions": "No loader versions available",
   "optifineImportJar": "Import OptiFine installer JAR…",
-  "optifineHint": "Online OptiFine lists use BMCLAPI when enabled, or import a downloaded OptiFine JAR directly.",
+  "optifineHint": "Voxelight does not download OptiFine: its downloads come without a checksum the launcher could verify, and the installer is a program that runs on your computer. Download the installer for this Minecraft version from the official site, then import the JAR.",
+  "optifineSite": "OptiFine downloads (optifine.net)",
   "instanceNameOptional": "Instance name (optional)",
   "instanceNamePlaceholder": "Name this world",
   "curseforgeKeyOptional": "CurseForge API key (optional)",
@@ -299,6 +301,7 @@
     "diagnosticsExported": "Diagnostics saved.",
     "settingsSaved": "Instance settings saved.",
     "loaderChanged": "Instance loader updated.",
+    "loaderChangedBackup": "Instance loader updated. A backup of the previous instance was saved first.",
     "runtimeReset": "Global runtime restored.",
     "resourceRecovered": "The interrupted resource transaction was recovered."
   },

@@ -68,7 +68,7 @@
   "importAction": "Importar",
   "importedServer": "Servidor importado",
   "noManaged": "Aún no hay servidores gestionados.",
-  "javaAuto": "auto",
+  "javaAuto": "automático",
   "managedStatus": {
     "stopped": "Detenido",
     "starting": "Iniciando",
@@ -173,20 +173,22 @@
       "endpointIndependent": "NAT de cono",
       "addressPortDependent": "NAT simétrico",
       "behindNat": "Tras NAT",
-      "unreachable": "Inaccesible"
+      "unreachable": "Inaccesible",
+      "proxied": "Túnel de proxy / VPN"
     },
     "natSummary": {
       "openInternet": "Tu PC dispone directamente de una dirección IPv4 pública sin traducción de direcciones ni puertos.",
       "endpointIndependent": "Asignación independiente del destino (NAT de cono): se reutiliza el mismo puerto externo entre servidores STUN.",
       "addressPortDependent": "Asignación dependiente de dirección y puerto (NAT simétrico): cada servidor remoto ve un puerto externo distinto.",
       "behindNat": "Tu tráfico IPv4 pasa por NAT y solo respondió un servidor STUN, por lo que no se pudo distinguir entre NAT de cono y NAT simétrico.",
-      "unreachable": "Ningún servidor STUN respondió por IPv4 UDP."
+      "unreachable": "Ningún servidor STUN respondió por IPv4 UDP.",
+      "proxied": "El tráfico sale por un proxy local o un túnel VPN (TUN), así que STUN puede ver la dirección de salida del proxy o una mezcla de rutas proxificadas y directas. El resultado no permite determinar tu NAT real."
     },
     "cgnatBadge": "Se detectó NAT de operador (CGNAT, 100.64.0.0/10) en la ruta local.",
     "directTitle": "Dirección de conexión directa",
     "directPort": "Puerto de conexión directa",
     "directIpv6Label": "IPv6 (recomendado si ambos lados tienen IPv6)",
-    "directIpv4Label": "IPv4 (requiere Firewall de Windows y redirección de puertos en el router si hay NAT)",
+    "directIpv4Label": "IPv4 (requiere Firewall de Windows y reenvío de puertos en el router si hay NAT)",
     "copyAddress": "Copiar",
     "copied": "Copiado",
     "adviceTitle": "Consejos de conexión directa",
@@ -200,6 +202,8 @@
       "ipv4BehindNatSingleProbe": "IPv4 está tras NAT y solo respondió un servidor STUN. Repite la comprobación o prueba desde otra red para confirmar si es NAT de cono o NAT simétrico.",
       "ipv4CgnatDetected": "Tu ruta local está dentro del rango CGNAT (100.64.0.0/10). El reenvío de puertos IPv4 en el router no llegará a internet público; usa IPv6 o una LAN virtual.",
       "ipv4Unavailable": "Las sondas IPv4 UDP no obtuvieron respuesta. Revisa tu conexión a internet o las reglas UDP del firewall.",
+      "ipv4TunnelDetected": "Parece que un proxy local o un túnel VPN (modo TUN) gestiona el tráfico UDP de esta comprobación. Desactiva el modo TUN o permite que los UDP 3478 y 19302 omitan el proxy y vuelve a comprobar. No se muestra una dirección IPv4 de conexión directa porque apuntaría al proxy, no a tu red doméstica.",
+      "ipv4MixedEgress": "Los servidores STUN vieron direcciones IPv4 públicas distintas. Ocurre con routers de doble WAN o con balanceo de carga, con algunos NAT de operador y con proxies o VPN que solo enrutan parte del tráfico. Si usas alguno, desactívalo y vuelve a comprobar.",
       "proxyDirectUdpNote": "Hay un proxy HTTP personalizado activado en los ajustes del iniciador. Esta comprobación sondea tráfico UDP directo sin usar el proxy HTTP."
     },
     "stunHosts": "Servidores STUN consultados: {{hosts}}",

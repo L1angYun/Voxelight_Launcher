@@ -69,7 +69,7 @@
   "noManaged": "管理サーバーがまだありません。",
   "javaAuto": "自動",
   "managedStatus": {
-    "stopped": "停止中",
+    "stopped": "停止済み",
     "starting": "起動中",
     "running": "稼働中",
     "stopping": "保存して停止中",
@@ -172,14 +172,16 @@
       "endpointIndependent": "コーン型 NAT",
       "addressPortDependent": "対称型 NAT",
       "behindNat": "NAT 配下",
-      "unreachable": "到達不可"
+      "unreachable": "到達不可",
+      "proxied": "プロキシ / VPN トンネル"
     },
     "natSummary": {
       "openInternet": "この PC はアドレスやポートの変換なしでグローバル IPv4 アドレスを直接保持しています。",
       "endpointIndependent": "エンドポイント独立マッピング（コーン型 NAT）：異なる STUN サーバー間で同じ外部ポートが再利用されます。",
       "addressPortDependent": "アドレス・ポート依存マッピング（対称型 NAT）：接続先サーバーごとに異なる外部ポートが割り当てられます。",
       "behindNat": "IPv4 通信は NAT により変換されていますが、応答した STUN サーバーが 1 台のみのためコーン型と対称型を判別できませんでした。",
-      "unreachable": "IPv4 UDP で応答した STUN サーバーがありませんでした。"
+      "unreachable": "IPv4 UDP で応答した STUN サーバーがありませんでした。",
+      "proxied": "ローカルプロキシまたは VPN トンネル（TUN）経由で通信しているため、STUN にはプロキシの出口アドレス、またはプロキシと直接経路が混在して見える可能性があります。実際の NAT タイプは判定できません。"
     },
     "cgnatBadge": "ローカル経路上でキャリアグレード NAT（100.64.0.0/10）が検出されました。",
     "directTitle": "直接接続アドレス",
@@ -199,6 +201,8 @@
       "ipv4BehindNatSingleProbe": "IPv4 は NAT 配下ですが、応答した STUN サーバーが 1 台のみでした。コーン型か対称型か確認するため、再診断するか別のネットワークでお試しください。",
       "ipv4CgnatDetected": "ローカル経路が CGNAT 範囲（100.64.0.0/10）内です。IPv4 のルーターポート開放では外部から接続できないため、IPv6 または仮想 LAN の利用をおすすめします。",
       "ipv4Unavailable": "IPv4 UDP 調査に応答がありませんでした。インターネット接続やファイアウォールの UDP ルールを確認してください。",
+      "ipv4TunnelDetected": "ローカルプロキシまたは VPN トンネル（TUN モード）がこの診断の UDP 通信を処理している可能性があります。TUN モードをオフにするか、UDP 3478 と 19302 をプロキシの対象外にしてから再診断してください。IPv4 の直接接続アドレスは、家庭の回線ではなくプロキシを指すため表示されません。",
+      "ipv4MixedEgress": "STUN サーバーごとに異なるグローバル IPv4 アドレスが見えています。デュアル WAN や負荷分散ルーター、一部のキャリア NAT で起こるほか、通信の一部だけを経由させるプロキシや VPN でも起こります。使用している場合はオフにしてから再診断してください。",
       "proxyDirectUdpNote": "ランチャー設定でカスタム HTTP プロキシが有効です。この診断は HTTP プロキシを経由せず直接 UDP 通信で測定します。"
     },
     "stunHosts": "問い合わせた STUN ホスト：{{hosts}}",

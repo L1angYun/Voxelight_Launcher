@@ -99,6 +99,13 @@ async fn read_github(
             }
         }
     };
+    // GitHub's `releases/latest` excludes pre-releases, so the static manifest
+    // cannot answer a Beta check: report the quota instead of comparing a
+    // stable-only update against the beta watermarks.
+    if channel.includes_prerelease() {
+        let local = until.with_timezone(&chrono::Local).format("%H:%M");
+        return Err(format!("{QUOTA_EXHAUSTED}（{local} 后恢复），Beta 通道无法从仅含正式版的更新信息确认最新测试版"));
+    }
     // As in HSR, a failed fallback still reports the quota diagnosis and when it ends.
     read_github_fallback(transport).await.map_err(|error| {
         let local = until.with_timezone(&chrono::Local).format("%H:%M");

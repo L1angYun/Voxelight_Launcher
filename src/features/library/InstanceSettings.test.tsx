@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
@@ -12,9 +13,21 @@ vi.mock("../../lib/launcher", async (importOriginal) => ({
   command: commandMock,
 }));
 vi.mock("../../lib/nativePaths", () => ({ pickLauncherPath: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
 vi.mock("../../app/AppearanceProvider", () => ({ useAppearance: () => ({ effects: "lite", reducedMotion: true }) }));
+// Like the real controller, a failed task ends as a notice, not a rejection.
+const failures = vi.hoisted(() => [] as unknown[]);
 vi.mock("../../app/controller/LauncherProvider", () => ({
-  useLauncher: () => ({ run: async (_scope: string, task: () => Promise<unknown>) => task() }),
+  useLauncher: () => ({
+    run: async (_scope: string, task: () => Promise<unknown>) => {
+      try {
+        return await task();
+      } catch (error) {
+        failures.push(error);
+        return undefined;
+      }
+    },
+  }),
 }));
 
 const { InstanceSettings } = await import("./InstanceSettings");
@@ -54,10 +67,12 @@ describe("InstanceSettings memory fields", () => {
     root = createRoot(container);
     commandMock.mockReset();
     commandMock.mockResolvedValue(null);
+    failures.length = 0;
   });
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
   });
 
   it("shows a legacy instance as manual and resubmits its maximum", async () => {
@@ -93,7 +108,7 @@ describe("InstanceSettings memory fields", () => {
         return [{ id: "47.2.0", stable: true, recommended: true }];
       }
       if (name === "change_instance_loader") {
-        return { ...base, versionId: "fabric-loader-0.16.10-1.20.1", loader: "fabric", loaderVersion: "0.16.10" };
+        return { ...base, versionId: "fabric-loader-0.16.10-1.20.1", loader: "fabric", loaderVersion: "0.16.10", backupId: "backup-fixture" };
       }
       return null;
     });
@@ -107,12 +122,16 @@ describe("InstanceSettings memory fields", () => {
     expect(applyBtn.disabled).toBe(false);
     await act(async () => applyBtn.click());
     expect(window.confirm).toHaveBeenCalled();
+    const confirmation = vi.mocked(window.confirm).mock.calls[0]?.[0] ?? "";
+    expect(confirmation).toContain("backup");
+    expect(confirmation).toContain("permanently lose");
     expect(commandMock).toHaveBeenCalledWith("change_instance_loader", {
       instanceId: "fixture",
       loader: "fabric",
       loaderVersion: "0.16.10",
+      skipBackup: false,
     });
-    expect(container.textContent).toContain("Instance loader updated.");
+    expect(container.textContent).toContain("Instance loader updated. A backup of the previous instance was saved first.");
   });
 
   it("switches an instance back to Vanilla without requiring a loader version", async () => {
@@ -133,29 +152,144 @@ describe("InstanceSettings memory fields", () => {
       instanceId: "fixture",
       loader: "vanilla",
       loaderVersion: null,
+      skipBackup: false,
     });
   });
 
-  it("imports a local OptiFine installer JAR for the current instance", async () => {
+  it("imports a local OptiFine installer JAR for the current instance and never lists OptiFine builds", async () => {
     const { pickLauncherPath } = await import("../../lib/nativePaths");
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
     vi.mocked(pickLauncherPath).mockResolvedValue("C:\\SyntheticFixture\\OptiFine_1.20.1_HD_U_I6.jar");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     commandMock.mockImplementation(async (name) => {
       if (name === "get_resource_context") return { gameVersion: "1.20.1", loader: "forge" };
-      if (name === "list_loader_versions") return [];
-      if (name === "install_optifine_installer") return { versionId: "1.20.1-OptiFine_HD_U_I6", loader: "optifine", loaderVersion: "HD_U_I6" };
+      if (name === "list_loader_versions") return [{ id: "HD_U_I6", stable: true, recommended: true }];
+      if (name === "install_optifine_installer") return { versionId: "1.20.1-OptiFine_HD_U_I6", loader: "optifine", loaderVersion: "HD_U_I6", backupId: "backup-fixture" };
       return null;
     });
 
     await render({ ...base, versionId: "1.20.1", loader: "vanilla", loaderVersion: "" });
     const ofBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "OptiFine")!;
     await act(async () => ofBtn.click());
+    // Only the local import is offered: no build list, no online apply.
+    expect(commandMock.mock.calls.some(([name, args]) => name === "list_loader_versions" && args?.loader === "optifine")).toBe(false);
+    expect(container.querySelector("#instance-loader-version")).toBeNull();
+    expect([...container.querySelectorAll("button")].some(b => b.textContent?.trim() === "Change loader")).toBe(false);
+    expect(container.textContent).toContain("Voxelight does not download OptiFine");
+    const site = [...container.querySelectorAll<HTMLAnchorElement>("a")].find(a => a.textContent === "OptiFine downloads (optifine.net)")!;
+    expect(site.getAttribute("href")).toBe("https://optifine.net/downloads");
+    await act(async () => site.click());
+    expect(openUrl).toHaveBeenCalledWith("https://optifine.net/downloads");
+    // The native opener only opens listed pages, so the link must be in its scope.
+    const capability = JSON.parse(readFileSync("src-tauri/capabilities/default.json", "utf8")) as {
+      permissions: Array<string | { identifier: string; allow?: Array<{ url: string }> }>;
+    };
+    const opener = capability.permissions.find((entry) => typeof entry === "object" && entry.identifier === "opener:allow-open-url");
+    expect(typeof opener === "object" ? opener.allow?.map(({ url }) => url) : []).toContain("https://optifine.net/downloads");
+
     const importBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Import OptiFine installer JAR…")!;
     await act(async () => importBtn.click());
+    // Switching to OptiFine is a loader change, so it is confirmed first.
+    expect(vi.mocked(window.confirm).mock.calls[0]?.[0]).toContain("permanently lose");
     expect(pickLauncherPath).toHaveBeenCalledWith("optifineInstaller");
+    // The Minecraft version comes from the JAR and is checked by the backend
+    // against this instance; the window sends no version of its own.
     expect(commandMock).toHaveBeenCalledWith("install_optifine_installer", {
       path: "C:\\SyntheticFixture\\OptiFine_1.20.1_HD_U_I6.jar",
-      expectedGameVersion: "1.20.1",
       instanceId: "fixture",
+      skipBackup: false,
     });
+    expect(container.textContent).toContain("A backup of the previous instance was saved first.");
+  });
+
+  it("keeps the OptiFine import unavailable until the Minecraft version of the instance is known", async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    commandMock.mockImplementation(async (name) => name === "get_resource_context"
+      ? new Promise(resolve => { answer = resolve; })
+      : null);
+    await render({ ...base, versionId: "1.20.1-OptiFine_HD_U_I6", loader: "optifine", loaderVersion: "HD_U_I6" });
+    const importBtn = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Import OptiFine installer JAR…")!;
+    expect(importBtn().disabled).toBe(true);
+    await act(async () => answer({ gameVersion: "1.20.1", loader: "optifine" }));
+    expect(importBtn().disabled).toBe(false);
+  });
+
+  it("switches without a backup only after a second confirmation that names why the backup was refused", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_resource_context") return { gameVersion: "1.20.1", loader: "forge" };
+      if (name === "list_loader_versions") return [{ id: "0.16.10", stable: true, recommended: true }];
+      if (name === "change_instance_loader" && !args?.skipBackup) {
+        throw { code: "loader.switchBackupNoSpace", params: { needed: 2048, available: 300 } };
+      }
+      if (name === "change_instance_loader") return { ...base, loader: "fabric", backupId: null };
+      return null;
+    });
+    await render({ ...base, versionId: "1.20.1-forge-47.2.0", loader: "forge", loaderVersion: "47.2.0" });
+    const fabricBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Fabric")!;
+    await act(async () => fabricBtn.click());
+    const applyBtn = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Change loader")!;
+
+    // Declining the second confirmation keeps the refusal and changes nothing.
+    confirm.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    await act(async () => applyBtn().click());
+    const second = confirm.mock.calls[1]?.[0] ?? "";
+    expect(second).toContain("has 300 MB free, and the backup needs about 2048 MB");
+    expect(second).toContain("without a backup");
+    expect(commandMock.mock.calls.filter(([name]) => name === "change_instance_loader")).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+
+    // Accepting it retries with the explicit choice.
+    confirm.mockClear();
+    confirm.mockReturnValue(true);
+    await act(async () => applyBtn().click());
+    expect(confirm).toHaveBeenCalledTimes(2);
+    const calls = commandMock.mock.calls.filter(([name]) => name === "change_instance_loader");
+    expect(calls.map(([, args]) => args?.skipBackup)).toEqual([false, false, true]);
+    expect(container.textContent).toContain("Instance loader updated.");
+    expect(container.textContent).not.toContain("A backup of the previous instance was saved first.");
+  });
+
+  it("does not offer to skip the backup when the user cancelled it or the install failed", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const errors = [{ code: "download.cancelled", params: {} }, { code: "internal.unexpected", params: {} }];
+    commandMock.mockImplementation(async (name) => {
+      if (name === "get_resource_context") return { gameVersion: "1.20.1", loader: "forge" };
+      if (name === "list_loader_versions") return [{ id: "0.16.10", stable: true, recommended: true }];
+      if (name === "change_instance_loader") throw errors.shift();
+      return null;
+    });
+    await render({ ...base, versionId: "1.20.1-forge-47.2.0", loader: "forge", loaderVersion: "47.2.0" });
+    const fabricBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Fabric")!;
+    await act(async () => fabricBtn.click());
+    const applyBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Change loader")!;
+    await act(async () => applyBtn.click());
+    await act(async () => applyBtn.click());
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(commandMock.mock.calls.filter(([name]) => name === "change_instance_loader").map(([, args]) => args?.skipBackup)).toEqual([false, false]);
+    expect(failures).toHaveLength(2);
+  });
+
+  it("retries an OptiFine import without a backup after the second confirmation", async () => {
+    const { pickLauncherPath } = await import("../../lib/nativePaths");
+    vi.mocked(pickLauncherPath).mockClear();
+    vi.mocked(pickLauncherPath).mockResolvedValue("C:\\SyntheticFixture\\OptiFine_1.20.1_HD_U_I6.jar");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "get_resource_context") return { gameVersion: "1.20.1", loader: "forge" };
+      if (name === "install_optifine_installer" && !args?.skipBackup) throw { code: "loader.switchBackupLinks", params: {} };
+      if (name === "install_optifine_installer") return { versionId: "1.20.1-OptiFine_HD_U_I6", loader: "optifine", loaderVersion: "HD_U_I6" };
+      return null;
+    });
+    await render({ ...base, versionId: "1.20.1-forge-47.2.0", loader: "forge", loaderVersion: "47.2.0" });
+    const ofBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "OptiFine")!;
+    await act(async () => ofBtn.click());
+    const importBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "Import OptiFine installer JAR…")!;
+    await act(async () => importBtn.click());
+    expect(confirm.mock.calls[1]?.[0]).toContain("directory junction");
+    const calls = commandMock.mock.calls.filter(([name]) => name === "install_optifine_installer");
+    expect(calls.map(([, args]) => args?.skipBackup)).toEqual([false, true]);
+    expect(pickLauncherPath).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Instance loader updated.");
   });
 });
