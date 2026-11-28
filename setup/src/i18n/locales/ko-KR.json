@@ -1,0 +1,146 @@
+{
+  "app": {
+    "productName": "Voxelight Launcher",
+    "setupName": "Voxelight 설치",
+    "wordmark": "VOXELIGHT",
+    "stepCount": "{{total}}단계 중 {{current}}단계",
+    "stepAnnouncement": "{{total}}단계 중 {{current}}단계: {{title}}"
+  },
+  "chrome": {
+    "windowControls": "창 제어",
+    "minimize": "최소화",
+    "close": "닫기",
+    "closeBlocked": "설치가 끝날 때까지 창을 닫을 수 없습니다"
+  },
+  "actions": {
+    "back": "이전",
+    "next": "계속",
+    "install": "설치",
+    "update": "업데이트",
+    "reinstall": "다시 설치",
+    "browse": "찾아보기",
+    "classicInstaller": "클래식 설치 프로그램 열기",
+    "launch": "Voxelight 실행",
+    "close": "닫기",
+    "retry": "다시 시도",
+    "copyDetails": "세부 정보 복사",
+    "copied": "세부 정보를 클립보드에 복사했습니다.",
+    "copyFailed": "클립보드에 접근할 수 없습니다. 아래 내용을 직접 선택해 복사해 주세요.",
+    "viewLicense": "GPL-3.0 라이선스 보기"
+  },
+  "welcome": {
+    "title": "Voxelight Launcher 설치",
+    "version": "버전 {{version}}",
+    "summary": "Windows용 오픈소스 Minecraft: Java Edition 런처입니다. 독립 인스턴스, 모드 로더, 월드와 다운로드를 차분한 공간에서 관리할 수 있습니다.",
+    "perUserNote": "현재 Windows 계정에만 설치되며 관리자 권한이 필요 없습니다. Minecraft 게임 파일은 별도로 유지됩니다.",
+    "licenseLead": "GNU GPL-3.0-only 라이선스로 배포되며, 설치를 위해 별도의 약관에 동의할 필요가 없습니다.",
+    "updateNotice": "기존 설치({{installed}})가 감지되어 {{target}} 버전으로 업데이트합니다.",
+    "reinstallNotice": "버전 {{version}}이(가) 이미 이 컴퓨터에 설치되어 있습니다.",
+    "downgradeNotice": "더 최신 버전({{installed}})이 이미 설치되어 있어 다운그레이드할 수 없습니다."
+  },
+  "location": {
+    "title": "설치 위치",
+    "description": "Voxelight Launcher를 설치할 사용자 폴더를 선택하세요. 기존 게임 디렉터리와 월드는 변경되지 않습니다.",
+    "fieldLabel": "대상 폴더",
+    "placeholder": "로컬 드라이브의 폴더를 선택하세요",
+    "spaceSummary": "필요 공간 약 {{required}}, 드라이브 여유 공간 {{available}}",
+    "spaceRequiredOnly": "약 {{required}}의 여유 공간이 필요합니다",
+    "checking": "폴더 확인 중…",
+    "modeUpdateTitle": "{{from}}에서 {{to}}(으)로 업데이트",
+    "modeUpdateHint": "바로 가기와 앱 등록을 유지하기 위해 기존 설치 폴더를 그대로 사용합니다.",
+    "modeReinstallTitle": "{{version}} 다시 설치",
+    "modeReinstallHint": "기존 설치 폴더를 유지합니다. 저장된 계정, 인스턴스, 설정은 그대로 보존됩니다.",
+    "modeFolderMissingHint": "등록된 설치 폴더에서 Voxelight Launcher를 찾을 수 없으므로 설치할 위치를 선택할 수 있습니다.",
+    "keptFolderUnusableHint": "설치 프로그램은 기존 설치 폴더를 유지하지만 이 폴더는 더 이상 사용할 수 없습니다. 클래식 설치 프로그램에서 이전 설치를 제거하고 다른 폴더에 설치할 수 있습니다. Windows 설정에서 Voxelight Launcher를 제거한 다음 설치 프로그램을 다시 실행해도 됩니다.",
+    "classicInstallerFailed": "클래식 설치 프로그램을 열지 못했습니다. 설치 프로그램을 닫은 후 다시 실행하세요.",
+    "modeDowngradeTitle": "더 최신 버전 {{installed}}이(가) 이미 설치되어 있습니다",
+    "modeDowngradeHint": "{{target}}(으)로 다운그레이드할 수 없습니다. 이전 버전이 필요하다면 먼저 {{installed}}을(를) 제거하세요."
+  },
+  "pathErrors": {
+    "empty": "대상 폴더 경로를 입력해 주세요.",
+    "invalidChars": "Windows에서 허용하지 않는 문자 또는 예약된 이름이 포함되어 있습니다.",
+    "notAbsolute": "C:\\Users\\User\\AppData\\Local\\Voxelight Launcher 같은 로컬 드라이브 전체 경로를 입력하세요.",
+    "driveRoot": "드라이브 최상위 대신 하위 폴더를 선택해 주세요.",
+    "protectedLocation": "Windows 및 Program Files 외부의 사용자 폴더를 선택해 주세요.",
+    "sharedLocation": "내 계정 전용 폴더를 선택하세요. ProgramData, 공용 폴더, 드라이브 루트 같은 공유 위치는 사용할 수 없습니다.",
+    "reparsePoint": "심볼릭 링크나 정션이 포함된 경로에는 설치할 수 없습니다.",
+    "isFile": "해당 경로에 이미 파일이 있습니다. 폴더를 선택해 주세요.",
+    "driveMissing": "선택한 드라이브 또는 상위 폴더가 존재하지 않습니다.",
+    "notWritable": "이 폴더에 쓸 권한이 없습니다.",
+    "insufficientSpace": "드라이브의 여유 공간이 부족합니다. {{required}}이(가) 필요하지만 {{available}}만 남아 있습니다."
+  },
+  "options": {
+    "title": "설치 옵션",
+    "description": "설치를 시작하기 전에 바로 가기와 실행 동작을 확인하세요.",
+    "shortcutsTitle": "바탕 화면 및 시작 메뉴 바로 가기",
+    "shortcutsHint": "바탕 화면과 시작 메뉴에 바로 가기를 만듭니다. 끄면 두 바로 가기 모두 만들지 않습니다.",
+    "shortcutsUpdateHint": "업데이트 중에는 기존 바로 가기 구성을 그대로 유지합니다.",
+    "launchTitle": "설치 완료 후 Voxelight 실행",
+    "launchHint": "설치가 끝나면 Voxelight Launcher를 자동으로 시작합니다.",
+    "launchElevatedHint": "설치 프로그램이 관리자 권한으로 실행 중이라 일반 사용자 권한으로 Voxelight를 시작할 수 없습니다. 설치 후 시작 메뉴에서 Voxelight를 여세요.",
+    "summaryLabel": "요약",
+    "summaryTarget": "폴더: {{path}}",
+    "summaryActionInstall": "작업: {{version}} 새로 설치",
+    "summaryActionUpdate": "작업: {{from}}에서 {{to}}(으)로 업데이트",
+    "summaryActionReinstall": "작업: {{version}} 다시 설치"
+  },
+  "installing": {
+    "title": "Voxelight 설치 중",
+    "subtitle": "설치가 완료될 때까지 이 창을 열어 두세요.",
+    "progressLabel": "설치 진행률",
+    "phases": {
+      "extract": "압축 해제",
+      "install": "설치",
+      "verify": "확인"
+    },
+    "status": {
+      "extract": "설치 패키지를 검증하고 압축을 푸는 중…",
+      "install": "Voxelight Launcher 파일을 설치하는 중…",
+      "installOverwrite": "기존 설치 파일을 업데이트하는 중…",
+      "verify": "설치된 파일을 확인하고 임시 파일을 정리하는 중…"
+    },
+    "bytesWritten": "{{expected}} 중 {{written}} 기록됨"
+  },
+  "done": {
+    "title": "Voxelight 준비 완료",
+    "description": "Voxelight Launcher {{version}} 설치가 완료되었습니다.",
+    "installedAt": "설치 위치: {{path}}",
+    "launchingNote": "Voxelight Launcher를 시작하고 있습니다.",
+    "launchFailed": "자동으로 실행하지 못했습니다. 아래 실행 버튼을 누르거나 시작 메뉴에서 열어 주세요.",
+    "launchBlockedElevated": "설치 프로그램이 관리자 권한으로 실행 중입니다. 일반 사용자 권한으로 Voxelight를 시작하려면 설치 프로그램을 닫고 시작 메뉴에서 Voxelight Launcher를 여세요."
+  },
+  "error": {
+    "title": "설치를 완료하지 못했습니다",
+    "summary": "시스템 전역 설정은 변경되지 않았습니다. 아래 원인을 확인하고 세부 정보를 복사하거나 다시 시도해 보세요.",
+    "detailsLabel": "기술 세부 정보",
+    "detailVersion": "버전: {{value}}",
+    "detailTarget": "폴더: {{value}}",
+    "detailPhase": "단계: {{value}}",
+    "detailExitCode": "종료 코드: {{value}}",
+    "detailCode": "오류 코드: {{value}}",
+    "detailNone": "없음",
+    "reasons": {
+      "nsisExit1": "설치가 완료되기 전에 취소되거나 중단되었습니다(종료 코드 1). 실행 중인 Voxelight Launcher를 닫고 다시 시도하세요.",
+      "nsisExit2": "설치 스크립트가 도중에 중단되었습니다(종료 코드 2). 런처가 닫혀 있는지, 폴더에 쓰기 권한이 있는지, 더 최신 버전이 설치되어 있지 않은지 확인하세요.",
+      "nsisExit5": "Windows가 대상 폴더에 대한 쓰기 권한을 거부했습니다(종료 코드 5). 쓰기 가능한 사용자 폴더를 선택해 다시 시도하세요.",
+      "nsisExit112": "설치 중 대상 드라이브의 공간이 부족해졌습니다(종료 코드 112). 공간을 확보하거나 다른 드라이브를 선택하세요.",
+      "nsisExit1223": "설치가 끝나기 전에 취소되었습니다(종료 코드 1223).",
+      "nsisExit1602": "이전 버전 제거가 취소되었습니다(종료 코드 1602).",
+      "nsisExit1618": "다른 Windows 설치 프로그램이 이미 실행 중입니다(종료 코드 1618). 완료된 뒤 다시 시도하세요.",
+      "nsisExitOther": "설치 프로그램이 예기치 않게 종료되었습니다(종료 코드 {{code}}).",
+      "hashMismatch": "내장 설치 패키지의 SHA-256 무결성 검사에 실패했습니다. 공식 릴리스 페이지에서 설치 프로그램을 다시 다운로드하세요.",
+      "extractFailed": "임시 폴더에 설치 파일을 풀지 못했습니다. 디스크 여유 공간과 보안 프로그램 설정을 확인하세요.",
+      "spawnFailed": "Windows 설치 엔진을 시작하지 못했습니다. 보안 소프트웨어 설정을 확인한 뒤 다시 시도하세요.",
+      "verifyFailed": "설치 엔진이 종료되었지만 대상 폴더에서 voxelight-launcher.exe를 찾지 못했습니다.",
+      "downgradeBlocked": "더 최신 버전의 Voxelight Launcher가 이미 설치되어 있어 다운그레이드를 거부했습니다.",
+      "alreadyInstalling": "이미 설치가 진행 중입니다.",
+      "launcherRunning": "Voxelight Launcher가 아직 실행 중입니다. Voxelight를 닫은 다음 [다시 시도]를 선택하세요."
+    }
+  },
+  "license": {
+    "title": "GNU 일반 공중 사용 허가서 v3.0",
+    "description": "Voxelight Launcher는 GPL-3.0-only에 따라 배포되는 자유 소프트웨어입니다. 안내 목적으로 제공됩니다.",
+    "close": "대화 상자 닫기",
+    "loading": "라이선스 본문을 불러오는 중…"
+  }
+}

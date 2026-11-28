@@ -9,6 +9,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.7.0-beta.3] - 2026-11-28
+
+### Added
+- **Voxelight Setup**: a new installer in the launcher's own design language. It follows the Windows light/dark theme and accent colour, shows the install folder, options and progress on the dotted lattice, refuses downgrades and asks you to close a running launcher first. The self-updater and silent installs pass straight through to the NSIS installer inside it. Without WebView2 it falls back to the classic installer, which installs WebView2.
+- **CurseForge required dependencies** are installed together with the file you pick, in one transaction with rollback. Dependencies of another category (a resource pack that needs a mod) are checked, not installed.
+- **Discover paging and sorting**: Load more, sort options for each source, a result count, and version paging in the project drawer.
+- **Restricted CurseForge files** get a manual-download section that names the exact file, links to its page and tells you which folder it goes in.
+- **Colour presets** from traditional Chinese colours (靛青, 孔雀蓝, 碧青, 竹绿, 芦苇绿, 朱红, 海棠红, 玫瑰红, 青莲, 琥珀黄, 燕羽灰) next to "Follow system" and a custom colour.
+- **First run** introduces Lumen, the optional assistant, and the appearance preview has a "Replay entrance animation" button.
+- **Settings** warns before leaving with unsaved changes (including typed keys and proxy credentials), and Library, Downloads and Settings keep their view state while the app runs.
+- **Ambient light**: soft fields of colour now breathe behind every page, tinted by your accent or colour preset, so the liquid glass has something to show. You can pick your own background image for the whole app; Lite and reduced motion keep the colours still.
+
+### Changed
+- **Instances work like PCL and HMCL.** Every instance is a version folder (`versions/<name>/`) in a game folder, so versions installed by other launchers appear as instances without an import step. You can add several game folders and switch between them, give any instance its own game directory (optionally copying its worlds), copy an instance, and delete one to the Recycle Bin after confirming. Creating, importing and copying make new version folders; Voxelight instances from earlier versions keep working and can be converted.
+- The accent follows the Windows system accent by default. Voxelight no longer has a brand colour of its own; when the system colour cannot be read, Windows' default blue is used.
+- Instance icons are isometric voxel cubes coloured by loader, and loader versions installed by other launchers (such as `1.21.1-fabric-0.19.3`) are recognised.
+- Texts no longer use "·" as a separator; names and descriptions read naturally in every language.
+- Changing the scene or material in the first-run and appearance previews now transitions smoothly instead of rebuilding the scene.
+- Buttons, toggles, menus and dialogs move on spring curves, and spacing, type sizes, icon sizes and notifications follow one shared scale.
+- Buttons, selection lists, drop-down menus and empty states got a consistent look: one icon size per button size, frosted menus and framed empty states.
+- Every page got a visual pass in the same language: Home and the window frame, the first-run tour (anchored at the top, with a focused heading), the keyboard shortcut list (grouped, with merged alternatives), Discover cards and the install-target dialog, Multiplayer and Downloads, Accounts, Settings, Lumen, the Library grid, the Create instance dialog (an always-visible version list) and the instance detail tabs.
+
+### Fixed
+- **Versions installed by other launchers start again.** Their version JSON is left untouched and the game launches from metadata verified against Mojang's manifest, instead of failing with "无法确认现有版本配置的来源". A local file that adds `inheritsFrom` to a vanilla id can no longer slip extra arguments past this check.
+- **Confirmations wait for your answer.** In the desktop app the browser's confirm box did not block, so removing content, restoring a backup, changing a loader, applying a modpack update, clearing downloads or removing a server could go ahead without a real answer. These now ask in a launcher dialog, Cancel has the initial focus, and destructive choices are marked red.
+- A loader switch can no longer overwrite a version that other instances share (such as the vanilla `1.21.1` folder), and a profile at an official version id is always checked against Mojang's manifest.
+- Lumen and MCP can create instances again, re-importing a personal backup works when the original name is free, and a failed "create instance" task is no longer retried as a plain vanilla install.
+- Discover and Multiplayer use exactly the instance you selected, including right after start-up.
+- The home character's head now follows the pointer in the right direction and eases back when the pointer leaves.
+- The voxel hover highlight no longer stays on pages other than Home.
+- Library version icons no longer show an offset dotted backdrop and a stray corner mark.
+- Character previews no longer fill the download history, and old preview entries are removed once.
+- The installer no longer suggests a deleted temporary folder as the install location, and its pages use the system UI font instead of SimSun.
+- The launch button's label stays readable in every state: the pointer halo outlines the button instead of circling over its text, and fades over a button that is briefly unavailable.
+
 ## [0.7.0-beta.2] - 2026-11-27
 
 _Pre-release beta for 0.7.0._

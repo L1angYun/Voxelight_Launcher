@@ -8,6 +8,11 @@
   "shortcuts": {
     "title": "Atajos de teclado",
     "description": "Estos atajos funcionan en cualquier parte del iniciador.",
+    "or": "o",
+    "groups": {
+      "navigation": "Navegación",
+      "general": "General"
+    },
     "actions": {
       "goTo": "Ir a {{page}}",
       "assistant": "Abrir Lumen",
@@ -53,7 +58,7 @@
         "javaNone": "Aún no se ha detectado ningún Java local; Voxelight puede preparar automáticamente el entorno oficial correspondiente.",
         "redetect": "Volver a detectar",
         "memoryTitle": "Asignación de memoria",
-        "memorySummary": "{{total}} GiB de RAM detectados · recomendación automática: {{recommended}} MB.",
+        "memorySummary": "{{total}} GiB de RAM detectados; recomendación automática: {{recommended}} MB.",
         "memoryAuto": "La asignación automática de memoria está activa y se adapta a la RAM del sistema.",
         "proxyTitle": "Proxy de red",
         "proxySystem": "Siguiendo el proxy del sistema de Windows ({{url}}).",
@@ -69,16 +74,37 @@
           "bmclapi": "BMCLAPI"
         }
       },
+      "lumen": {
+        "title": "Conoce a Lumen, tu asistente opcional",
+        "body": "Lumen es el asistente de IA opcional de Voxelight. Puede ayudarte a entender fallos, descargas e instancias, y no es necesario para jugar.",
+        "ownKey": "Tú aportas tu propia clave de API del proveedor de IA.",
+        "readOnly": "Empieza en modo de solo lectura y no puede cambiar nada hasta que se lo permitas.",
+        "asksFirst": "Siempre pregunta antes de hacer un cambio.",
+        "setUp": "Configurar ahora",
+        "later": "Más tarde"
+      },
       "ready": {
         "title": "Todo listo",
         "body": "Aquí encontrarás todo en Voxelight. Puedes volver a abrir esta configuración inicial en cualquier momento con F1."
       }
     },
     "steps": {
-      "library": { "title": "Biblioteca", "body": "Tus instancias y versiones." },
-      "discover": { "title": "Explorar", "body": "Encuentra mods, modpacks y más." },
-      "downloads": { "title": "Descargas", "body": "Progreso e historial de descargas." },
-      "settings": { "title": "Ajustes", "body": "Java, memoria y apariencia." }
+      "library": {
+        "title": "Biblioteca",
+        "body": "Tus instancias y versiones."
+      },
+      "discover": {
+        "title": "Explorar",
+        "body": "Encuentra mods, modpacks y más."
+      },
+      "downloads": {
+        "title": "Descargas",
+        "body": "Progreso e historial de descargas."
+      },
+      "settings": {
+        "title": "Ajustes",
+        "body": "Java, memoria y apariencia."
+      }
     }
   },
   "notifications": {
@@ -121,7 +147,27 @@
     "resource.versionMissing": "Instala Minecraft o crea primero una instancia compatible.",
     "resource.installAfterCreate": "La instancia se creó, pero falló la instalación del recurso. Vuelve a intentar instalarlo.",
     "resource.sourceUnsupported": "Esta fuente aún no admite la selección automática de destino. Crea primero una instancia compatible.",
+    "discover.requestInvalid": "La solicitud de búsqueda no es válida. Cambia los filtros e inténtalo de nuevo.",
+    "discover.pageLimit": "Los resultados de búsqueda se limitan a los primeros 10.000. Acota la búsqueda para ver otros resultados.",
+    "discover.versionPageLimit": "Las versiones anteriores deben consultarse en la página del proyecto.",
+    "discover.projectNotFound": "Este proyecto o versión ya no existe.",
+    "discover.modrinthUnreachable": "No se pudo conectar con Modrinth. Comprueba tu red e inténtalo de nuevo.",
+    "discover.modrinthRateLimited": "Modrinth está recibiendo demasiadas solicitudes. Inténtalo más tarde.",
+    "discover.modrinthFailed": "Modrinth no pudo completar la solicitud. Inténtalo de nuevo.",
+    "discover.curseforgeUnreachable": "No se pudo conectar con CurseForge. Comprueba tu red e inténtalo de nuevo.",
+    "discover.curseforgeRateLimited": "CurseForge está recibiendo demasiadas solicitudes. Inténtalo más tarde.",
+    "discover.curseforgeRefused": "CurseForge rechazó la solicitud. Comprueba tu propia API Key y sus permisos.",
+    "discover.curseforgeFailed": "CurseForge no pudo completar la solicitud. Inténtalo de nuevo.",
     "resource.loaderUnavailable": "No hay versiones de cargador disponibles para esta versión del juego. Elige otra versión.",
+    "resource.manualDownload": "El iniciador no puede descargar este archivo de CurseForge. Descárgalo desde su página de CurseForge y colócalo tú mismo en la carpeta de recursos.",
+    "resource.dependencyIncompatible": "El proyecto incompatible {{project}} está activado en esta instancia. Desactívalo antes de instalar este recurso. No se modificó ningún archivo.",
+    "resource.dependencyLimit": "El grafo de dependencias obligatorias es demasiado grande o está demasiado anidado para instalarlo de forma segura. No se modificó ningún archivo.",
+    "resource.dependencyCycle": "Las dependencias obligatorias forman un ciclo que incluye a {{project}}, por lo que no se puede continuar la instalación. No se modificó ningún archivo.",
+    "resource.dependencyUnavailable": "La dependencia obligatoria «{{name}}» no tiene un archivo compatible para esta versión del juego y cargador, o no pudo verificarse. No se modificó ningún archivo.",
+    "resource.dependencyConflict": "Las dependencias obligatorias tienen un conflicto de versiones o nombres de archivo y no pueden instalarse de forma segura. No se modificó ningún archivo.",
+    "resource.dependencyInvalid": "No se pudo verificar una dependencia obligatoria o no es compatible con esta instancia de cliente. No se modificó ningún archivo.",
+    "resource.dependencyInstallFirst": "Este recurso requiere «{{name}}» de otra categoría. Instala primero «{{name}}» en esta instancia y vuelve a intentarlo. No se modificó ningún archivo.",
+    "resource.dependencyManualDownload": "La dependencia obligatoria «{{name}}» ({{file}}) no se puede descargar automáticamente: el autor no permite que el launcher la descargue o CurseForge no proporciona una URL. Descarga {{file}} manualmente desde {{url}}, colócalo en la carpeta {{folder}} de la instancia y vuelve a intentarlo. No se modificó ningún archivo.",
     "loader.optifineInvalid": "El archivo seleccionado no es un JAR instalador de OptiFine válido.",
     "loader.optifineVersionMismatch": "El instalador de OptiFine seleccionado es para Minecraft {{installer}}, pero la versión de destino es {{expected}}.",
     "loader.optifineOnlineUnavailable": "OptiFine no se puede instalar en línea: sus descargas no tienen una suma de comprobación que Voxelight pueda verificar. Descarga el instalador desde optifine.net e importa el JAR.",
@@ -132,10 +178,26 @@
     "loader.switchBackupNoSpace": "No se pudo hacer una copia de seguridad de la instancia: la unidad donde el launcher guarda las copias tiene {{available}} MB libres y la copia necesita unos {{needed}} MB. El cargador no se ha cambiado.",
     "loader.switchBackupChanged": "No se pudo hacer una copia de seguridad de la instancia porque sus archivos cambiaron durante la copia. Cierra los programas que los usen e inténtalo de nuevo. El cargador no se ha cambiado.",
     "instance.baseVersionUnknown": "No se puede determinar la versión base de Minecraft de esta instancia. Comprueba que exista su perfil de versión.",
+    "gameFolder.notFound": "Esa carpeta del juego ya no está en la lista. Vuelve a añadirla en Ajustes.",
+    "gameFolder.unsupported": "Esta carpeta no contiene versions y no está vacía, así que no se puede añadir como carpeta de juego.",
+    "gameFolder.unavailable": "No se pudo abrir la carpeta del juego: {{reason}}",
+    "instance.sharedRootRequired": "Esta instancia comparte el directorio del juego de la carpeta del juego. Las copias de seguridad, restauraciones, exportaciones, cambios de cargador y actualizaciones de modpacks necesitan un directorio del juego dedicado, así que asigna uno a esta instancia primero.",
+    "instance.deleteConfirmRequired": "Eliminar una carpeta de instancia requiere una confirmación explícita.",
+    "instance.folderUnsafe": "Esta carpeta no es una carpeta de instancia gestionada por el iniciador, así que no se ha eliminado.",
+    "instance.folderNameInvalid": "Usa de 1 a 64 caracteres visibles. El nombre no puede contener separadores de ruta ni nombres reservados de Windows, ni terminar con un punto o un espacio.",
+    "instance.folderNameTaken": "Ya existe una carpeta de instancia con este nombre en la carpeta del juego. Elige otro nombre.",
+    "instance.createUnsupportedLoader": "Este cargador no se puede usar al crear una instancia. Importa su instalador en su lugar.",
+    "instance.isolationUnsupported": "Solo una instancia con carpeta de versión estándar puede cambiar su directorio del juego.",
+    "instance.isolationCopyOnly": "Los mundos solo se pueden copiar al cambiar a un directorio del juego dedicado.",
+    "instance.convertUnsupported": "Solo se puede convertir una carpeta de instancia gestionada por el iniciador.",
+    "instance.convertNotNeeded": "Esta instancia ya es una carpeta de versión estándar.",
+    "instance.conversionNotPending": "No hay ninguna conversión de instancia interrumpida que recuperar.",
     "server.importArgsFileMismatch": "El archivo de argumentos seleccionado no forma parte del contenido del servidor importado.",
     "resource.manifestUnavailable": "No se pudo cargar la lista de versiones de Minecraft. Comprueba tu conexión e inténtalo de nuevo.",
     "version.loaderReinstall": "El perfil de versión de {{id}} está dañado. Vuelve a instalar la misma versión del juego y el mismo cargador en el iniciador. Tus mundos y mods no se reemplazarán.",
-    "version.profileConflict": "Voxelight conservó el perfil existente de {{id}} porque no pudo verificar su origen. Haz una copia de seguridad de su archivo JSON en versions, apártalo y vuelve a instalar la versión o el cargador original.",
+    "version.loaderArtifactMissing": "Falta o está dañado un archivo generado por el instalador del cargador. Vuelve a instalar ese cargador en el iniciador (por ejemplo, desde la página de la instancia). Tus mundos y mods no se reemplazarán.",
+    "version.profileConflict": "El perfil de versión de {{id}} cambió mientras Voxelight lo actualizaba, así que se conservó el archivo existente. Cierra otros iniciadores que estén usando esta carpeta del juego e inténtalo de nuevo.",
+    "version.offlineUnverified": "Voxelight conservó el perfil existente de {{id}}, pero necesita conexión a internet una vez para descargar y verificar los metadatos oficiales de Mojang antes de iniciar sin conexión.",
     "download.cancelled": "Instalación cancelada.",
     "instance.running": "Esta instancia ya está en ejecución. No la inicies dos veces.",
     "install.gameRunning": "Hay un juego en ejecución en el mismo directorio del juego. Cierra el juego antes de instalar una versión o un cargador.",
@@ -214,7 +276,34 @@
     "assistant.modelRequired": "Introduce primero un nombre de modelo en Ajustes → Lumen y MCP.",
     "assistant.invalidBaseUrl": "La URL base de la API de Lumen debe usar HTTPS o HTTP en loopback (127.0.0.1 / localhost).",
     "assistant.providerError": "El servicio de IA configurado devolvió un error.",
-    "assistant.emptyMessage": "Escribe un mensaje antes de enviar."
+    "assistant.emptyMessage": "Escribe un mensaje antes de enviar.",
+    "instance.deleteDependants": "No se puede eliminar esta carpeta de versión porque estas instancias heredan de ella: {{instances}}. Elimina esas instancias primero o conserva esta versión.",
+    "instance.officialVersionName": "Ese nombre es una versión oficial de Minecraft. Una carpeta de versión con un id oficial pero otra versión base no se puede iniciar; elige otro nombre.",
+    "instance.loaderSwitchShared": "La carpeta de versión de esta instancia está compartida: es una versión oficial de Minecraft, una versión completa independiente u otras instancias heredan de ella. Cambiar su cargador en el mismo lugar también las cambiaría, así que no se modificó la instancia. Crea una instancia nueva con el cargador que quieras.",
+    "instance.loaderSwitchInstallerFolder": "Esta instancia es la carpeta de versión que creó el instalador de un cargador (lleva el nombre de esa versión del cargador). La próxima instalación del mismo cargador, por ejemplo al crear o importar otra instancia con él, sobrescribe su perfil de versión, así que no se puede cambiar su cargador en el mismo lugar. No se modificó la instancia. Usa «Copiar instancia» y cambia el cargador en la copia, o crea una instancia nueva con el cargador que quieras.",
+    "backup.kindMismatch": "Esta copia de seguridad se hizo de la instancia en otra forma (por ejemplo, antes de convertirla en una carpeta de versión estándar), así que no se puede restaurar en el mismo lugar. No se modificó la instancia; puedes importar el ZIP de la copia como nueva instancia.",
+    "instance.recycleFailed": "No se pudo mover la carpeta a la Papelera de reciclaje: {{reason}}. No se eliminó nada.",
+    "instance.recycleUnavailable": "Esta carpeta no se puede mover a la Papelera de reciclaje: {{reason}}. No se eliminó nada. Usa la eliminación permanente, que se confirma por separado, si quieres borrar la carpeta.",
+    "instance.launchBlocked": "Esta instancia no se puede iniciar. {{reason}}",
+    "gameFolder.nested": "Una carpeta de juego no puede estar dentro de otra carpeta de juego configurada. Elige una carpeta independiente.",
+    "gameFolder.dataDirectory": "El directorio de datos del launcher no puede usarse como carpeta de juego. Elige otra carpeta."
+  },
+  "errorReasons": {
+    "recycle": {
+      "networkShare": "está en una carpeta compartida de red",
+      "noRecycleBin": "esta unidad no tiene Papelera de reciclaje",
+      "unknownDrive": "no se pudo identificar la unidad en la que está",
+      "pathTooLong": "su ruta es demasiado larga para la Papelera de reciclaje",
+      "unsupportedPath": "su ruta no se puede pasar a la Papelera de reciclaje de forma segura",
+      "unsupportedSystem": "este sistema no admite la Papelera de reciclaje",
+      "shellError": "Windows devolvió el error {{code}}",
+      "aborted": "se canceló la operación",
+      "unknown": "se produjo un error inesperado"
+    },
+    "gameFolder": {
+      "invalidPath": "su ruta no se puede usar",
+      "openFailed": "el sistema no pudo abrirla"
+    }
   },
   "assistant": {
     "title": "Lumen",
@@ -222,6 +311,47 @@
     "notConfigured": "Modelo sin configurar",
     "configure": "Configurar",
     "toolCount": "{{count}} herramientas",
+    "tools": {
+      "list_instances": "Listar instancias",
+      "list_installed_versions": "Listar versiones instaladas",
+      "list_accounts": "Listar cuentas",
+      "get_launcher_config": "Leer ajustes del launcher",
+      "get_memory_overview": "Ver resumen de memoria",
+      "detect_java_runtimes": "Detectar Java",
+      "list_remote_versions": "Listar versiones remotas",
+      "list_loader_versions": "Listar versiones de cargadores",
+      "list_download_tasks": "Listar tareas de descarga",
+      "list_running_games": "Listar juegos en ejecución",
+      "list_instance_resources": "Listar recursos de la instancia",
+      "list_instance_worlds": "Listar mundos de la instancia",
+      "list_world_datapacks": "Listar paquetes de datos del mundo",
+      "list_instance_backups": "Listar copias de seguridad",
+      "read_instance_log": "Leer registro de la instancia",
+      "diagnose_instance": "Diagnosticar instancia",
+      "search_modrinth": "Buscar en Modrinth",
+      "list_multiplayer_servers": "Listar servidores multijugador",
+      "list_managed_servers": "Listar servidores administrados",
+      "read_managed_server_logs": "Leer registros del servidor administrado",
+      "check_network_environment": "Comprobar la red",
+      "detect_local_proxies": "Detectar proxies locales",
+      "toggle_instance_resource": "Alternar recurso de la instancia",
+      "toggle_world_datapack": "Alternar paquete de datos del mundo",
+      "create_instance": "Crear instancia",
+      "update_instance_notes": "Actualizar notas de la instancia",
+      "update_instance_settings": "Actualizar ajustes de la instancia",
+      "backup_instance": "Copia de seguridad de la instancia",
+      "clone_instance": "Clonar instancia",
+      "change_instance_loader": "Cambiar el cargador de la instancia",
+      "install_minecraft_version": "Instalar versión de Minecraft",
+      "install_modrinth_resource": "Instalar recurso de Modrinth",
+      "launch_instance": "Iniciar instancia",
+      "stop_running_game": "Detener juego",
+      "retry_failed_downloads": "Reintentar descargas fallidas",
+      "clear_unfinished_downloads": "Borrar descargas inacabadas",
+      "save_multiplayer_server": "Guardar servidor",
+      "start_managed_server": "Iniciar servidor administrado",
+      "stop_managed_server": "Detener servidor administrado"
+    },
     "emptyReady": "Pregunta a Lumen sobre la configuración de tu iniciador o elige una sugerencia abajo.",
     "emptyUnconfigured": "Configura un proveedor, un modelo y una clave de API (o un punto de conexión local en loopback) en Ajustes → Lumen y MCP para activar Lumen.",
     "prompts": {

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Activity, Check, Copy, Globe, Info, ShieldAlert, ShieldCheck, Wifi } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
+import { ICON } from "../../design/icons";
 import { formatDate } from "../../i18n/format";
 import { LumenHelpButton } from "../assistant/LumenHelpButton";
 import type { useMultiplayer } from "./useMultiplayer";
@@ -13,6 +14,7 @@ function formatDirectAddress(ip: string, port: number, ipv6: boolean): string {
 
 export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMultiplayer> }) {
   const { t, i18n } = useTranslation();
+  const labelSeparator = /^(?:zh|ja)/i.test(i18n.language) ? "：" : ": ";
   const { networkReport: report, networkBusy, runNetworkCheck, currentManaged } = model;
   const managedPort = currentManaged?.settings.port;
   const [portInput, setPortInput] = useState(() => String(managedPort ?? 25565));
@@ -54,36 +56,50 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
 
   return (
     <div className="vx-network-check">
-      <div className="vx-multiplayer-toolbar vx-panel">
-        <p>{t("multiplayer:network.description")}</p>
-        <div className="vx-action-row">
-          <Button
-            variant="primary"
-            icon={<Activity size={15} />}
-            loading={networkBusy}
-            disabled={networkBusy}
-            onClick={() => void runNetworkCheck()}
-          >
-            {report ? t("multiplayer:network.rerunCheck") : t("multiplayer:network.runCheck")}
-          </Button>
-          <LumenHelpButton
-            when={Boolean(needsNatHelp && report)}
-            label={t("shell:assistant.wake.askNetwork")}
-            reason={t("shell:assistant.wake.networkReason")}
-            prompt={t("shell:assistant.wake.networkPrompt", { natType: report?.natType ?? "unknown" })}
-          />
+      {report ? (
+        <div className="vx-multiplayer-toolbar vx-panel">
+          <p>{t("multiplayer:network.description")}</p>
+          <div className="vx-action-row">
+            <Button
+              variant="primary"
+              icon={<Activity />}
+              loading={networkBusy}
+              disabled={networkBusy}
+              onClick={() => void runNetworkCheck()}
+            >
+              {t("multiplayer:network.rerunCheck")}
+            </Button>
+            <LumenHelpButton
+              when={Boolean(needsNatHelp && report)}
+              label={t("shell:assistant.wake.askNetwork")}
+              reason={t("shell:assistant.wake.networkReason")}
+              prompt={t("shell:assistant.wake.networkPrompt", { natType: report?.natType ?? "unknown" })}
+            />
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {!report ? (
-        <section className="vx-network-empty">
+        <div className="vx-network-empty">
           <EmptyState
-            icon={<Wifi size={36} strokeWidth={1.3} />}
+            variant="panel"
+            icon={<Wifi size={ICON.xl} />}
             title={t("multiplayer:network.emptyTitle")}
             description={t("multiplayer:network.emptyDescription")}
+            action={
+              <Button
+                variant="primary"
+                icon={<Activity />}
+                loading={networkBusy}
+                disabled={networkBusy}
+                onClick={() => void runNetworkCheck()}
+              >
+                {t("multiplayer:network.runCheck")}
+              </Button>
+            }
           />
           <p className="vx-network-privacy">{t("multiplayer:network.privacyNote")}</p>
-        </section>
+        </div>
       ) : (
         <div className="vx-network-results">
           <div
@@ -99,14 +115,14 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
             }
           >
             <span className="vx-network-verdict__tag">
-              {t("multiplayer:network.natTitle")} · {t(`multiplayer:network.natType.${report.natType}`)}
+              {t("multiplayer:network.natTitle")}{labelSeparator}{t(`multiplayer:network.natType.${report.natType}`)}
             </span>
             <p>{t(`multiplayer:network.natSummary.${report.natType}`)}</p>
           </div>
           <div className="vx-network-grid">
             <article className="vx-network-card" data-tone={report.ipv4.available ? "good" : "warn"}>
               <header>
-                <h3><Globe size={16} aria-hidden="true" />{t("multiplayer:network.ipv4Title")}</h3>
+                <h3><Globe size={ICON.md} aria-hidden="true" />{t("multiplayer:network.ipv4Title")}</h3>
                 <span className="vx-network-badge" data-tone={report.ipv4.available ? "good" : "warn"}>
                   {report.ipv4.available ? t("multiplayer:network.available") : t("multiplayer:network.unavailable")}
                 </span>
@@ -144,7 +160,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
               data-tone={report.ipv6.status === "globalPublic" ? "good" : report.ipv6.status === "behindNat6" ? "info" : "neutral"}
             >
               <header>
-                <h3><Globe size={16} aria-hidden="true" />{t("multiplayer:network.ipv6Title")}</h3>
+                <h3><Globe size={ICON.md} aria-hidden="true" />{t("multiplayer:network.ipv6Title")}</h3>
                 <span
                   className="vx-network-badge"
                   data-tone={report.ipv6.status === "globalPublic" ? "good" : report.ipv6.status === "behindNat6" ? "info" : "neutral"}
@@ -183,7 +199,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
               }
             >
               <header>
-                <h3><Activity size={16} aria-hidden="true" />{t("multiplayer:network.natTitle")}</h3>
+                <h3><Activity size={ICON.md} aria-hidden="true" />{t("multiplayer:network.natTitle")}</h3>
                 <span
                   className="vx-network-badge"
                   data-tone={
@@ -236,7 +252,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
                     <Button
                       variant="secondary"
                       disabled={!portValid}
-                      icon={copiedTarget === "v6" ? <Check size={14} /> : <Copy size={14} />}
+                      icon={copiedTarget === "v6" ? <Check size={ICON.sm} /> : <Copy size={ICON.sm} />}
                       onClick={() => void copyAddress("v6", directV6)}
                     >
                       {copiedTarget === "v6" ? t("multiplayer:network.copied") : t("multiplayer:network.copyAddress")}
@@ -252,7 +268,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
                     <Button
                       variant="secondary"
                       disabled={!portValid}
-                      icon={copiedTarget === "v4" ? <Check size={14} /> : <Copy size={14} />}
+                      icon={copiedTarget === "v4" ? <Check size={ICON.sm} /> : <Copy size={ICON.sm} />}
                       onClick={() => void copyAddress("v4", directV4)}
                     >
                       {copiedTarget === "v4" ? t("multiplayer:network.copied") : t("multiplayer:network.copyAddress")}
@@ -270,7 +286,7 @@ export function NetworkCheckPanel({ model }: { model: ReturnType<typeof useMulti
                 const Icon = item.severity === "good" ? ShieldCheck : item.severity === "warn" ? ShieldAlert : Info;
                 return (
                   <li key={item.code} data-severity={item.severity}>
-                    <Icon size={16} aria-hidden="true" />
+                    <Icon size={ICON.md} aria-hidden="true" />
                     <span>{t(`multiplayer:network.advice.${item.code}`)}</span>
                   </li>
                 );

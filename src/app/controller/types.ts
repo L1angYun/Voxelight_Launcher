@@ -48,9 +48,11 @@ export interface LauncherContextValue {
   setTourCompleted(completed: boolean): Promise<Config>;
   setConfig(next: Config): void;
   selectInstance(id?: string): void;
+  /** Selects a game version for non-launch surfaces such as resource targets. */
   selectVersion(id: string): void;
-  launch(instanceId?: string, versionId?: string): Promise<void>;
-  launchMultiplayer(versionId: string, serverAddress: string): Promise<void>;
+  launch(instanceId?: string): Promise<void>;
+  /** Joins a server with exactly this instance (the one whose server list was shown). */
+  launchMultiplayer(instanceId: string, serverAddress: string): Promise<void>;
   stop(): Promise<void>;
   cancelPreparation(): Promise<void>;
   run<T>(labelKey: string, action: () => Promise<T>): Promise<T | undefined>;

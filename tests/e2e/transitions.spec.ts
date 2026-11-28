@@ -721,74 +721,69 @@ function assertDrillIdentityVisible(recorded: Recorded, label: string) {
 if (!HARDWARE) {
   drillTest.describe("hardware drill geometry", () => {
     // Built-in browser launch options are worker-scoped. Keep the override
-    // local to these eight tests through a test-scoped context fixture.
+    // local to these four tests through a test-scoped context fixture.
     drillTest.use({ drillHardware: true });
-    for (const kind of ["instance", "version-directory"] as const) {
-      for (const view of ["grid", "list"] as const) {
-        for (const input of ["mouse", "keyboard"] as const) {
-          drillTest("transitions: drill " + kind + " " + view + " " + input + " preserves scrolled origin and return focus", async ({ page }, info) => {
-            await prepare(page, { instanceCount: 30, versionDirectoryCount: 30 });
-            await verifyHardwareRenderer(page, join(EVIDENCE, info.title.replace(/[^a-zA-Z0-9_-]+/g, "-")));
-            await navigate(page, "library");
-            if (kind === "version-directory") await page.locator(".vx-library-scope button").nth(1).click();
-            await page.locator(".vx-library-view button").nth(view === "list" ? 1 : 0).click();
-            await expect(page.locator(".vx-instance-sheet--" + view)).toBeVisible();
-            const attribute = kind === "instance" ? "data-instance-id" : "data-version-directory";
-            const cards = page.locator("article[" + attribute + "]");
-            await expect(cards).toHaveCount(30);
-            const id = await cards.nth(24).getAttribute(attribute);
-            expect(id).not.toBeNull();
-            const cardSelector = "article[" + attribute + "=" + JSON.stringify(id) + "]";
-            const openSelector = cardSelector + " .vx-instance-card__select";
-            const identity = ".vx-instance-identity[data-identity-kind=" + JSON.stringify(kind) + "][data-identity=" + JSON.stringify(id) + "]";
-            const cardIdentity = cardSelector + " " + identity;
-            const detailIdentity = ".vx-detail-header " + identity;
-            const layoutId = kind + "-identity-" + id;
-            await expect(page.locator(cardIdentity)).toHaveAttribute("data-layout-id", layoutId);
-            await expect(page.locator(cardSelector)).not.toHaveAttribute("data-identity-flight");
-            await expect(page.locator(cardSelector)).toHaveCSS("z-index", "auto");
-            const main = page.locator("#main-content");
-            if (input === "keyboard") await tabTo(page, openSelector);
-            else await page.locator(openSelector).scrollIntoViewIfNeeded();
-            const savedScrollTop = await main.evaluate(element => element.scrollTop);
-            expect(savedScrollTop).toBeGreaterThan(100);
-            const openTrace = await capture(page, info, "open", { trigger: openSelector, source: cardIdentity, target: detailIdentity },
-              () => input === "keyboard" ? page.keyboard.press("Enter") : page.locator(openSelector).click());
-            await expect(page.locator(".vx-detail-header h1")).toBeFocused();
-            await expect(page.locator(detailIdentity)).toHaveAttribute("data-layout-id", layoutId);
-            await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(0);
-            const finalDetail = await page.locator(detailIdentity).boundingBox();
-            expect(finalDetail).not.toBeNull();
-            await assertDrillGeometry(openTrace, finalDetail!, info, "open");
-            assertDrillIdentityVisible(openTrace, "open");
-            if (kind === "instance") {
-              const detailContent = page.locator(".vx-detail-layout");
-              await expect(detailContent).toHaveCSS("opacity", "1");
-              // Finished opacity fills behave like will-change: opacity and can
-              // isolate a nested glass control from the backdrop.
-              await expect(detailContent).toHaveCSS("animation-fill-mode", "none");
-            }
-            const backSelector = ".vx-detail-header > button:first-child";
-            if (input === "keyboard") {
-              await page.keyboard.press("Shift+Tab");
-              await expect(page.locator(backSelector)).toBeFocused();
-            }
-            const backTrace = await capture(page, info, "back", { trigger: backSelector, source: detailIdentity, target: cardIdentity },
-              () => input === "keyboard" ? page.keyboard.press("Enter") : page.locator(backSelector).click());
-            await expect(page.locator(openSelector)).toBeFocused();
-            await expect.poll(() => main.evaluate(element => element.scrollTop)).toBeCloseTo(savedScrollTop, 0);
-            const finalCard = await page.locator(cardIdentity).boundingBox();
-            expect(finalCard).not.toBeNull();
-            await assertDrillGeometry(backTrace, finalCard!, info, "back");
-            assertDrillIdentityVisible(backTrace, "back");
-            const returnFlight = backTrace.frames.filter(frame => frame.target && !identityTransform(frame.targetTransform));
-            expect(returnFlight.length, "return must sample the temporary card elevation").toBeGreaterThan(1);
-            expect(returnFlight.every(frame => frame.identityHit?.cardFlight && frame.identityHit.cardZIndex === "2"),
-              "only the returning card must stay elevated throughout its identity flight").toBe(true);
-            await expect(page.locator(".vx-instance-card[data-identity-flight]")).toHaveCount(0);
-            await expect(page.locator(cardSelector)).toHaveCSS("z-index", "auto");
-          });
-        }
+    for (const view of ["grid", "list"] as const) {
+      for (const input of ["mouse", "keyboard"] as const) {
+        drillTest("transitions: drill instance " + view + " " + input + " preserves scrolled origin and return focus", async ({ page }, info) => {
+          await prepare(page, { instanceCount: 30 });
+          await verifyHardwareRenderer(page, join(EVIDENCE, info.title.replace(/[^a-zA-Z0-9_-]+/g, "-")));
+          await navigate(page, "library");
+          await page.locator(".vx-library-view button").nth(view === "list" ? 1 : 0).click();
+          await expect(page.locator(".vx-instance-sheet--" + view)).toBeVisible();
+          const cards = page.locator("article[data-instance-id]");
+          await expect(cards).toHaveCount(30);
+          const id = await cards.nth(24).getAttribute("data-instance-id");
+          expect(id).not.toBeNull();
+          const cardSelector = "article[data-instance-id=" + JSON.stringify(id) + "]";
+          const openSelector = cardSelector + " .vx-instance-card__select";
+          const identity = ".vx-instance-identity[data-identity-kind=\"instance\"][data-identity=" + JSON.stringify(id) + "]";
+          const cardIdentity = cardSelector + " " + identity;
+          const detailIdentity = ".vx-detail-header " + identity;
+          const layoutId = "instance-identity-" + id;
+          await expect(page.locator(cardIdentity)).toHaveAttribute("data-layout-id", layoutId);
+          await expect(page.locator(cardSelector)).not.toHaveAttribute("data-identity-flight");
+          await expect(page.locator(cardSelector)).toHaveCSS("z-index", "auto");
+          const main = page.locator("#main-content");
+          if (input === "keyboard") await tabTo(page, openSelector);
+          else await page.locator(openSelector).scrollIntoViewIfNeeded();
+          const savedScrollTop = await main.evaluate(element => element.scrollTop);
+          expect(savedScrollTop).toBeGreaterThan(100);
+          const openTrace = await capture(page, info, "open", { trigger: openSelector, source: cardIdentity, target: detailIdentity },
+            () => input === "keyboard" ? page.keyboard.press("Enter") : page.locator(openSelector).click());
+          await expect(page.locator(".vx-detail-header h1")).toBeFocused();
+          await expect(page.locator("#instance-detail-panel")).toBeVisible();
+          await expect(page.locator(detailIdentity)).toHaveAttribute("data-layout-id", layoutId);
+          await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(0);
+          const finalDetail = await page.locator(detailIdentity).boundingBox();
+          expect(finalDetail).not.toBeNull();
+          await assertDrillGeometry(openTrace, finalDetail!, info, "open");
+          assertDrillIdentityVisible(openTrace, "open");
+          const detailContent = page.locator(".vx-detail-layout");
+          await expect(detailContent).toHaveCSS("opacity", "1");
+          // Finished opacity fills behave like will-change: opacity and can
+          // isolate a nested glass control from the backdrop.
+          await expect(detailContent).toHaveCSS("animation-fill-mode", "none");
+          const backSelector = ".vx-detail-header > button:first-child";
+          if (input === "keyboard") {
+            await page.keyboard.press("Shift+Tab");
+            await expect(page.locator(backSelector)).toBeFocused();
+          }
+          const backTrace = await capture(page, info, "back", { trigger: backSelector, source: detailIdentity, target: cardIdentity },
+            () => input === "keyboard" ? page.keyboard.press("Enter") : page.locator(backSelector).click());
+          await expect(page.locator(openSelector)).toBeFocused();
+          await expect.poll(() => main.evaluate(element => element.scrollTop)).toBeCloseTo(savedScrollTop, 0);
+          const finalCard = await page.locator(cardIdentity).boundingBox();
+          expect(finalCard).not.toBeNull();
+          await assertDrillGeometry(backTrace, finalCard!, info, "back");
+          assertDrillIdentityVisible(backTrace, "back");
+          const returnFlight = backTrace.frames.filter(frame => frame.target && !identityTransform(frame.targetTransform));
+          expect(returnFlight.length, "return must sample the temporary card elevation").toBeGreaterThan(1);
+          expect(returnFlight.every(frame => frame.identityHit?.cardFlight && frame.identityHit.cardZIndex === "2"),
+            "only the returning card must stay elevated throughout its identity flight").toBe(true);
+          await expect(page.locator(".vx-instance-card[data-identity-flight]")).toHaveCount(0);
+          await expect(page.locator(cardSelector)).toHaveCSS("z-index", "auto");
+        });
       }
     }
   });
@@ -830,20 +825,17 @@ if (!HARDWARE) {
   }
 
   test("transitions: drill current-library navigation resets details without restoring the old scroll", async ({ page }, info) => {
-    await prepare(page, { instanceCount: 30, versionDirectoryCount: 30 });
+    await prepare(page, { instanceCount: 30 });
     await navigate(page, "library");
-    for (const kind of ["instance", "version-directory"] as const) {
-      await page.locator(".vx-library-scope button").nth(kind === "instance" ? 0 : 1).click();
-      const attribute = kind === "instance" ? "data-instance-id" : "data-version-directory";
-      const open = page.locator("article[" + attribute + "] .vx-instance-card__select").nth(24);
-      await open.scrollIntoViewIfNeeded();
-      expect(await page.locator("#main-content").evaluate(element => element.scrollTop)).toBeGreaterThan(100);
-      await open.click();
-      await expect(page.locator(".vx-detail-page")).toBeVisible();
-      await capture(page, info, kind + "-nav-reset", { trigger: navSelector("library") }, () => page.locator(navSelector("library")).click());
-      await expect(page.locator(".vx-library-page")).toBeVisible();
-      await expect(page.locator(".vx-detail-page")).toHaveCount(0);
-      await expect.poll(() => page.locator("#main-content").evaluate(element => element.scrollTop)).toBe(0);
-    }
+    const open = page.locator("article[data-instance-id] .vx-instance-card__select").nth(24);
+    await open.scrollIntoViewIfNeeded();
+    expect(await page.locator("#main-content").evaluate(element => element.scrollTop)).toBeGreaterThan(100);
+    await open.click();
+    await expect(page.locator(".vx-detail-page")).toBeVisible();
+    await expect(page.locator("#instance-detail-panel")).toBeVisible();
+    await capture(page, info, "instance-nav-reset", { trigger: navSelector("library") }, () => page.locator(navSelector("library")).click());
+    await expect(page.locator(".vx-library-page")).toBeVisible();
+    await expect(page.locator(".vx-detail-page")).toHaveCount(0);
+    await expect.poll(() => page.locator("#main-content").evaluate(element => element.scrollTop)).toBe(0);
   });
 }

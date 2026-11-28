@@ -4,6 +4,7 @@ import { FunctionAnimation, IdleAnimation, WalkingAnimation, SkinViewer as WebGL
 import type { BufferGeometry, Material, Object3D } from "three";
 import { CapeTextureLoader, SkinTextureLoader, type SkinModel } from "../../components/skinTexture";
 import { cn } from "../../lib/utils";
+import { stepHeadAnglesInto, type HeadAngles, type HeadPointer } from "./headTracking";
 import "./character.css";
 
 export type CharacterAnimation = "idle" | "walk" | "run" | "none";
@@ -101,8 +102,15 @@ export function CharacterCanvas({
   const cameraTouched = useRef(false);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
-  const headPointerRef = useRef<{ x: number; y: number } | null>(null);
-  headPointerRef.current = headPointer;
+  const headPointerRef = useRef<HeadPointer | null>(null);
+  const headAnglesRef = useRef<HeadAngles>({ x: 0, y: 0 });
+  const windowBlurredRef = useRef(false);
+  if (headPointerRef.current !== headPointer) {
+    headPointerRef.current = headPointer;
+    // A fresh pointer update (or explicit leave) after window blur resumes
+    // smooth tracking from the current head pose without snapping.
+    windowBlurredRef.current = false;
+  }
   const [viewer, setViewer] = useState<WebGLSkinViewer | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -124,8 +132,13 @@ export function CharacterCanvas({
 
   useEffect(() => {
     const update = () => setVisible(!document.hidden && inView.current);
+    const onBlur = () => { windowBlurredRef.current = true; };
     document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("blur", onBlur);
+    };
   }, []);
 
   useEffect(() => {
@@ -383,23 +396,34 @@ export function CharacterCanvas({
     if (!viewer || viewer.disposed) return;
     // Assigning animation resets the pose and clock; pause separately to retain the stride.
     const next = mode === "walk" ? new WalkingAnimation() : mode === "run" ? groundedRun() : mode === "idle" ? new IdleAnimation() : null;
-    next?.addAnimation((player) => {
-      const head = player.skin.head;
-      if (mode === "run") {
-        head.rotation.x = 0;
-        head.rotation.y = 0;
-        return;
-      }
-      const pointer = headPointerRef.current;
-      if (pointer) {
-        // Applied after the native frame, with no competing pointer effect.
-        head.rotation.x = -Math.max(-1, Math.min(1, pointer.y)) * 0.35;
-        head.rotation.y = Math.max(-1, Math.min(1, pointer.x)) * 0.55;
-      } else if (mode === "idle") {
-        head.rotation.x = 0;
-        head.rotation.y = 0;
-      }
-    });
+    if (mode === "run" || mode === "none") {
+      headAnglesRef.current.x = 0;
+      headAnglesRef.current.y = 0;
+    }
+    if (next) {
+      let frameDelta = 0;
+      const baseUpdate = next.update.bind(next);
+      next.update = (player, deltaTime) => {
+        frameDelta = deltaTime;
+        baseUpdate(player, deltaTime);
+      };
+      next.addAnimation((player) => {
+        const head = player.skin.head;
+        if (mode === "run") {
+          headAnglesRef.current.x = 0;
+          headAnglesRef.current.y = 0;
+          head.rotation.x = 0;
+          head.rotation.y = 0;
+          return;
+        }
+        const restX = mode === "walk" ? head.rotation.x : 0;
+        const restY = mode === "walk" ? head.rotation.y : 0;
+        const pointer = windowBlurredRef.current ? null : headPointerRef.current;
+        const angles = stepHeadAnglesInto(headAnglesRef.current, pointer, restX, restY, frameDelta);
+        head.rotation.x = angles.x;
+        head.rotation.y = angles.y;
+      });
+    }
     viewer.animation = next;
     // Show the selected mode immediately, including a static native frame in
     // lite mode. A zero delta neither starts a clock nor advances the stride.

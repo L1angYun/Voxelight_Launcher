@@ -383,16 +383,175 @@ impl PathGrants {
 }
 
 pub(crate) fn approved_config_is_current(approved: &crate::models::Config, current: &crate::models::Config) -> bool {
-    approved.game_directory == current.game_directory && approved.java_path == current.java_path
+    approved.game_directory == current.game_directory
+        && approved.game_folders == current.game_folders
+        && approved.java_path == current.java_path
         && approved.custom_background == current.custom_background
+}
+
+/// Lexical containment that matches how Windows compares two configured
+/// spellings: separators and case do not matter.
+fn path_within(child: &Path, parent: &Path) -> bool {
+    let parts = |path: &Path| {
+        path.components()
+            .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase())
+            .collect::<Vec<_>>()
+    };
+    let child = parts(child);
+    let parent = parts(parent);
+    !parent.is_empty() && child.len() >= parent.len() && child[..parent.len()] == parent[..]
+}
+
+/// Whether the configured folder list changed, so unrelated settings saves of
+/// an older profile are not refused by a rule added later.
+pub(crate) fn game_folder_roots_changed(previous: &[String], next: &[String]) -> bool {
+    let normalize = |roots: &[String]| {
+        let mut values: Vec<String> = roots
+            .iter()
+            .map(|root| {
+                root.trim()
+                    .replace('\\', "/")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase()
+            })
+            .filter(|root| !root.is_empty())
+            .collect();
+        values.sort();
+        values
+    };
+    normalize(previous) != normalize(next)
+}
+
+/// Refuse nested game folders and any overlap with the launcher's own data
+/// directory. Both would let a scan or a delete reach the other tree.
+pub(crate) fn validate_game_folder_layout(
+    roots: &[String],
+    data_dir: &Path,
+) -> AppResult<()> {
+    let candidates: Vec<&Path> = roots
+        .iter()
+        .map(|root| Path::new(root.trim()))
+        .filter(|root| !root.as_os_str().is_empty())
+        .collect();
+    for (index, root) in candidates.iter().enumerate() {
+        if path_within(root, data_dir) || path_within(data_dir, root) {
+            return Err(crate::errors::AppError::new(
+                crate::errors::GAME_FOLDER_DATA_DIRECTORY,
+            )
+            .with_param("folder", root.display().to_string()));
+        }
+        for (other_index, other) in candidates.iter().enumerate() {
+            if index == other_index {
+                continue;
+            }
+            if path_within(root, other) {
+                let mut error =
+                    crate::errors::AppError::new(crate::errors::GAME_FOLDER_NESTED);
+                error.params.insert(
+                    "folder".into(),
+                    serde_json::Value::String(root.display().to_string()),
+                );
+                error.params.insert(
+                    "outer".into(),
+                    serde_json::Value::String(other.display().to_string()),
+                );
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A game folder holds `versions/`, is empty, or carries the usual launcher
+/// markers. A random non-empty folder would be scanned and written by mistake.
+pub(crate) fn validate_game_folder_candidate(root: &Path) -> AppResult<()> {
+    let has_versions = root.join("versions").is_dir();
+    let looks_like_game_folder = [
+        "libraries",
+        "assets",
+        "saves",
+        "mods",
+        "logs",
+        "launcher_profiles.json",
+        "hmclversion.cfg",
+    ]
+    .iter()
+    .any(|name| root.join(name).exists());
+    let empty = std::fs::read_dir(root)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false);
+    if !has_versions && !looks_like_game_folder && !empty {
+        return Err(crate::errors::AppError::new(
+            crate::errors::GAME_FOLDER_UNSUPPORTED,
+        )
+        .with_param("folder", root.display().to_string()));
+    }
+    Ok(())
 }
 
 pub(crate) async fn authorize_changed_config_paths(
     window: &WebviewWindow, grants: &PathGrants, previous: &crate::models::Config, next: &mut crate::models::Config,
+    data_dir: &Path,
 ) -> AppResult<()> {
-    if next.game_directory.trim() != previous.game_directory {
-        let result = grants.choose_or_confirm(PathUse::GameDirectory, next.game_directory.trim(), window, true).await?;
-        next.game_directory = crate::storage::display_profile_path(&result);
+    let known = previous.game_folder_roots();
+    // The renderer may send a folder list, a legacy single directory, or both.
+    // Every path that was not already configured needs a native choice (or an
+    // exact typed confirmation), exactly like the old single game directory.
+    let candidates = next
+        .game_folders
+        .iter()
+        .map(|folder| folder.path.trim().to_owned())
+        .chain(std::iter::once(next.game_directory.trim().to_owned()))
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    let mut authorized: Vec<(String, String)> = Vec::new();
+    for path in &candidates {
+        if known
+            .iter()
+            .any(|root| crate::models::same_game_folder_path(root, path))
+            || authorized
+                .iter()
+                .any(|(candidate, _)| crate::models::same_game_folder_path(candidate, path))
+        {
+            continue;
+        }
+        let result = grants.choose_or_confirm(PathUse::GameDirectory, path, window, true).await?;
+        authorized.push((path.clone(), crate::storage::display_profile_path(&result)));
+    }
+    // Validate every path this save introduces, including one that only
+    // arrived as `gameDirectory` without a matching folder-list entry.
+    for (candidate, resolved) in &authorized {
+        let root = crate::processes::configured_game_root(std::path::Path::new(resolved))?;
+        validate_game_folder_candidate(&root).map_err(|error| {
+            error.with_param("folder", candidate.clone())
+        })?;
+    }
+    for folder in &mut next.game_folders {
+        let trimmed = folder.path.trim().to_owned();
+        if let Some((_, resolved)) = authorized
+            .iter()
+            .find(|(candidate, _)| crate::models::same_game_folder_path(candidate, &trimmed))
+        {
+            folder.path.clone_from(resolved);
+        } else {
+            folder.path = trimmed;
+        }
+    }
+    let directory = next.game_directory.trim().to_owned();
+    if let Some((_, resolved)) = authorized
+        .iter()
+        .find(|(candidate, _)| crate::models::same_game_folder_path(candidate, &directory))
+    {
+        next.game_directory.clone_from(resolved);
+    } else {
+        next.game_directory = directory;
+    }
+    // Nested folders and the launcher data directory are never valid targets.
+    // An older profile that already had such a folder can still save other
+    // settings; only a change to the folder list has to pass this rule.
+    let roots = next.game_folder_roots();
+    if game_folder_roots_changed(&previous.game_folder_roots(), &roots) {
+        validate_game_folder_layout(&roots, data_dir)?;
     }
     if !next.java_path.trim().is_empty() && next.java_path.trim() != previous.java_path {
         let result = grants.choose_or_confirm(PathUse::Java, next.java_path.trim(), window, true).await?;
@@ -706,5 +865,68 @@ mod tests {
         let chosen = crate::storage::display_profile_path(&native[0]);
         assert_eq!(table.consume_all(PathUse::Background, &[&chosen], "main", now).unwrap(), vec![native[0].clone()]);
         table.insert_all(PathUse::Background, &native[..1], "main", now).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn game_folders_refuse_nesting_and_the_launcher_data_directory() {
+        let holder = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let outer = holder.path().join("outer");
+        let inner = outer.join("inner");
+        let other = holder.path().join("other");
+        let data = holder.path().join("data");
+        for path in [&outer, &inner, &other, &data] {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::create_dir_all(outer.join("versions")).unwrap();
+        let roots = |values: &[&Path]| values.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let nested = validate_game_folder_layout(&roots(&[&outer, &inner]), &data).unwrap_err();
+        assert_eq!(nested.code, crate::errors::GAME_FOLDER_NESTED);
+        assert_eq!(nested.params["outer"], outer.to_string_lossy().as_ref());
+        let deeper = validate_game_folder_layout(
+            &roots(&[&outer, &data.join("game")]),
+            &data,
+        )
+        .unwrap_err();
+        assert_eq!(deeper.code, crate::errors::GAME_FOLDER_DATA_DIRECTORY);
+        let same = validate_game_folder_layout(&roots(&[&data]), &data).unwrap_err();
+        assert_eq!(same.code, crate::errors::GAME_FOLDER_DATA_DIRECTORY);
+        validate_game_folder_layout(&roots(&[&outer, &other]), &data).unwrap();
+        validate_game_folder_layout(&roots(&[&holder.path().join("beside-data")]), &data).unwrap();
+    }
+
+    #[test]
+    fn a_game_folder_candidate_must_hold_versions_be_empty_or_look_like_one() {
+        let holder = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let empty = holder.path().join("empty");
+        let with_versions = holder.path().join("with-versions");
+        let with_saves = holder.path().join("with-saves");
+        let random = holder.path().join("random");
+        for path in [&empty, &with_versions, &with_saves, &random] {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::create_dir_all(with_versions.join("versions")).unwrap();
+        fs::create_dir_all(with_saves.join("saves")).unwrap();
+        fs::write(random.join("report.docx"), b"not a game").unwrap();
+        validate_game_folder_candidate(&empty).unwrap();
+        validate_game_folder_candidate(&with_versions).unwrap();
+        validate_game_folder_candidate(&with_saves).unwrap();
+        let refused = validate_game_folder_candidate(&random).unwrap_err();
+        assert_eq!(refused.code, crate::errors::GAME_FOLDER_UNSUPPORTED);
+        assert_eq!(refused.params["folder"], random.to_string_lossy().as_ref());
     }
 }

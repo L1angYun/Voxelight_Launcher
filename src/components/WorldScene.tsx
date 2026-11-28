@@ -6,7 +6,8 @@ import { createWorldRenderer, type RGB, type WorldPalette, type WorldRenderer } 
 import { createFrameBudget, nextTier, selectTier, type Tier } from "./world/qualityTier";
 import type { WorldMaterial, WorldPage, WorldPhase, WorldSceneId } from "./world/types";
 import { isBlankPress } from "./world/pointerTarget";
-import { publishWorldAvailability } from "./world/worldAvailability";
+import { publishWorldAvailability, publishWorldPaused } from "./world/worldAvailability";
+import { WORLD_INTRO_REPLAY_EVENT } from "./world/worldReplay";
 import "./WorldScene.css";
 
 // Claimed by the first scheduled draw, so StrictMode's disposable setup cannot
@@ -32,7 +33,7 @@ function palette(): WorldPalette {
   const light = root.dataset.theme === "light";
   const base = rgb(style.getPropertyValue("--bg-base"), light ? [.953, .945, .922] : [.027, .031, .043]);
   return { light, ink: light ? base : [7 / 255, 8 / 255, 11 / 255], point: light ? rgb(style.getPropertyValue("--text-primary"), [.14, .145, .13]) : [236 / 255, 231 / 255, 218 / 255],
-    accent: rgb(style.getPropertyValue("--accent"), [180 / 255, 241 / 255, 122 / 255]), haze: light ? base : [.25, .27, .32] };
+    accent: rgb(style.getPropertyValue("--accent"), [0, 120 / 255, 212 / 255]), haze: light ? base : [.25, .27, .32] };
 }
 
 export function WorldScene(props: WorldSceneProps) {
@@ -73,6 +74,9 @@ export function WorldScene(props: WorldSceneProps) {
     let lastLayoutKey = "", trackedAnchor: Element | null = null;
     let lastAnchorNdc: [number, number] = [.62, -.66];
     let previousPhase = current.current.phase;
+    let previousPage = current.current.page;
+    let previousScene = current.current.scene;
+    let previousMaterial = current.current.material;
     let renderer: WorldRenderer | null = null;
     let unsupported = false;
     let submittedScene: WorldSceneId | "transition" | "unavailable" = "unavailable";
@@ -87,17 +91,18 @@ export function WorldScene(props: WorldSceneProps) {
     const director = createWorldDirector(userInputs());
     let lastFrame = director.step(0, performance.now());
     const permitted = () => !disposed && !lost && !current.current.paused && !document.hidden && visible;
-    const introEligible = () => Boolean(renderer) && !lost && tier?.kind === "animated" &&
-      current.current.page === "home" && current.current.phase === "idle" && requestedInputs().material === "lattice";
+    const replayEligible = () => Boolean(renderer) && !lost && tier?.kind === "animated" &&
+      current.current.phase === "idle" && requestedInputs().material === "lattice";
+    const introEligible = () => replayEligible() && current.current.page === "home";
     function endIntro() {
       introPending = false; director.endIntro();
       introWordSubmitted = false; introWordHoldUntil = null;
       if (introTimer !== null) clearTimeout(introTimer);
       introTimer = null; introDeadline = null; html.dataset.worldIntro = "off";
     }
-    function queueIntro() {
-      introWordSubmitted = false; introWordHoldUntil = null;
-      introPending = true; introDeadline = performance.now() + 2500;
+    function scheduleIntroDeadline(now: number) {
+      if (introTimer !== null) clearTimeout(introTimer);
+      introDeadline = now + 2500;
       introTimer = setTimeout(() => {
         introConsumed = true; endIntro();
         publish(director.step(0, performance.now()));
@@ -105,8 +110,28 @@ export function WorldScene(props: WorldSceneProps) {
         paint(performance.now(), 0); start();
       }, 2500);
     }
-    function skipIntro() {
+    function queueIntro() {
+      introWordSubmitted = false; introWordHoldUntil = null;
+      introPending = true;
+      scheduleIntroDeadline(performance.now());
+    }
+    function replayIntro() {
+      if (!replayEligible() || !permitted()) return;
+      const now = performance.now();
+      introConsumed = true;
+      introPending = false;
+      introWordSubmitted = false;
+      introWordHoldUntil = null;
+      // Sync wall clock before starting the replay so idle elapsed time never jumps scalars.
+      director.step(0, now);
+      director.replayIntro();
+      scheduleIntroDeadline(now);
+      paint(now, 0);
+      start();
+    }
+    function skipIntro(event?: Event) {
       if (!introPending && !lastFrame.introActive) return;
+      if (event?.target instanceof Element && event.target.closest("[data-world-intro-replay]")) return;
       introConsumed = true; endIntro();
       publish(director.step(0, performance.now())); start();
     }
@@ -193,7 +218,7 @@ export function WorldScene(props: WorldSceneProps) {
       if (!frame.introActive && !introPending && introTimer !== null) endIntro();
       // Sparse draws can cross the entire readable gather interval. Submit its
       // keyframe once without rewinding the director or extending the entrance.
-      const supplement = frame.introActive && introEligible() && introDeadline !== null && drawAt < introDeadline &&
+      const supplement = frame.introActive && replayEligible() && introDeadline !== null && drawAt < introDeadline &&
         ((!introWordSubmitted && frame.morph.fromWord) || (introWordHoldUntil !== null && drawAt < introWordHoldUntil));
       const drawFrame = supplement ? { ...frame, introTime: 1, morph: { ...frame.morph, toWord: true, fromWord: false } } : frame;
       try {
@@ -287,7 +312,14 @@ export function WorldScene(props: WorldSceneProps) {
       const key = JSON.stringify([input.phase, input.fraction, input.page, input.scene, input.material, input.paused, effects, reducedMotion, highContrast, document.hidden, visible, lost, Boolean(fine?.matches)]);
       if (!force && key === lastKey && paletteKey === lastPalette) return;
       const launchStarted = previousPhase === "idle" && input.phase === "preparing";
+      const appearanceChanged = previousScene !== input.scene || previousMaterial !== input.material;
+      const pageChanged = previousPage !== input.page;
       previousPhase = input.phase;
+      previousPage = input.page;
+      previousScene = input.scene;
+      previousMaterial = input.material;
+      const previousTierKind = tier.kind;
+      const now = performance.now();
       lastKey = key; stop(); needsSubmission = true; gpuComplete = false;
       if (!permitted()) introWordHoldUntil = null;
       if (effects === "lite") {
@@ -299,23 +331,32 @@ export function WorldScene(props: WorldSceneProps) {
         introConsumed = true; endIntro();
         lastPalette = paletteKey;
         fit();
-        publish(director.step(0, performance.now()));
+        publish(director.step(0, now));
         return;
       }
       ensureRenderer();
       tier = selectTier({ webgl2: Boolean(renderer) && !lost, floatTargets: Boolean(renderer?.capabilities.floatTargets), effects, reducedMotion, highContrast });
       for (let index = 0; index < downgrades; index++) tier = nextTier(tier) ?? tier;
       budget = createFrameBudget(16.7);
+      if (drawn > 0 && previousTierKind === "animated" && tier.kind === "animated") {
+        // Sync wall clock under the previous inputs so elapsed idle time cannot
+        // jump scalar parameters ahead of the camera on an option change.
+        director.step(0, now);
+      }
       director.setInputs(requestedInputs());
       if (drawn === 0) director.snap();
-      if (!introEligible()) { introConsumed = true; endIntro(); }
-      else if (!introConsumed && !introPending) queueIntro();
+      if (appearanceChanged || pageChanged || !replayEligible()) { introConsumed = true; endIntro(); }
+      else if (!introEligible()) {
+        introConsumed = true;
+        if (introPending) endIntro();
+      } else if (!introConsumed && !introPending) queueIntro();
       try {
         renderer?.setTier(tier);
         if (paletteKey !== lastPalette) { renderer?.setPalette(nextPalette); lastPalette = paletteKey; }
-        fit(); publish(director.step(0, performance.now()));
+        fit();
         if (launchStarted && permitted() && tier.kind === "animated") renderer?.shock(lastAnchorNdc);
-        if (renderer && permitted() && tier.kind !== "css") paint(performance.now(), 0);
+        if (renderer && permitted() && tier.kind !== "css") paint(now, 0);
+        else publish(director.step(0, now));
         start();
       } catch { fallback(); }
     }
@@ -324,7 +365,7 @@ export function WorldScene(props: WorldSceneProps) {
       return [(event.clientX - rect.left) / width * 2 - 1, 1 - (event.clientY - rect.top) / height * 2];
     };
     const move = (event: PointerEvent) => {
-      if (!permitted() || tier.kind !== "animated" || !fine?.matches || event.pointerType === "touch" || lastFrame.settled) return;
+      if (!permitted() || tier.kind !== "animated" || !fine?.matches || current.current.page !== "home" || event.pointerType === "touch" || lastFrame.settled) return;
       renderer?.setPointer(ndc(event));
       if (held && held.id === event.pointerId) held.moved = Math.max(held.moved, Math.hypot(event.clientX - held.x, event.clientY - held.y));
       director.noteInteraction(performance.now()); start();
@@ -344,7 +385,7 @@ export function WorldScene(props: WorldSceneProps) {
     const cancel = (event: PointerEvent) => finishPress(event);
     const leave = () => { finishPress(); renderer?.setPointer(null); };
     function syncPointerBindings() {
-      const bind = permitted() && tier?.kind === "animated" && Boolean(fine?.matches) && !lastFrame.settled;
+      const bind = permitted() && tier?.kind === "animated" && Boolean(fine?.matches) && current.current.page === "home" && !lastFrame.settled;
       if (bind === pointerBound) return;
       pointerBound = bind;
       const handlers: Array<[string, EventListener]> = [["pointermove", move as EventListener], ["pointerdown", down as EventListener], ["pointerup", up as EventListener], ["pointercancel", cancel as EventListener], ["pointerleave", leave], ["blur", leave]];
@@ -374,6 +415,7 @@ export function WorldScene(props: WorldSceneProps) {
     document.addEventListener("pointerdown", skipIntro, { capture: true, passive: true });
     window.addEventListener("resize", resized);
     window.addEventListener("vx:world-anchor", anchorCommitted);
+    window.addEventListener(WORLD_INTRO_REPLAY_EVENT, replayIntro);
     runtime.current = { update }; update();
     return () => {
       disposed = true; endIntro(); stop(); runtime.current = null;
@@ -382,10 +424,15 @@ export function WorldScene(props: WorldSceneProps) {
       queries.forEach(value => value?.removeEventListener?.("change", changed));
       document.removeEventListener("visibilitychange", changed); document.removeEventListener("pointerdown", skipIntro, true); window.removeEventListener("resize", resized);
       window.removeEventListener("vx:world-anchor", anchorCommitted);
+      window.removeEventListener(WORLD_INTRO_REPLAY_EVENT, replayIntro);
       renderer?.dispose();
     };
   }, []);
   useEffect(() => runtime.current?.update(), [props.phase, props.fraction, props.page, props.scene, props.material, props.paused, props.effects, props.reducedMotion]);
+  // Settings and the tour hide "Replay intro" while the scene is paused, since
+  // replayIntro() ignores requests then.
+  useEffect(() => publishWorldPaused(Boolean(props.paused)), [props.paused]);
+  useEffect(() => () => publishWorldPaused(false), []);
   return <div ref={hostRef} className={["world-scene", props.className].filter(Boolean).join(" ")} aria-hidden="true"
     data-world-tier="css" data-world-scene="unavailable" data-world-material="solid" data-world-phase={props.phase} data-world-front="0" data-world-frames="0" data-world-settled="false" data-motion="reduced" data-paused={Boolean(props.paused)} />;
 }

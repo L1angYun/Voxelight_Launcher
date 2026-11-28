@@ -14,9 +14,88 @@ struct LocalEntry {
 }
 
 #[derive(Clone)]
-struct Node {
-    version: Version,
-    enabled: bool,
+pub(crate) struct Node {
+    pub(crate) version: Version,
+    pub(crate) enabled: bool,
+}
+
+/// How an unpinned required dependency project is resolved by a [`DependencySource`].
+pub(crate) enum RequiredResolution {
+    /// Already satisfied outside the target folder (for example, a CurseForge
+    /// cross-category dependency that is enabled in its own class folder).
+    SatisfiedExternal,
+    /// Candidate versions for the target folder, newest first.
+    Versions(Vec<Version>),
+}
+
+/// Source-specific dependency lookups. The traversal, the depth/size limit,
+/// the cycle check and the incompatible-project check below are shared by the
+/// Modrinth and CurseForge install paths; only these lookups differ.
+#[allow(async_fn_in_trait)]
+pub(crate) trait DependencySource {
+    /// Resolves an unpinned required dependency project: either already
+    /// satisfied outside this transaction's target folder, or newest compatible
+    /// versions of `project`, newest first, so [`latest`] can prefer a release
+    /// and then the newest remaining file.
+    async fn resolve_required(&self, project: &str) -> Result<RequiredResolution, String>;
+    /// A dependency that pins an exact version.
+    async fn pinned_version(&self, project: Option<&str>, version: &str) -> Result<Version, String>;
+    /// Every enabled local version of `project`; the planner decides whether
+    /// one is compatible or conflicts.
+    fn installed(&self, project: &str) -> Vec<Version>;
+    /// A human-readable project label for error messages (such as incompatible
+    /// or cyclic dependencies).
+    async fn project_label(&self, project: &str) -> String {
+        project.to_owned()
+    }
+}
+
+struct ModrinthSource<'a> {
+    api: &'a reqwest::Client,
+    minecraft: &'a str,
+    loader: Option<&'a str>,
+    locals: &'a [LocalEntry],
+}
+
+impl DependencySource for ModrinthSource<'_> {
+    async fn resolve_required(&self, project: &str) -> Result<RequiredResolution, String> {
+        super::project_versions(self.api, project, self.minecraft, self.loader)
+            .await
+            .map(RequiredResolution::Versions)
+    }
+
+    async fn pinned_version(&self, project: Option<&str>, version: &str) -> Result<Version, String> {
+        identifier(version)?;
+        let value: Version = api_json(self.api, &format!("version/{version}"), &[]).await?;
+        if project.is_some_and(|project| project != value.project_id) {
+            return Err("固定前置版本与项目标识不一致".into());
+        }
+        Ok(value)
+    }
+
+    fn installed(&self, project: &str) -> Vec<Version> {
+        self.locals
+            .iter()
+            .filter(|entry| entry.enabled)
+            .filter_map(|entry| entry.version.as_ref())
+            .filter(|version| version.project_id == project)
+            .cloned()
+            .collect()
+    }
+
+    async fn project_label(&self, project: &str) -> String {
+        self.locals
+            .iter()
+            .find(|entry| {
+                entry.enabled
+                    && entry
+                        .version
+                        .as_ref()
+                        .is_some_and(|version| version.project_id == project)
+            })
+            .map(|entry| entry.file_name.clone())
+            .unwrap_or_else(|| project.to_owned())
+    }
 }
 
 struct Action {
@@ -172,6 +251,10 @@ fn latest(versions: Vec<Version>) -> Option<Version> {
         .or_else(|| versions.into_iter().next())
 }
 
+/// A chain longer than this is treated as a malformed dependency graph. Real
+/// mods nest a handful of levels at most; the cycle check below catches loops.
+const MAX_DEPENDENCY_DEPTH: usize = 16;
+
 fn check_cycle(graph: &HashMap<String, Vec<String>>) -> Result<(), String> {
     fn visit(
         node: &str,
@@ -183,7 +266,7 @@ fn check_cycle(graph: &HashMap<String, Vec<String>>) -> Result<(), String> {
             return Ok(());
         }
         if !visiting.insert(node.into()) {
-            return Err(format!("必需前置存在循环依赖：{node}"));
+            return Err(node.into());
         }
         if let Some(edges) = graph.get(node) {
             for edge in edges {
@@ -202,12 +285,11 @@ fn check_cycle(graph: &HashMap<String, Vec<String>>) -> Result<(), String> {
     Ok(())
 }
 
-async fn resolve_plan(
+pub(crate) async fn resolve_dependency_plan(
     state: &LauncherState,
-    api: &reqwest::Client,
+    source: &impl DependencySource,
     selected: Version,
     enabled: bool,
-    locals: &[LocalEntry],
     minecraft: &str,
     loader: Option<&str>,
     kind: ResourceKind,
@@ -221,16 +303,38 @@ async fn resolve_plan(
             enabled,
         },
     )]);
-    let mut queue = VecDeque::from([selected]);
+    let mut seen_projects = HashSet::from([root.clone()]);
+    let mut external_satisfied = HashSet::new();
+    let mut queue = VecDeque::from([(selected, 0_usize)]);
     let mut graph = HashMap::<String, Vec<String>>::new();
     let mut incompatible = Vec::new();
-    while let Some(version) = queue.pop_front() {
+    let project_cap_error = || {
+        format!(
+            "{}超过 64 个项目，已停止以避免异常依赖图",
+            crate::errors::RESOURCE_DEPENDENCY_LIMIT_PREFIX
+        )
+    };
+    let depth_cap_error = || {
+        format!(
+            "{}超过 {MAX_DEPENDENCY_DEPTH} 层，已停止以避免异常依赖图",
+            crate::errors::RESOURCE_DEPENDENCY_LIMIT_PREFIX
+        )
+    };
+    while let Some((version, depth)) = queue.pop_front() {
         state.control.checkpoint().await?;
-        if nodes.len() > 64 {
-            return Err("必需前置超过 64 个项目，已停止以避免异常依赖图".into());
+        if seen_projects.len() > 64 {
+            return Err(project_cap_error());
+        }
+        if depth > MAX_DEPENDENCY_DEPTH {
+            return Err(depth_cap_error());
         }
         if !compatible(&version, minecraft, loader) {
-            return Err(format!("依赖版本 {} 与所选游戏或加载器不兼容", version.id));
+            let label = source.project_label(&version.project_id).await;
+            return Err(format!(
+                "{}{label}\t依赖版本 {} 与所选游戏或加载器不兼容",
+                crate::errors::RESOURCE_DEPENDENCY_UNAVAILABLE_PREFIX,
+                version.id
+            ));
         }
         if ["server_only", "dedicated_server_only"].contains(&version.environment.as_str()) {
             return Err("依赖图包含仅服务端资源，不能安装到客户端".into());
@@ -238,6 +342,27 @@ async fn resolve_plan(
         let file = primary_file(&version)?;
         if !kind.accepts(&file.filename) {
             return Err("依赖文件类型不匹配，未修改任何资源".into());
+        }
+        // Check both the 64-project cap (including already-queued nodes) and
+        // the depth limit BEFORE fetching any new required dependency.
+        let mut declared_unseen = HashSet::new();
+        for dependency in &version.dependencies {
+            if dependency.dependency_type != "required" {
+                continue;
+            }
+            if let Some(project) = dependency.project_id.as_deref() {
+                if !seen_projects.contains(project) {
+                    if depth >= MAX_DEPENDENCY_DEPTH {
+                        return Err(depth_cap_error());
+                    }
+                    declared_unseen.insert(project);
+                }
+            } else if depth >= MAX_DEPENDENCY_DEPTH {
+                return Err(depth_cap_error());
+            }
+        }
+        if seen_projects.len().saturating_add(declared_unseen.len()) > 64 {
+            return Err(project_cap_error());
         }
         for dependency in &version.dependencies {
             match dependency.dependency_type.as_str() {
@@ -250,33 +375,62 @@ async fn resolve_plan(
                 _ => return Err("依赖图出现不支持的依赖关系类型".into()),
             }
             let desired = if let Some(id) = dependency.version_id.as_deref() {
-                identifier(id)?;
-                let value: Version = api_json(api, &format!("version/{id}"), &[]).await?;
-                if dependency
+                let already_known = dependency
                     .project_id
                     .as_deref()
-                    .is_some_and(|p| p != value.project_id)
-                {
-                    return Err("固定前置版本与项目标识不一致".into());
+                    .is_some_and(|project| seen_projects.contains(project));
+                if !already_known {
+                    if seen_projects.len() >= 64 {
+                        return Err(project_cap_error());
+                    }
+                    if depth >= MAX_DEPENDENCY_DEPTH {
+                        return Err(depth_cap_error());
+                    }
                 }
-                value
+                source
+                    .pinned_version(dependency.project_id.as_deref(), id)
+                    .await?
             } else if let Some(project) = dependency.project_id.as_deref() {
                 identifier(project)?;
                 if let Some(existing) = nodes.get(project) {
                     existing.version.clone()
-                } else if let Some(existing) = locals
-                    .iter()
-                    .filter(|v| v.enabled)
-                    .filter_map(|v| v.version.as_ref())
-                    .find(|v| v.project_id == project && compatible(v, minecraft, loader))
-                {
-                    existing.clone()
+                } else if external_satisfied.contains(project) {
+                    continue;
                 } else {
-                    latest(project_versions(api, project, minecraft, loader).await?)
-                        .ok_or_else(|| format!("必需前置 {project} 没有兼容版本"))?
+                    if seen_projects.len() >= 64 {
+                        return Err(project_cap_error());
+                    }
+                    if depth >= MAX_DEPENDENCY_DEPTH {
+                        return Err(depth_cap_error());
+                    }
+                    if let Some(existing) = source
+                        .installed(project)
+                        .into_iter()
+                        .find(|version| compatible(version, minecraft, loader))
+                    {
+                        existing
+                    } else {
+                        match source.resolve_required(project).await? {
+                            RequiredResolution::SatisfiedExternal => {
+                                seen_projects.insert(project.to_owned());
+                                external_satisfied.insert(project.to_owned());
+                                continue;
+                            }
+                            RequiredResolution::Versions(versions) => match latest(versions) {
+                                Some(version) => version,
+                                None => {
+                                    let label = source.project_label(project).await;
+                                    return Err(format!(
+                                        "{}{label}\t必需前置 {label} 没有兼容版本",
+                                        crate::errors::RESOURCE_DEPENDENCY_UNAVAILABLE_PREFIX
+                                    ));
+                                }
+                            },
+                        }
+                    }
                 }
             } else {
-                return Err("必需前置没有可核验的 Modrinth 标识".into());
+                return Err("必需前置没有可核验的项目标识".into());
             };
             identifier(&desired.project_id)?;
             graph
@@ -286,11 +440,19 @@ async fn resolve_plan(
             if let Some(existing) = nodes.get(&desired.project_id) {
                 if existing.version.id != desired.id {
                     return Err(format!(
-                        "项目 {} 被要求使用两个不同版本，未修改任何资源",
+                        "{}项目 {} 被要求使用两个不同版本，未修改任何资源",
+                        crate::errors::RESOURCE_DEPENDENCY_CONFLICT_PREFIX,
                         desired.project_id
                     ));
                 }
             } else {
+                if !seen_projects.contains(&desired.project_id) && seen_projects.len() >= 64 {
+                    return Err(project_cap_error());
+                }
+                if depth >= MAX_DEPENDENCY_DEPTH {
+                    return Err(depth_cap_error());
+                }
+                seen_projects.insert(desired.project_id.clone());
                 nodes.insert(
                     desired.project_id.clone(),
                     Node {
@@ -298,16 +460,23 @@ async fn resolve_plan(
                         enabled: true,
                     },
                 );
-                queue.push_back(desired);
+                queue.push_back((desired, depth + 1));
             }
         }
     }
-    check_cycle(&graph)?;
+    if let Err(cycle_node) = check_cycle(&graph) {
+        let label = source.project_label(&cycle_node).await;
+        return Err(format!(
+            "{}{label}",
+            crate::errors::RESOURCE_DEPENDENCY_CYCLE_PREFIX
+        ));
+    }
     for dependency in incompatible {
         state.control.checkpoint().await?;
         let (project, pinned) = if let Some(id) = dependency.version_id {
-            identifier(&id)?;
-            let version: Version = api_json(api, &format!("version/{id}"), &[]).await?;
+            // Preserve historical Modrinth behavior: resolve the pinned version's
+            // actual project even if dependency.project_id differs.
+            let version = source.pinned_version(None, &id).await?;
             (version.project_id, Some(id))
         } else if let Some(project) = dependency.project_id {
             (project, None)
@@ -320,20 +489,167 @@ async fn resolve_plan(
         if nodes
             .values()
             .any(|node| node.enabled && conflicts(&node.version))
-            || locals
-                .iter()
-                .filter(|entry| entry.enabled)
-                .filter_map(|entry| entry.version.as_ref())
-                .any(|version| !nodes.contains_key(&version.project_id) && conflicts(version))
+            || source
+                .installed(&project)
+                .into_iter()
+                .any(|version| !nodes.contains_key(&version.project_id) && conflicts(&version))
         {
+            let label = source.project_label(&project).await;
             return Err(format!(
-                "检测到与依赖图不兼容的已启用项目 {project}，未修改任何文件"
+                "{}{label}",
+                crate::errors::RESOURCE_DEPENDENCY_INCOMPATIBLE_PREFIX
             ));
         }
     }
     let mut ordered: Vec<Node> = nodes.into_values().collect();
     ordered.sort_by(|a, b| a.version.project_id.cmp(&b.version.project_id));
     Ok(ordered)
+}
+
+/// Which install path builds the user-facing notices for one transaction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallSource {
+    Modrinth,
+    Curseforge,
+}
+
+/// One file of a staged resource transaction. `source` is whatever the
+/// source-specific downloader needs to fetch the file.
+pub(crate) struct InstallEntry<T> {
+    pub(crate) source: T,
+    pub(crate) destination: String,
+    pub(crate) keep: Option<String>,
+    pub(crate) remove: Vec<String>,
+}
+
+/// Result of downloading or reusing one staged entry file.
+pub(crate) struct StagedFile {
+    pub(crate) path: PathBuf,
+    /// True when the file was downloaded and written into the stage; false
+    /// when an identical verified file already existed in the stage.
+    pub(crate) written: bool,
+}
+
+/// Installs every entry in one staged, journaled transaction, so any failure
+/// rolls back the main file and all dependencies together.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn install_entries<T, F, Fut>(
+    state: &Arc<LauncherState>,
+    directory: &Path,
+    name: &str,
+    source: InstallSource,
+    root_destination: String,
+    projects: Vec<String>,
+    entries: Vec<InstallEntry<T>>,
+    kind: ResourceKind,
+    progress: Option<&ResourceProgress>,
+    reuse: Option<&crate::parts::Reuse>,
+    download: F,
+) -> Result<ResourceInstall, String>
+where
+    T: Clone,
+    F: Fn(T, PathBuf, PathBuf) -> Fut,
+    Fut: Future<Output = Result<StagedFile, String>>,
+{
+    let dependency_count = entries.len().saturating_sub(1);
+    if entries
+        .iter()
+        .all(|entry| entry.keep.is_some() && entry.remove.is_empty())
+    {
+        return Ok(ResourceInstall {
+            name: name.into(),
+            file_name: root_destination.clone(),
+            path: directory.join(&root_destination).to_string_lossy().into_owned(),
+            warning: Some("资源及其必需前置已是选定版本。".into()),
+            update_id: None,
+            dependency_count,
+            changed_count: 0,
+            already_installed: true,
+        });
+    }
+    let (id, (changed, replaced)) = stage_commit(
+        state,
+        directory,
+        name,
+        projects,
+        progress,
+        reuse,
+        |next, removed| async move {
+            let mut changed = 0;
+            for entry in &entries {
+                state.control.checkpoint().await?;
+                for file in &entry.remove {
+                    let from = safe_join(&next, file)?;
+                    let to = safe_join(&removed, file)?;
+                    if from.is_file() {
+                        fs::rename(from, to).map_err(|e| e.to_string())?;
+                    }
+                }
+                if entry.keep.is_some() {
+                    continue;
+                }
+                let installed = download(entry.source.clone(), next.clone(), removed.clone()).await?;
+                let same_name = installed
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == entry.destination);
+                if !same_name {
+                    let target = safe_join(&next, &entry.destination)?;
+                    if target.exists() {
+                        let alternate = safe_join(
+                            &removed,
+                            &format!("{}-disabled", uuid::Uuid::new_v4()),
+                        )?;
+                        fs::rename(&target, alternate).map_err(|e| e.to_string())?;
+                    }
+                    rename_staged(&installed.path, &target, reuse)?;
+                }
+                if installed.written || !same_name {
+                    changed += 1;
+                }
+            }
+            // The staged-replaced folder holds files this install moved aside.
+            let replaced = if source == InstallSource::Curseforge {
+                let mut names: Vec<String> = fs::read_dir(&removed)
+                    .map_err(|e| e.to_string())?
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                names
+            } else {
+                Vec::new()
+            };
+            Ok((changed, replaced))
+        },
+    )
+    .await?;
+    let mut notices = Vec::new();
+    if dependency_count > 0 {
+        notices.push(format!(
+            "已校验 {dependency_count} 个必需前置，本次新增或更新 {changed} 个资源"
+        ));
+    }
+    if source == InstallSource::Curseforge && !replaced.is_empty() {
+        notices.push(format!(
+            "已替换 {}，可在更新历史中回滚",
+            replaced.join("、")
+        ));
+    }
+    if kind == ResourceKind::Shader {
+        notices.push("光影仍需在游戏中配合 Iris、OptiFine 或兼容加载器启用".into());
+    }
+    Ok(ResourceInstall {
+        name: name.into(),
+        file_name: root_destination.clone(),
+        path: directory.join(&root_destination).to_string_lossy().into_owned(),
+        warning: (!notices.is_empty()).then(|| notices.join("；")),
+        update_id: Some(id),
+        dependency_count,
+        changed_count: changed,
+        already_installed: false,
+    })
 }
 
 fn actions(nodes: Vec<Node>, locals: &[LocalEntry]) -> Result<Vec<Action>, String> {
@@ -857,10 +1173,17 @@ pub(super) async fn preflight(
     loader: Option<&str>,
     kind: ResourceKind,
 ) -> Result<(), String> {
-    resolve_plan(state, api, selected, true, &[], minecraft, loader, kind).await?;
+    let source = ModrinthSource {
+        api,
+        minecraft,
+        loader,
+        locals: &[],
+    };
+    resolve_dependency_plan(state, &source, selected, true, minecraft, loader, kind).await?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn install(
     state: &Arc<LauncherState>,
     directory: &Path,
@@ -879,45 +1202,56 @@ pub(super) async fn install(
     let api = client(state, false)?;
     let locals = scan(state, &api, directory, kind).await?;
     let root_project = selected.project_id.clone();
-    let nodes = resolve_plan(
-        state, &api, selected, enabled, &locals, minecraft, loader, kind,
-    )
-    .await?;
+    let source = ModrinthSource {
+        api: &api,
+        minecraft,
+        loader,
+        locals: &locals,
+    };
+    let nodes =
+        resolve_dependency_plan(state, &source, selected, enabled, minecraft, loader, kind).await?;
     let plan = actions(nodes, &locals)?;
-    let root_action = plan
+    let root_destination = plan
         .iter()
-        .find(|a| a.node.version.project_id == root_project)
+        .find(|action| action.node.version.project_id == root_project)
+        .map(|action| action.destination.clone())
         .ok_or("缺少根资源计划")?;
-    let root_filename = root_action.destination.clone();
-    if plan.iter().all(|a| a.keep.is_some() && a.remove.is_empty()) {
+    let projects = plan
+        .iter()
+        .map(|action| action.node.version.project_id.clone())
+        .collect();
+    let entries: Vec<_> = plan
+        .into_iter()
+        .map(|action| InstallEntry {
+            source: action.node.version,
+            destination: action.destination,
+            keep: action.keep,
+            remove: action.remove,
+        })
+        .collect();
+    if entries
+        .iter()
+        .all(|entry| entry.keep.is_some() && entry.remove.is_empty())
+    {
         return Ok(ResourceInstall {
             name: name.into(),
-            file_name: root_filename.clone(),
-            path: directory.join(root_filename).to_string_lossy().into_owned(),
+            file_name: root_destination.clone(),
+            path: directory.join(&root_destination).to_string_lossy().into_owned(),
             warning: Some("资源及其必需前置已是选定版本。".into()),
             update_id: None,
+            dependency_count: entries.len().saturating_sub(1),
+            changed_count: 0,
+            already_installed: true,
         });
     }
-    let dependency_count = plan.len().saturating_sub(1);
-    let projects = plan.iter().map(|a| a.node.version.project_id.clone()).collect();
     // Parts live beside the game folder, not in next/: they outlive a failed stage.
     let parts = super::resource_parts(state, directory).map(crate::parts::Reuse::new);
     let reuse = parts.as_ref();
-    let (id, changed) = stage_commit(state, directory, name, projects, progress, reuse, |next, removed| async move {
-        let mut changed = 0;
-        for action in &plan {
-            state.control.checkpoint().await?;
-            for file in &action.remove {
-                let from = safe_join(&next, file)?;
-                let to = safe_join(&removed, file)?;
-                if from.is_file() {
-                    fs::rename(from, to).map_err(|e| e.to_string())?;
-                }
-            }
-            if action.keep.is_some() {
-                continue;
-            }
-            let file = primary_file(&action.node.version)?;
+    let install_state = state.clone();
+    let download = move |version: Version, next: PathBuf, removed: PathBuf| {
+        let state = install_state.clone();
+        async move {
+            let file = primary_file(&version)?;
             let raw = safe_join(&next, &file.filename)?;
             if raw.exists() {
                 if !raw.is_file() {
@@ -929,37 +1263,36 @@ pub(super) async fn install(
                 )?;
                 fs::rename(&raw, alternate).map_err(|e| e.to_string())?;
             }
-            let installed =
-                download_verified_progress(state, file, &next, reuse, kind, client(state, true)?, progress).await?;
-            if action.destination != file.filename {
-                let target = safe_join(&next, &action.destination)?;
-                if target.exists() {
-                    let alternate = safe_join(&removed, &format!("{}-disabled", uuid::Uuid::new_v4()))?;
-                    fs::rename(&target, alternate).map_err(|e| e.to_string())?;
-                }
-                rename_staged(&installed, &target, reuse)?;
-            }
-            changed += 1;
+            let path = download_verified_progress(
+                &state,
+                file,
+                &next,
+                reuse,
+                kind,
+                client(&state, true)?,
+                progress,
+            )
+            .await?;
+            Ok(StagedFile {
+                path,
+                written: true,
+            })
         }
-        Ok(changed)
-    })
-    .await?;
-    let mut notices = Vec::new();
-    if dependency_count > 0 {
-        notices.push(format!(
-            "已校验 {dependency_count} 个必需前置，本次新增或更新 {changed} 个资源"
-        ));
-    }
-    if kind == ResourceKind::Shader {
-        notices.push("光影仍需在游戏中配合 Iris、OptiFine 或兼容加载器启用".into());
-    }
-    Ok(ResourceInstall {
-        name: name.into(),
-        file_name: root_filename.clone(),
-        path: directory.join(root_filename).to_string_lossy().into_owned(),
-        warning: (!notices.is_empty()).then(|| notices.join("；")),
-        update_id: Some(id),
-    })
+    };
+    install_entries(
+        state,
+        directory,
+        name,
+        InstallSource::Modrinth,
+        root_destination,
+        projects,
+        entries,
+        kind,
+        progress,
+        reuse,
+        download,
+    )
+    .await
 }
 
 /// Stages a copy of `directory`, lets `apply` change the copy (moving every
@@ -1416,9 +1749,19 @@ mod tests {
     #[test]
     fn c1_staging_is_kept_once_the_journal_is_saved() {
         let source = crate::storage::executable_source(include_str!("resource_transactions.rs"));
+        let strip = |text: &str| text.chars().filter(|c| !c.is_whitespace()).collect::<String>();
         let (_, install) = source.split_once("pub(super) async fn install(").unwrap();
         let (install, _) = install.split_once("\n}").unwrap();
-        assert!(install.contains("stage_commit(state, directory, name, projects, progress,"), "the Modrinth install stages through stage_commit");
+        assert!(
+            strip(install).contains("install_entries(state,directory,name,InstallSource::Modrinth,root_destination,projects,entries,kind,progress,reuse,download,)"),
+            "the Modrinth install forwards progress and reuse through install_entries"
+        );
+        let (_, entries) = source.split_once("pub(crate) async fn install_entries<").unwrap();
+        let (entries, _) = entries.split_once("\n}").unwrap();
+        assert!(
+            strip(entries).contains("stage_commit(state,directory,name,projects,progress,reuse,"),
+            "the shared install forwards progress and reuse to stage_commit"
+        );
         let (_, body) = source.split_once("pub(crate) async fn stage_commit<").unwrap();
         let (body, _) = body.split_once("\n}").unwrap();
         let swept = body.find("sweep_unjournaled(&root,").unwrap();
@@ -1892,6 +2235,90 @@ mod tests {
         fs::rename(from, to)
     }
 
+    fn chain_version(id: &str, dependency: Option<&str>) -> Version {
+        let mut value = serde_json::json!({
+            "id": format!("{id}-version"),
+            "project_id": id,
+            "game_versions": ["1.21.1"],
+            "loaders": ["fabric"],
+            "version_type": "release",
+            "files": [{
+                "filename": format!("{id}.jar"),
+                "url": "https://cdn.modrinth.com/fixture",
+                "primary": true,
+                "size": 1,
+                "hashes": {"sha512": "a".repeat(128)},
+            }],
+        });
+        if let Some(dependency) = dependency {
+            value["dependencies"] = serde_json::json!([{
+                "dependency_type": "required",
+                "project_id": dependency,
+            }]);
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    struct ChainSource {
+        requests: std::sync::atomic::AtomicUsize,
+    }
+
+    impl DependencySource for ChainSource {
+        async fn resolve_required(&self, project: &str) -> Result<RequiredResolution, String> {
+            self.requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let index: usize = project
+                .strip_prefix('p')
+                .and_then(|value| value.parse().ok())
+                .ok_or("bad chain project")?;
+            Ok(RequiredResolution::Versions(vec![chain_version(
+                &format!("p{index}"),
+                Some(&format!("p{}", index + 1)),
+            )]))
+        }
+
+        async fn pinned_version(&self, _: Option<&str>, _: &str) -> Result<Version, String> {
+            Err("unused".into())
+        }
+
+        fn installed(&self, _: &str) -> Vec<Version> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_required_dependency_chain_deeper_than_the_limit_is_rejected() {
+        let root = root();
+        fs::create_dir_all(&root).unwrap();
+        let state = LauncherState::test_fixture(
+            root.join("data"),
+            crate::models::Persisted::default(),
+            crate::storage::test_client(),
+        );
+        let source = ChainSource {
+            requests: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let error = match tauri::async_runtime::block_on(resolve_dependency_plan(
+            &state,
+            &source,
+            chain_version("p0", Some("p1")),
+            true,
+            "1.21.1",
+            Some("fabric"),
+            ResourceKind::Mod,
+        )) {
+            Ok(_) => panic!("a 17-level chain must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("16 层"), "{error}");
+        assert_eq!(
+            source.requests.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_DEPENDENCY_DEPTH,
+            "depth 17 must be rejected before fetching"
+        );
+        drop(state);
+        cleanup(&root);
+    }
+
     #[test]
     fn circular_required_dependencies_are_rejected() {
         let graph = HashMap::from([
@@ -1899,5 +2326,256 @@ mod tests {
             ("b".into(), vec!["a".into()]),
         ]);
         assert!(check_cycle(&graph).is_err());
+    }
+
+    struct FanoutSource {
+        requests: std::sync::atomic::AtomicUsize,
+        second_wave_for: Option<String>,
+        second_wave_count: usize,
+    }
+
+    impl DependencySource for FanoutSource {
+        async fn resolve_required(&self, project: &str) -> Result<RequiredResolution, String> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut deps = Vec::new();
+            if self.second_wave_for.as_deref() == Some(project) {
+                for index in 0..self.second_wave_count {
+                    deps.push(serde_json::json!({
+                        "dependency_type": "required",
+                        "project_id": format!("b{index}"),
+                    }));
+                }
+            }
+            let version: Version = serde_json::from_value(serde_json::json!({
+                "id": format!("{project}-v1"),
+                "project_id": project,
+                "game_versions": ["1.21.1"],
+                "loaders": ["fabric"],
+                "version_type": "release",
+                "dependencies": deps,
+                "files": [{
+                    "filename": format!("{project}.jar"),
+                    "url": "https://cdn.modrinth.com/fixture",
+                    "primary": true,
+                    "size": 1,
+                    "hashes": {"sha512": "a".repeat(128)},
+                }],
+            }))
+            .unwrap();
+            Ok(RequiredResolution::Versions(vec![version]))
+        }
+
+        async fn pinned_version(&self, _: Option<&str>, _: &str) -> Result<Version, String> {
+            Err("unused".into())
+        }
+
+        fn installed(&self, _: &str) -> Vec<Version> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn project_cap_is_enforced_before_fetching_including_queued_nodes() {
+        let root = root();
+        fs::create_dir_all(&root).unwrap();
+        let state = LauncherState::test_fixture(
+            root.join("data"),
+            crate::models::Persisted::default(),
+            crate::storage::test_client(),
+        );
+        // 1) A single root with 80 required dependencies stops before fetching any of them.
+        let wide_deps: Vec<_> = (0..80)
+            .map(|index| serde_json::json!({"dependency_type": "required", "project_id": format!("d{index}")}))
+            .collect();
+        let wide_root: Version = serde_json::from_value(serde_json::json!({
+            "id": "root-v1", "project_id": "root", "game_versions": ["1.21.1"],
+            "loaders": ["fabric"], "version_type": "release", "dependencies": wide_deps,
+            "files": [{"filename": "root.jar", "url": "https://cdn.modrinth.com/fixture", "primary": true, "size": 1, "hashes": {"sha512": "a".repeat(128)}}],
+        }))
+        .unwrap();
+        let source = FanoutSource {
+            requests: std::sync::atomic::AtomicUsize::new(0),
+            second_wave_for: None,
+            second_wave_count: 0,
+        };
+        let error = match tauri::async_runtime::block_on(resolve_dependency_plan(
+            &state,
+            &source,
+            wide_root,
+            true,
+            "1.21.1",
+            Some("fabric"),
+            ResourceKind::Mod,
+        )) {
+            Ok(_) => panic!("80 required dependencies must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(crate::errors::expected(error).code, "resource.dependencyLimit");
+        assert_eq!(
+            source.requests.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "cap must stop before issuing any dependency fetch"
+        );
+
+        // 2) Root queues 40 projects; the first queued node declares 30 more (41 + 30 > 64).
+        // Counting queued nodes stops before fetching any of the 30 extra projects.
+        let first_wave: Vec<_> = (0..40)
+            .map(|index| serde_json::json!({"dependency_type": "required", "project_id": format!("a{index}")}))
+            .collect();
+        let queued_root: Version = serde_json::from_value(serde_json::json!({
+            "id": "root-v1", "project_id": "root", "game_versions": ["1.21.1"],
+            "loaders": ["fabric"], "version_type": "release", "dependencies": first_wave,
+            "files": [{"filename": "root.jar", "url": "https://cdn.modrinth.com/fixture", "primary": true, "size": 1, "hashes": {"sha512": "a".repeat(128)}}],
+        }))
+        .unwrap();
+        let queued_source = FanoutSource {
+            requests: std::sync::atomic::AtomicUsize::new(0),
+            second_wave_for: Some("a0".into()),
+            second_wave_count: 30,
+        };
+        let error = match tauri::async_runtime::block_on(resolve_dependency_plan(
+            &state,
+            &queued_source,
+            queued_root,
+            true,
+            "1.21.1",
+            Some("fabric"),
+            ResourceKind::Mod,
+        )) {
+            Ok(_) => panic!("41 queued + 30 new must exceed the 64-project cap"),
+            Err(error) => error,
+        };
+        assert_eq!(crate::errors::expected(error).code, "resource.dependencyLimit");
+        assert_eq!(
+            queued_source
+                .requests
+                .load(std::sync::atomic::Ordering::SeqCst),
+            40,
+            "none of the 30 second-wave dependencies may be fetched once queued nodes already leave too few slots"
+        );
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn modrinth_incompatible_pinned_version_with_mismatched_project_behaves_as_before() {
+        struct MismatchedPinnedSource {
+            installed_project_b: Option<Version>,
+        }
+        impl DependencySource for MismatchedPinnedSource {
+            async fn resolve_required(&self, _: &str) -> Result<RequiredResolution, String> {
+                Err("unused".into())
+            }
+            async fn pinned_version(
+                &self,
+                project: Option<&str>,
+                version: &str,
+            ) -> Result<Version, String> {
+                let real: Version = serde_json::from_value(serde_json::json!({
+                    "id": version,
+                    "project_id": "project-b",
+                    "game_versions": ["1.21.1"],
+                    "loaders": ["fabric"],
+                    "version_type": "release",
+                    "files": [{
+                        "filename": "project-b.jar",
+                        "url": "https://cdn.modrinth.com/fixture",
+                        "primary": true,
+                        "size": 1,
+                        "hashes": {"sha512": "b".repeat(128)},
+                    }],
+                }))
+                .unwrap();
+                // Mirror ModrinthSource::pinned_version's consistency check.
+                if project.is_some_and(|expected| expected != real.project_id) {
+                    return Err("固定前置版本与项目标识不一致".into());
+                }
+                Ok(real)
+            }
+            fn installed(&self, project: &str) -> Vec<Version> {
+                self.installed_project_b
+                    .iter()
+                    .filter(|version| version.project_id == project)
+                    .cloned()
+                    .collect()
+            }
+        }
+        let root = root();
+        fs::create_dir_all(&root).unwrap();
+        let state = LauncherState::test_fixture(
+            root.join("data"),
+            crate::models::Persisted::default(),
+            crate::storage::test_client(),
+        );
+        let selected: Version = serde_json::from_value(serde_json::json!({
+            "id": "root-v1",
+            "project_id": "root",
+            "game_versions": ["1.21.1"],
+            "loaders": ["fabric"],
+            "version_type": "release",
+            "dependencies": [{
+                "dependency_type": "incompatible",
+                "project_id": "project-a",
+                "version_id": "pinned-b-v1",
+            }],
+            "files": [{
+                "filename": "root.jar",
+                "url": "https://cdn.modrinth.com/fixture",
+                "primary": true,
+                "size": 1,
+                "hashes": {"sha512": "a".repeat(128)},
+            }],
+        }))
+        .unwrap();
+
+        // When pinned-b-v1 is NOT installed, the inconsistent project_id on an
+        // incompatible relation must not fail the install.
+        let ok = tauri::async_runtime::block_on(resolve_dependency_plan(
+            &state,
+            &MismatchedPinnedSource {
+                installed_project_b: None,
+            },
+            selected.clone(),
+            true,
+            "1.21.1",
+            Some("fabric"),
+            ResourceKind::Mod,
+        ));
+        assert!(ok.is_ok(), "unexpected error: {:?}", ok.err());
+
+        // When pinned-b-v1 IS installed (under its real project-b), it still refuses.
+        let installed_b: Version = serde_json::from_value(serde_json::json!({
+            "id": "pinned-b-v1",
+            "project_id": "project-b",
+            "game_versions": ["1.21.1"],
+            "loaders": ["fabric"],
+            "version_type": "release",
+            "files": [{
+                "filename": "project-b.jar",
+                "url": "https://cdn.modrinth.com/fixture",
+                "primary": true,
+                "size": 1,
+                "hashes": {"sha512": "b".repeat(128)},
+            }],
+        }))
+        .unwrap();
+        let err = match tauri::async_runtime::block_on(resolve_dependency_plan(
+            &state,
+            &MismatchedPinnedSource {
+                installed_project_b: Some(installed_b),
+            },
+            selected,
+            true,
+            "1.21.1",
+            Some("fabric"),
+            ResourceKind::Mod,
+        )) {
+            Ok(_) => panic!("installed incompatible pinned version must refuse"),
+            Err(error) => error,
+        };
+        assert_eq!(crate::errors::expected(err).code, "resource.dependencyIncompatible");
+        drop(state);
+        cleanup(&root);
     }
 }

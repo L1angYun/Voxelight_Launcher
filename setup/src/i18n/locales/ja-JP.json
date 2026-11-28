@@ -1,0 +1,146 @@
+{
+  "app": {
+    "productName": "Voxelight Launcher",
+    "setupName": "Voxelight セットアップ",
+    "wordmark": "VOXELIGHT",
+    "stepCount": "ステップ {{current}} / {{total}}",
+    "stepAnnouncement": "ステップ {{current}} / {{total}}: {{title}}"
+  },
+  "chrome": {
+    "windowControls": "ウィンドウ操作",
+    "minimize": "最小化",
+    "close": "閉じる",
+    "closeBlocked": "インストールが完了するまでウィンドウを閉じられません"
+  },
+  "actions": {
+    "back": "戻る",
+    "next": "次へ",
+    "install": "インストール",
+    "update": "更新",
+    "reinstall": "再インストール",
+    "browse": "参照",
+    "classicInstaller": "従来のインストーラーを開く",
+    "launch": "Voxelight を起動",
+    "close": "閉じる",
+    "retry": "再試行",
+    "copyDetails": "詳細をコピー",
+    "copied": "詳細情報をクリップボードにコピーしました。",
+    "copyFailed": "クリップボードにアクセスできません。下の詳細を手動で選択してコピーしてください。",
+    "viewLicense": "GPL-3.0 ライセンスを表示"
+  },
+  "welcome": {
+    "title": "Voxelight Launcher をインストール",
+    "version": "バージョン {{version}}",
+    "summary": "Windows 向けのオープンソース Minecraft: Java Edition ランチャーです。インスタンス、MOD ローダー、ワールド、ダウンロードを落ち着いた画面でまとめて管理できます。",
+    "perUserNote": "現在の Windows ユーザー専用にインストールされます。管理者権限は不要で、Minecraft のゲームデータとは分離して保存されます。",
+    "licenseLead": "GNU GPL-3.0-only ライセンスで配布されています。インストールにあたって同意操作は不要です。",
+    "updateNotice": "既存のバージョン {{installed}} が見つかりました。{{target}} へ更新します。",
+    "reinstallNotice": "バージョン {{version}} はすでにインストールされています。",
+    "downgradeNotice": "より新しいバージョン {{installed}} がすでにインストールされているため、ダウングレードできません。"
+  },
+  "location": {
+    "title": "インストール先",
+    "description": "Voxelight Launcher を配置するユーザーフォルダーを選択してください。既存のゲームデータやセーブは変更されません。",
+    "fieldLabel": "インストール先フォルダー",
+    "placeholder": "ローカルドライブ上のフォルダーを選択",
+    "spaceSummary": "必要容量 約 {{required}}、このドライブの空き容量 {{available}}",
+    "spaceRequiredOnly": "約 {{required}} の空き容量が必要です",
+    "checking": "フォルダーを確認しています…",
+    "modeUpdateTitle": "{{from}} から {{to}} へ更新",
+    "modeUpdateHint": "ショートカットとアプリ登録を保つため、現在のインストール先フォルダーをそのまま使用します。",
+    "modeReinstallTitle": "{{version}} を再インストール",
+    "modeReinstallHint": "現在のインストール先フォルダーを維持します。アカウント、インスタンス、設定はそのまま残ります。",
+    "modeFolderMissingHint": "登録されているインストール先フォルダーに Voxelight Launcher が見つからないため、インストール先を選択できます。",
+    "keptFolderUnusableHint": "セットアップは既存のインストール先フォルダーを維持しますが、このフォルダーは使用できなくなっています。従来のインストーラーなら古いコピーを削除して別のフォルダーにインストールできます。Windows の設定で Voxelight Launcher をアンインストールしてから、セットアップをもう一度実行することもできます。",
+    "classicInstallerFailed": "従来のインストーラーを開けませんでした。セットアップを閉じてからもう一度実行してください。",
+    "modeDowngradeTitle": "より新しいバージョン {{installed}} がインストール済みです",
+    "modeDowngradeHint": "{{target}} へのダウングレードは許可されていません。古い版を入れる場合は先に {{installed}} をアンインストールしてください。"
+  },
+  "pathErrors": {
+    "empty": "インストール先フォルダーを入力してください。",
+    "invalidChars": "Windows で使用できない文字または予約名が含まれています。",
+    "notAbsolute": "C:\\Users\\User\\AppData\\Local\\Voxelight Launcher のようなローカルドライブの絶対パスを指定してください。",
+    "driveRoot": "ドライブのルート直下ではなくサブフォルダーを指定してください。",
+    "protectedLocation": "Windows や Program Files 以外のユーザーフォルダーを選択してください。",
+    "sharedLocation": "自分のアカウント専用のフォルダーを選択してください。ProgramData、パブリック フォルダー、ドライブのルートなどの共有場所は使用できません。",
+    "reparsePoint": "シンボリックリンクまたはジャンクションを含むパスは使用できません。",
+    "isFile": "指定されたパスにはすでにファイルが存在します。フォルダーを選んでください。",
+    "driveMissing": "指定されたドライブまたは親フォルダーが見つかりません。",
+    "notWritable": "このフォルダーへの書き込み権限がありません。",
+    "insufficientSpace": "ドライブの空き容量が不足しています。必要容量は {{required}}、空き容量は {{available}} です。"
+  },
+  "options": {
+    "title": "インストール設定",
+    "description": "インストールを開始する前にショートカットと起動設定を確認してください。",
+    "shortcutsTitle": "デスクトップとスタートメニューのショートカット",
+    "shortcutsHint": "デスクトップとスタートメニューにショートカットを作成します。オフにすると、どちらのショートカットも作成しません。",
+    "shortcutsUpdateHint": "更新時は既存のショートカット構成をそのまま維持します。",
+    "launchTitle": "インストール後に Voxelight を起動する",
+    "launchHint": "セットアップが完了すると自動的に Voxelight Launcher を起動します。",
+    "launchElevatedHint": "セットアップは管理者として実行されているため、通常のユーザー権限で Voxelight を起動できません。インストール後はスタート メニューから Voxelight を開いてください。",
+    "summaryLabel": "概要",
+    "summaryTarget": "フォルダー: {{path}}",
+    "summaryActionInstall": "処理: {{version}} の新規インストール",
+    "summaryActionUpdate": "処理: {{from}} から {{to}} への更新",
+    "summaryActionReinstall": "処理: {{version}} の再インストール"
+  },
+  "installing": {
+    "title": "Voxelight をインストールしています",
+    "subtitle": "完了するまでこのウィンドウを閉じないでお待ちください。",
+    "progressLabel": "インストールの進行状況",
+    "phases": {
+      "extract": "展開",
+      "install": "インストール",
+      "verify": "確認"
+    },
+    "status": {
+      "extract": "インストーラーを検証して展開しています…",
+      "install": "Voxelight Launcher のファイルを書き込んでいます…",
+      "installOverwrite": "既存のインストールファイルを更新しています…",
+      "verify": "配置されたファイルを確認して一時フォルダーを整理しています…"
+    },
+    "bytesWritten": "{{expected}} 中 {{written}} を書き込み済み"
+  },
+  "done": {
+    "title": "Voxelight の準備ができました",
+    "description": "Voxelight Launcher {{version}} のインストールが完了しました。",
+    "installedAt": "インストール先: {{path}}",
+    "launchingNote": "Voxelight Launcher を起動しています。",
+    "launchFailed": "自動で起動できませんでした。下の起動ボタンを押すかスタートメニューから開いてください。",
+    "launchBlockedElevated": "セットアップは管理者として実行されています。通常のユーザー権限で Voxelight を起動するには、セットアップを閉じてからスタート メニューで Voxelight Launcher を開いてください。"
+  },
+  "error": {
+    "title": "インストールを完了できませんでした",
+    "summary": "システム全体への変更は行われていません。理由を確認して詳細をコピーするか、もう一度お試しください。",
+    "detailsLabel": "技術的な詳細",
+    "detailVersion": "バージョン: {{value}}",
+    "detailTarget": "フォルダー: {{value}}",
+    "detailPhase": "フェーズ: {{value}}",
+    "detailExitCode": "終了コード: {{value}}",
+    "detailCode": "コード: {{value}}",
+    "detailNone": "なし",
+    "reasons": {
+      "nsisExit1": "インストールが完了前にキャンセルまたは中断されました（終了コード 1）。起動中の Voxelight Launcher があれば閉じて再試行してください。",
+      "nsisExit2": "インストーラーが途中で停止しました（終了コード 2）。ランチャーが終了していること、書き込み可能なフォルダーであること、新しい版が入っていないことを確認してください。",
+      "nsisExit5": "選択したフォルダーへの書き込みが拒否されました（終了コード 5）。書き込み可能なユーザーフォルダーを選んで再試行してください。",
+      "nsisExit112": "インストール中にドライブの空き容量が不足しました（終了コード 112）。空き容量を確保するか別のドライブを選んでください。",
+      "nsisExit1223": "操作が完了前にキャンセルされました（終了コード 1223）。",
+      "nsisExit1602": "以前のバージョンのアンインストールがキャンセルされました（終了コード 1602）。",
+      "nsisExit1618": "別の Windows インストーラーが実行中です（終了コード 1618）。完了を待ってから再試行してください。",
+      "nsisExitOther": "インストーラーが予期せず終了しました（終了コード {{code}}）。",
+      "hashMismatch": "組み込みパッケージの SHA-256 整合性検証に失敗しました。公式リリースページからセットアップを再ダウンロードしてください。",
+      "extractFailed": "一時フォルダーへの展開に失敗しました。空き容量やセキュリティソフトの制限を確認してください。",
+      "spawnFailed": "Windows インストーラーエンジンを起動できませんでした。セキュリティ設定を確認して再試行してください。",
+      "verifyFailed": "インストーラーは終了しましたが、インストール先に voxelight-launcher.exe が見つかりませんでした。",
+      "downgradeBlocked": "より新しいバージョンの Voxelight Launcher がすでにインストールされているため、ダウングレードを中止しました。",
+      "alreadyInstalling": "別のインストール処理がすでに進行中です。",
+      "launcherRunning": "Voxelight Launcher がまだ実行中です。Voxelight を閉じてから [再試行] を選んでください。"
+    }
+  },
+  "license": {
+    "title": "GNU 一般公衆利用許諾書 バージョン 3",
+    "description": "Voxelight Launcher は GPL-3.0-only のもとで提供される自由ソフトウェアです。参考のために表示しています。",
+    "close": "ダイアログを閉じる",
+    "loading": "ライセンス本文を読み込んでいます…"
+  }
+}

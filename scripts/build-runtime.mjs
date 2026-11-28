@@ -166,6 +166,42 @@ export function collectBuiltArtifacts(target, args = ["build"]) {
   return artifacts;
 }
 
+export function setupInstallerName(version) {
+  return `VoxelightLauncher-${version}-x64-setup.exe`;
+}
+
+export function rawNsisArtifactName(productName, version) {
+  return `${productName}_${version}_x64-nsis.exe`;
+}
+
+/**
+ * Selects only the NSIS installer this build wrote.
+ *
+ * Tauri names its output `<product>_<version>_x64-setup.exe`; build.ps1 renames
+ * it to `<product>_<version>_x64-nsis.exe` before embedding. A previous build
+ * (possibly of another target triple) can leave either name behind, so a file
+ * counts only when it is an ordinary file whose modification time is at or
+ * after the build's start time. Returns null when neither file is fresh.
+ */
+export function freshNsisArtifact(directory, tauriName, rawName, startedAt) {
+  const started = startedAt instanceof Date ? startedAt.getTime() : Number(startedAt);
+  if (!Number.isFinite(started)) {
+    throw new Error("A build start time is required to reject stale NSIS installers.");
+  }
+  const fresh = (name) => {
+    if (!name) return null;
+    const file = join(directory, name);
+    const item = lstatSync(file, { throwIfNoEntry: false });
+    if (!item || !item.isFile() || item.isSymbolicLink()) return null;
+    return item.mtimeMs >= started ? file : null;
+  };
+  const tauri = fresh(tauriName);
+  if (tauri) return { path: tauri, renameTo: join(directory, rawName), source: "tauri" };
+  const raw = fresh(rawName);
+  if (raw) return { path: raw, renameTo: null, source: "raw" };
+  return null;
+}
+
 export function resolveSmokeArtifact(kind, {
   repositoryRoot = checkoutRoot,
   environment = process.env,
@@ -173,14 +209,35 @@ export function resolveSmokeArtifact(kind, {
   version,
 } = {}) {
   const isInstaller = kind === "installer";
-  const override = isInstaller ? "SMOKE_INSTALLER" : "SMOKE_BINARY";
+  const isRawNsis = kind === "nsis";
+  const override = isInstaller || isRawNsis ? "SMOKE_INSTALLER" : "SMOKE_BINARY";
   if (environment[override]) return resolve(environment[override]);
   const target = targetDirectory({ repositoryRoot, environment });
-  const args = isInstaller ? ["build"] : ["build", "--debug", "--no-bundle"];
+  const args = isInstaller || isRawNsis ? ["build"] : ["build", "--debug", "--no-bundle"];
   if (environment.CARGO_BUILD_TARGET) args.push("--target", environment.CARGO_BUILD_TARGET);
-  const candidates = collectBuiltArtifacts(target, args).filter(path =>
-    isInstaller ? win32.basename(path).startsWith(`${productName}_${version}_`) && /-setup\.exe$/i.test(path) : true,
-  );
+  if (isRawNsis) {
+    const expectedRaw = rawNsisArtifactName(productName, version).toLowerCase();
+    const candidates = [];
+    for (const directory of artifactProfileDirectories(target, args)) {
+      const nsis = join(directory, "bundle", "nsis");
+      if (!ordinaryPath(nsis, "directory")) continue;
+      for (const name of readdirSync(nsis).sort()) {
+        if (name.toLowerCase() === expectedRaw && ordinaryPath(join(nsis, name), "file")) {
+          candidates.push(join(nsis, name));
+        }
+      }
+    }
+    if (candidates.length === 1) return candidates[0];
+    const reason = candidates.length === 0 ? "No matching" : "Found multiple";
+    throw new Error(`${reason} raw NSIS installer files below ${target}. Build the expected artifact or set ${override} to its exact path.`);
+  }
+  const setupName = setupInstallerName(version).toLowerCase();
+  const candidates = collectBuiltArtifacts(target, args).filter(path => {
+    if (!isInstaller) return true;
+    const base = win32.basename(path);
+    return base.toLowerCase() === setupName
+      || (base.startsWith(`${productName}_${version}_`) && /-setup\.exe$/i.test(base));
+  });
   if (candidates.length === 1) return candidates[0];
   const reason = candidates.length === 0 ? "No matching" : "Found multiple";
   throw new Error(`${reason} ${isInstaller ? "Release setup files" : "Debug launcher executables"} below ${target}. Build the expected artifact or set ${override} to its exact path.`);
@@ -198,13 +255,27 @@ export async function runTauri(args, options = {}) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (!["--print-target-dir", "--print-artifact-dirs"].includes(process.argv[2])) {
-    console.error("Usage: node scripts/build-runtime.mjs --print-target-dir | --print-artifact-dirs [--debug] [--target <triple>]");
+  const command = process.argv[2];
+  if (command === "--fresh-nsis") {
+    try {
+      const [directory, tauriName, rawName, startedIso] = process.argv.slice(3);
+      const started = new Date(startedIso);
+      if (!directory || !tauriName || !rawName || Number.isNaN(started.getTime())) {
+        throw new Error("--fresh-nsis requires <directory> <tauriName> <rawName> <start-time>");
+      }
+      const result = freshNsisArtifact(directory, tauriName, rawName, started);
+      if (result) console.log(JSON.stringify({ path: result.path, renameTo: result.renameTo }));
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    }
+  } else if (!["--print-target-dir", "--print-artifact-dirs"].includes(command)) {
+    console.error("Usage: node scripts/build-runtime.mjs --print-target-dir | --print-artifact-dirs [--debug] [--target <triple>] | --fresh-nsis <directory> <tauriName> <rawName> <start-time>");
     process.exitCode = 1;
   } else {
     try {
       const target = targetDirectory();
-      console.log(process.argv[2] === "--print-target-dir" ? target : JSON.stringify(artifactProfileDirectories(target, ["build", ...process.argv.slice(3)])));
+      console.log(command === "--print-target-dir" ? target : JSON.stringify(artifactProfileDirectories(target, ["build", ...process.argv.slice(3)])));
     } catch (error) {
       console.error(error.message);
       process.exitCode = 1;

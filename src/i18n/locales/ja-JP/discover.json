@@ -12,9 +12,13 @@
     "modpack": "MODパック"
   },
   "target": "インストール先",
-  "versionDirectory": "バージョンディレクトリを使用",
+  "versionDirectory": "選択中のバージョン",
   "details": "詳細を見る",
   "install": "インストール",
+  "installLatest": "最新の互換バージョンをインストール",
+  "installLatestInto": "{{name}} に最新の互換バージョンをインストール",
+  "compatibleWith": "{{version}} に対応",
+  "noVersionFor": "{{version}} 版はありません",
   "installVersion": "バージョン {{version}} をインストール",
   "installVersionNotice": "別バージョンをインストールすると既存バージョンが置き換わる場合があります。必須の依存関係は別途解決されます。",
   "noResults": "リソースが見つかりませんでした",
@@ -23,6 +27,30 @@
   "authorUnknown": "作者不明",
   "versions": "互換バージョン",
   "noVersions": "現在のインスタンスに対応するバージョンがありません",
+  "sortLabel": "並び替え",
+  "sort": {
+    "relevance": "関連度順",
+    "downloads": "ダウンロード数順",
+    "follows": "フォロー数順",
+    "newest": "新着順",
+    "updated": "更新日順",
+    "featured": "おすすめ順",
+    "popularity": "人気順",
+    "name": "名前順"
+  },
+  "results": {
+    "showing": "{{shown}} 件を表示",
+    "showingOf": "{{total}} 件中 {{shown}} 件を表示"
+  },
+  "filtersLabel": "現在のフィルター",
+  "filter": {
+    "type": "種類：{{value}}",
+    "gameVersion": "バージョン：{{value}}",
+    "loader": "ローダー：{{value}}",
+    "sort": "並び順：{{value}}"
+  },
+  "loadMore": "さらに読み込む",
+  "loadMoreVersions": "さらにバージョンを読み込む",
   "fits": {
     "count": "{{count}} 件のインスタンスに適合",
     "none": "適合するインスタンスなし",
@@ -42,7 +70,7 @@
   "external": "プロジェクトページを開く",
   "installTarget": {
     "newInstance": "新規インスタンス",
-    "title": "インストール先を選択 · {{title}}",
+    "title": "{{title}} のインストール先を選択",
     "compatible": "互換性のあるインストール先",
     "incompatible": "非互換 ({{count}})",
     "installInto": "{{name}} にインストール",
@@ -58,6 +86,19 @@
     "downloads": "ダウンロードで確認",
     "cancel": "インストールをキャンセル",
     "curseforge": "先に互換性のあるインスタンスを作成し、そのインスタンスを選択してこの CurseForge プロジェクトをインストールしてください。",
+    "manual": {
+      "title": "手動ダウンロードが必要です",
+      "reason": {
+        "distributionForbidden": "作者は他のアプリによるこのファイルのダウンロードを許可していません。",
+        "noDownloadUrl": "CurseForge はこのファイルを他のアプリ向けにダウンロード提供していません。",
+        "untrustedUrl": "CurseForge が示したこのファイルのダウンロード先は公式のダウンロードサーバーではないため、ランチャーは使用しません。"
+      },
+      "file": "ファイル：{{fileName}}",
+      "fileNamed": "ファイル：{{name}}（{{fileName}}）",
+      "open": "CurseForge でファイルページを開く",
+      "folder": "手動でダウンロードし、使用するインスタンスの {{folder}} フォルダーに入れてください。",
+      "folderTarget": "手動でダウンロードし、「{{name}}」の {{folder}} フォルダーに入れてください。"
+    },
     "reason": {
       "vanilla": "バニラでは MOD を読み込めません",
       "loaderMismatch": "ローダー非互換",
@@ -69,7 +110,6 @@
       "datapack": "データパックはワールドの datapacks フォルダ用であり、現在この機能では未対応です",
       "noSupportedLoader": "このプロジェクトには Fabric、NeoForge、Forge、Quilt 向けのバージョンがありません",
       "noVersions": "ダウンロード可能なバージョンがありません",
-      "curseforgeRequiredDependencies": "この CurseForge ファイルには他のリソースが必要です。先に互換性のあるインスタンスへ依存リソースをインストールしてから、このファイルをインストールしてください。",
       "noPinnedCreationLoader": "このファイルは新規インスタンス作成で利用できるローダーに対応していません。",
       "noReleaseVersions": "このプロジェクトにはインストール可能なリリース版のゲームバージョンがありません。",
       "manifestUnavailable": "ゲームバージョンマニフェストを一時的に取得できないため、新規インスタンスを提案できません。"
@@ -77,9 +117,13 @@
   },
   "notice": {
     "resourceInstalled": "リソースをインストールしました。",
+    "resourceInstalledWithDependencies": "リソースをインストールしました（必須の依存関係 {{count}} 件を検証、{{changed}} 件を追加または更新）。",
+    "resourceAlreadyInstalled": "このリソースと必須の依存関係はすでに選択したバージョンです。",
     "instanceInstalled": "インスタンスをインストールしました。",
-    "resourceInstalledNew": "新しいインスタンスにリソースをインストールしました。"
+    "resourceInstalledNew": "新しいインスタンスにリソースをインストールしました。",
+    "resourceInstalledNewWithDependencies": "新しいインスタンスにリソースをインストールしました（必須の依存関係 {{count}} 件を検証、{{changed}} 件を追加または更新）。"
   },
   "importCurseforgeZip": "代わりに CurseForge ZIP をインポート",
-  "curseforgeZipRequired": "CurseForge MODパックの ZIP ファイルを選択してください。"
+  "curseforgeZipRequired": "CurseForge MODパックの ZIP ファイルを選択してください。",
+  "versionDirectoryTarget": "選択中のバージョン（{{version}}）"
 }

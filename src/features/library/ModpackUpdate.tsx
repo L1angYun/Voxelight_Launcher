@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { command, type Instance } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
+import { useConfirm } from "../../components/ui/ConfirmDialog";
 import { ExternalLink } from "../../components/ui/ExternalLink";
 import { Select } from "../../components/ui/Select";
 import type { ModpackUpdateCheck, PackConflictReason, PackUpdatePlan, PackUpdateResult } from "./types";
@@ -35,6 +36,7 @@ export function ModpackUpdate({
   onRecoveryFault: (error: unknown) => void;
 }) {
   const { t, i18n } = useTranslation();
+  const confirm = useConfirm();
   const [check, setCheck] = useState<ModpackUpdateCheck | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -105,8 +107,9 @@ export function ModpackUpdate({
   const manualBlocksApply = manual.some((entry) => entry.conflict === false
     || (entry.conflict && choices[entry.path] === true));
 
-  const applyUpdate = () => {
-    if (!plan || busy || manualBlocksApply || !window.confirm(t("library:modpackUpdate.plan.confirm"))) return;
+  const applyUpdate = async () => {
+    if (!plan || busy || manualBlocksApply
+      || !await confirm(t("library:modpackUpdate.plan.confirm"), { tone: "danger" })) return;
     const approved = plan;
     void (async () => {
       setBusy(true);
@@ -160,12 +163,15 @@ export function ModpackUpdate({
 
   return (
     <section className="vx-detail-section">
-      <h2>{t("library:modpackUpdate.title")}</h2>
-      <div className="vx-action-row">
+      {/* Most instances are not modpacks, so before a check the section is one
+          heading row and one muted line; nothing is requested until asked. */}
+      <div className="vx-section-heading">
+        <h2>{t("library:modpackUpdate.title")}</h2>
         <Button variant="secondary" onClick={() => void checkForUpdate()} disabled={busy}>
           {t("library:modpackUpdate.check")}
         </Button>
       </div>
+      {!check && !error && !appliedVersion ? <p className="vx-modpack-update__hint">{t("library:modpackUpdate.onlyModpacks")}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
       {appliedVersion ? (
         <p className="vx-inline-notice" role="status">
@@ -205,7 +211,8 @@ export function ModpackUpdate({
                 disabled={busy}
                 options={check.newer.map((version) => ({
                   value: version.id,
-                  label: `${version.versionNumber} · ${formatDate(version.datePublished, i18n.language)}`,
+                  label: version.versionNumber,
+                  metadata: formatDate(version.datePublished, i18n.language),
                 }))}
               />
               <Button

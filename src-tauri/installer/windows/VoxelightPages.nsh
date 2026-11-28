@@ -49,10 +49,18 @@ Function VoxelightGuiInit
   StrCpy $VoxelightInheritedHeaderFont $mui.Header.Text.Font
   SendMessage $mui.Header.Text ${WM_SETFONT} $VoxelightSemiboldFont 1
   SendMessage $mui.Header.SubText ${WM_SETFONT} $VoxelightBodyFont 1
+  ; MUI writes $(^Branding) (the NSIS version line) in its own .onGUIInit.
+  SendMessage $mui.Branding.Text ${WM_SETTEXT} 0 "STR:Voxelight Launcher"
   SendMessage $mui.Branding.Text ${WM_SETFONT} $VoxelightSmallFont 1
   SendMessage $mui.Button.Next ${WM_SETFONT} $VoxelightBodyFont 1
   SendMessage $mui.Button.Back ${WM_SETFONT} $VoxelightBodyFont 1
   SendMessage $mui.Button.Cancel ${WM_SETFONT} $VoxelightBodyFont 1
+FunctionEnd
+
+; MUI's uninstaller GUI init also writes the NSIS branding line.
+!define MUI_CUSTOMFUNCTION_UNGUIINIT un.VoxelightUnGuiInit
+Function un.VoxelightUnGuiInit
+  SendMessage $mui.Branding.Text ${WM_SETTEXT} 0 "STR:Voxelight Launcher"
 FunctionEnd
 
 Function .onGUIEnd

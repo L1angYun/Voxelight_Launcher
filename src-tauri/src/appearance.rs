@@ -214,7 +214,14 @@ pub async fn import_launcher_config(
     let previous = state.snapshot()?.config;
     let mut config = read_config_preset(&path)?;
     sanitize_imported_preset(&previous, &mut config);
-    crate::path_grants::authorize_changed_config_paths(&window, &grants, &previous, &mut config).await?;
+    crate::path_grants::authorize_changed_config_paths(
+        &window,
+        &grants,
+        &previous,
+        &mut config,
+        &state.data_dir,
+    )
+    .await?;
     let config = crate::commands::save_approved_config(&state, config, Some(&previous)).map_err(expected)?;
     Ok(ImportedPreset { config, heap_arguments_removed: false })
 }

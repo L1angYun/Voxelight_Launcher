@@ -12,7 +12,8 @@
     "maximize": "最大化",
     "restore": "还原",
     "search": "搜索",
-    "manage": "管理"
+    "manage": "管理",
+    "confirm": "确认"
   },
   "navigation": {
     "home": "开始",
@@ -32,7 +33,20 @@
     "missing": "无法显示此内容。",
     "desktopRequired": "请使用桌面版执行此操作。"
   },
+  "confirm": {
+    "title": "确认操作"
+  },
   "units": {},
+  "leaveGuard": {
+    "title": "有未保存的更改",
+    "description": "离开此页面前保存更改，或放弃这些更改。",
+    "discard": "放弃更改",
+    "stay": "留在此页",
+    "saveFailed": "无法保存更改，你仍留在当前页面。",
+    "waitingForSave": "更改仍在保存中，保存完成后将离开此页面。",
+    "sectionDescription": "切换到其他分组前保存更改，或放弃这些更改。",
+    "sectionWaitingForSave": "更改仍在保存中，保存完成后将切换分组。"
+  },
   "a11y": {
     "dismissNotification": "关闭通知",
     "mainNavigation": "主导航",

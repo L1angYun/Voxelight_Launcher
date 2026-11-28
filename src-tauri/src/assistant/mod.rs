@@ -292,6 +292,106 @@ mod tests {
     }
 
     #[test]
+    fn fb_adopt_2_clone_copies_a_version_folder_and_list_hides_invisible_records() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (_root, ctx) = fixture_context();
+            let data = ctx.state.snapshot().unwrap();
+            let game = std::path::PathBuf::from(&data.config.game_directory);
+            let base = game.join("versions/1.21.1");
+            std::fs::create_dir_all(&base).unwrap();
+            std::fs::write(
+                base.join("1.21.1.json"),
+                serde_json::json!({ "id": "1.21.1", "mainClass": "net.minecraft.client.main.Main" }).to_string(),
+            )
+            .unwrap();
+            std::fs::write(base.join("1.21.1.jar"), b"jar").unwrap();
+            let source = game.join("versions/My World");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(
+                source.join("My World.json"),
+                serde_json::json!({ "id": "My World", "inheritsFrom": "1.21.1" }).to_string(),
+            )
+            .unwrap();
+            ctx.state
+                .update(|data| {
+                    data.instances.push(crate::models::Instance {
+                        id: "vx-my-world".into(),
+                        name: "My World".into(),
+                        version_id: "My World".into(),
+                        game_directory: source.to_string_lossy().into_owned(),
+                        kind: "version".into(),
+                        game_folder: data.config.game_directory.clone(),
+                        isolated: true,
+                        ..Default::default()
+                    });
+                    data.instances.push(crate::models::Instance {
+                        id: "vx-hidden".into(),
+                        name: "Hidden".into(),
+                        version_id: "Hidden".into(),
+                        game_directory: game.join("versions/Hidden").to_string_lossy().into_owned(),
+                        kind: "version".into(),
+                        game_folder: data.config.game_directory.clone(),
+                        isolated: true,
+                        hidden: true,
+                        ..Default::default()
+                    });
+                    data.instances.push(crate::models::Instance {
+                        id: "vx-other".into(),
+                        name: "Other folder".into(),
+                        version_id: "Other".into(),
+                        game_directory: "D:/other/versions/Other".into(),
+                        kind: "version".into(),
+                        game_folder: "D:/other".into(),
+                        isolated: true,
+                        ..Default::default()
+                    });
+                    Ok(())
+                })
+                .unwrap();
+            let listed = tools::execute_tool(
+                &ctx,
+                "list_instances",
+                &json!({}),
+                tools::PermissionTier::ReadOnly,
+                false,
+            )
+            .await
+            .unwrap();
+            let names: Vec<_> = listed["instances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|instance| instance["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(names, ["Fabric Test", "My World"], "hidden and other-folder records stay out");
+
+            ctx.state
+                .update(|data| {
+                    data.config.assistant_permission = "fullAccess".into();
+                    Ok(())
+                })
+                .unwrap();
+            let cloned = tools::execute_tool(
+                &ctx,
+                "clone_instance",
+                &json!({ "instanceId": "vx-my-world", "name": "Copy World" }),
+                tools::PermissionTier::FullAccess,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(cloned["versionId"], "Copy World");
+            assert!(game.join("versions/Copy World/Copy World.json").is_file());
+            let records = ctx.state.snapshot().unwrap().instances;
+            assert!(records.iter().any(|instance| {
+                instance.version_id == "Copy World" && instance.kind == "version"
+            }));
+            assert!(!records.iter().any(|instance| instance.version_id == "Copy World" && instance.kind != "version"));
+        });
+    }
+
+    #[test]
     fn fixture_directory_is_removed_when_a_test_ends() {
         let directory = {
             let (root, ctx) = fixture_context();
@@ -1239,6 +1339,54 @@ mod tests {
     }
 
     #[test]
+    fn create_instance_from_lumen_and_mcp_publishes_a_version_folder() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (root, ctx) = fixture_context();
+            install_fixture_version(&ctx);
+            let game = root.path().join("game");
+
+            // Lumen, with the user's approval in the controlled tier.
+            set_permission(&ctx, "controlled");
+            let created = tools::execute_tool(
+                &ctx,
+                "create_instance",
+                &json!({ "name": "Lumen World", "versionId": "1.21.1" }),
+                tools::PermissionTier::Controlled,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(created["versionId"], "Lumen World");
+            assert!(game.join("versions/Lumen World/Lumen World.json").is_file());
+
+            // An MCP client with full access.
+            set_permission(&ctx, "fullAccess");
+            let service = McpService::default();
+            let port = service
+                .start(ctx.clone(), 0, tokio::runtime::Handle::current())
+                .unwrap()
+                .port;
+            let token = service.token().unwrap();
+            let response = mcp_call(
+                port,
+                &token,
+                &tool_call("create_instance", json!({ "name": "MCP World", "versionId": "1.21.1" })),
+            );
+            assert_eq!(response["result"]["isError"], false, "{response}");
+            wait_until("the create call", || service.tool_slots_in_use() == 0);
+            service.stop();
+            assert!(game.join("versions/MCP World/MCP World.json").is_file());
+            let instances = ctx.state.snapshot().unwrap().instances;
+            for name in ["Lumen World", "MCP World"] {
+                let record = instances.iter().find(|record| record.version_id == name).expect(name);
+                assert_eq!((record.kind.as_str(), record.isolated, record.loader.as_str()), ("version", true, "vanilla"));
+            }
+            assert!(ctx.state.operation.try_lock().is_ok(), "the operation lock was released");
+        });
+    }
+
+    #[test]
     fn mcp_write_waiting_for_the_operation_lock_reads_the_permission_again() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -1670,7 +1818,7 @@ mod tests {
         let actions = [
             (include_str!("../instances.rs"), "pub(crate) async fn update_instance_notes_inner("),
             (include_str!("../instances.rs"), "pub(crate) async fn update_instance_safe_settings("),
-            (include_str!("../instances.rs"), "pub(crate) async fn clone_instance_for_state("),
+            (include_str!("../commands.rs"), "pub(crate) async fn copy_instance_inner("),
             (include_str!("../instances.rs"), "pub(crate) async fn backup_instance_for_state("),
             (include_str!("../resources.rs"), "pub(crate) async fn toggle_resource_for_state("),
             (include_str!("../content.rs"), "pub(crate) async fn toggle_world_datapack_for_state("),

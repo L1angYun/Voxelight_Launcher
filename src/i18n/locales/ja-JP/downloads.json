@@ -4,7 +4,7 @@
   "history": "履歴",
   "activeCount": "進行中 {{count}} 件",
   "historyCount": "履歴 {{count}} 件",
-  "taskTitle": "{{kind}} · {{target}}",
+  "taskTitle": "{{kind}}：{{target}}",
   "interruptedDescription": "このタスクの完了前にランチャーが終了しました。再試行すると検証済みファイルが再利用されます。",
   "interruptedNoRetry": "このタスクの完了前にランチャーが終了しました。",
   "tasks": {
@@ -31,7 +31,8 @@
       "server-install": "サーバーインストール",
       "server-import": "サーバーのインポート",
       "server-start": "サーバー準備",
-      "default-skin": "キャラクタープレビュー"
+      "default-skin": "キャラクタープレビュー",
+      "instance-create": "インスタンスの作成"
     },
     "stage": {
       "queued": "待機中",
@@ -70,7 +71,7 @@
   },
   "progress": {
     "files": "{{completed}} / {{total}} ファイル",
-    "completedUnknown": "{{completed}} ファイル · 合計不明",
+    "completedUnknown": "{{completed}} ファイル、合計不明",
     "byteLabel": "{{completed}} / {{total}}",
     "byteLabelUnknown": "{{completed}} ダウンロード済み、合計サイズ不明",
     "bytesCompleted": "{{completed}} ダウンロード済み",
@@ -87,7 +88,9 @@
     "historyTitle": "タスク履歴がありません",
     "historyDescription": "完了したタスクや復旧可能なタスクがここに残ります。",
     "filteredTitle": "一致するタスクがありません",
-    "filteredDescription": "別のフィルターを選んでダウンロード履歴を表示してください。"
+    "filteredDescription": "別のフィルターを選んでダウンロード履歴を表示してください。",
+    "discover": "コンテンツを探す",
+    "installGame": "ゲームバージョンをインストール"
   },
   "errors": {
     "taskFailed": "タスクを完了できませんでした。再試行可能な場合は再試行するか、元のページからやり直してください。",

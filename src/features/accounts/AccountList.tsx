@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Trash2, TriangleAlert } from "lucide-react";
 import { command, type Account } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import type { useAccountSkin } from "../../lib/accountSkin";
@@ -9,23 +9,38 @@ import { Button, IconButton } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
 import { accountErrorText } from "./utils";
 
+const SESSION_NEUTRAL_FAILURES = new Set(["auth.rateLimited", "auth.sessionChanged"]);
+
 export function AccountList({
   accounts,
   activeAccount,
   accountAppearance,
+  unverified,
+  onSessionChecked,
   onChanged,
   onAdd,
 }: {
   accounts: Account[];
   activeAccount?: Account;
   accountAppearance: ReturnType<typeof useAccountSkin>;
+  /** Accounts whose last session refresh failed; the page owns it so a new sign-in can clear it. */
+  unverified: ReadonlySet<string>;
+  onSessionChecked: (accountId: string, failed: boolean) => void;
   onChanged: () => Promise<void>;
   onAdd: () => void;
 }) {
   const { t } = useTranslation();
+  const listId = useId();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  function rowStatus(account: Account, selected: boolean): "sessionUnverified" | "profileUnavailable" | undefined {
+    if (unverified.has(account.id)) return "sessionUnverified";
+    const online = account.type === "microsoft" || account.type === "authlib";
+    if (selected && online && !accountAppearance.loading && accountAppearance.error) return "profileUnavailable";
+    return undefined;
+  }
 
   async function perform(account: Account, action: "select" | "refresh" | "remove") {
     if (busy) return;
@@ -39,10 +54,14 @@ export function AccountList({
           ? "refresh_account"
           : "remove_account";
       await command(commandName, { accountId: account.id });
+      if (action !== "select") onSessionChecked(account.id, false);
       await onChanged();
       if (action === "refresh") setNotice(t("accounts:notice.sessionRefreshed", { name: account.username }));
     } catch (cause) {
-      if (action === "remove" && normalizeError(cause).code === "auth.credentialCleanupPending") {
+      const failure = normalizeError(cause);
+      // A rate limit or a replaced session says nothing about this account's credentials.
+      if (action === "refresh" && !SESSION_NEUTRAL_FAILURES.has(failure.code)) onSessionChecked(account.id, true);
+      if (action === "remove" && failure.code === "auth.credentialCleanupPending") {
         // The profile is already gone; keep the cleanup warning visible after refreshing.
         await onChanged().catch(() => {});
       }
@@ -57,7 +76,7 @@ export function AccountList({
       <header className="vx-account-section-heading">
         <h2 id="account-list-title">{t("accounts:listTitle")}</h2>
         {accounts.length ? (
-          <Button variant="secondary" size="sm" icon={<Plus size={14} />} onClick={onAdd}>{t("accounts:addAccount")}</Button>
+          <IconButton variant="secondary" size="sm" label={t("accounts:addAccount")} icon={<Plus size={14} />} onClick={onAdd} />
         ) : null}
       </header>
       {error ? <p role="alert">{error}</p> : null}
@@ -67,11 +86,23 @@ export function AccountList({
           {accounts.map((account) => {
             const selected = activeAccount?.id === account.id;
             const online = account.type !== "offline";
+            const status = rowStatus(account, selected);
+            const warningId = status ? `${listId}-status-${account.id}` : undefined;
             return (
-              <li className="vx-account-row" key={account.id} data-selected={selected || undefined}>
-                <button className="vx-account-choice" type="button" aria-current={selected || undefined} aria-label={t(selected ? "accounts:actions.current" : "accounts:actions.select", { name: account.username })} disabled={Boolean(busy)} onClick={() => { if (!selected) void perform(account, "select"); }}>
+              <li className="vx-account-row" key={account.id} data-selected={selected || undefined} data-status={status}>
+                <button className="vx-account-choice" type="button" aria-current={selected || undefined} aria-label={t(selected ? "accounts:actions.current" : "accounts:actions.select", { name: account.username })} aria-describedby={warningId} disabled={Boolean(busy)} onClick={() => { if (!selected) void perform(account, "select"); }}>
                   <PlayerAvatar skinUrl={selected ? accountAppearance.skinUrl : account.skinUrl} username={account.username} label={t("accounts:avatar", { name: account.username })} size={36} />
-                  <span className="vx-account-row__identity"><strong>{account.username}</strong><small>{t(`accounts:type.${account.type}`, { defaultValue: t("accounts:type.unknown") })}</small></span>
+                  <span className="vx-account-row__identity">
+                    <strong title={account.username}>{account.username}</strong>
+                    {status ? (
+                      <small className="vx-account-row__warning" id={warningId}>
+                        <TriangleAlert size={12} aria-hidden="true" />
+                        <span>{t(`accounts:status.${status}`)}</span>
+                      </small>
+                    ) : (
+                      <small>{t(`accounts:type.${account.type}`, { defaultValue: t("accounts:type.unknown") })}</small>
+                    )}
+                  </span>
                 </button>
                 <div className="vx-account-row__actions">
                   {online ? (

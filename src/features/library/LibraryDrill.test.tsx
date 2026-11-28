@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLauncherI18n } from "../../i18n";
 import { command, defaults, type Instance } from "../../lib/launcher";
 import type { LauncherContextValue } from "../../app/controller/types";
+import { resetViewState } from "../../app/viewState";
+import { ConfirmProvider } from "../../components/ui/ConfirmDialog";
 import { LibraryPage } from "./LibraryPage";
 import { isolatedStylesheetCss } from "../../test/isolatedStylesheetCss";
 
@@ -57,7 +59,7 @@ function fixture(): LauncherContextValue {
 async function render(navResetTick = 0) {
   const i18n = createLauncherI18n("zh-CN", "zh-CN");
   await i18n.initPromise;
-  await act(async () => root.render(<I18nextProvider i18n={i18n}><LibraryPage navResetTick={navResetTick} /></I18nextProvider>));
+  await act(async () => root.render(<I18nextProvider i18n={i18n}><ConfirmProvider><LibraryPage navResetTick={navResetTick} /></ConfirmProvider></I18nextProvider>));
 }
 function button(label: string) {
   const found = [...main.querySelectorAll<HTMLButtonElement>("button")].find((element) => element.textContent?.trim() === label || element.getAttribute("aria-label") === label);
@@ -66,7 +68,6 @@ function button(label: string) {
 }
 async function click(label: string) { await act(async () => button(label).click()); }
 function card(id = first.id) { return container.querySelector<HTMLButtonElement>(`[data-instance-id="${id}"] .vx-instance-card__select`)!; }
-function versionCard() { return container.querySelector<HTMLButtonElement>('[data-version-directory="1.21.1"] [data-version-id="1.21.1"]')!; }
 async function openCard(id = first.id) {
   const trigger = card(id);
   await act(async () => { trigger.focus(); trigger.click(); });
@@ -75,6 +76,7 @@ async function back() { await act(async () => container.querySelector<HTMLButton
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  resetViewState();
   launcher = fixture();
   fullMotion = false;
   commandMock.mockReset();
@@ -84,9 +86,10 @@ beforeEach(() => {
     if (name === "list_versions") return { latestRelease: "1.21.1", latestSnapshot: "", versions: [] };
     if (name === "install_version") return { versionId: "1.21.1", downloaded: 0, reused: 1 };
     if (name === "create_instance") return created;
+    if (name === "create_game_instance") return created;
+    if (name === "suggest_instance_name") return created.name;
     return null;
   });
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function () { this.open = true; } });
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function () { this.open = false; this.dispatchEvent(new Event("close")); } });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
@@ -214,17 +217,6 @@ describe("library drill focus and scroll", () => {
     expect(document.activeElement).toBe(card(second.id));
   });
 
-  it("focuses version-directory details and returns to the same directory card and scroll", async () => {
-    await render(); await click("版本目录"); main.scrollTop = 360;
-    await act(async () => versionCard().click());
-    const heading = container.querySelector<HTMLElement>(".vx-detail-header h1")!;
-    expect(main.scrollTop).toBe(0);
-    expect(document.activeElement).toBe(heading);
-    main.scrollTop = 80; await back();
-    expect(main.scrollTop).toBe(360);
-    expect(document.activeElement).toBe(versionCard());
-  });
-
   it("same-nav reset leaves detail at the list top even when the origin card exists", async () => {
     await render(); main.scrollTop = 420; await openCard(); main.scrollTop = 60;
     await render(1);
@@ -252,22 +244,51 @@ describe("library drill focus and scroll", () => {
     expect(card()).not.toBeNull();
   });
 
-  it("restores the list after version reload invalidation without resurrecting the stale directory ID", async () => {
-    await render(); await click("版本目录"); main.scrollTop = 360;
-    await act(async () => versionCard().click());
-    const version = launcher.data.installedVersions[0];
-    launcher.data.installedVersions = []; await render();
+  it("restores the list after instance reload invalidation without resurrecting the stale detail", async () => {
+    await render(); main.scrollTop = 360;
+    await openCard();
+    launcher.data.instances = []; await render();
     expect(main.scrollTop).toBe(0);
     expect(document.activeElement).toBe(container.querySelector(".vx-library-page h1"));
-    launcher.data.installedVersions = [version]; await render();
+    launcher.data.instances = [{ ...first }, { ...second }]; await render();
     expect(Boolean(container.querySelector(".vx-detail-page"))).toBe(false);
+  });
+
+  it("closes the manage menu before confirming, so Escape declines the confirmation and returns to the menu button", async () => {
+    await render(); await openCard();
+    const summary = container.querySelector<HTMLElement>(".vx-detail-manage summary")!;
+    await act(async () => summary.click());
+    await click("移除实例");
+    const confirmation = container.querySelector<HTMLDialogElement>("dialog.vx-confirm-dialog")!;
+    expect(confirmation.open).toBe(true);
+    expect(container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!.open).toBe(false);
+    const cancel = confirmation.querySelector<HTMLButtonElement>("[data-confirm-cancel]")!;
+    expect(document.activeElement).toBe(cancel);
+    await act(async () => { cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(confirmation.open).toBe(false);
+    expect(commandMock).not.toHaveBeenCalledWith("remove_instance", expect.anything());
+    expect(document.activeElement).toBe(summary);
   });
 
   it("delete returns to a visible library title instead of restoring an invisible deleted card", async () => {
     vi.mocked(launcher.reload).mockImplementation(async () => { launcher.data.instances = [{ ...second }]; });
     await render(); main.scrollTop = 420; await openCard(); main.scrollTop = 110;
+    const confirmation = () => container.querySelector<HTMLDialogElement>("dialog.vx-confirm-dialog")!;
+    // The real confirmation dialog: Cancel keeps the instance and its detail.
     await act(async () => container.querySelector<HTMLElement>(".vx-detail-manage summary")!.click());
     await click("移除实例");
+    expect(confirmation().open).toBe(true);
+    expect(confirmation().textContent).toContain(first.name);
+    expect(document.activeElement).toBe(confirmation().querySelector("[data-confirm-cancel]"));
+    expect(commandMock).not.toHaveBeenCalledWith("remove_instance", expect.anything());
+    await act(async () => confirmation().querySelector<HTMLButtonElement>("[data-confirm-cancel]")!.click());
+    expect(confirmation().open).toBe(false);
+    expect(commandMock).not.toHaveBeenCalledWith("remove_instance", expect.anything());
+    expect(Boolean(container.querySelector(".vx-detail-page"))).toBe(true);
+
+    if (!container.querySelector(".vx-detail-manage[open]")) await act(async () => container.querySelector<HTMLElement>(".vx-detail-manage summary")!.click());
+    await click("移除实例");
+    await act(async () => confirmation().querySelector<HTMLButtonElement>("[data-confirm-accept]")!.click());
     expect(commandMock).toHaveBeenCalledWith("remove_instance", { instanceId: first.id });
     expect(Boolean(container.querySelector(".vx-detail-page"))).toBe(false);
     expect(main.scrollTop).toBe(0);
@@ -328,13 +349,15 @@ describe("library drill identity continuity", () => {
     expect(identitySnapshot(card().querySelector(".vx-instance-identity")!)).toEqual(expected);
   });
 
-  it("keeps version-directory identity separate from instance identity in its detail header", async () => {
+  it("keeps a version-folder instance's identity in its detail header", async () => {
     fullMotion = true;
-    await render(); await click("版本目录");
-    const expected = { identity: "1.21.1", kind: "version-directory", layoutId: "version-directory-identity-1.21.1",
-      letter: "M", icon: null };
-    expect(identitySnapshot(versionCard().querySelector(".vx-instance-identity")!)).toEqual(expected);
-    await act(async () => versionCard().click());
+    launcher.data.instances[0].kind = "version";
+    launcher.data.instances[0].versionId = "1.21.1";
+    await render();
+    const expected = { identity: "first-world", kind: "instance", layoutId: "instance-identity-first-world",
+      letter: "第", icon: null };
+    expect(identitySnapshot(card().querySelector(".vx-instance-identity")!)).toEqual(expected);
+    await openCard();
     expect(identitySnapshot(container.querySelector(".vx-detail-header .vx-instance-identity")!)).toEqual(expected);
   });
 

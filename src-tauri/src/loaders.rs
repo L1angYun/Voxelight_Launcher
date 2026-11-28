@@ -527,14 +527,22 @@ fn library_progress<'a>(
     }
 }
 
-fn write_profile(root: &Path, profile: &Value) -> Result<String, String> {
+/// Publish a loader profile at `versions/<id>/<id>.json`. A profile it
+/// replaces (possibly another launcher's) is kept in the launcher's data
+/// folder, never as a `.json.backup-*` beside the live profile.
+fn write_profile(state: &LauncherState, root: &Path, profile: &Value) -> Result<String, String> {
     let id = profile["id"].as_str().ok_or("加载器版本 ID 缺失")?;
     validate_id(id)?;
     let destination = safe_join(root, &format!("versions/{id}/{id}.json"))?;
     fs::create_dir_all(destination.parent().ok_or("版本路径无效")?).map_err(|e| e.to_string())?;
     if destination.is_file() {
-        let backup = destination.with_extension(format!("json.backup-{}", uuid::Uuid::new_v4()));
-        fs::copy(&destination, backup).map_err(|e| format!("备份现有加载器配置失败：{e}"))?;
+        crate::commands::keep_profile_backup(
+            &state.data_dir,
+            id,
+            &uuid::Uuid::new_v4().to_string(),
+            &destination,
+        )
+        .map_err(|e| format!("备份现有加载器配置失败：{e}"))?;
     }
     let temporary = destination.with_extension(format!("json-{}.tmp", uuid::Uuid::new_v4()));
     fs::write(
@@ -595,7 +603,7 @@ async fn lightweight_loader(
     }
     prepare_profile(state, &mut profile, &safe_join(root, "libraries")?, &library_progress(app, state)).await?;
     profile["launcherMetadata"] = json!({"source":url,"loader":loader,"loaderVersion":version,"officialVanillaBase":game_version});
-    write_profile(root, &profile)
+    write_profile(state, root, &profile)
 }
 
 fn read_zip_json(path: &Path, name: &str) -> Result<Value, String> {
@@ -880,6 +888,20 @@ async fn preseed_installer_libraries(state: &LauncherState, stage: &Path, profil
     Ok(())
 }
 
+/// Writes the exact SHA-1-verified vanilla profile bytes into the installer
+/// staging directory. The installer reads this file later, so it must never be
+/// a second read of a path whose contents were only checked earlier.
+pub(crate) async fn stage_verified_base_profile(
+    state: &LauncherState,
+    root: &Path,
+    game_version: &str,
+    base_json: &Path,
+) -> Result<(), String> {
+    fs::create_dir_all(base_json.parent().ok_or("暂存路径无效")?).map_err(|e| e.to_string())?;
+    let base_bytes = minecraft::verified_profile_bytes(state, root, game_version).await?;
+    fs::write(base_json, &base_bytes).map_err(|e| e.to_string())
+}
+
 async fn heavyweight_loader(
     state: &LauncherState,
     app: &AppHandle,
@@ -909,15 +931,7 @@ async fn heavyweight_loader(
         stage,
         &format!("versions/{game_version}/{game_version}.json"),
     )?;
-    fs::create_dir_all(base_json.parent().ok_or("暂存路径无效")?).map_err(|e| e.to_string())?;
-    fs::copy(
-        safe_join(
-            root,
-            &format!("versions/{game_version}/{game_version}.json"),
-        )?,
-        &base_json,
-    )
-    .map_err(|e| e.to_string())?;
+    stage_verified_base_profile(state, root, game_version, &base_json).await?;
     fs::copy(
         safe_join(root, &format!("versions/{game_version}/{game_version}.jar"))?,
         safe_join(
@@ -968,7 +982,7 @@ async fn heavyweight_loader(
     // carried by the publisher's version.json. A zero exit code alone is insufficient.
     prepare_profile(state, &mut profile, &safe_join(root, "libraries")?, &library_progress(app, state)).await?;
     profile["launcherMetadata"] = json!({"loader":loader,"loaderVersion":version,"officialVanillaBase":game_version,"installer":jar.file_name().unwrap_or_default().to_string_lossy()});
-    write_profile(root, &profile)
+    write_profile(state, root, &profile)
 }
 
 fn sha1_file(path: &Path) -> Result<String, String> {
@@ -1221,7 +1235,7 @@ async fn finish_optifine_install(
     validate_profile(&profile, &info.mc_version)?;
     prepare_profile(state, &mut profile, &stage_libraries, progress).await?;
     commit_staged_libraries(stage, root)?;
-    write_profile(root, &profile)
+    write_profile(state, root, &profile)
 }
 
 /// Copies an OptiFine installer into `directory` as `file_name` and inspects
@@ -1274,11 +1288,15 @@ fn check_optifine_target(
             None => return Ok(()),
         },
     };
-    if target == info.mc_version {
-        Ok(())
-    } else {
-        Err(optifine_version_mismatch(&info.mc_version, &target))
+    if target != info.mc_version {
+        return Err(optifine_version_mismatch(&info.mc_version, &target));
     }
+    // Importing into an instance switches its loader: refused before the task
+    // starts when the instance's profile is shared, like any other switch.
+    if let Some(current) = current {
+        crate::commands::require_switchable_instance(state, current, &target)?;
+    }
+    Ok(())
 }
 
 /// `skip_backup` is the window's second, explicit choice after the backup
@@ -1996,6 +2014,69 @@ mod tests {
     }
 
     #[test]
+    fn fb_review_installer_base_profile_is_staged_from_verified_bytes() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let root = test_root("verified-base-stage");
+            fs::create_dir_all(root.join("data")).unwrap();
+            let game = root.join("game");
+            let official = br#"{"id":"1.21.1","type":"release","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#;
+            let tampered = br#"{"id":"1.21.1","type":"custom","mainClass":"net.minecraft.client.main.Main","libraries":[],"_otherLauncher":"pcl2"}"#;
+            let local = game.join("versions/1.21.1/1.21.1.json");
+            fs::create_dir_all(local.parent().unwrap()).unwrap();
+            fs::write(&local, tampered).unwrap();
+            let manifest = json!({
+                "latest": {"release": "1.21.1", "snapshot": "1.21.1"},
+                "versions": [{
+                    "id": "1.21.1",
+                    "type": "release",
+                    "url": "https://piston-meta.mojang.com/v1/packages/1.21.1.json",
+                    "sha1": format!("{:x}", Sha1::digest(official)),
+                }]
+            });
+            fs::write(
+                root.join("data/version-manifest-mojang.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            let cache = root.join("data/verified-profiles/versions/1.21.1/1.21.1.json");
+            fs::create_dir_all(cache.parent().unwrap()).unwrap();
+            fs::write(&cache, official).unwrap();
+
+            let (client, connections) = counting_client();
+            let state = loader_state(&root, client);
+            let staged = root.join("stage/versions/1.21.1/1.21.1.json");
+            stage_verified_base_profile(&state, &game, "1.21.1", &staged)
+                .await
+                .unwrap();
+            assert_eq!(
+                fs::read(&staged).unwrap(),
+                official,
+                "the installer stage receives the exact verified bytes"
+            );
+            assert_eq!(fs::read(&local).unwrap(), tampered);
+            assert_eq!(
+                connections.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "the locally cached manifests verify the bytes without a network request"
+            );
+
+            // Without a verified copy the helper fails instead of falling back
+            // to copying the unverified .minecraft JSON.
+            fs::remove_file(&cache).unwrap();
+            let second = root.join("stage2/versions/1.21.1/1.21.1.json");
+            let error = stage_verified_base_profile(&state, &game, "1.21.1", &second)
+                .await
+                .unwrap_err();
+            assert!(error.contains("缺少已校验"), "{error}");
+            assert!(!second.exists());
+            assert_eq!(fs::read(&local).unwrap(), tampered);
+
+            drop(state);
+            fs::remove_dir_all(&root).unwrap();
+        });
+    }
+
+    #[test]
     fn u7_generated_optifine_artifact_verifies_without_a_download() {
         let root = test_root("optifine-generated");
         let libraries = root.join("libraries");
@@ -2277,6 +2358,201 @@ mod tests {
     }
 
     #[test]
+    fn a_loader_installers_own_folder_is_never_switched_in_place() {
+        const FABRIC: &str = "fabric-loader-0.16.9-1.21.1";
+        const FORGE: &str = "1.21.1-forge-52.0.10";
+        const OPTIFINE: &str = "1.20.4-OptiFine_HD_U_I7";
+        const UNUSUAL: &str = "forge-1.21.1-52.0.10";
+        let root = test_root("installer-folder");
+        let game = root.join("game");
+        let write = |id: &str, profile: &Value| {
+            let directory = game.join("versions").join(id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(format!("{id}.json")), serde_json::to_vec_pretty(profile).unwrap()).unwrap();
+        };
+        let profile_path = |id: &str| game.join(format!("versions/{id}/{id}.json"));
+        for version in ["1.21.1", "1.20.4", "1.7.10"] {
+            write(version, &json!({
+                "id": version, "type": "release", "mainClass": "net.minecraft.client.main.Main", "libraries": []
+            }));
+        }
+        let mut config = crate::models::Config {
+            game_directory: game.to_string_lossy().into_owned(),
+            download_source: "official".into(),
+            ..Default::default()
+        };
+        config.normalize_game_folders();
+        let (client, connections) = counting_client();
+        let state = Arc::new(LauncherState::test_fixture(
+            root.join("data"),
+            crate::models::Persisted { config, ..Default::default() },
+            client,
+        ));
+        let listed = |id: &str| json!({
+            "id": id, "type": "release",
+            "url": format!("https://piston-meta.mojang.com/v1/packages/{}/{id}.json", "a".repeat(40)),
+            "sha1": "a".repeat(40)
+        });
+        fs::write(
+            state.data_dir.join("version-manifest-mojang.json"),
+            serde_json::to_vec(&json!({
+                "latest": { "release": "1.21.1", "snapshot": "1.21.1" },
+                "versions": [listed("1.21.1"), listed("1.20.4"), listed("1.7.10")]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Fabric installed from Downloads: the profile its installer writes,
+        // with the user's Fabric mods and world in that same folder.
+        let fabric = json!({
+            "id": FABRIC, "inheritsFrom": "1.21.1", "type": "release",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "arguments": { "game": [], "jvm": ["-DFabricMcEmu= net.minecraft.client.main.Main "] },
+            "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16.9", "url": "https://maven.fabricmc.net/" }],
+            "launcherMetadata": {
+                "source": "https://meta.fabricmc.net/v2/versions/loader/1.21.1/0.16.9/profile/json",
+                "loader": "fabric", "loaderVersion": "0.16.9", "officialVanillaBase": "1.21.1"
+            }
+        });
+        assert_eq!(write_profile(&state, &game, &fabric).unwrap(), FABRIC);
+        let fabric_folder = game.join("versions").join(FABRIC);
+        fs::create_dir_all(fabric_folder.join("mods")).unwrap();
+        fs::write(fabric_folder.join("mods/sodium.jar"), b"fabric mod").unwrap();
+        fs::create_dir_all(fabric_folder.join("saves/World")).unwrap();
+        fs::write(fabric_folder.join("saves/World/level.dat"), b"world").unwrap();
+        // OptiFine imported as a new version, through the real finishing step.
+        let stage = root.join("stage");
+        let info = patched_info(Some("2.3"));
+        fake_patcher_output(&stage, &info);
+        let base = json!({ "id": "1.20.4", "type": "release", "arguments": { "game": [] } });
+        let optifine = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(finish_optifine_install(&state, &stage, &game, &base, &info, &|_: &str, _: usize, _: usize| {}))
+            .unwrap();
+        assert_eq!(optifine, OPTIFINE);
+        // Folders other launchers' installers made, with their usual ids.
+        for (id, parent, main_class) in [
+            (FORGE, "1.21.1", "net.minecraftforge.bootstrap.ForgeBootstrap"),
+            ("neoforge-21.1.77", "1.21.1", "cpw.mods.bootstraplauncher.BootstrapLauncher"),
+            ("quilt-loader-0.27.1-1.21.1", "1.21.1", "org.quiltmc.loader.impl.launch.knot.KnotClient"),
+            ("1.7.10-Forge10.13.4.1614-1.7.10", "1.7.10", "net.minecraft.launchwrapper.Launch"),
+        ] {
+            write(id, &json!({ "id": id, "inheritsFrom": parent, "mainClass": main_class, "libraries": [] }));
+        }
+        // A Forge build Voxelight installed whose installer chose another id
+        // shape: its own metadata and its loader version in the name give it away.
+        write_profile(&state, &game, &json!({
+            "id": UNUSUAL, "inheritsFrom": "1.21.1",
+            "mainClass": "net.minecraftforge.bootstrap.ForgeBootstrap", "libraries": [],
+            "launcherMetadata": {
+                "loader": "forge", "loaderVersion": "52.0.10", "officialVanillaBase": "1.21.1",
+                "installer": "forge-1.21.1-52.0.10-installer.jar"
+            }
+        }))
+        .unwrap();
+        // Instances Voxelight created with its default names, and a pack whose
+        // profile is a renamed copy of the installer's (its hash not recorded).
+        for (name, installed, loader) in [("1.21.1-Fabric", FABRIC, "fabric"), ("1.21.1-Forge-2", FORGE, "forge")] {
+            crate::commands::write_instance_profile(&state, &game, name, "1.21.1", installed, loader).unwrap();
+        }
+        let mut pack = fabric.clone();
+        pack["id"] = json!("Pack");
+        write("Pack", &pack);
+
+        // The scan lists every folder as its own isolated instance.
+        crate::instances::sync_version_instances(&state).unwrap();
+        let record = |version: &str| {
+            state
+                .snapshot()
+                .unwrap()
+                .instances
+                .into_iter()
+                .find(|record| record.is_version_folder() && record.version_id == version)
+                .unwrap()
+        };
+        let loader_folder = record(FABRIC);
+        assert!(loader_folder.isolated && !loader_folder.hidden);
+        assert_eq!((loader_folder.loader.as_str(), loader_folder.loader_version.as_str()), ("fabric", "0.16.9"));
+
+        let refused = [
+            FABRIC,
+            OPTIFINE,
+            FORGE,
+            "neoforge-21.1.77",
+            "quilt-loader-0.27.1-1.21.1",
+            "1.7.10-Forge10.13.4.1614-1.7.10",
+            UNUSUAL,
+        ];
+        let profiles = || refused.map(|id| fs::read(profile_path(id)).unwrap());
+        let before = profiles();
+        let records = serde_json::to_value(state.snapshot().unwrap().instances).unwrap();
+        for folder in refused {
+            let current = record(folder);
+            // The window, Lumen and MCP plan the switch before any backup or install.
+            let error = crate::instances::plan_loader_switch(&state, &current.id, "forge", None).err().unwrap();
+            assert_eq!(error.code, "instance.loaderSwitchInstallerFolder", "{folder}");
+            // The rewrite after the install, also used by pack updates.
+            let (installed, loader) = if folder == FORGE { (FABRIC, "fabric") } else { (FORGE, "forge") };
+            let error = crate::commands::rewrite_version_folder_profile(&state, &current, installed, loader).unwrap_err();
+            assert_eq!(crate::errors::expected(error).code, "instance.loaderSwitchInstallerFolder", "{folder}");
+        }
+        // An OptiFine import into the folder is a switch as well.
+        for (folder, mc_version) in [(FABRIC, "1.21.1"), (OPTIFINE, "1.20.4")] {
+            let jar = OptifineJarInfo { mc_version: mc_version.into(), edition: "HD_U_J1".into(), ..info.clone() };
+            let error = check_optifine_target(&state, Some(&record(folder)), &jar, None).unwrap_err();
+            assert_eq!(crate::errors::expected(error).code, "instance.loaderSwitchInstallerFolder", "{folder}");
+        }
+        assert_eq!(profiles(), before, "no installer profile was rewritten");
+        assert_eq!(serde_json::to_value(state.snapshot().unwrap().instances).unwrap(), records);
+        assert!(!state.data_dir.join("instance-backups").exists(), "no backup was taken");
+        for folder in refused {
+            let names: Vec<String> = fs::read_dir(game.join("versions").join(folder))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(names.iter().all(|name| !name.contains(".backup-") && !name.ends_with(".tmp")), "{folder}: {names:?}");
+        }
+
+        // Instances named by Voxelight or a pack still switch.
+        for folder in ["1.21.1-Fabric", "1.21.1-Forge-2", "Pack"] {
+            assert!(crate::instances::plan_loader_switch(&state, &record(folder).id, "forge", None).is_ok(), "{folder}");
+        }
+        // The way out the message names, as the window runs it: Copy instance
+        // sends no name, so the copy gets the default `<name> Copy`, and the
+        // loader is switched on that copy.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let copy = runtime
+            .block_on(crate::commands::copy_instance_inner(&state, &loader_folder.id, None))
+            .unwrap();
+        let copy_name = format!("{FABRIC} Copy");
+        assert_eq!(copy.version_id, copy_name);
+        assert!(crate::instances::plan_loader_switch(&state, &copy.id, "forge", None).is_ok());
+        assert_eq!(crate::commands::rewrite_version_folder_profile(&state, &copy, FORGE, "forge").unwrap(), copy_name);
+        let copied = game.join("versions").join(&copy_name);
+        assert_eq!(fs::read(copied.join("mods/sodium.jar")).unwrap(), b"fabric mod");
+        assert_eq!(fs::read(copied.join("saves/World/level.dat")).unwrap(), b"world");
+        // The same holds for the other installers' folders and a second copy.
+        for (folder, target) in [(FORGE, "fabric"), (OPTIFINE, "forge"), (FABRIC, "quilt")] {
+            let copy = runtime
+                .block_on(crate::commands::copy_instance_inner(&state, &record(folder).id, None))
+                .unwrap();
+            assert!(copy.version_id.starts_with(&format!("{folder} Copy")), "{}", copy.version_id);
+            assert!(crate::instances::plan_loader_switch(&state, &copy.id, target, None).is_ok(), "{}", copy.version_id);
+        }
+        // Installing that Fabric again rewrites only the installer's folder.
+        write_profile(&state, &game, &fabric).unwrap();
+        let switched: Value = serde_json::from_slice(&fs::read(copied.join(format!("{copy_name}.json"))).unwrap()).unwrap();
+        assert_eq!(switched["id"], copy_name.as_str());
+        assert_eq!(switched["inheritsFrom"], "1.21.1");
+        assert_eq!(switched["mainClass"], "net.minecraftforge.bootstrap.ForgeBootstrap");
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing was fetched");
+        drop(runtime);
+        drop(state);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn u7_optifine_versions_sort_by_build_letter_not_digits_alone() {
         let version = |id: &str, stable: bool| LoaderVersion {
             id: id.into(),
@@ -2311,5 +2587,46 @@ mod tests {
             previews.iter().find(|item| item.recommended).map(|item| item.id.as_str()),
             Some("HD_U_G5")
         );
+    }
+
+    #[test]
+    fn l2_a_replaced_loader_profile_is_kept_in_the_data_folder_not_in_versions() {
+        let holder = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/instance-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let state = loader_state(holder.path(), crate::storage::test_client());
+        let root = holder.path().join("game");
+        let id = "fabric-loader-0.16-1.21.1";
+        let folder = root.join("versions").join(id);
+        fs::create_dir_all(&folder).unwrap();
+        // Another launcher's profile under the same loader id.
+        let theirs = br#"{"id":"fabric-loader-0.16-1.21.1","note":"written by PCL"}"#;
+        fs::write(folder.join(format!("{id}.json")), theirs).unwrap();
+        let profile = json!({
+            "id": id, "inheritsFrom": "1.21.1",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient", "libraries": []
+        });
+        assert_eq!(write_profile(&state, &root, &profile).unwrap(), id);
+        assert_eq!(write_profile(&state, &root, &profile).unwrap(), id, "a reinstall");
+        let live: Value = serde_json::from_slice(&fs::read(folder.join(format!("{id}.json"))).unwrap()).unwrap();
+        assert_eq!(live, profile);
+        let beside: Vec<String> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(beside, [format!("{id}.json")], "nothing but the profile stays in versions/");
+        let kept: Vec<Vec<u8>> = fs::read_dir(state.data_dir.join(crate::commands::PROFILE_BACKUP_FOLDER))
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                assert!(path.file_name().unwrap().to_string_lossy().starts_with(id));
+                fs::read(path).unwrap()
+            })
+            .collect();
+        assert_eq!(kept.len(), 2, "each replaced profile is kept once");
+        assert!(kept.iter().any(|bytes| bytes.as_slice() == theirs), "the other launcher's profile survives");
     }
 }

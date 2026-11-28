@@ -132,7 +132,7 @@ async function verifyLoader(
   for (const [command, args] of [
     ["backup_instance", { instanceId: instance.id }],
     [
-      "clone_instance",
+      "copy_instance",
       { instanceId: instance.id, name: "Must not clone a running instance" },
     ],
     [
@@ -881,7 +881,7 @@ try {
   await check(
     "instance clone copies fixture bytes without changing source",
     async () => {
-      const clone = await invoke("clone_instance", {
+      const clone = await invoke("copy_instance", {
         instanceId: fixtureInstance.id,
         name: "Smoke copied fixture",
       });

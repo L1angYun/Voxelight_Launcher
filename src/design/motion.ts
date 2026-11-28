@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 export type MotionTier = "full" | "fade" | "none";
 export const MOTION = {
-  duration: { exit: .08, enter: .18, content: .14, slow: .24, menuEnter: .15, menuExit: .10 },
+  duration: { exit: .08, enter: .18, content: .14, slow: .24, menuEnter: .14, menuExit: .08 },
   delay: { characterMs: 280, loadingMs: 150, cancelGuardMs: 250, characterIdleMs: 1500 },
   overture: { flashStrength: 1.1, decayMs: 450, maxMs: 1400 },
   world: { frontStart: 30 },

@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "../../components/ui/ExternalLink";
-import { Play, Plus, RefreshCw, Square, Upload } from "lucide-react";
+import { ChevronDown, CircleStop, Play, Plus, RefreshCw, Server, Upload } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { EmptyState } from "../../components/ui/Feedback";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
+import { ICON } from "../../design/icons";
 import { formatDate } from "../../i18n/format";
 import { ImportServerDialog } from "./ImportServerDialog";
 import { defaultServerSettings, type ManagedServer, type ServerSettings, type useMultiplayer } from "./useMultiplayer";
@@ -40,6 +41,7 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
   const [playerAction, setPlayerAction] = useState("whitelist add");
   const [autoScroll, setAutoScroll] = useState(true);
   const logEnd = useRef<HTMLDivElement>(null);
+  const settingsBodyId = useId();
   const alive = Boolean(current?.pid);
   // An imported server whose JAR is gone cannot start; there is nothing to install.
   const jarMissing = current?.source === "imported" && !current.installed;
@@ -67,18 +69,15 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
   }
 
   const importedLabel = (server: ManagedServer) => server.software ?? t("multiplayer:importedServer");
-  const listedVersion = (server: ManagedServer) => server.source === "imported"
-    ? `${importedLabel(server)} · ${server.versionId}`
-    : server.versionId;
 
   return (
     <div className="vx-managed-servers">
-      <div className="vx-multiplayer-toolbar">
+      <div className="vx-multiplayer-toolbar vx-panel">
         <p>{t("multiplayer:managedDescription")}</p>
         <div className="vx-action-row">
-          <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={Boolean(busy)} onClick={() => void refreshManaged()}>{t("multiplayer:refresh")}</Button>
-          {managedServers.length > 0 || creating ? <Button variant="primary" icon={<Plus size={15} />} disabled={Boolean(busy)} onClick={() => setCreating((value) => !value)}>{t("multiplayer:createServer")}</Button> : null}
-          <Button variant="secondary" icon={<Upload size={15} />} disabled={Boolean(busy)} onClick={() => setImporting(true)}>{t("multiplayer:importServer")}</Button>
+          <Button variant="ghost" icon={<RefreshCw />} disabled={Boolean(busy)} onClick={() => void refreshManaged()}>{t("multiplayer:refresh")}</Button>
+          {managedServers.length > 0 || creating ? <Button variant="secondary" icon={<Plus />} disabled={Boolean(busy)} onClick={() => setCreating((value) => !value)}>{t("multiplayer:createServer")}</Button> : null}
+          <Button variant="secondary" icon={<Upload />} disabled={Boolean(busy)} onClick={() => setImporting(true)}>{t("multiplayer:importServer")}</Button>
         </div>
       </div>
       <LoadingStatus active={Boolean(busy)}>{t("multiplayer:managedBusy")}</LoadingStatus>
@@ -116,8 +115,14 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
           {managedServers.length ? managedServers.map((server) => (
             <button type="button" key={server.id} aria-current={selectedManagedId === server.id || undefined} onClick={() => setSelectedManagedId(server.id)}>
               <strong>{server.name}</strong>
-              <span>{listedVersion(server)} · :{server.settings.port}</span>
-              <small>{t(`multiplayer:managedStatus.${server.status}`, { defaultValue: t("multiplayer:managedStatus.unknown") })}</small>
+              <span className="vx-managed-list__meta">
+                {server.source === "imported" ? <><span>{importedLabel(server)}</span>{" "}<span>{server.versionId}</span></> : <span>{server.versionId}</span>}
+                <span>:{server.settings.port}</span>
+              </span>
+              <small className="vx-managed-list__status" data-state={server.status}>
+                <i aria-hidden="true" />
+                {t(`multiplayer:managedStatus.${server.status}`, { defaultValue: t("multiplayer:managedStatus.unknown") })}
+              </small>
             </button>
           )) : <p>{t("multiplayer:noManaged")}</p>}
         </aside>
@@ -128,9 +133,17 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
               <header>
                 <div>
                   <h2>{current.name}</h2>
-                  <p>{current.source === "imported" ? `${importedLabel(current)} · ${current.versionId}` : `Vanilla ${current.versionId}`} · Java {current.javaMajor ?? t("multiplayer:javaAuto")}{current.pid ? ` · PID ${current.pid}` : ""}</p>
+                  <p className="vx-managed-meta">
+                    {current.source === "imported" ? <><span>{importedLabel(current)}</span>{" "}<span>{current.versionId}</span></> : <span>Vanilla {current.versionId}</span>}
+                    {" "}
+                    <span>Java {current.javaMajor ?? t("multiplayer:javaAuto")}</span>
+                    {current.pid ? <>{" "}<span>PID {current.pid}</span></> : null}
+                  </p>
                 </div>
-                <strong>{t(`multiplayer:managedStatus.${current.status}`, { defaultValue: t("multiplayer:managedStatus.unknown") })}</strong>
+                <strong className="vx-managed-state" data-state={current.status}>
+                  <i aria-hidden="true" />
+                  {t(`multiplayer:managedStatus.${current.status}`, { defaultValue: t("multiplayer:managedStatus.unknown") })}
+                </strong>
               </header>
               <p className="vx-managed-directory">{current.directory}</p>
               {current.error ? <p className="vx-managed-error" role="alert">{t("multiplayer:errors.processFailed")}</p> : null}
@@ -150,18 +163,29 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
                 <span>{t("multiplayer:eula.consent")} <ExternalLink url={current.eulaUrl}>Minecraft EULA</ExternalLink></span>
               </label>
               <div className="vx-action-row">
-                <Button variant="primary" icon={<Play size={14} />} disabled={Boolean(busy) || alive || !current.eulaAccepted || jarMissing} onClick={() => void startManaged()}>
+                <Button variant={creating ? "secondary" : "primary"} icon={<Play />} disabled={Boolean(busy) || alive || !current.eulaAccepted || jarMissing} onClick={() => void startManaged()}>
                   {current.installed || current.source === "imported" ? t("multiplayer:startServer") : t("multiplayer:installAndStart")}
                 </Button>
-                <Button variant="secondary" icon={<Square size={14} />} disabled={Boolean(busy) || !alive || current.status === "stopping"} onClick={() => void stopManaged(false)}>{t("multiplayer:saveAndStop")}</Button>
+                <Button variant="secondary" icon={<CircleStop />} disabled={Boolean(busy) || !alive || current.status === "stopping"} onClick={() => void stopManaged(false)}>{t("multiplayer:saveAndStop")}</Button>
                 <Button variant="ghost" disabled={Boolean(busy) || !alive} onClick={() => void stopManaged(true)}>{t("multiplayer:forceStop")}</Button>
               </div>
             </section>
 
             <section className="vx-managed-settings">
-              <Button variant="ghost" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((value) => !value)}>{t("multiplayer:serverSettings")}</Button>
+              <header className="vx-managed-section__header">
+                <button
+                  type="button"
+                  className="vx-managed-section__toggle"
+                  aria-expanded={settingsOpen}
+                  aria-controls={settingsBodyId}
+                  onClick={() => setSettingsOpen((value) => !value)}
+                >
+                  <span className="vx-managed-section__title">{t("multiplayer:serverSettings")}</span>
+                  <ChevronDown className="vx-managed-section__chevron" size={ICON.md} aria-hidden="true" data-open={settingsOpen || undefined} />
+                </button>
+              </header>
               {settingsOpen ? (
-                <div className="vx-managed-settings__body">
+                <div className="vx-managed-settings__body" id={settingsBodyId}>
                   <div className="vx-managed-fields">
                     <label>{t("multiplayer:fields.port")}<input aria-label={t("multiplayer:fields.port")} type="number" min={1} max={65535} value={settings.port} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, port: Number(event.target.value) })} /></label>
                     <label>{t("multiplayer:fields.maxPlayers")}<input aria-label={t("multiplayer:fields.maxPlayers")} type="number" min={1} max={10000} value={settings.maxPlayers} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, maxPlayers: Number(event.target.value) })} /></label>
@@ -174,14 +198,14 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
                     <label className="vx-managed-checkbox"><input type="checkbox" checked={settings.onlineMode} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, onlineMode: event.target.checked })} />{t("multiplayer:fields.onlineMode")}</label>
                     <label className="vx-managed-checkbox"><input type="checkbox" checked={settings.whitelist} disabled={alive || Boolean(busy)} onChange={(event) => setSettings({ ...settings, whitelist: event.target.checked })} />{t("multiplayer:fields.whitelist")}</label>
                   </div>
-                  <Button variant="primary" disabled={Boolean(busy) || alive} onClick={() => void updateManaged(settings)}>{t("multiplayer:saveSettings")}</Button>
+                  <Button variant="secondary" disabled={Boolean(busy) || alive} onClick={() => void updateManaged(settings)}>{t("multiplayer:saveSettings")}</Button>
                   {alive ? <p>{t("multiplayer:settingsWhileRunning")}</p> : null}
                 </div>
               ) : null}
             </section>
 
             <section className="vx-managed-console">
-              <header>
+              <header className="vx-managed-section__header">
                 <h2>{t("multiplayer:console")}</h2>
                 <label className="vx-managed-checkbox"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />{t("multiplayer:autoScroll")}</label>
               </header>
@@ -201,24 +225,26 @@ export function ManagedServerPanel({ model }: { model: ReturnType<typeof useMult
                 }}
               >
                 <input aria-label={t("multiplayer:consoleCommand")} value={consoleInput} onChange={(event) => setConsoleInput(event.target.value)} disabled={!alive || Boolean(busy)} maxLength={2048} placeholder={t("multiplayer:consolePlaceholder")} />
-                <Button variant="primary" type="submit" disabled={!alive || Boolean(busy) || !consoleInput.trim()}>{t("multiplayer:sendCommand")}</Button>
+                <Button variant="secondary" type="submit" disabled={!alive || Boolean(busy) || !consoleInput.trim()}>{t("multiplayer:sendCommand")}</Button>
               </form>
               <div className="vx-managed-player">
                 <Select className="vx-managed-player__action" aria-label={t("multiplayer:playerAction")} value={playerAction} onChange={setPlayerAction} disabled={!alive || Boolean(busy)}
                   options={["whitelist add", "whitelist remove", "op", "deop", "ban", "pardon"].map((value) => ({ value, label: t(`multiplayer:playerActions.${value}`) }))} />
-                <input aria-label={t("multiplayer:playerName")} value={player} onChange={(event) => setPlayer(event.target.value)} disabled={!alive || Boolean(busy)} maxLength={16} />
+                <input aria-label={t("multiplayer:playerName")} value={player} onChange={(event) => setPlayer(event.target.value)} disabled={!alive || Boolean(busy)} maxLength={16} placeholder={t("multiplayer:playerNamePlaceholder")} />
                 <Button variant="secondary" disabled={!alive || Boolean(busy) || !/^[A-Za-z0-9_]{3,16}$/.test(player)} onClick={() => void send(`${playerAction} ${player}`, () => setPlayer(""))}>{t("multiplayer:managePlayer")}</Button>
               </div>
             </section>
           </div>
         ) : (
           <EmptyState
+            variant="panel"
+            icon={<Server size={ICON.xl} />}
             title={t("multiplayer:emptyManaged.title")}
             description={t("multiplayer:emptyManaged.description")}
             action={!creating ? (
               <div className="vx-action-row">
                 <Button variant="primary" onClick={() => setCreating(true)}>{t("multiplayer:createServer")}</Button>
-                <Button variant="secondary" icon={<Upload size={15} />} disabled={Boolean(busy)} onClick={() => setImporting(true)}>{t("multiplayer:importServer")}</Button>
+                <Button variant="secondary" icon={<Upload />} disabled={Boolean(busy)} onClick={() => setImporting(true)}>{t("multiplayer:importServer")}</Button>
               </div>
             ) : undefined}
           />

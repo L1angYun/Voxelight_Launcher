@@ -83,11 +83,11 @@ function resize(nextWidth: number) {
 
 describe.each(["lite", "reduced-motion"] as const)("static progress under %s", (mode) => {
   it("paints completed dots with the contrast-safe indicator and repaints when it changes", async () => {
-    document.documentElement.style.setProperty("--accent", "#b4f17a");
+    document.documentElement.style.setProperty("--accent", "#0078d4");
     document.documentElement.style.setProperty("--accent-indicator", "#527b2f");
     const canvas = await render(mode);
     expect(pixels.get(canvas)!.some(dot => dot.alpha === 1 && dot.color === "#527b2f")).toBe(true);
-    expect(pixels.get(canvas)!.some(dot => dot.color === "#b4f17a")).toBe(false);
+    expect(pixels.get(canvas)!.some(dot => dot.color === "#0078d4")).toBe(false);
     document.documentElement.style.setProperty("--accent-indicator", "#315f8a");
     await act(async () => { await Promise.resolve(); });
     expect(pixels.get(canvas)!.some(dot => dot.alpha === 1 && dot.color === "#315f8a")).toBe(true);

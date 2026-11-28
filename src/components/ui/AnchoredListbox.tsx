@@ -24,6 +24,8 @@ export interface AnchoredListboxProps extends AriaAttributes {
 }
 interface Placement { left: number; top: number; width: number; maxHeight: number; anchorX: number; side: "top" | "bottom" }
 
+const POPUP_CHROME_HEIGHT = 18;
+
 function Popup({ popupRef, placement, animate, className, children }: {
   popupRef: RefObject<HTMLDivElement | null>; placement: Placement | null; animate: boolean; className?: string; children: ReactNode;
 }) {
@@ -92,7 +94,7 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
   const selected = options[selectedIndex];
   const active = enabled.includes(activeIndex) ? activeIndex : enabled.find((index) => index >= activeIndex) ?? enabled.at(-1) ?? -1;
   const animatePopup = pointerInput && !staticMotion;
-  const rowHeight = options.some((option) => option.metadata) ? 60 : 44;
+  const rowHeight = options.some((option) => option.metadata) ? 56 : 44;
   const close = useCallback((pointer = false) => {
     setPointerInput(pointer); openRef.current = false; setOpen(false); search.current = { value: "", time: -Infinity };
     // Keyboard and accessibility modes have no popup exit animation. Pointer
@@ -121,7 +123,7 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
       const gap = 8;
       if (rect.bottom <= margin || rect.top >= window.innerHeight - margin || rect.right <= margin || rect.left >= window.innerWidth - margin) { close(); return; }
       const width = Math.min(Math.max(rect.width, minimumMenuWidth), Math.max(0, window.innerWidth - margin * 2));
-      const naturalHeight = Math.min(360, (listRef.current?.scrollHeight || options.length * rowHeight) + 14);
+      const naturalHeight = Math.min(360, (listRef.current?.scrollHeight || options.length * rowHeight) + POPUP_CHROME_HEIGHT);
       const below = Math.max(0, window.innerHeight - margin - rect.bottom - gap);
       const above = Math.max(0, rect.top - margin - gap);
       const side = below >= naturalHeight || below >= above ? "bottom" : "top";
@@ -200,7 +202,7 @@ export function AnchoredListbox({ value, onChange, onOpenChange, options, disabl
     {portalRoot ? createPortal(<AnimatePresence custom={animatePopup} onExitComplete={() => { if (!openRef.current) notifyOpen(false); }}>
       {open ? <Popup key={listId} popupRef={popupRef} placement={placement} animate={animatePopup} className={popupClassName}>
         <SelectSurface glass variant="dialog" className="vx-listbox-surface">
-          <ul ref={listRef} id={listId} role="listbox" aria-label={label} className="vx-select__listbox" style={{ maxHeight: Math.max(0, (placement?.maxHeight ?? 360) - 14) }}>
+          <ul ref={listRef} id={listId} role="listbox" aria-label={label} className="vx-select__listbox" style={{ maxHeight: Math.max(0, (placement?.maxHeight ?? 360) - POPUP_CHROME_HEIGHT) }}>
             {options.map((option, index) => <li key={option.value} {...option.dataAttributes} id={`${listId}-${index}`} role="option"
               aria-selected={index === selectedIndex} aria-disabled={option.disabled || undefined} data-active={index === active}
               data-value={option.value} data-has-icon={Boolean(option.icon)} className="vx-select__option"

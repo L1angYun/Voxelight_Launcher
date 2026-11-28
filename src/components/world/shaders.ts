@@ -210,7 +210,7 @@ void main() {
   float alpha = d * vAlpha * mix(1., uPaperInk, uLight);
   if (alpha < .004) discard;
   vec3 color = mix(uPoint, uAccent, vHot);
-  o = uLight > .5 ? vec4(color, alpha) : vec4(color * alpha * (1. + vHot), 1.);
+  o = uLight > .5 ? vec4(color, alpha) : vec4(color * alpha * (1. + vHot), alpha);
 }`;
 
 export const VOXEL_VERTEX = `#version 300 es
@@ -223,7 +223,7 @@ uniform float uN, uSpan, uFront, uCharge;
 uniform float uLight;
 ${CRYSTAL_GLSL}
 out vec3 vN, vW, vL;
-out float vH, vM, vHeat, vLit, vChg, vIsland;
+out float vH, vM, vHeat, vLit, vChg, vIsland, vCr;
 void main() {
   ivec2 id = ivec2(gl_InstanceID % int(uN), gl_InstanceID / int(uN));
   vec4 f = texelFetch(uField, id, 0);
@@ -232,10 +232,10 @@ void main() {
   float m = maskM(c), cr = crystal(c, f.a, m);
   float crE = cr * cr * (3. - 2. * cr);
   float pitch = uSpan / uN;
-  float s = mix(.13, .97, m * m) * pitch * mix(1., step(.03, cr) * mix(.16, 1., crE), uLat);
+  float s = mix(.13, .97, m * m) * pitch * mix(1., smoothstep(.03, .12, cr) * mix(.16, 1., crE), uLat);
   float depth = mix(s, mix(9., 3., uLat), m * mix(1., crE * crE * crE, uLat));
   vec3 p = vec3(c.x + aPos.x * s, aPos.y > 0. ? h : h - depth, c.y + aPos.z * s);
-  vN = aNor; vW = p; vL = aPos; vH = h; vM = m; vHeat = f.a; vLit = f.b;
+  vN = aNor; vW = p; vL = aPos; vH = h; vM = m; vHeat = f.a; vLit = f.b; vCr = cr;
   float d = length(c - uOrigin);
   float isl = 1. - smoothstep(uIsland, uIsland + 10., d);
   vIsland = isl;
@@ -248,7 +248,7 @@ void main() {
 export const VOXEL_FRAGMENT = `#version 300 es
 precision highp float;
 in vec3 vN, vW, vL;
-in float vH, vM, vHeat, vLit, vChg, vIsland;
+in float vH, vM, vHeat, vLit, vChg, vIsland, vCr;
 out vec4 o;
 uniform vec3 uEye, uAccent, uSun, uHaze, uPoint;
 uniform float uExposure, uFogD, uDim, uLight, uLat, uPaperInk;
@@ -271,7 +271,8 @@ void main() {
   paper = mix(paper, uAccent, clamp(vHeat * .55 + vChg * .2, 0., .65) * uPaperInk);
   col = mix(col, paper, uLight);
   float fog = (1. - exp(-pow(length(vW - uEye) / uFogD, 2.4))) * .96;
-  o = vec4(mix(col, uHaze, fog), 1.);
+  float vis = max(smoothstep(.03, .12, vCr), 1. - uLat);
+  o = vec4(mix(uHaze, mix(col, uHaze, fog), vis), 1.);
 }`;
 
 export const SKY_FRAGMENT = `#version 300 es
@@ -282,11 +283,15 @@ uniform vec3 uHaze, uInk, uPoint;
 uniform float uHorizon, uDots, uDotPx, uLight;
 void main() {
   float t = smoothstep(0., .5, vUv.y - uHorizon);
-  vec3 c = mix(uHaze, uInk, pow(t, .55));
+  float fogT = pow(t, .55);
+  vec3 c = mix(uHaze, uInk, fogT);
+  float a = mix(mix(.38, .28, uLight), .06, fogT);
   vec2 g = fract(gl_FragCoord.xy / uDotPx) - .5;
   float d = (1. - smoothstep(.07, .13, length(g))) * .2 * uDots * smoothstep(0., .2, vUv.y - .38);
-  c = mix(c + uPoint * d, mix(c, uPoint, d), uLight);
-  o = vec4(c, 1.);
+  vec3 premul = c * a;
+  float outA = clamp(a + d * (1. - a), 0., 1.);
+  vec3 outRgb = mix(premul + uPoint * d, premul * (1. - d) + uPoint * d, uLight);
+  o = vec4(outRgb, outA);
 }`;
 
 export const THRESHOLD_FRAGMENT = `#version 300 es
@@ -320,8 +325,11 @@ uniform sampler2D uTex, uBloom;
 uniform float uAmt, uFlash;
 float dither(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 void main() {
-  vec3 c = texture(uTex, vUv).rgb + texture(uBloom, vUv).rgb * uAmt;
-  c *= 1. + uFlash;
-  c += (dither(gl_FragCoord.xy) - .5) / 255.;
-  o = vec4(c, 1.);
+  vec4 scene = texture(uTex, vUv);
+  vec3 bloom = texture(uBloom, vUv).rgb * uAmt;
+  vec3 c = (scene.rgb + bloom) * (1. + uFlash);
+  float bloomA = clamp(max(bloom.r, max(bloom.g, bloom.b)), 0., 1.);
+  float a = clamp(max(scene.a + bloomA * (1. - scene.a), max(c.r, max(c.g, c.b))), 0., 1.);
+  c += (dither(gl_FragCoord.xy) - .5) / 255. * a;
+  o = vec4(clamp(c, 0., a), a);
 }`;

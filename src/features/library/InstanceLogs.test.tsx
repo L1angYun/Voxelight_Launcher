@@ -185,6 +185,28 @@ describe("instance game log", () => {
     expect(container.querySelector(".vx-game-log__path")).toBeNull();
   });
 
+  it("refreshes the game log from an icon button in its heading", async () => {
+    await render(instanceLogs());
+    const refresh = container.querySelector<HTMLButtonElement>('.vx-section-heading button[aria-label="Refresh"]');
+    expect(refresh?.classList.contains("vx-button--icon")).toBe(true);
+    expect(refresh?.closest(".vx-section-heading")?.querySelector("h2")?.textContent).toBe("Game log");
+  });
+
+  it("shows the three empty sections as inline empty states without a placeholder log box", async () => {
+    commandMock.mockImplementation(async (name) => name === "read_game_log"
+      ? { path: null, lines: [], truncated: false } : null);
+    await render(instanceLogs());
+    const titles = [...container.querySelectorAll(".vx-empty--inline h2")].map((title) => title.textContent);
+    expect(titles).toEqual(["No launch analysis yet", "No game log yet", "No launcher logs yet"]);
+    expect(container.querySelector(".vx-empty--panel")).toBeNull();
+    expect(container.querySelector("pre.vx-log-view")).toBeNull();
+    expect(container.querySelector(".vx-game-log__toolbar")).toBeNull();
+    expect(container.querySelector('input[type="search"]')).toBeNull();
+    mockLauncher.logs = [{ timestamp: "12:00:00", level: "info", message: "Launcher ready" } as LogEntry];
+    await render(instanceLogs());
+    expect(container.querySelector("pre.vx-log-view")?.textContent).toBe("[12:00:00] Launcher ready");
+  });
+
   it("shows the path and how many tail lines were kept when truncated", async () => {
     commandMock.mockImplementation(async (name) => name === "read_game_log"
       ? { path: logPath, lines: lines.slice(0, 2), truncated: true } : null);

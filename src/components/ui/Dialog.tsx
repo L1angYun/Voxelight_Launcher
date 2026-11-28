@@ -15,6 +15,22 @@ function focusable(dialog: HTMLDialogElement): HTMLElement[] {
     && (element.checkVisibility?.({ visibilityProperty: true }) ?? true));
 }
 
+// Controls where Enter edits, opens a choice or re-selects the current tab.
+// Plain buttons are left out: Enter on them runs their action.
+const DIALOG_INPUT_CONTROLS = [
+  "input:not([type='button']):not([type='submit']):not([type='reset']):not([type='image'])",
+  "select", "textarea", "[contenteditable='true']",
+  "[role='combobox']", "[role='searchbox']", "[role='tab']", "[role='radio']", "[role='slider']", "[role='spinbutton']",
+].join(", ");
+
+// A blank line in a description starts a new paragraph, as the native confirm
+// showed it. HTML would otherwise fold the break into a single space.
+function descriptionParagraphs(description?: string): string[] {
+  if (!description) return [];
+  const parts = description.split(/\r?\n\s*\n/).map(part => part.trim()).filter(Boolean);
+  return parts.length > 1 ? parts : [description];
+}
+
 export interface DialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -41,12 +57,22 @@ export function Dialog({
   const previousFocus = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
+  const paragraphs = descriptionParagraphs(description);
+  // Every paragraph stays in the accessible description, in reading order.
+  const paragraphIds = paragraphs.map((_, index) => paragraphs.length === 1 ? descriptionId : `${descriptionId}-${index}`);
 
   const focusFirst = useCallback((dialog: HTMLDialogElement) => {
     const items = focusable(dialog);
+    // An explicit opt-in wins. Otherwise only an input control may take the
+    // first focus, because Enter there types or opens a choice instead of
+    // running a body action. A dialog without one starts on its close button
+    // (then its heading), so Enter right after opening never fires an action.
     const preferred = items.find(element => element.hasAttribute("data-dialog-autofocus"))
-      ?? items.find(element => element.matches("input, select, textarea, button:not([data-dialog-close])"));
-    (preferred ?? items[0] ?? dialog).focus();
+      ?? items.find(element => element.matches(DIALOG_INPUT_CONTROLS))
+      ?? items.find(element => element.hasAttribute("data-dialog-close"))
+      ?? dialog.querySelector<HTMLElement>(".vx-dialog__header h2")
+      ?? dialog;
+    preferred.focus();
   }, []);
 
   useEffect(() => {
@@ -123,7 +149,7 @@ export function Dialog({
       ref={ref}
       className={cn("vx-dialog", className)}
       aria-labelledby={titleId}
-      aria-describedby={description ? descriptionId : undefined}
+      aria-describedby={paragraphIds.length ? paragraphIds.join(" ") : undefined}
       tabIndex={-1}
       onCancel={(event) => {
         event.preventDefault();
@@ -147,12 +173,12 @@ export function Dialog({
     >
       <div className="vx-dialog__header">
         <div>
-          <h2 id={titleId}>{title}</h2>
-          {description ? <p id={descriptionId}>{description}</p> : null}
+          <h2 id={titleId} tabIndex={-1}>{title}</h2>
+          {paragraphs.map((paragraph, index) => <p key={index} id={paragraphIds[index]}>{paragraph}</p>)}
         </div>
         <IconButton label={closeLabel ?? t("common:a11y.closeDialog")} icon={<X size={18} />} data-dialog-close="true" onClick={() => onOpenChange(false)} />
       </div>
-      <div className="vx-dialog__body">{children}</div>
+      {children != null ? <div className="vx-dialog__body">{children}</div> : null}
       {footer ? <div className="vx-dialog__footer">{footer}</div> : null}
     </dialog>
     </SelectionProjectionContext.Provider>

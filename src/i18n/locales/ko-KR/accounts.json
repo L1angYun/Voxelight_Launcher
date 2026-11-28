@@ -3,6 +3,10 @@
   "subtitle": "계정, 온라인 외형 및 로컬 미리보기를 관리합니다.",
   "listTitle": "계정",
   "addAccount": "계정 추가",
+  "status": {
+    "profileUnavailable": "외형을 사용할 수 없음",
+    "sessionUnverified": "세션을 확인할 수 없음"
+  },
   "loginTitle": "계정 추가",
   "loginDescription": "로그인 방식 또는 오프라인 플레이를 선택하세요.",
   "loginMethods": "로그인 방식",
@@ -52,7 +56,7 @@
     "start": "Microsoft 로그인 시작",
     "deviceInstruction": "Microsoft 공식 페이지에서 아래 코드를 입력하세요:",
     "openVerification": "Microsoft 인증 페이지 열기",
-    "waiting": "인증 대기 중 · {{minutes}}:{{seconds}} 남음 · {{interval}}초마다 확인",
+    "waiting": "인증 대기 중입니다. {{minutes}}:{{seconds}} 남았으며 {{interval}}초마다 확인합니다.",
     "cancel": "인증 취소"
   },
   "offline": {
@@ -93,8 +97,8 @@
     "unavailable": "3D 미리보기를 사용할 수 없습니다. 다시 시도하거나 다른 미리보기 소스를 선택하세요.",
     "loading": "계정 외형 불러오는 중…",
     "noAccountSkin": "사용 가능한 계정 스킨이 없습니다",
-    "localNotice": "로컬 미리보기 전용 · 계정을 변경하지 않습니다",
-    "accountNotice": "온라인 계정 소스 · 아래 변경은 명시적 작업 시에만 적용됩니다",
+    "localNotice": "로컬 미리보기 전용이며 계정을 변경하지 않습니다.",
+    "accountNotice": "온라인 계정 소스입니다. 아래 변경은 명시적으로 작업해야 적용됩니다.",
     "import": "PNG 가져오기",
     "resetView": "시점 초기화",
     "restoreDefault": "기본 미리보기 복원",
@@ -107,8 +111,8 @@
   },
   "model": {
     "auto": "자동",
-    "classic": "클래식 · 넓은 팔",
-    "slim": "슬림 · 가는 팔"
+    "classic": "클래식(넓은 팔)",
+    "slim": "슬림(가는 팔)"
   },
   "animation": {
     "idle": "대기",
@@ -123,11 +127,11 @@
     "fallback": "선택한 기본 캐릭터를 사용할 수 없습니다. 다시 시도하거나 로컬 미리보기를 가져오세요.",
     "steve": {
       "name": "Steve",
-      "description": "클래식 · 검증된 클라이언트"
+      "description": "클래식 모델, 검증된 클라이언트"
     },
     "alex": {
       "name": "Alex",
-      "description": "슬림 · 검증된 클라이언트"
+      "description": "슬림 모델, 검증된 클라이언트"
     }
   },
   "notice": {

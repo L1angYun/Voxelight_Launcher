@@ -6,7 +6,6 @@
   "importPack": "Import modpack",
   "recentInstances": "Recent instances",
   "instance": "Current instance",
-  "versionDirectory": "Use version directory",
   "vanilla": "Vanilla",
   "javaUnknown": "Java unknown",
   "javaVersion": "Java {{major}}",
@@ -16,7 +15,7 @@
   "stop": "Stop",
   "cancelPreparation": "Cancel preparation",
   "files": "{{completed}} / {{total}} files",
-  "filesUnknown": "{{completed}} files prepared · total unknown",
+  "filesUnknown": "{{completed}} files prepared, total unknown",
   "progress": "Preparation progress",
   "stages": {
     "queued": "Waiting to prepare",
@@ -30,14 +29,6 @@
     "complete": "Preparation complete"
   },
   "openFolder": "Open folder",
-  "installTitle": "Install game",
-  "installDescription": "Choose a version. Voxelight will verify and prepare its files.",
-  "version": "Game version",
-  "instanceNameOptional": "Instance name (optional)",
-  "instanceNamePlaceholder": "Name this world",
-  "install": "Install",
-  "installing": "Installing…",
-  "noVersions": "No versions available",
   "defaultPreview": "Default character preview",
   "accountPreview": "{{username}}'s character preview",
   "previewLoading": "Loading account appearance…",
@@ -51,5 +42,5 @@
   "anim.idle": "Idle",
   "anim.walk": "Walk",
   "anim.run": "Run",
-  "progressMilestone": "{{stage}} · {{percent}}"
+  "progressMilestone": "{{stage}}, {{percent}}"
 }

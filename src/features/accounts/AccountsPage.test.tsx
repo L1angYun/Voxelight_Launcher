@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -472,6 +475,113 @@ describe("accounts and appearance", () => {
     expect(mockLauncher.reload).toHaveBeenCalledTimes(3);
   });
 
+  it("flags a row whose session refresh failed until a later refresh succeeds", async () => {
+    commandMock.mockImplementationOnce(async () => {
+      throw { code: "auth.credentialsRejected", params: {} };
+    });
+    await render();
+    await click("Refresh CyanFixture session");
+    const row = container.querySelector<HTMLElement>('.vx-account-row[data-status="sessionUnverified"]');
+    const warning = row?.querySelector<HTMLElement>(".vx-account-row__warning");
+    expect(warning?.textContent).toBe("Session not verified");
+    expect(warning?.querySelector(".lucide-triangle-alert")).not.toBeNull();
+    expect(row?.querySelector(".vx-account-choice")?.getAttribute("aria-describedby")).toBe(warning?.id);
+    // The warning replaces the account type line, so the row keeps its two-line height.
+    expect(row?.querySelectorAll(".vx-account-row__identity small")).toHaveLength(1);
+
+    await click("Refresh CyanFixture session");
+    expect(container.querySelector(".vx-account-row[data-status]")).toBeNull();
+    expect(container.textContent).toContain("Microsoft");
+  });
+
+  it("clears the session warning when the same account signs in again", async () => {
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "refresh_account") throw { code: "auth.credentialsRejected", params: {} };
+      // A Microsoft sign-in keeps the account id of the profile it signs in to.
+      if (name === "poll_microsoft_login") return { status: "complete", retryAfterSeconds: 0, account: { ...microsoft } };
+      return base(name, args);
+    });
+    const rowOf = (name: string) => [...container.querySelectorAll<HTMLElement>(".vx-account-row")]
+      .find((row) => row.textContent?.includes(name));
+    await render();
+    await click("Refresh CyanFixture session");
+    await click("Refresh AmberFixture session");
+    expect(rowOf("CyanFixture")?.dataset.status).toBe("sessionUnverified");
+    expect(rowOf("AmberFixture")?.dataset.status).toBe("sessionUnverified");
+
+    await click("Add account");
+    vi.useFakeTimers();
+    await click("Start Microsoft login");
+    await act(async () => vi.advanceTimersByTimeAsync(device.interval * 1000));
+    expect(commandMock).toHaveBeenCalledWith("poll_microsoft_login", { sessionId: device.sessionId });
+    expect(mockLauncher.reload).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("dialog")?.open).toBe(false);
+    expect(rowOf("CyanFixture")?.dataset.status).toBeUndefined();
+    expect(rowOf("CyanFixture")?.querySelector(".vx-account-row__warning")).toBeNull();
+    // Signing in to one account says nothing about the others.
+    expect(rowOf("AmberFixture")?.dataset.status).toBe("sessionUnverified");
+  });
+
+  it("does not flag a row when a refresh is only rate limited", async () => {
+    commandMock.mockImplementationOnce(async () => {
+      throw { code: "auth.rateLimited", params: {} };
+    });
+    await render();
+    await click("Refresh CyanFixture session");
+    expect(container.querySelector("[role=alert]")?.textContent).toContain("Too many authentication requests");
+    expect(container.querySelector(".vx-account-row[data-status]")).toBeNull();
+  });
+
+  it("warns on the current row when its account appearance cannot be loaded", async () => {
+    mockLauncher.accountAppearance = { ...mockLauncher.accountAppearance, profile: null, error: "Synthetic profile failure" };
+    await render();
+    const rows = [...container.querySelectorAll<HTMLElement>(".vx-account-row")];
+    const current = rows.find((row) => row.textContent?.includes("CyanFixture"));
+    const other = rows.find((row) => row.textContent?.includes("AmberFixture"));
+    expect(current?.dataset.status).toBe("profileUnavailable");
+    expect(current?.querySelector(".vx-account-row__warning")?.textContent).toBe("Appearance unavailable");
+    expect(other?.dataset.status).toBeUndefined();
+  });
+
+  it("adds accounts from a labelled icon button", async () => {
+    await render("zh-CN");
+    const add = container.querySelector<HTMLButtonElement>(".vx-account-list .vx-account-section-heading button");
+    expect(add?.classList.contains("vx-button--icon")).toBe(true);
+    expect(add?.getAttribute("aria-label")).toBe("添加账号");
+    expect(add?.getAttribute("title")).toBe("添加账号");
+  });
+
+  it("puts the appearance refresh beside the profile name as an icon button", async () => {
+    await render();
+    const refresh = container.querySelector<HTMLButtonElement>('.vx-appearance-current button[aria-label="Refresh appearance"]');
+    expect(refresh?.classList.contains("vx-button--icon")).toBe(true);
+    expect(container.querySelector('.vx-appearance-panel .vx-account-section-heading button[aria-label="Refresh appearance"]')).toBeNull();
+    await act(async () => refresh!.click());
+    expect(mockLauncher.accountAppearance.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the appearance refresh reachable when the profile failed but a cached skin is shown", async () => {
+    mockLauncher.accountAppearance = { ...mockLauncher.accountAppearance, profile: null, error: "Synthetic profile failure" };
+    await render();
+    expect(container.querySelector(".vx-appearance-current strong")?.textContent).toBe("CyanFixture");
+    expect(container.querySelector('.vx-appearance-current button[aria-label="Refresh appearance"]')).not.toBeNull();
+  });
+
+  it("reveals the row actions of other accounts on hover or keyboard focus and keeps them reachable", () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "accounts.css"), "utf8").replace(/\s+/g, " ");
+    const hidden = /\.vx-account-row:not\(\[data-selected="true"\]\):not\(:hover\):not\(:focus-within\) \.vx-account-row__actions \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    // Clipped, never removed: display or visibility would drop Refresh and Remove from the tab order.
+    expect(hidden).toContain("position: absolute;");
+    // Anchored at the row's end: a box at the row's start would push the clipped buttons past the window edge.
+    expect(hidden).toContain("inset-inline-end: var(--space-2);");
+    expect(hidden).toContain("clip-path: inset(50%);");
+    expect(hidden).toContain("overflow: hidden;");
+    expect(hidden).not.toMatch(/display|visibility/);
+    expect(css).not.toMatch(/\.vx-account-row__actions \{[^}]*display: none/);
+    expect(css).toMatch(/\.vx-account-row \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;[^}]*min-height: var\(--row-lg\);/);
+  });
+
   it("reloads the removed row and explains when credential cleanup must be retried", async () => {
     commandMock.mockImplementationOnce(async () => {
       throw { code: "auth.credentialCleanupPending", params: {} };
@@ -575,9 +685,9 @@ describe("accounts and appearance", () => {
 
   it("loads a URL only into the local preview and never claims an online update", async () => {
     await render();
-    expect(container.querySelector('[aria-label="Online account source · changes below require an explicit action"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Shown from your online account. Changes below require an explicit action."]')).not.toBeNull();
     await click("Local preview");
-    expect(container.querySelector('[aria-label="Local preview only · does not change your account"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Local preview only. It does not change your account."]')).not.toBeNull();
     await fill("Online skin URL", "https://example.invalid/skin.png");
     await click("Load URL");
     expect(mocks.character).toHaveBeenCalledWith(expect.objectContaining({ skinUrl: "https://example.invalid/skin.png" }));

@@ -18,7 +18,11 @@ test("Lite unloads the 3D world and glass WebGL contexts and keeps the home char
   expect(canvases[0].still).toBe(true);
   expect(canvases[0].width).toBeGreaterThan(100);
   await expect(page.locator(".vx-home__character canvas")).toHaveAttribute("role", "img");
-  // The 3D world and glass capability canvases hold no active WebGL backbuffer in Lite mode.
+  // The 3D world and glass capability canvases hold no active WebGL backbuffer in Lite mode,
+  // and the ambient light layer falls back to frozen CSS gradients with zero canvases.
+  await expect(page.locator(".vx-ambient")).toBeVisible();
+  await expect(page.locator(".vx-ambient")).toHaveAttribute("data-ambient-mode", "static");
+  await expect(page.locator(".vx-ambient-canvas")).toHaveCount(0);
   await expect(page.locator(".vx-global-scene")).toHaveAttribute("data-world-tier", "css");
   await expect(page.locator(".vx-global-scene")).toHaveAttribute("data-world-frames", "0");
   await expect(page.locator(".vx-glass-provider")).toHaveAttribute("data-glass-mode", "lite");

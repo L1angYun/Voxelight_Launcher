@@ -12,9 +12,11 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { command, type Instance } from "../../lib/launcher";
+import { normalizeError } from "../../lib/errors";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { instanceTabRegistry } from "../../app/registry";
 import { Button, IconButton } from "../../components/ui/Button";
+import { useConfirm } from "../../components/ui/ConfirmDialog";
 import { InstanceOverview } from "./InstanceOverview";
 import { InstanceContent } from "./InstanceContent";
 import { InstanceWorlds } from "./InstanceWorlds";
@@ -25,11 +27,15 @@ import { InstanceIdentity } from "./InstanceIdentity";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
+import { Dialog } from "../../components/ui/Dialog";
 import "./instance-detail.css";
 import { motionDuration } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 import { loaderText } from "./utils";
+import { errorText } from "./utils";
+import { instanceIssueBlocksLaunch } from "../../lib/gameFolders";
 import { GlassSurface } from "../../visual/glass/GlassSystem";
+import { ICON } from "../../design/icons";
 
 const tabIcons = {
   overview: Box,
@@ -39,8 +45,9 @@ const tabIcons = {
   settings: Settings2,
 };
 
-function InstanceManageMenu({ label, title, removeLabel, onRemove }: {
+function InstanceManageMenu({ label, title, removeLabel, onRemove, deleteLabel, onDelete }: {
   label: string; title: string; removeLabel: string; onRemove: () => void;
+  deleteLabel?: string; onDelete?: () => void;
 }) {
   const { tier } = useMotionTier();
   const id = useId();
@@ -63,6 +70,14 @@ function InstanceManageMenu({ label, title, removeLabel, onRemove }: {
     if (detailsRef.current) detailsRef.current.open = false;
     syncOpen(false);
   }, [syncOpen]);
+  // A chosen action opens a modal confirmation or dialog. The menu closes first
+  // so its Escape handler cannot swallow the dialog's Escape, and the dialog
+  // returns focus to the menu button instead of an unmounted menu item.
+  const choose = (action: () => void) => {
+    close();
+    summaryRef.current?.focus({ preventScroll: true });
+    action();
+  };
   useEffect(() => {
     if (open || !mounted) return;
     const duration = motionDuration(tier, "menuExit") * 1000;
@@ -120,7 +135,7 @@ function InstanceManageMenu({ label, title, removeLabel, onRemove }: {
         if (open && event.key === "Tab" && !event.shiftKey) {
           event.preventDefault(); popupRef.current?.querySelector("button")?.focus({ preventScroll: true });
         }
-      }}><MoreHorizontal size={18} aria-hidden="true" /></summary>
+      }}><MoreHorizontal size={ICON.md} aria-hidden="true" /></summary>
     {mounted && portalRoot ? createPortal(<div ref={popupRef} id={id} popover="manual" className="vx-detail-manage__popover"
       data-open={open} inert={!open || undefined} aria-hidden={!open || undefined}
       style={{ position: "fixed", opacity: 1, left: placement?.left ?? 16, top: placement?.top ?? 16, width: placement?.width ?? 168,
@@ -136,7 +151,8 @@ function InstanceManageMenu({ label, title, removeLabel, onRemove }: {
         close(); next?.focus({ preventScroll: true });
       }}>
       <GlassSurface variant="dialog" className="vx-detail-manage__menu">
-        <button type="button" onClick={onRemove}>{removeLabel}</button>
+        <button type="button" onClick={() => choose(onRemove)}>{removeLabel}</button>
+        {deleteLabel && onDelete ? <button type="button" className="vx-destructive" onClick={() => choose(onDelete)}>{deleteLabel}</button> : null}
       </GlassSurface>
     </div>, portalRoot) : null}
   </details>;
@@ -154,12 +170,18 @@ export function InstanceDetailPage({
   onLaunch: () => void;
 }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const { run } = useLauncher();
   const [tab, setTab] = useState<InstanceTab>("overview");
   useEffect(() => setTab("overview"), [instance.id]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [dependants, setDependants] = useState<string[]>([]);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const [recycleUnavailable, setRecycleUnavailable] = useState(false);
   const tabs = instanceTabRegistry.enabled({});
-  const remove = () => {
-    if (!window.confirm(t("library:removeConfirm", { name: instance.name })))
+  const remove = async () => {
+    if (!await confirm(t("library:removeConfirm", { name: instance.name }), { tone: "danger" }))
       return;
     void run("instance.remove", async () => {
       await command("remove_instance", { instanceId: instance.id });
@@ -167,12 +189,40 @@ export function InstanceDetailPage({
       onBack();
     });
   };
+  const removeFiles = () => {
+    void run("instance.delete", async () => {
+      setDeleteError("");
+      setRecycleUnavailable(false);
+      setDependants(await command<string[]>("list_instance_dependants", { instanceId: instance.id }));
+      setDeleteOpen(true);
+    });
+  };
+  const destroy = async (permanent: boolean) => {
+    if (permanent && !await confirm(t("library:deletePermanentConfirm", { name: instance.name }), { tone: "danger" })) return;
+    void run("instance.delete", async () => {
+      setDeleteBusy(true);
+      try {
+        await command("delete_instance", { instanceId: instance.id, confirmed: true, permanent });
+        setDeleteOpen(false);
+        await onChanged();
+        onBack();
+      } catch (cause) {
+        const fault = normalizeError(cause);
+        setDeleteError(errorText(fault.code, t, fault.params));
+        if (fault.code === "instance.recycleUnavailable") setRecycleUnavailable(true);
+      } finally {
+        setDeleteBusy(false);
+      }
+    });
+  };
+  const blockedText = instance.issue ? t(`library:instanceIssue.${instance.issue}`) : "";
+  const blocksLaunch = instanceIssueBlocksLaunch(instance.issue);
   return (
     <PageShell className="vx-detail-page">
       <PageHeader className="vx-detail-header">
         <IconButton
           label={t("common:actions.back")}
-          icon={<ArrowLeft size={18} />}
+          icon={<ArrowLeft />}
           onClick={onBack}
         />
         <div className="vx-detail-header__identity">
@@ -186,19 +236,22 @@ export function InstanceDetailPage({
           />
           <div>
             <h1 tabIndex={-1} title={instance.name}>{instance.name}</h1>
-            <p>
-              {instance.versionId}
-              <span aria-hidden="true"> · </span>
-              {loaderText(instance, t)}
+            <p className="vx-detail-header__meta">
+              <span>{instance.versionId}</span>{" "}
+              <span className="vx-detail-header__meta-secondary">{loaderText(instance, t)}</span>
             </p>
           </div>
         </div>
-        <Button variant="primary" icon={<Play size={15} />} onClick={onLaunch}>
+        <Button variant="primary" icon={<Play />} disabled={blocksLaunch}
+          title={blocksLaunch ? blockedText : undefined} onClick={onLaunch}>
           {t("common:actions.launch")}
         </Button>
         <InstanceManageMenu key={instance.id} label={t("library:manageInstance", { name: instance.name })}
-          title={t("common:actions.manage")} removeLabel={t("library:remove")} onRemove={remove} />
+          title={t("common:actions.manage")} removeLabel={t("library:remove")} onRemove={remove}
+          deleteLabel={instance.kind === "version" ? t("library:deleteFiles") : undefined}
+          onDelete={instance.kind === "version" ? removeFiles : undefined} />
       </PageHeader>
+      {instance.issue ? <p className="vx-inline-notice" role="alert">{blockedText}</p> : null}
       <div className="vx-detail-layout vx-workspace">
         <aside className="vx-detail-context">
           <Segmented className="vx-detail-selection" semantic="tabs" orientation="vertical" fill
@@ -207,7 +260,7 @@ export function InstanceDetailPage({
             options={tabs.map((item) => {
               const id = item.id as typeof tab;
               const Icon = tabIcons[id];
-              return { value: id, icon: <Icon size={16} aria-hidden="true" />, label: t(`library:${item.labelKey}`) };
+              return { value: id, icon: <Icon size={ICON.md} aria-hidden="true" />, label: t(`library:${item.labelKey}`) };
             })} />
         </aside>
         <SectionPanel selectionKey={tab}
@@ -242,6 +295,36 @@ export function InstanceDetailPage({
           ) : null}
         </SectionPanel>
       </div>
+      <Dialog open={deleteOpen} onOpenChange={(open) => { if (!open) setDeleteOpen(false); }}
+        title={t("library:deleteFiles")}
+        description={t("library:deleteConfirm", { name: instance.name })}
+        footer={<>
+          <Button variant="ghost" onClick={() => setDeleteOpen(false)}>{t("common:actions.cancel")}</Button>
+          {dependants.length === 0 ? (
+            <>
+              <Button variant="secondary" disabled={deleteBusy} data-delete-permanent
+                data-delete-permanent-fallback={recycleUnavailable || undefined}
+                {...(recycleUnavailable ? { "data-dialog-autofocus": true } : {})} onClick={() => destroy(true)}>
+                {t("library:deletePermanently")}
+              </Button>
+              {recycleUnavailable ? null : (
+                <Button variant="primary" disabled={deleteBusy} data-delete-recycle data-dialog-autofocus onClick={() => destroy(false)}>
+                  {t("library:moveToRecycleBin")}
+                </Button>
+              )}
+            </>
+          ) : null}
+        </>}>
+        {dependants.length ? (
+          <div role="alert">
+            <p>{t("library:deleteDependants")}</p>
+            <ul>{dependants.map((name) => <li key={name}>{name}</li>)}</ul>
+          </div>
+        ) : (
+          <p>{t(recycleUnavailable ? "library:deleteRecycleUnavailable" : "library:deleteRecycleHint")}</p>
+        )}
+        {deleteError ? <p role="alert">{deleteError}</p> : null}
+      </Dialog>
     </PageShell>
   );
 }

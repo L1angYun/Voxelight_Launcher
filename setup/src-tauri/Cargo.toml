@@ -1,0 +1,44 @@
+[package]
+name = "voxelight-setup"
+version = "0.7.0-beta.3"
+description = "Voxelight Setup front end for the Voxelight Launcher Windows installer"
+authors = ["Voxelight Launcher contributors"]
+license = "GPL-3.0-only"
+repository = "https://github.com/L1angYun/Voxelight_Launcher"
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "voxelight_setup_lib"
+crate-type = ["rlib"]
+
+[features]
+# Embeds dist/setup in the executable and serves it from the tauri:// origin.
+# Without it Tauri builds in development mode: no UI is embedded and the window
+# loads build.devUrl. build.rs refuses a release build that lacks it.
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+sha2 = "0.10"
+serde_json = "1"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+tokio = { version = "1", features = ["fs", "io-util", "process", "sync", "time", "rt-multi-thread"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "System_UserProfile", "UI_ViewManagement", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_Globalization"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"

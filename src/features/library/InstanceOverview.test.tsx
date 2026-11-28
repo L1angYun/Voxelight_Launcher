@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import { createLauncherI18n } from "../../i18n";
 import { command, type Instance } from "../../lib/launcher";
+import { ConfirmContext, type ConfirmFn } from "../../components/ui/ConfirmDialog";
 import { InstanceOverview } from "./InstanceOverview";
 
 const commandMock = vi.mocked(command);
+const confirmMock = vi.fn<ConfirmFn>(async () => true);
 let root: Root;
 let container: HTMLDivElement;
 
@@ -57,12 +59,15 @@ async function render() {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
   await act(async () => root.render(createElement(I18nextProvider, { i18n },
-    createElement(InstanceOverview, { instance, onChanged: vi.fn(async () => {}) }))));
+    createElement(ConfirmContext.Provider, { value: confirmMock },
+      createElement(InstanceOverview, { instance, onChanged: vi.fn(async () => {}) })))));
 }
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   commandMock.mockReset();
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(true);
   commandMock.mockImplementation(async (name) => name === "list_instance_backups"
     ? { backups: [], warnings: [], recovery: null }
     : null);
@@ -102,7 +107,6 @@ describe("instance overview backups", () => {
   });
 
   it("confirms and completes a pack-update recovery with the instance name", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     let recovered = false;
     commandMock.mockImplementation(async (name) => {
       if (name === "list_instance_backups") return {
@@ -115,10 +119,16 @@ describe("instance overview backups", () => {
       return null;
     });
     await render();
+    // Cancelling leaves the interrupted state for the user to decide later.
+    confirmMock.mockResolvedValueOnce(false);
     await act(async () => button("Recover interrupted modpack update")!.click());
-    expect(confirm).toHaveBeenCalledWith(
+    expect(confirmMock).toHaveBeenCalledWith(
       `Undo the interrupted modpack update of "${instance.name}" and reinstate its original directory once the copies are verified?`,
     );
+    expect(commandMock).not.toHaveBeenCalledWith("recover_instance_restore", expect.anything());
+    expect(button("Recover interrupted modpack update")).toBeDefined();
+    await act(async () => button("Recover interrupted modpack update")!.click());
+    expect(confirmMock).toHaveBeenCalledTimes(2);
     expect(commandMock).toHaveBeenCalledWith("recover_instance_restore", { instanceId: instance.id });
     expect(container.textContent).toContain(
       "The interrupted modpack update was undone; the instance is as it was before the update.",
@@ -138,7 +148,6 @@ describe("instance overview backups", () => {
       "The backup restore could not finish. The original directory was restored.",
     ],
   ])("reports a %s recovery failure with the operation's wording", async (code, packText, backupText) => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     let kind: "packUpdate" | undefined = "packUpdate";
     commandMock.mockImplementation(async (name) => {
       if (name === "list_instance_backups") return {
@@ -160,5 +169,28 @@ describe("instance overview backups", () => {
     kind = undefined;
     await act(async () => button("Recover interrupted modpack update")!.click());
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(backupText);
+  });
+});
+
+describe("instance overview layout", () => {
+  it("lays the backup picker and the restore button out on one row", async () => {
+    await render();
+    const row = container.querySelector<HTMLElement>(".vx-backup-restore")!;
+    expect(row.querySelector('[role="combobox"]')).not.toBeNull();
+    expect(row.lastElementChild?.textContent).toBe("Restore backup");
+  });
+
+  it("puts the personal backup first and the Modrinth options in a fieldset before their export button", async () => {
+    await render();
+    const section = button("Export personal backup")!.closest("section")!;
+    const fieldset = section.querySelector("fieldset")!;
+    expect(fieldset.querySelector("legend")?.textContent).toBe("Include in the Modrinth modpack");
+    expect(fieldset.contains(button("Export personal backup")!)).toBe(false);
+    expect(button("Export personal backup")!.compareDocumentPosition(fieldset) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const pack = button("Export Modrinth modpack")!;
+    expect(fieldset.contains(pack)).toBe(true);
+    const boxes = [...fieldset.querySelectorAll('input[type="checkbox"]')];
+    expect(boxes).toHaveLength(4);
+    expect(boxes.every((box) => box.compareDocumentPosition(pack) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 });

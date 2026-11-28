@@ -1,41 +1,36 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 @layer features {
-  .vx-game-log__heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
-  }
   .vx-game-log__toolbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
   }
-  .vx-game-log__search { flex: 1 1 220px; min-width: 0; }
+  .vx-game-log__search { flex: 1 1 280px; min-width: 0; }
   .vx-game-log__path {
     margin: 0;
     color: var(--text-tertiary);
-    font: var(--weight-regular) var(--text-xs)/1.5 var(--font-mono);
+    font: var(--type-code);
     overflow-wrap: anywhere;
   }
+  /* The log reads from a sunken well, like the launcher log below it. */
   .vx-game-log__lines {
     display: grid;
-    gap: var(--space-1);
     max-height: 420px;
     overflow: auto;
-    padding: var(--space-3);
+    padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-sm);
-    background: var(--bg-base);
+    background: var(--surface-sunken);
+    box-shadow: var(--edge-shade);
   }
   .vx-game-log__line {
     display: flex;
     align-items: baseline;
     gap: var(--space-2);
     padding: var(--space-1) 0;
-    border-bottom: 1px solid var(--hairline);
+    border-bottom: 1px dotted var(--border-subtle);
     color: var(--text-secondary);
-    font: var(--weight-regular) var(--text-xs)/1.65 var(--font-mono);
+    font: var(--type-code);
   }
   .vx-game-log__line:last-child { border-bottom: 0; }
   .vx-game-log__time {
@@ -48,21 +43,21 @@
     padding: 0 var(--space-2);
     border-radius: var(--radius-sm);
     color: var(--text-tertiary);
-    background: var(--surface-hover);
+    background: var(--fill-hover);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: var(--tracking-caps);
   }
   .vx-game-log__level[data-level="error"] {
     color: var(--danger);
-    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    background: var(--danger-soft);
   }
   .vx-game-log__level[data-level="warn"] {
     color: var(--warning);
-    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    background: var(--warning-soft);
   }
   .vx-game-log__level[data-level="info"] {
     color: var(--info);
-    background: color-mix(in srgb, var(--info) 14%, transparent);
+    background: var(--info-soft);
   }
   .vx-game-log__thread {
     flex: none;
@@ -80,6 +75,9 @@
     margin: 0;
     padding: var(--space-4) var(--space-1);
     color: var(--text-secondary);
-    font-size: var(--text-sm);
+    font: var(--type-control);
   }
+}
+@layer overrides {
+  [data-high-contrast="true"] .vx-game-log__lines { box-shadow: inset 0 0 0 1px var(--border-strong); }
 }

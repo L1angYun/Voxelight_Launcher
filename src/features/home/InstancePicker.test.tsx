@@ -46,7 +46,7 @@ async function render(instances = choices, selected = "alpha") {
   await i18n.initPromise;
   await act(async () => root.render(createElement(I18nextProvider, { i18n },
     createElement("div", { style: { overflow: "hidden", transform: "translateX(0)" } },
-      createElement(InstancePicker, { instance: instances.find((item) => item.id === selected), instances, versionId: "1.21.1", onSelectInstance: onSelect })),
+      createElement(InstancePicker, { instance: instances.find((item) => item.id === selected), instances, onSelectInstance: onSelect })),
     createElement("button", { id: "outside" }, "Outside"))));
 }
 
@@ -83,7 +83,7 @@ describe("InstancePicker", () => {
     expect(trigger().textContent).toContain(long);
     await act(async () => trigger().click());
     const selected = listbox()!.querySelector('[role="option"][aria-selected="true"]')!;
-    expect(selected.textContent).toContain("1.21.1 · fabric 0.16.5");
+    expect(selected.textContent).toContain("1.21.1, fabric 0.16.5");
     expect(selected.querySelector("svg[data-selected-mark]")).not.toBeNull();
     expect(selected.querySelector<HTMLElement>("[title]")!.title).toBe(long);
     await act(async () => listbox()!.querySelector<HTMLElement>('[data-instance-id="beta"]')!.click());
@@ -99,7 +99,7 @@ describe("InstancePicker", () => {
     expect(document.activeElement).toBe(trigger());
     expect(activeOption()?.getAttribute("data-instance-id")).toBe("alpha");
     await press("End");
-    expect(activeOption()?.hasAttribute("data-version-directory")).toBe(true);
+    expect(activeOption()?.getAttribute("data-instance-id")).toBe("beta");
     await press("Home");
     await press("ArrowDown");
     expect(activeOption()?.getAttribute("data-instance-id")).toBe("alpine");
@@ -109,13 +109,13 @@ describe("InstancePicker", () => {
     expect(trigger().getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("commits the explicit version-directory option with Space", async () => {
+  it("commits the last instance option with Space", async () => {
     await render();
     await press(" ");
     await press("End");
-    expect(activeOption()?.textContent).toContain("Use version directory");
+    expect(activeOption()?.textContent).toContain("Beta world");
     await press(" ");
-    expect(onSelect).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("beta");
   });
 
   it("cancels with Escape and lets Tab commit without preventing native focus movement", async () => {

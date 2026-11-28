@@ -381,6 +381,19 @@ fn u0272_every_download_entry_resolves_auto_through_the_session_verdict() {
         assert!(body.contains("crate::source_select::with_effective_source(state, config).await?"));
         minecraft.replace_range(start..end, "");
     }
+    // Synchronous local library scanning performs no network requests; it only
+    // filters which already-cached manifests are trusted for the configured source.
+    {
+        let start = minecraft.find("fn scan_versions_with_data_dir(").unwrap();
+        let end = start + minecraft[start..].find("\n}").unwrap();
+        minecraft.replace_range(start..end, "");
+        let start = minecraft.find("pub(crate) fn scan_versions_at_root(").unwrap();
+        let end = start + minecraft[start..].find("\n}").unwrap();
+        let body = &minecraft[start..end];
+        assert!(body.contains("read_cached_manifests_sync(dir, download_source)"));
+        assert!(!body.contains("fetch_") && !body.contains("state.client"));
+        minecraft.replace_range(start..end, "");
+    }
     let sources = [
         ("minecraft.rs", minecraft),
         ("loaders.rs", production(include_str!("loaders.rs"))),

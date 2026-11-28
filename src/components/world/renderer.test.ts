@@ -103,6 +103,8 @@ function glBoundary(options: { float?: boolean; floatComplete?: boolean; timer?:
       passes.push({ mrt: (attachments?.size ?? 0) === 2, width, uniforms: new Map(uniforms), field: boundTextures.get(2) });
     },
     blendFunc: (source: number, destination: number) => blends.push([source, destination]),
+    blendFuncSeparate: (sourceRgb: number, destinationRgb: number, sourceAlpha: number, destinationAlpha: number) =>
+      blends.push([sourceRgb, destinationRgb, sourceAlpha, destinationAlpha]),
     drawArraysInstanced: (_mode: number, _first: number, _count: number, count: number) => {
       instances.push(count);
       const sources = linkedSources.get(currentProgram!);
@@ -562,7 +564,9 @@ describe("WebGL renderer boundary", () => {
     r.setPalette({ ink: [1, 1, 1], point: [.1, .1, .1], accent: [.3, .6, .2], haze: [.95, .95, .95], light: true });
     r.draw(frame(), .016);
     expect(t.pointCounts).toEqual([65536]);
-    expect(t.blends.at(-1)).toEqual([t.gl.SRC_ALPHA, t.gl.ONE_MINUS_SRC_ALPHA]);
+    // Straight-alpha ink over the transparent premultiplied sky must accumulate
+    // coverage, not alpha squared, or the paper shows through the ridge.
+    expect(t.blends.at(-1)).toEqual([t.gl.SRC_ALPHA, t.gl.ONE_MINUS_SRC_ALPHA, t.gl.ONE, t.gl.ONE_MINUS_SRC_ALPHA]);
     expect(t.uniforms.get("uAmt")).toBe(0);
     r.dispose(); expect(t.live.size).toBe(0);
   });
@@ -709,5 +713,84 @@ describe("WebGL renderer boundary", () => {
     r.dispose(true);
     expect(t.live.size).toBe(0);
     expect([t.canvas.width, t.canvas.height]).toEqual([0, 0]);
+  });
+
+  it("disables pointer picking and clears hover heat on content pages and restores it on home", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    try {
+      r.setPointer([.2, -.4]);
+      r.draw(frame(), .05);
+      expect(t.uniforms.get("uPtrOn")).toBeGreaterThan(0);
+      expect(t.uniforms.get("uDecay")).toBeGreaterThan(0);
+      expect(t.vectors.get("uPtr")![0]).toBeLessThan(9999);
+
+      // On content pages, pointer picking stops and residual terrain heat is wiped immediately.
+      r.draw({ ...frame(), page: "content" }, .05);
+      expect(t.uniforms.get("uPtrOn")).toBe(0);
+      expect(t.uniforms.get("uDecay")).toBe(0);
+      expect(t.vectors.get("uPtr")).toEqual([99999, 99999]);
+
+      // Returning to home re-enables hover picking when pointer moves again.
+      r.setPointer([.2, -.4]);
+      r.draw(frame(), .05);
+      expect(t.uniforms.get("uPtrOn")).toBeGreaterThan(0);
+      expect(t.uniforms.get("uDecay")).toBeGreaterThan(0);
+    } finally { r.dispose(); }
+    expect(t.live.size).toBe(0);
+  });
+
+  it("bypasses an animated GPU fence when the live palette changes so stale themes never flash", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    try {
+      expect(r.draw(frame(), .016).submitted).toBe(true);
+      t.wait("TIMEOUT_EXPIRED");
+      expect(r.draw(frame(), .016).submitted).toBe(false);
+      r.setPalette({ light: true, ink: [1, 1, 1], point: [.1, .1, .1], accent: [.4, .5, .6], haze: [1, 1, 1] });
+      expect(r.draw(frame(), 0).submitted).toBe(true);
+      expect(t.uniforms.get("uLight")).toBe(1);
+      // Subsequent normal animated frames still honor the fence.
+      expect(r.draw(frame(), .016).submitted).toBe(false);
+    } finally { r.dispose(); }
+    expect(t.live.size).toBe(0);
+  });
+
+  it("consumes launch shock on non-home pages when lattice is active while keeping hover hold and melt disabled", () => {
+    const t = mount({ float: true }); const r = t.renderer!;
+    try {
+      const contentFrame = createWorldDirector({
+        phase: "preparing", fraction: 0, page: "content", scene: "horizon", material: "lattice",
+      }).snap();
+      r.press([.5, -.6]);
+      r.shock([0, -.5]);
+      r.draw({ ...contentFrame, simTime: 4.25 }, .05);
+
+      // Launch shock is consumed and forwarded to particle simulation on content pages.
+      expect(t.uniforms.get("uShockT")).toBe(4.25);
+      expect(t.vectors.get("uShockAt")![0]).toBeLessThan(9999);
+      // Hover highlight, decay, and press melt remain disabled off Home.
+      expect(r.melt).toBe(0);
+      expect(t.uniforms.get("uMeltP")).toBe(0);
+      expect(t.uniforms.get("uPtrOn")).toBe(0);
+      expect(t.uniforms.get("uDecay")).toBe(0);
+      expect(t.vectors.get("uPtr")).toEqual([99999, 99999]);
+
+      // Subsequent content frames preserve the in-flight shock timestamp while still ignoring hold/melt.
+      for (let index = 0; index < 10; index++) r.draw({ ...contentFrame, simTime: 4.25 + (index + 1) * .05 }, .05);
+      expect(t.uniforms.get("uShockT")).toBe(4.25);
+      expect(r.melt).toBe(0);
+      expect(t.uniforms.get("uMeltP")).toBe(0);
+    } finally { r.dispose(); }
+    expect(t.live.size).toBe(0);
+  });
+
+  it("acquires a transparent premultiplied WebGL2 context", () => {
+    const boundary = glBoundary();
+    const canvas = document.createElement("canvas");
+    const getContext = vi.spyOn(canvas, "getContext").mockReturnValue(boundary.gl);
+    const renderer = createWorldRenderer(canvas, { onLost() {}, onRestored() {} });
+    expect(renderer).not.toBeNull();
+    expect(getContext).toHaveBeenCalledWith("webgl2", expect.objectContaining({ alpha: true, premultipliedAlpha: true }));
+    renderer!.dispose();
+    expect(boundary.live.size).toBe(0);
   });
 });

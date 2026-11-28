@@ -284,13 +284,62 @@ describe("CharacterCanvas", () => {
     expect(player.skin.head.rotation.y).toBe(0);
   });
 
-  it("applies walking pointer tracking after each native animation frame", async () => {
+  it("applies walking pointer tracking smoothly toward the pointer on both axes", async () => {
     await render({ skinUrl: "skin.png", animation: "walk", headPointer: { x: 0.3, y: 0.5 }, label: "Preview" });
     const viewer = viewers[0];
-    viewer.animation!.update(viewer.playerObject, 0.1);
-    viewer.animation!.update(viewer.playerObject, 0.1);
-    expect(viewer.playerObject.skin.head.rotation.x).toBeCloseTo(-0.175);
-    expect(viewer.playerObject.skin.head.rotation.y).toBeCloseTo(0.165);
+    viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeGreaterThan(0);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeLessThan(0.175);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeGreaterThan(0);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeLessThan(0.165);
+    for (let i = 0; i < 60; i += 1) viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeCloseTo(0.175, 3);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeCloseTo(0.165, 3);
+  });
+
+  it("eases the head back to rest on pointer leave and window blur without snapping on return", async () => {
+    await render({ skinUrl: "skin.png", animation: "idle", headPointer: { x: 2, y: -2 }, label: "Preview" });
+    const viewer = viewers[0];
+    for (let i = 0; i < 90; i += 1) viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeCloseTo(-0.35, 3);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeCloseTo(0.55, 3);
+
+    // Leaving eases back smoothly rather than snapping straight to 0.
+    await render({ skinUrl: "skin.png", animation: "idle", headPointer: null, label: "Preview" });
+    viewer.animation!.update(viewer.playerObject, 1 / 60);
+    const leavingX = viewer.playerObject.skin.head.rotation.x;
+    const leavingY = viewer.playerObject.skin.head.rotation.y;
+    expect(leavingX).toBeGreaterThan(-0.35);
+    expect(leavingX).toBeLessThan(-0.2);
+    expect(leavingY).toBeLessThan(0.55);
+    expect(leavingY).toBeGreaterThan(0.35);
+
+    // Returning mid-ease does not snap directly to the new target.
+    await render({ skinUrl: "skin.png", animation: "idle", headPointer: { x: -1, y: 1 }, label: "Preview" });
+    viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(Math.abs(viewer.playerObject.skin.head.rotation.x - leavingX)).toBeLessThan(0.2);
+    expect(Math.abs(viewer.playerObject.skin.head.rotation.y - leavingY)).toBeLessThan(0.3);
+
+    for (let i = 0; i < 90; i += 1) viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeCloseTo(0.35, 3);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeCloseTo(-0.55, 3);
+
+    // Losing window focus eases the head back to rest even before pointer leave fires.
+    await act(async () => window.dispatchEvent(new Event("blur")));
+    viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeLessThan(0.35);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeGreaterThan(0.2);
+    for (let i = 0; i < 120; i += 1) viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(viewer.playerObject.skin.head.rotation.x).toBe(0);
+    expect(viewer.playerObject.skin.head.rotation.y).toBe(0);
+
+    // Returning with a fresh pointer resumes smoothly from rest without snapping.
+    await render({ skinUrl: "skin.png", animation: "idle", headPointer: { x: 1, y: 1 }, label: "Preview" });
+    viewer.animation!.update(viewer.playerObject, 1 / 60);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeGreaterThan(0);
+    expect(viewer.playerObject.skin.head.rotation.x).toBeLessThan(0.15);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeGreaterThan(0);
+    expect(viewer.playerObject.skin.head.rotation.y).toBeLessThan(0.2);
   });
 
   it("samples a grounded neutral frame when the running mode is selected while paused", async () => {

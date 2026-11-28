@@ -78,6 +78,33 @@ describe("Tauri IPC registration contract", () => {
     }
   });
 
+  it("registers the instance model commands in the family of the page that owns them", () => {
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const families = permissions.split("[[permission]]");
+    // Library and its instance pages create, copy, hide, delete, isolate and
+    // convert instances and switch the listed game folder; Settings > Game
+    // folders opens a configured folder. Crash recovery of a conversion has no
+    // renderer caller yet but belongs with the conversion it completes.
+    const owners: [string, string, boolean][] = [
+      ...[
+        "create_game_instance", "create_instance_from_version", "suggest_instance_name", "copy_instance",
+        "delete_instance", "list_instance_dependants", "list_hidden_instances", "restore_instance",
+        "set_instance_isolation", "set_active_game_folder", "convert_managed_instance",
+      ].map((command): [string, string, boolean] => [command, "launcher-library", true]),
+      ["recover_instance_conversion", "launcher-library", false],
+      ["open_game_folder", "launcher-settings", true],
+    ];
+    for (const [command, family, rendererCaller] of owners) {
+      expect(registered.has(command)).toBe(true);
+      if (rendererCaller) expect(invoked.has(command)).toBe(true);
+      const allowed = families.filter((block) => block.includes(`"${command}"`));
+      expect(allowed).toHaveLength(1);
+      expect(allowed[0]).toContain(`identifier = "${family}"`);
+    }
+    expect(registered.has("clone_instance")).toBe(false);
+    expect(permissions).not.toContain('"clone_instance"');
+  });
+
   it("registers the download source verdict only in the settings permission family", () => {
     const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
     const families = permissions.split("[[permission]]");
@@ -126,5 +153,44 @@ describe("Tauri IPC registration contract", () => {
       expect(allowed).toHaveLength(1);
       expect(allowed[0]).toContain('identifier = "launcher-assistant"');
     }
+  });
+
+  it("allows every command the frontend invokes in exactly one permission family", () => {
+    // The app ACL manifest makes Tauri reject any custom command it does not list.
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const families = permissions.split("[[permission]]");
+    const notAllowedOnce = [...invoked].filter(
+      (command) => families.filter((family) => family.includes(`"${command}"`)).length !== 1,
+    );
+    expect(notAllowedOnce).toEqual([]);
+  });
+
+  it("allows the instance model commands in their permission families", () => {
+    const permissions = readFileSync(`${project}src-tauri/permissions/launcher.toml`, "utf8");
+    const families = permissions.split("[[permission]]");
+    const expected: Array<[string, string]> = [
+      ["create_game_instance", "launcher-library"],
+      ["create_instance_from_version", "launcher-library"],
+      ["suggest_instance_name", "launcher-library"],
+      ["copy_instance", "launcher-library"],
+      ["delete_instance", "launcher-library"],
+      ["list_instance_dependants", "launcher-library"],
+      ["list_hidden_instances", "launcher-library"],
+      ["restore_instance", "launcher-library"],
+      ["set_instance_isolation", "launcher-library"],
+      ["convert_managed_instance", "launcher-library"],
+      ["recover_instance_conversion", "launcher-library"],
+      ["set_active_game_folder", "launcher-library"],
+      ["open_game_folder", "launcher-settings"],
+    ];
+    for (const [command, family] of expected) {
+      expect(registered.has(command), command).toBe(true);
+      const allowed = families.filter((block) => block.includes(`"${command}"`));
+      expect(allowed, command).toHaveLength(1);
+      expect(allowed[0], command).toContain(`identifier = "${family}"`);
+    }
+    // The old clone command is gone from the handler, so the ACL must not keep it.
+    expect(registered.has("clone_instance")).toBe(false);
+    expect(permissions).not.toContain('"clone_instance"');
   });
 });

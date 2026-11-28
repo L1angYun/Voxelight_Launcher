@@ -4,6 +4,7 @@ import { Radar } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { command, desktop, type Config, type DetectedProxy, type LocalProxyReport } from "../../lib/launcher";
+import { useLeaveGuard } from "../../app/leaveGuard";
 import type { SettingsSectionProps } from "./types";
 
 function probeSettings(config: Config) {
@@ -20,7 +21,8 @@ function ProxyActions({ config, endpointSaved, onError, onNotice }: Pick<Setting
   const [loadingStatus, setLoadingStatus] = useState(endpointSaved);
   const [busy, setBusy] = useState(false);
   const active = useRef(false);
-  const inFlight = useRef(false);
+  // One proxy operation at a time; the leave guard needs to know which one runs.
+  const inFlight = useRef<{ kind: "test" | "credentials"; done: Promise<boolean> } | null>(null);
 
   useEffect(() => {
     active.current = true;
@@ -39,43 +41,73 @@ function ProxyActions({ config, endpointSaved, onError, onNotice }: Pick<Setting
     return () => { current = false; active.current = false; };
   }, [endpointSaved, onError]);
 
-  async function testConnection() {
-    if (inFlight.current) return;
-    inFlight.current = true;
+  function exclusive(kind: "test" | "credentials", task: () => Promise<boolean>): Promise<boolean> {
     setBusy(true);
-    try {
-      const { latencyMs } = await command<{ latencyMs: number }>("test_proxy_connection", probeSettings(config));
-      if (active.current) onNotice("proxyConnected", { latencyMs });
-    } catch (cause) {
-      if (active.current) onError(cause);
-    } finally {
-      inFlight.current = false;
+    const done = task().finally(() => {
+      if (inFlight.current?.done === done) inFlight.current = null;
       if (active.current) setBusy(false);
-    }
+    });
+    inFlight.current = { kind, done };
+    return done;
   }
 
-  async function saveCredentials(clear: boolean) {
-    if (!endpointSaved || inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
-    try {
-      const saved = await command<boolean>("set_proxy_credentials", {
-        ...probeSettings(config), username: clear ? "" : username, password: clear ? "" : password,
-      });
-      if (active.current) {
-        setConfigured(saved);
-        setStatusUnreadable(false);
-        setUsername("");
-        setPassword("");
-        onNotice(saved ? "proxyCredentialsSaved" : "proxyCredentialsCleared");
+  function testConnection() {
+    if (inFlight.current) return;
+    void exclusive("test", async () => {
+      try {
+        const { latencyMs } = await command<{ latencyMs: number }>("test_proxy_connection", probeSettings(config));
+        if (active.current) onNotice("proxyConnected", { latencyMs });
+        return true;
+      } catch (cause) {
+        if (active.current) onError(cause);
+        return false;
       }
-    } catch (cause) {
-      if (active.current) onError(cause);
-    } finally {
-      inFlight.current = false;
-      if (active.current) setBusy(false);
-    }
+    });
   }
+
+  function saveCredentials(clear: boolean): Promise<boolean> {
+    if (!endpointSaved) return Promise.resolve(false);
+    if (inFlight.current) return inFlight.current.kind === "credentials" ? inFlight.current.done : Promise.resolve(false);
+    return exclusive("credentials", async () => {
+      try {
+        const saved = await command<boolean>("set_proxy_credentials", {
+          ...probeSettings(config), username: clear ? "" : username, password: clear ? "" : password,
+        });
+        if (active.current) {
+          setConfigured(saved);
+          setStatusUnreadable(false);
+          setUsername("");
+          setPassword("");
+          onNotice(saved ? "proxyCredentialsSaved" : "proxyCredentialsCleared");
+        }
+        return true;
+      } catch (cause) {
+        if (active.current) onError(cause);
+        return false;
+      }
+    });
+  }
+
+  // Typed credentials live only in these fields, outside the settings draft, so
+  // they register with the leave guard and save through the same command.
+  useLeaveGuard(username.length > 0 || password.length > 0, {
+    save: async () => {
+      if (!username && !password) return { ok: true };
+      if (!endpointSaved) return { ok: false, message: t("settings:proxy.leaveEndpointUnsaved") };
+      // The backend refuses a password without a username, as the Save button does.
+      if (!username) return { ok: false, message: t("settings:proxy.leaveUsernameRequired") };
+      const running = inFlight.current;
+      if (running?.kind === "credentials") return (await running.done) ? { ok: true } : { ok: false };
+      // A connection test holds the lock; let it finish instead of reporting a failed save.
+      if (running) await running.done;
+      return (await saveCredentials(false)) ? { ok: true } : { ok: false };
+    },
+    discard: () => {
+      setUsername("");
+      setPassword("");
+    },
+    running: () => (inFlight.current?.kind === "credentials" ? inFlight.current.done : null),
+  });
 
   return (
     <>
@@ -194,8 +226,9 @@ export function ProxySettings({ config, savedConfig, onChange, onError, onNotice
               <li key={item.url} className="vx-proxy-detected__row">
                 <div className="vx-proxy-detected__info">
                   <code>{item.url}</code>
-                  <small>
-                    {t(`settings:proxy.sources.${item.source}`)} · {item.label}
+                  <small className="vx-proxy-detected__meta">
+                    <span>{t(`settings:proxy.sources.${item.source}`)}</span>{" "}
+                    <span>{item.label}</span>
                   </small>
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => applyDetected(item)}>

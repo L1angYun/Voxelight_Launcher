@@ -27,7 +27,7 @@ export async function captureReadingSurface(page: Page, selector: string, screen
         for (const rect of range.getClientRects()) if (rect.width && rect.height) result.push({ ...rect.toJSON(), owner: describe(parent) });
       }
       for (const element of root.querySelectorAll("canvas,img,svg,button,input,select,textarea,video,.vx-glass-surface")) {
-        if (!shown(element) || element.matches(".world-scene__canvas,.vx-cursor-halo,.vx-glass-canvas")) continue;
+        if (!shown(element) || element.matches(".world-scene__canvas,.vx-cursor-halo,.vx-glass-canvas,.vx-ambient-canvas")) continue;
         result.push({ ...bounds(element), owner: describe(element) });
       }
       return result;

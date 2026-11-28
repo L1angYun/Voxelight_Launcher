@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
@@ -156,21 +156,50 @@ public static class TokenProbe {
 }
 `);
     const compiler = join(process.env.SystemRoot, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
-    const compiled = spawnSync(compiler, ["/nologo", "/target:exe", `/out:${template}`, sourceFile], { encoding: "utf8", windowsHide: true });
+    // The Windows sandbox blocks piped child stdio; capture through files.
+    let logNumber = 0;
+    const capture = (command, args, options = {}) => {
+      const stdoutFile = join(directory, `stdout-${++logNumber}.log`);
+      const stderrFile = join(directory, `stderr-${++logNumber}.log`);
+      const out = openSync(stdoutFile, "w");
+      const err = openSync(stderrFile, "w");
+      try {
+        const result = spawnSync(command, args, {
+          ...options, stdio: ["ignore", out, err], windowsHide: true,
+        });
+        return {
+          ...result,
+          stdout: readFileSync(stdoutFile, "utf8"),
+          stderr: readFileSync(stderrFile, "utf8"),
+        };
+      } finally {
+        closeSync(out);
+        closeSync(err);
+      }
+    };
+    const icacls = join(process.env.SystemRoot, "System32", "icacls.exe");
+    const probeFile = join(directory, "integrity-probe.txt");
+    writeFileSync(probeFile, "probe");
+    const probe = capture(icacls, [probeFile, "/setintegritylevel", "low"]);
+    if (probe.status !== 0) {
+      context.skip("this environment cannot change file integrity levels (icacls access denied)");
+      return;
+    }
+    const compiled = capture(compiler, ["/nologo", "/target:exe", `/out:${template}`, sourceFile]);
     assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
     for (let relink = 0; relink < 2; relink++) {
       const executable = join(directory, `freshly-linked-${relink}.exe`);
       copyFileSync(template, executable);
-      const labeled = spawnSync(join(process.env.SystemRoot, "System32", "icacls.exe"), [executable, "/setintegritylevel", "low"], { encoding: "utf8", windowsHide: true });
+      const labeled = capture(icacls, [executable, "/setintegritylevel", "low"]);
       assert.equal(labeled.status, 0, labeled.stdout + labeled.stderr);
-      const control = spawnSync(executable, [], { encoding: "utf8", windowsHide: true });
+      const control = capture(executable, []);
       assert.equal(control.status, 0, control.stderr);
       assert.equal(Number(control.stdout.trim()), 4096, "the negative control must really run at Low integrity");
       let observedRid;
       const code = await mediumRunner.runMedium(executable, [], {
         repositoryRoot, currentDirectory: directory,
         execute: async (command, args, options) => {
-          const result = spawnSync(command, args, { cwd: options.currentDirectory, env: options.environment, encoding: "utf8", windowsHide: true });
+          const result = capture(command, args, { cwd: options.currentDirectory, env: options.environment });
           assert.equal(result.status, 0, result.stdout + result.stderr);
           if (command === executable) observedRid = Number(result.stdout.trim());
           return result.status;
@@ -256,4 +285,65 @@ test("artifact reporting and installer selection use profiles; signing requires 
   assert.match(desktop, /\$artifacts = @\(\$receiptJson \| ConvertFrom-Json/);
   assert.doesNotMatch(desktop, /--print-artifact-dirs|--print-target-dir|Temp\\VoxelightLauncher\\build/);
   assert.match(receipt, /readSigningReceipt\(targetDirectory\(\{ repositoryRoot \}\), resolve\(arg\)\)/);
+});
+
+test("NSIS payload selection ignores installers left by an earlier build or another target", () => {
+  const directory = mkdtempSync(join(tmpdir(), "voxelight-fresh-nsis-"));
+  try {
+    const started = new Date("2026-01-02T03:04:05.000Z");
+    const earlier = new Date(started.getTime() - 60_000);
+    const later = new Date(started.getTime() + 60_000);
+    const tauri = join(directory, "Voxelight Launcher_0.7.0_x64-setup.exe");
+    const raw = join(directory, "Voxelight Launcher_0.7.0_x64-nsis.exe");
+
+    writeFileSync(tauri, "MZ stale from a previous build");
+    utimesSync(tauri, earlier, earlier);
+    assert.equal(
+      buildRuntime.freshNsisArtifact(directory, win32.basename(tauri), win32.basename(raw), started),
+      null,
+      "a stale Tauri NSIS output must not be embedded",
+    );
+
+    utimesSync(tauri, later, later);
+    const rename = buildRuntime.freshNsisArtifact(directory, win32.basename(tauri), win32.basename(raw), started);
+    assert.equal(rename.path, tauri);
+    assert.equal(rename.renameTo, raw);
+
+    writeFileSync(raw, "MZ stale raw payload");
+    utimesSync(raw, earlier, earlier);
+    utimesSync(tauri, earlier, earlier);
+    assert.equal(
+      buildRuntime.freshNsisArtifact(directory, win32.basename(tauri), win32.basename(raw), started),
+      null,
+      "a stale raw payload from another target must not be wrapped",
+    );
+
+    utimesSync(raw, later, later);
+    const existing = buildRuntime.freshNsisArtifact(directory, win32.basename(tauri), win32.basename(raw), started);
+    assert.equal(existing.path, raw);
+    assert.equal(existing.renameTo, null);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("build artifacts collect Voxelight Setup as the sole -setup.exe while keeping raw -nsis.exe available for smoke", () => {
+  const directory = mkdtempSync(join(tmpdir(), "voxelight-setup-artifacts-"));
+  try {
+    const target = join(directory, "target");
+    const profile = join(target, "release");
+    const nsisDir = join(profile, "bundle", "nsis");
+    mkdirSync(nsisDir, { recursive: true });
+    const launcher = join(profile, "voxelight-launcher.exe");
+    const setupAsset = join(nsisDir, buildRuntime.setupInstallerName("0.7.0-beta.2"));
+    const rawNsis = join(nsisDir, buildRuntime.rawNsisArtifactName("Voxelight Launcher", "0.7.0-beta.2"));
+    writeFileSync(launcher, "MZ");
+    writeFileSync(setupAsset, "MZ");
+    writeFileSync(rawNsis, "MZ");
+    assert.deepEqual(buildRuntime.collectBuiltArtifacts(target, ["build"]), [launcher, setupAsset]);
+    assert.equal(buildRuntime.setupInstallerName("0.7.0"), "VoxelightLauncher-0.7.0-x64-setup.exe");
+    assert.equal(buildRuntime.rawNsisArtifactName("Voxelight Launcher", "0.7.0"), "Voxelight Launcher_0.7.0_x64-nsis.exe");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

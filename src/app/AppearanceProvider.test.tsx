@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearanceProvider, resolveEffects, useAppearance } from "./AppearanceProvider";
 import { defaults, type Config, type SystemAppearance } from "../lib/launcher";
 import type { AppearanceContextValue } from "./AppearanceProvider";
-import { contrast } from "../design/accent";
+import { buildAccentScale, contrast, DEFAULT_ACCENT } from "../design/accent";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -76,17 +76,41 @@ afterEach(() => {
 
 describe("appearance and accessibility preferences", () => {
   it("publishes a contrast-safe light indicator and restores the base indicator with the system theme", () => {
-    render({ ...defaults, theme: "system", accentSource: "system" }, { ...systemAppearance, accentColor: "#b4f17a" });
+    render({ ...defaults, theme: "system", accentSource: "system" }, { ...systemAppearance, accentColor: DEFAULT_ACCENT });
     const style = document.documentElement.style;
     const lightIndicator = style.getPropertyValue("--accent-indicator");
     expect(lightIndicator).toMatch(/^#[0-9a-f]{6}$/);
-    expect(style.getPropertyValue("--accent")).toBe("#b4f17a");
-    for (const surface of ["#f3f1eb", "#faf9f5", "#eae7e0"])
+    expect(style.getPropertyValue("--accent")).toBe(buildAccentScale(DEFAULT_ACCENT, "light").base);
+    for (const surface of ["#f3f1eb", "#fcfaf6", "#ffffff"])
       expect(contrast(lightIndicator, surface)).toBeGreaterThanOrEqual(3);
     setSystemLight(false);
-    expect(style.getPropertyValue("--accent-indicator")).toBe("#b4f17a");
+    expect(style.getPropertyValue("--accent-indicator")).toMatch(/^#[0-9a-f]{6}$/);
+    for (const surface of ["#07080b", "#0e1013", "#131417", "#232528", "#2f3033"])
+      expect(contrast(style.getPropertyValue("--accent-indicator"), surface)).toBeGreaterThanOrEqual(3);
     setSystemLight(true);
     expect(style.getPropertyValue("--accent-indicator")).toBe(lightIndicator);
+  });
+
+  it("keeps the primary fill and foreground readable and leaves soft/border to CSS", () => {
+    render({ ...defaults, theme: "dark", accentSource: "system" }, systemAppearance);
+    const style = document.documentElement.style;
+    const foreground = style.getPropertyValue("--accent-foreground");
+    for (const role of ["--accent", "--accent-hover", "--accent-active"])
+      expect(contrast(style.getPropertyValue(role), foreground), role).toBeGreaterThanOrEqual(4.5);
+    expect(style.getPropertyValue("--accent-soft")).toBe("");
+    expect(style.getPropertyValue("--accent-border")).toBe("");
+  });
+
+  it("falls back to Windows' default blue when the system accent is unavailable", () => {
+    render({ ...defaults, accentSource: "system", accentColor: "#123456" }, { ...systemAppearance, accentColor: "" });
+    expect(current.accentColor).toBe(DEFAULT_ACCENT);
+    expect(document.documentElement.style.getPropertyValue("--accent")).toBe(buildAccentScale(DEFAULT_ACCENT, "light").base);
+  });
+
+  it("resolves the retired voxelight source through the system accent instead of the old green", () => {
+    render({ ...defaults, accentSource: "voxelight", accentColor: "#123457" }, { ...systemAppearance, accentColor: "#123456" });
+    expect(current.accentColor).toBe("#123456");
+    expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#123456");
   });
 
   it("follows the current system theme with an untouched default configuration", () => {

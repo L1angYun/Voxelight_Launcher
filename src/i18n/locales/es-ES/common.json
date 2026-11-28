@@ -12,7 +12,8 @@
     "maximize": "Maximizar",
     "restore": "Restaurar",
     "search": "Buscar",
-    "manage": "Gestionar"
+    "manage": "Gestionar",
+    "confirm": "Confirmar"
   },
   "navigation": {
     "home": "Jugar",
@@ -32,7 +33,20 @@
     "missing": "No se puede mostrar este contenido.",
     "desktopRequired": "Usa la aplicación de escritorio para esta acción."
   },
+  "confirm": {
+    "title": "Confirmar acción"
+  },
   "units": {},
+  "leaveGuard": {
+    "title": "Cambios sin guardar",
+    "description": "Guarda los cambios antes de salir de esta página o descártalos.",
+    "discard": "Descartar cambios",
+    "stay": "Permanecer en esta página",
+    "saveFailed": "No se pudieron guardar los cambios. Sigues en esta página.",
+    "waitingForSave": "Tus cambios se siguen guardando. Saldrás de esta página cuando termine el guardado.",
+    "sectionDescription": "Guarda los cambios antes de cambiar a otra sección o descártalos.",
+    "sectionWaitingForSave": "Tus cambios se siguen guardando. La sección cambiará cuando termine el guardado."
+  },
   "a11y": {
     "dismissNotification": "Descartar notificación",
     "mainNavigation": "Navegación principal",

@@ -9,7 +9,8 @@ import { prepareIntroContrast } from "./helpers/world-intro-compositor";
 import { installWorldResourceProbe, snapshotWorldResources, type WorldResourceSnapshot } from "./helpers/world-resource-probe";
 import { decodePng } from "./helpers/glass-pixel-probe.mjs";
 import { worldAppearanceMetrics } from "./helpers/world-appearance";
-import { captureAppearanceSeries } from "./helpers/world-appearance-capture";
+import { captureAppearanceSeries, excludeAmbientLight } from "./helpers/world-appearance-capture";
+import { captureAmbientSilhouetteSweep, type AmbientSilhouetteSweep } from "./helpers/ambient-silhouette-sweep";
 import { loadAppearanceBudget as appearanceBudget } from "./helpers/world-appearance-budget";
 import { installWorldUniformProbe } from "./helpers/world-uniform-probe";
 import { evidenceDirectory } from "./helpers/evidence-directory";
@@ -48,6 +49,34 @@ function lightHorizonChecks(measured: AppearanceMedians): NumericAppearanceCheck
       pass: Math.abs(measured.skyOffset) <= 1 },
     { id: "lower-white", value: measured.lowerWhiteFraction, rule: "normal lower-world white <0.001",
       pass: measured.lowerWhiteFraction < .001 },
+  ];
+}
+
+/** The sweep reached every phase it set out to measure, through the page's own controller. */
+function ambientSweepChecks(sweep: AmbientSilhouetteSweep): NumericAppearanceCheck[] {
+  return [
+    { id: "ambient-sweep-orbit", value: sweep.orbitSpanMs, rule: `every ${sweep.stepMs}ms over 0..${sweep.orbitSpanMs}ms, the longest drift orbit (6 s and 92 s included)`,
+      pass: sweep.orbitCovered && sweep.frames.some(frame => frame.timeMs === 6000) && sweep.frames.some(frame => frame.timeMs === 92000) },
+    { id: "ambient-sweep-joint", value: sweep.joint.phases.length, rule: `the 4 worst joint phases over ${sweep.joint.jointPeriodS}s measured`,
+      pass: sweep.joint.phases.length === 4 && sweep.jointMeasured },
+    { id: "ambient-sweep-driven", value: sweep.frames.length, rule: "every frame drawn by the page's controller and unchanged through its capture; the light drifts live before and after",
+      pass: sweep.driven && sweep.liveBefore.drifting && sweep.liveAfter.drifting },
+  ];
+}
+
+/**
+ * ui-language-spec 2.11.4: the light from the transparent sky must leave the
+ * ridge the clear subject. The world-only medians keep their gates; the R3-4
+ * silhouette gates also hold on the real page, ambient layer visible, at every
+ * ambient phase the sweep measures.
+ */
+function ambientSilhouetteChecks(sweep: AmbientSilhouetteSweep): NumericAppearanceCheck[] {
+  return [
+    ...ambientSweepChecks(sweep),
+    { id: "ambient-silhouette-delta-l", value: sweep.worst.deltaL, rule: "every frame -14 <= silhouetteDeltaL <= -5",
+      pass: sweep.worst.deltaL <= -5 && sweep.worst.lowestDeltaL >= -14 },
+    { id: "ambient-silhouette-tiles", value: sweep.worst.tiles, rule: "every frame silhouetteTiles >= 0.50",
+      pass: sweep.worst.tiles >= .5 },
   ];
 }
 
@@ -123,6 +152,7 @@ appearanceTest.describe("terrain breathing highlight safety", () => {
 appearanceTest.describe("review A appearance budgets", () => {
   for (const theme of ["dark", "light"] as const) for (const width of [1280, 1050]) {
     appearanceTest(`${theme} ${width}: home lower-world coverage stays within its visual budget`, async ({ page }, info) => {
+      if (theme === "light") appearanceTest.setTimeout(150000);
       await page.setViewportSize({ width, height: 720 });
       await installLauncherFixture(page, { theme });
       await page.goto("/");
@@ -130,10 +160,14 @@ appearanceTest.describe("review A appearance budgets", () => {
       const sample = await captureAppearanceSeries(page, info.outputPath("appearance"), {
         background: theme === "dark" ? [7, 8, 11] : [243, 241, 235],
       });
+      const ambientSweep = theme === "light" ? await captureAmbientSilhouetteSweep(page, info.outputPath("ambient-silhouette"), {
+        background: [243, 241, 235],
+      }) : null;
       const baseline = await appearanceBudget(theme, width);
       // Preserve the approved five-point design increment. S1 adds three
       // standard deviations measured from the independent d5e31ad reference.
-      const silhouetteChecks = theme === "light" ? lightHorizonChecks(sample.medians) : [];
+      const silhouetteChecks = theme === "light"
+        ? [...lightHorizonChecks(sample.medians), ...ambientSilhouetteChecks(ambientSweep!)] : [];
       const checks: NumericAppearanceCheck[] = [
         { id: "home-coverage", value: sample.medians.coveragePercent, rule: `coverage <= ${baseline.coverageLimit}`,
           pass: baseline.coverageLimit !== null && sample.medians.coveragePercent <= baseline.coverageLimit },
@@ -146,6 +180,8 @@ appearanceTest.describe("review A appearance budgets", () => {
         allAGatesPass: checks.every(check => check.pass), waiting: sample.settlingWait, medians: sample.medians,
         frames: sample.samples.map(frame => ({ index: frame.index, at: frame.before.at, normalUniforms: frame.normalUniforms,
           coveragePercent: frame.coveragePercent, silhouette: frame.silhouette, lower: frame.lower })),
+        ambientSilhouette: ambientSweep && { worst: ambientSweep.worst, orbitWorst: ambientSweep.orbitWorst, jointWorst: ambientSweep.jointWorst,
+          orbitSpanMs: ambientSweep.orbitSpanMs, joint: ambientSweep.joint, frames: ambientSweep.frames.length },
       }, null, 2));
       expect(baseline.coverageLimit).not.toBeNull();
       expect(sample.medians.coveragePercent).toBeLessThanOrEqual(baseline.coverageLimit!);
@@ -156,9 +192,11 @@ appearanceTest.describe("review A appearance budgets", () => {
   appearanceTest("dark 1280: content title bands stay quiet across all content pages", async ({ page }, info) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await installLauncherFixture(page, { theme: "dark" });
-    await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
     await page.goto("/"); await page.waitForTimeout(3500);
     await page.locator('.vx-floating-nav [data-page="home"]').click(); await page.waitForTimeout(700);
+    // Review A2 budgets the world's point field behind content titles; the R9
+    // ambient light layer under the transparent sky is measured without it.
+    const { ambient } = await excludeAmbientLight(page);
     const results = [];
     for (const id of ["library", "discover", "multiplayer", "downloads", "accounts", "settings"]) {
       await page.locator(`.vx-floating-nav [data-page="${id}"]`).click(); await page.waitForTimeout(700);
@@ -166,8 +204,72 @@ appearanceTest.describe("review A appearance budgets", () => {
       results.push({ page: id, ...metrics });
       expect.soft(metrics.title.fraction, `${id}: title band pixels brighter than 60/255`).toBeLessThan(.005);
     }
-    await writeFile(info.outputPath("content-appearance.json"), JSON.stringify(results, null, 2));
+    await writeFile(info.outputPath("content-appearance.json"), JSON.stringify({ ambient, results }, null, 2));
   });
+});
+
+/**
+ * The terrain clock and the ambient clock come apart in use: a running game
+ * slows the world to 0.12x while the light pauses and later resumes at the
+ * elapsed time, so any terrain phase can meet any light phase. These are the
+ * light horizon's least-contrast terrain phases in 7 minutes of live terrain
+ * with the ambient layer hidden (normal frames every 2 s): there the world
+ * alone keeps silhouetteDeltaL -5.58 (1280) and -5.34 (1050) but its 16px
+ * tiles fall to 0.478 and 0.453.
+ */
+const LEAST_CONTRAST_TERRAIN = [
+  { width: 1280, phase: 214 },
+  { width: 1050, phase: 314 },
+] as const;
+
+appearanceTest.describe("light horizon at its least-contrast terrain phase", () => {
+  for (const { width, phase } of LEAST_CONTRAST_TERRAIN) {
+    appearanceTest(`light ${width} uT=${phase}: the ridge stays the subject along every light field's whole drift path`, async ({ page }, info) => {
+      appearanceTest.setTimeout(150000);
+      await page.setViewportSize({ width, height: 720 });
+      await pinTerrainTime(page, phase);
+      await installLauncherFixture(page, { theme: "light", effects: "full", worldScene: "horizon", worldMaterial: "lattice" });
+      await page.goto("/");
+      await expectWorldAppearance(page, "light", "horizon");
+      const world = await captureAppearanceSeries(page, info.outputPath("terrain-phase"), {
+        background: [243, 241, 235], stability: "fixed",
+      });
+      const sweep = await captureAmbientSilhouetteSweep(page, info.outputPath("ambient-silhouette"), {
+        background: [243, 241, 235],
+      });
+      await expectWorldAppearance(page, "light", "horizon");
+      const probe = await page.evaluate(() => (window as Window & {
+        __terrainTimeProbe?: { calls: number; applied: number[] }
+      }).__terrainTimeProbe);
+      // The light must not break a gate the world meets on its own at this phase.
+      // Gated: every field's whole drift path (the orbit frames). Recorded: the
+      // rare joint alignments of all fields, which can coincide with this phase.
+      const worldTiles = world.medians.silhouetteTiles, tilesGated = worldTiles >= .5;
+      const checks: NumericAppearanceCheck[] = [
+        { id: "terrain-phase", value: phase, rule: "every terrain submission used the pinned uT",
+          pass: (probe?.calls ?? 0) > 0 && JSON.stringify(probe?.applied) === JSON.stringify([phase]) },
+        { id: "world-silhouette-delta-l", value: world.medians.silhouetteDeltaL, rule: "world alone -14 <= silhouetteDeltaL <= -5",
+          pass: world.medians.silhouetteDeltaL >= -14 && world.medians.silhouetteDeltaL <= -5 },
+        ...ambientSweepChecks(sweep),
+        { id: "ambient-silhouette-delta-l", value: sweep.orbitWorst.deltaL, rule: "every orbit frame -14 <= silhouetteDeltaL <= -5",
+          pass: sweep.orbitWorst.deltaL <= -5 && sweep.orbitWorst.lowestDeltaL >= -14 },
+      ];
+      if (tilesGated) checks.push({ id: "ambient-silhouette-tiles", value: sweep.orbitWorst.tiles,
+        rule: "every orbit frame silhouetteTiles >= 0.50", pass: sweep.orbitWorst.tiles >= .5 });
+      await writeFile(info.outputPath("numeric-acceptance.json"), JSON.stringify({
+        scenario: { theme: "light", width, height: 720, scene: "horizon", terrainPhase: phase }, probe, numeric: checks,
+        allGatesPass: checks.every(check => check.pass), worldMedians: world.medians,
+        recordOnly: [
+          ...tilesGated ? [] : [{ id: "ambient-silhouette-tiles", value: sweep.orbitWorst.tiles,
+            reason: `the world alone has silhouetteTiles ${worldTiles} < 0.50 at this terrain phase` }],
+          { id: "ambient-joint-silhouette", value: sweep.jointWorst,
+            reason: "joint alignments of all fields over their joint drift period, met with the world's least-contrast phase" }],
+        ambientSilhouette: { worst: sweep.worst, orbitWorst: sweep.orbitWorst, jointWorst: sweep.jointWorst,
+          orbitSpanMs: sweep.orbitSpanMs, joint: sweep.joint, frames: sweep.frames.length },
+      }, null, 2));
+      for (const check of checks) expect.soft(check.pass, `${check.id}: ${check.value}; ${check.rule}`).toBe(true);
+    });
+  }
 });
 
 appearanceTest.describe("round 2 anchored island acceptance", () => {
@@ -183,7 +285,8 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
     const recordOnly = theme === "light" && scene === "massif";
     const criterion = recordOnly ? "record-only silhouette diagnostics" : "anchored island and its surroundings meet their budgets";
     appearanceTest(`M1/M2 ${theme} ${scene} ${width}: ${criterion}`, async ({ page }, info) => {
-      appearanceTest.setTimeout(90000);
+      const lightHorizon = theme === "light" && scene === "horizon";
+      appearanceTest.setTimeout(lightHorizon ? 150000 : 90000);
       await page.setViewportSize({ width, height });
       await installLauncherFixture(page, { theme, effects: "full", worldScene: scene, worldMaterial: "lattice" });
       await page.goto("/");
@@ -191,6 +294,9 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
       const sampled = await captureAppearanceSeries(page, info.outputPath("anchored-island"), {
         background: theme === "dark" ? [7, 8, 11] : [243, 241, 235],
       });
+      const ambientSweep = lightHorizon ? await captureAmbientSilhouetteSweep(page, info.outputPath("ambient-silhouette"), {
+        background: [243, 241, 235],
+      }) : null;
       await expectWorldAppearance(page, theme, scene);
       const measured = sampled.medians;
       const checks: NumericAppearanceCheck[] = [];
@@ -224,7 +330,7 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
       // content of the proportional ROI in the other scenes and themes.
       if (theme === "dark" && scene === "horizon" && width === 1280)
         checks.push({ id: "far-p95", value: measured.farP95, rule: "60 <= p95 <= 90", pass: measured.farP95 >= 60 && measured.farP95 <= 90 });
-      if (theme === "light" && scene === "horizon") checks.push(...lightHorizonChecks(measured));
+      if (lightHorizon) checks.push(...lightHorizonChecks(measured), ...ambientSilhouetteChecks(ambientSweep!));
       const manualScreenshot = scene === "massif" ? info.outputPath("massif-manual.png") : null;
       if (manualScreenshot) await page.screenshot({ path: manualScreenshot, scale: "css" });
       await writeFile(info.outputPath("numeric-acceptance.json"), JSON.stringify({
@@ -234,6 +340,8 @@ appearanceTest.describe("round 2 anchored island acceptance", () => {
         frames: sampled.samples.map(sample => ({ index: sample.index, at: sample.hiddenGeometry.at,
           uniforms: sample.uniforms, normalUniforms: sample.normalUniforms,
           island: sample.island, outside: sample.outside, far: sample.far, lower: sample.lower, silhouette: sample.silhouette })),
+        ambientSilhouette: ambientSweep && { worst: ambientSweep.worst, orbitWorst: ambientSweep.orbitWorst, jointWorst: ambientSweep.jointWorst,
+          orbitSpanMs: ambientSweep.orbitSpanMs, joint: ambientSweep.joint, frames: ambientSweep.frames.length },
         diagnostics: { farP95: measured.farP95, outsideMeanAbsDelta: measured.outsideMeanAbsDelta,
           silhouette: { scope: theme === "light" && scene === "horizon" ? "see-numeric-checks" : "record-only",
             deltaL: measured.silhouetteDeltaL, tiles: measured.silhouetteTiles, farP05: measured.silhouetteFarP05, skyOffset: measured.skyOffset },
@@ -434,9 +542,11 @@ for (const theme of ["dark", "light"] as const) for (const [width, height] of [[
     // by actual on observations, proves which state its pixels came from.
     expect(intro.after.intro).toBe("off");
     expect(intro.after.theme).toBe(theme);
-    // The title and metadata are intentionally hidden during the wordmark. Their
-    // nominal colors are a conservative check of the later text over that frame;
-    // the actual launch label remains visible and is also tested.
+    // The title and metadata stay hidden for the first 600ms of the entrance and
+    // then fade in, so the captured intro frame may show them at any opacity.
+    // Their nominal colors are measured against that frame's real pixels, which
+    // is the contrast they reach once the fade has ended over the wordmark; the
+    // actual launch label remains visible and is also tested.
     await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off", { timeout: 3500 });
     await expect(page.locator(".vx-home__identity")).toHaveCSS("opacity", "1");
     await expect(page.locator(previewSourceTarget.selector)).toHaveCount(0);

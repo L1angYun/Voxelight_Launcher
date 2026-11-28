@@ -6,7 +6,6 @@
   "importPack": "Импорт сборки",
   "recentInstances": "Недавние экземпляры",
   "instance": "Текущий экземпляр",
-  "versionDirectory": "Использовать папку версии",
   "vanilla": "Ванилла",
   "javaUnknown": "Java неизвестна",
   "javaVersion": "Java {{major}}",
@@ -16,7 +15,7 @@
   "stop": "Остановить",
   "cancelPreparation": "Отменить подготовку",
   "files": "Файлы: {{completed}} / {{total}}",
-  "filesUnknown": "Подготовлено файлов: {{completed}} · всего неизвестно",
+  "filesUnknown": "Подготовлено файлов: {{completed}}, всего неизвестно",
   "progress": "Прогресс подготовки",
   "stages": {
     "queued": "Ожидание подготовки",
@@ -30,14 +29,6 @@
     "complete": "Подготовка завершена"
   },
   "openFolder": "Открыть папку",
-  "installTitle": "Установить игру",
-  "installDescription": "Выберите версию. Voxelight проверит и подготовит необходимые файлы.",
-  "version": "Версия игры",
-  "instanceNameOptional": "Название экземпляра (необязательно)",
-  "instanceNamePlaceholder": "Назовите этот мир",
-  "install": "Установить",
-  "installing": "Установка…",
-  "noVersions": "Нет доступных версий",
   "defaultPreview": "Персонаж по умолчанию",
   "accountPreview": "Персонаж {{username}}",
   "previewLoading": "Загрузка внешнего вида…",
@@ -51,5 +42,5 @@
   "anim.idle": "Ожидание",
   "anim.walk": "Ходьба",
   "anim.run": "Бег",
-  "progressMilestone": "{{stage}} · {{percent}}"
+  "progressMilestone": "{{stage}}, {{percent}}"
 }

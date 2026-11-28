@@ -3,6 +3,10 @@
   "subtitle": "Accounts, online appearance, and local previews.",
   "listTitle": "Accounts",
   "addAccount": "Add account",
+  "status": {
+    "profileUnavailable": "Appearance unavailable",
+    "sessionUnverified": "Session not verified"
+  },
   "loginTitle": "Add account",
   "loginDescription": "Choose how you want to sign in or play offline.",
   "loginMethods": "Sign-in method",
@@ -52,7 +56,7 @@
     "start": "Start Microsoft login",
     "deviceInstruction": "Enter this code on Microsoft's official page:",
     "openVerification": "Open Microsoft authorization",
-    "waiting": "Waiting for authorization · {{minutes}}:{{seconds}} remaining · polling every {{interval}}s",
+    "waiting": "Waiting for authorization. {{minutes}}:{{seconds}} remaining; polling every {{interval}}s.",
     "cancel": "Cancel authorization"
   },
   "offline": {
@@ -93,8 +97,8 @@
     "unavailable": "The 3D preview is unavailable. Retry or use another preview source.",
     "loading": "Loading account appearance…",
     "noAccountSkin": "No account skin is available",
-    "localNotice": "Local preview only · does not change your account",
-    "accountNotice": "Online account source · changes below require an explicit action",
+    "localNotice": "Local preview only. It does not change your account.",
+    "accountNotice": "Shown from your online account. Changes below require an explicit action.",
     "import": "Import PNG",
     "resetView": "Reset view",
     "restoreDefault": "Restore default preview",
@@ -107,8 +111,8 @@
   },
   "model": {
     "auto": "Automatic",
-    "classic": "Classic · wide arms",
-    "slim": "Slim · narrow arms"
+    "classic": "Classic (wide arms)",
+    "slim": "Slim (narrow arms)"
   },
   "animation": {
     "idle": "Idle",
@@ -123,11 +127,11 @@
     "fallback": "The selected default is unavailable. Retry or import a local preview.",
     "steve": {
       "name": "Steve",
-      "description": "Classic · verified client"
+      "description": "Classic model, verified client"
     },
     "alex": {
       "name": "Alex",
-      "description": "Slim · verified client"
+      "description": "Slim model, verified client"
     }
   },
   "notice": {

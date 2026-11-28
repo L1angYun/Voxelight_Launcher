@@ -4,7 +4,7 @@
   "history": "History",
   "activeCount": "{{count}} active",
   "historyCount": "{{count}} in history",
-  "taskTitle": "{{kind}} · {{target}}",
+  "taskTitle": "{{kind}}: {{target}}",
   "interruptedDescription": "The launcher closed before this task finished. Retry to reuse verified files.",
   "interruptedNoRetry": "The launcher closed before this task finished.",
   "tasks": {
@@ -31,7 +31,8 @@
       "server-install": "Server installation",
       "server-import": "Server import",
       "server-start": "Server preparation",
-      "default-skin": "Character preview"
+      "default-skin": "Character preview",
+      "instance-create": "Instance creation"
     },
     "stage": {
       "queued": "Waiting in queue",
@@ -70,7 +71,7 @@
   },
   "progress": {
     "files": "{{completed}} / {{total}} files",
-    "completedUnknown": "{{completed}} files · total unknown",
+    "completedUnknown": "{{completed}} files, total unknown",
     "byteLabel": "{{completed}} of {{total}}",
     "byteLabelUnknown": "{{completed}} downloaded, total size unknown",
     "bytesCompleted": "{{completed}} downloaded",
@@ -87,7 +88,9 @@
     "historyTitle": "No task history",
     "historyDescription": "Completed and recoverable tasks will stay here.",
     "filteredTitle": "No matching tasks",
-    "filteredDescription": "Choose another filter to view download history."
+    "filteredDescription": "Choose another filter to view download history.",
+    "discover": "Browse content",
+    "installGame": "Install a game version"
   },
   "errors": {
     "taskFailed": "The task did not complete. Retry when available, or return to its source.",

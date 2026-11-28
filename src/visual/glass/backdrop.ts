@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Static cube optics shared by the page background and glass refraction. The
 // canvas is painted only when the resolved theme or accent changes.
+import { DEFAULT_ACCENT } from "../../design/accent";
 import { clamp } from "./jelly";
 
 export type Rgb = [number, number, number];
 
-const fallbackAccent = "#b4f17a";
 const ridgeLayers = 4;
 const ridgeSteps = 22;
 const backdropCubePitch = 9;
@@ -37,7 +37,7 @@ const backdropBeams = [
   },
 ] as const;
 
-export function parseHex(value: string, fallback = fallbackAccent): Rgb {
+export function parseHex(value: string, fallback = DEFAULT_ACCENT): Rgb {
   const text = value.trim();
   const hex = /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
   return [1, 3, 5].map((start) =>

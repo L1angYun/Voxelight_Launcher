@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Copy, KeyRound, Play, RefreshCw, Server, Square } from "lucide-react";
+import { Bot, Copy, KeyRound, Play, RefreshCw, Square } from "lucide-react";
 import { command, type Config } from "../../lib/launcher";
+import { useLeaveGuard, useSharedSave } from "../../app/leaveGuard";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
@@ -26,6 +27,7 @@ export function AssistantSettings({
   const [busyMcp, setBusyMcp] = useState(false);
   const mountedRef = useRef(true);
   const loadGenRef = useRef(0);
+  const keySave = useSharedSave<boolean>();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -68,30 +70,34 @@ export function AssistantSettings({
     tokenMasked: null,
   };
 
-  async function saveApiKey(secret: string) {
-    setBusyKey(true);
-    try {
-      const configured = await command<boolean>("set_assistant_api_key", { secret });
-      if (lumen.managed) {
-        await lumen.refreshStatus();
-      } else {
-        await loadStandaloneStatus();
-        if (mountedRef.current) {
-          setLocalStatus((prev) => (prev ? { ...prev, apiKeyConfigured: configured } : prev));
+  function saveApiKey(secret: string): Promise<boolean> {
+    return keySave.run(async () => {
+      setBusyKey(true);
+      try {
+        const configured = await command<boolean>("set_assistant_api_key", { secret });
+        if (lumen.managed) {
+          await lumen.refreshStatus();
+        } else {
+          await loadStandaloneStatus();
+          if (mountedRef.current) {
+            setLocalStatus((prev) => (prev ? { ...prev, apiKeyConfigured: configured } : prev));
+          }
         }
+        if (!mountedRef.current) return true;
+        if (secret.trim()) {
+          setApiKey("");
+          onNotice("assistantKeySaved");
+        } else {
+          onNotice("assistantKeyCleared");
+        }
+        return true;
+      } catch (cause) {
+        if (mountedRef.current) onError(cause);
+        return false;
+      } finally {
+        if (mountedRef.current) setBusyKey(false);
       }
-      if (!mountedRef.current) return;
-      if (secret.trim()) {
-        setApiKey("");
-        onNotice("assistantKeySaved");
-      } else {
-        onNotice("assistantKeyCleared");
-      }
-    } catch (cause) {
-      if (mountedRef.current) onError(cause);
-    } finally {
-      if (mountedRef.current) setBusyKey(false);
-    }
+    });
   }
 
   async function toggleMcp() {
@@ -176,6 +182,20 @@ export function AssistantSettings({
       || config.assistantMcpPort !== savedConfig.assistantMcpPort
     ),
   );
+  // The API key is component-local: it is not part of the shared settings draft,
+  // so this section registers its own unsaved text with the leave guard. The
+  // provider fields are in the draft, which the page itself guards and which
+  // survives a section switch, so they must not make a switch ask.
+  useLeaveGuard(apiKey.trim().length > 0, {
+    save: async () => {
+      const running = keySave.current();
+      if (running) return (await running) ? { ok: true } : { ok: false };
+      if (!apiKey.trim()) return { ok: true };
+      return (await saveApiKey(apiKey)) ? { ok: true } : { ok: false };
+    },
+    discard: () => setApiKey(""),
+    running: keySave.current,
+  });
 
   return (
     <div className="vx-settings-section">
@@ -185,7 +205,7 @@ export function AssistantSettings({
       </header>
 
       <section className="vx-settings-group">
-        <h3><Bot size={17} />{t("settings:assistant.providerTitle")}</h3>
+        <h3>{t("settings:assistant.providerTitle")}</h3>
         <p>{t("settings:assistant.providerDescription")}</p>
 
         <div className="vx-settings-fields">
@@ -309,7 +329,7 @@ export function AssistantSettings({
       </section>
 
       <section className="vx-settings-group">
-        <h3><Server size={17} />{t("settings:assistant.mcpTitle")}</h3>
+        <h3>{t("settings:assistant.mcpTitle")}</h3>
         <p>{t("settings:assistant.mcpDescription")}</p>
 
         <label data-settings-target="assistant-mcp-port">
@@ -330,53 +350,64 @@ export function AssistantSettings({
           />
         </label>
 
-        <div className="vx-mcp-status-card" role="status" data-testid="mcp-status-card">
-          <div>
-            {mcp.running
-              ? t("settings:assistant.mcpRunning", { port: mcp.port })
-              : t("settings:assistant.mcpStopped")}
+        {/* The status row holds only the state and its start or stop action, so both stay on one line;
+            the running server's details and their actions sit in the well below. */}
+        <div className="vx-mcp-server" data-testid="mcp-status-card">
+          <div className="vx-mcp-status">
+            <span className="vx-mcp-status__badge" role="status" data-running={mcp.running || undefined}>
+              <span className="vx-status-pixel" aria-hidden="true" />
+              <span>{mcp.running ? t("settings:assistant.mcpRunningShort") : t("settings:assistant.mcpStopped")}</span>
+            </span>
+            <div className="vx-action-row" data-settings-target="assistant-mcp-actions">
+              <Button
+                variant={mcp.running ? "secondary" : "primary"}
+                data-settings-primary=""
+                icon={mcp.running ? <Square size={14} /> : <Play size={14} />}
+                loading={busyMcp}
+                onClick={() => void toggleMcp()}
+              >
+                {mcp.running ? t("settings:assistant.mcpStop") : t("settings:assistant.mcpStart")}
+              </Button>
+            </div>
           </div>
-          {mcp.running && mcp.url ? (
-            <div>
-              {t("settings:assistant.mcpEndpoint")}: <code>{mcp.url}</code>
-            </div>
-          ) : null}
-          {mcp.running && mcp.tokenMasked ? (
-            <div>
-              {t("settings:assistant.mcpToken")}: <code>{mcp.tokenMasked}</code>
-            </div>
-          ) : null}
-        </div>
 
-        <div className="vx-action-row" data-settings-target="assistant-mcp-actions">
-          <Button
-            variant={mcp.running ? "secondary" : "primary"}
-            data-settings-primary=""
-            icon={mcp.running ? <Square size={14} /> : <Play size={14} />}
-            loading={busyMcp}
-            onClick={() => void toggleMcp()}
-          >
-            {mcp.running ? t("settings:assistant.mcpStop") : t("settings:assistant.mcpStart")}
-          </Button>
           {mcp.running ? (
-            <>
-              <Button
-                variant="secondary"
-                icon={<Copy size={14} />}
-                disabled={busyMcp}
-                onClick={() => void copyMcpConfig()}
-              >
-                {t("settings:assistant.mcpCopyConfig")}
-              </Button>
-              <Button
-                variant="ghost"
-                icon={<RefreshCw size={14} />}
-                disabled={busyMcp}
-                onClick={() => void rotateToken()}
-              >
-                {t("settings:assistant.mcpRotateToken")}
-              </Button>
-            </>
+            <div className="vx-mcp-details">
+              {mcp.url || mcp.tokenMasked ? (
+                <dl>
+                  {mcp.url ? (
+                    <div>
+                      <dt>{t("settings:assistant.mcpEndpoint")}</dt>
+                      <dd><code>{mcp.url}</code></dd>
+                    </div>
+                  ) : null}
+                  {mcp.tokenMasked ? (
+                    <div>
+                      <dt>{t("settings:assistant.mcpToken")}</dt>
+                      <dd><code>{mcp.tokenMasked}</code></dd>
+                    </div>
+                  ) : null}
+                </dl>
+              ) : null}
+              <div className="vx-action-row">
+                <Button
+                  variant="secondary"
+                  icon={<Copy size={14} />}
+                  disabled={busyMcp}
+                  onClick={() => void copyMcpConfig()}
+                >
+                  {t("settings:assistant.mcpCopyConfig")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  icon={<RefreshCw size={14} />}
+                  disabled={busyMcp}
+                  onClick={() => void rotateToken()}
+                >
+                  {t("settings:assistant.mcpRotateToken")}
+                </Button>
+              </div>
+            </div>
           ) : null}
         </div>
       </section>

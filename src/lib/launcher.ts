@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorldMaterial, WorldSceneId } from "../components/world/types";
+import { DEFAULT_ACCENT } from "../design/accent";
 import { LauncherError, normalizeError } from "./errors";
 
 export type DefaultSkinId = "steve" | "alex";
@@ -38,8 +39,15 @@ export interface LocalProxyReport {
   candidates: DetectedProxy[];
 }
 
+export interface GameFolder {
+  path: string;
+  label: string;
+  active: boolean;
+}
+
 export interface Config {
   gameDirectory: string;
+  gameFolders: GameFolder[];
   javaPath: string;
   maxMemoryMb: number;
   memoryMode: "auto" | "manual";
@@ -66,6 +74,11 @@ export interface Config {
   accentSource: AccentSource;
   soundEnabled: boolean;
   customBackground?: string | null;
+  ambientLightEnabled: boolean;
+  ambientLightIntensity: number;
+  backgroundBlur: number;
+  backgroundDim: number;
+  backgroundDrift: boolean;
   javaAutoDownload: boolean;
   defaultSkin: DefaultSkinId;
   checkForUpdates: boolean;
@@ -83,12 +96,33 @@ type AppearanceField = typeof appearanceFields[number];
 export const appearanceFields = [
   "theme", "language", "effects", "worldScene", "worldMaterial",
   "accentSource", "accentColor", "soundEnabled", "defaultSkin",
+  "ambientLightEnabled", "ambientLightIntensity", "backgroundBlur",
+  "backgroundDim", "backgroundDrift",
 ] as const satisfies ReadonlyArray<keyof Config>;
 export type AppearancePatch = Partial<Pick<Config, AppearanceField>>;
 
+function sameGameFolders(left: GameFolder[] | undefined, right: GameFolder[] | undefined): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((folder, index) => {
+    const other = right[index];
+    return folder.path === other.path && folder.label === other.label && folder.active === other.active;
+  });
+}
+
+/**
+ * Whether one config field holds the same value in both snapshots. Every field
+ * is a primitive except `gameFolders`, which editors rebuild on each change, so
+ * it is compared entry by entry.
+ */
+export function sameConfigValue<Key extends keyof Config>(key: Key, left: Config[Key], right: Config[Key]): boolean {
+  if (key === "gameFolders") return sameGameFolders(left as GameFolder[] | undefined, right as GameFolder[] | undefined);
+  return Object.is(left, right);
+}
+
 export function configChanges(base: Config, next: Config): Partial<Config> {
   return Object.fromEntries((Object.keys(next) as (keyof Config)[])
-    .filter(key => !Object.is(base[key], next[key])).map(key => [key, next[key]]));
+    .filter(key => !sameConfigValue(key, base[key], next[key])).map(key => [key, next[key]]));
 }
 
 export interface Account {
@@ -123,6 +157,15 @@ export interface Instance {
   totalPlayTime: number;
   loader: string;
   loaderVersion: string;
+  /** "version" for a standard folder under <game folder>/versions/<name>/; empty for legacy managed records. */
+  kind?: "version" | "managed" | "";
+  gameFolder?: string;
+  isolated?: boolean;
+  hidden?: boolean;
+  folderMissingSince?: string | null;
+  /** Stable reason code when the folder exists but cannot launch. */
+  issue?: string | null;
+  derivedFrom?: string | null;
 }
 export interface InstalledVersion {
   id: string;
@@ -130,6 +173,7 @@ export interface InstalledVersion {
   installed: boolean;
   launchable: boolean;
   reason?: string;
+  reasonCode?: string;
   javaMajor?: number;
 }
 export interface LaunchResult {
@@ -221,6 +265,7 @@ export function events<T>(name: string, callback: (value: T) => void) {
 }
 export const defaults: Config = {
   gameDirectory: "",
+  gameFolders: [],
   javaPath: "",
   maxMemoryMb: 4096,
   memoryMode: "auto",
@@ -240,13 +285,18 @@ export const defaults: Config = {
   screenWidth: 1280,
   screenHeight: 720,
   language: "system",
-  accentColor: "#b4f17a",
+  accentColor: DEFAULT_ACCENT,
   effects: "full",
   worldScene: "horizon",
   worldMaterial: "lattice",
   accentSource: "system",
   soundEnabled: false,
   customBackground: null,
+  ambientLightEnabled: true,
+  ambientLightIntensity: 60,
+  backgroundBlur: 8,
+  backgroundDim: 35,
+  backgroundDrift: false,
   javaAutoDownload: true,
   defaultSkin: "steve",
   checkForUpdates: true,
@@ -261,6 +311,16 @@ export const defaults: Config = {
   assistantProactive: true,
 };
 
+/**
+ * Fills the fields a config snapshot leaves out with their defaults. A snapshot
+ * without `memoryMode` predates automatic memory: the backend reads it as manual
+ * (`legacy_memory_mode`), so it stays manual here too instead of taking the
+ * fresh-install `auto` default, which would also lock its maximum memory.
+ */
+export function withConfigDefaults(config: Partial<Config>): Config {
+  return { ...defaults, ...config, memoryMode: config.memoryMode ?? "manual" };
+}
+
 export interface ResourceProject {
   project_id: string;
   slug: string;
@@ -272,27 +332,4 @@ export interface ResourceProject {
   project_type: string;
   versions: string[];
   external_url?: string;
-}
-export async function searchResources(
-  query: string,
-  type: string,
-  gameVersion?: string,
-  loader?: string | null,
-): Promise<ResourceProject[]> {
-  const facets = [[`project_type:${type}`]];
-  if (gameVersion) facets.push([`versions:${gameVersion}`]);
-  if (type === "mod") facets.push(loader && ["fabric", "neoforge", "forge", "quilt"].includes(loader)
-    ? [`categories:${loader}`]
-    : ["categories:fabric", "categories:forge", "categories:neoforge", "categories:quilt"]);
-  const params = new URLSearchParams({
-    query,
-    limit: "24",
-    index: "relevance",
-    facets: JSON.stringify(facets),
-  });
-  const result = await fetch(`https://api.modrinth.com/v2/search?${params}`, {
-    headers: { Accept: "application/json" },
-  });
-  if (!result.ok) throw new Error(`资源搜索失败（HTTP ${result.status}）`);
-  return (await result.json()).hits;
 }

@@ -40,7 +40,7 @@ describe("paintVoxelBackdrop optical field", () => {
 
     const canvas = paintVoxelBackdrop({
       light: false,
-      accent: "#b4f17a",
+      accent: "#0078d4",
       width: 320.4,
       height: 180.7,
     });

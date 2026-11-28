@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { motion } from "motion/react";
 import { desktop } from "../../lib/launcher";
 import { identityTransition, type MotionTier } from "../../design/motion";
-import { InstanceGlyph, glyphLoader, glyphVersion } from "./instanceGlyphs";
+import { InstanceGlyph, glyphLoader, glyphLoaderForVersionDirectory, glyphVersion } from "./instanceGlyphs";
 
 const IconFailures = createContext<{
   tier: MotionTier;
@@ -63,8 +63,16 @@ export function InstanceIdentity({
     return restoreCard;
   }, [layoutId, placement, restoreCard]);
   const letter = Array.from(name.trim())[0]?.toLocaleUpperCase() ?? "";
+  const loaderFamily = glyphLoader(loader);
+  const versionLoader = glyphLoaderForVersionDirectory(versionId ?? "");
+  // A missing or unrecognised loader family can still be named by the version
+  // folder: "26.2-fabric-0.19.3" is a Fabric profile even when `loader` is null.
+  const resolvedLoader =
+    (loaderFamily === "vanilla" || loaderFamily === "unknown") && versionLoader !== "vanilla"
+      ? versionLoader
+      : loaderFamily;
   const glyph = !icon && (loader !== undefined || versionId !== undefined)
-    ? { loader: glyphLoader(loader), version: glyphVersion(versionId ?? "", versionType) }
+    ? { loader: resolvedLoader, version: glyphVersion(versionId ?? "", versionType) }
     : undefined;
   return (
     <motion.span
@@ -72,6 +80,7 @@ export function InstanceIdentity({
       className="vx-instance-identity"
       data-identity={identity}
       data-identity-kind={kind}
+      data-identity-face={glyph ? "glyph" : undefined}
       data-layout-id={layoutId}
       {...(layoutId ? { layoutId, layoutDependency: `${identity}:${placement}`, transition: identityTransition(tier),
         onLayoutAnimationStart: () => {

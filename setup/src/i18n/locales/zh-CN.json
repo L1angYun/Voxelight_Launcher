@@ -1,0 +1,146 @@
+{
+  "app": {
+    "productName": "Voxelight Launcher",
+    "setupName": "Voxelight 安装程序",
+    "wordmark": "VOXELIGHT",
+    "stepCount": "第 {{current}} 步，共 {{total}} 步",
+    "stepAnnouncement": "第 {{current}} 步，共 {{total}} 步：{{title}}"
+  },
+  "chrome": {
+    "windowControls": "窗口控制",
+    "minimize": "最小化",
+    "close": "关闭",
+    "closeBlocked": "安装进行中，请等待完成后再关闭"
+  },
+  "actions": {
+    "back": "上一步",
+    "next": "继续",
+    "install": "开始安装",
+    "update": "开始更新",
+    "reinstall": "重新安装",
+    "browse": "浏览",
+    "classicInstaller": "打开经典安装程序",
+    "launch": "启动 Voxelight",
+    "close": "关闭",
+    "retry": "重试",
+    "copyDetails": "复制详情",
+    "copied": "详细信息已复制到剪贴板。",
+    "copyFailed": "无法访问剪贴板，请手动选中下方详细信息进行复制。",
+    "viewLicense": "查看 GPL-3.0 许可证"
+  },
+  "welcome": {
+    "title": "安装 Voxelight Launcher",
+    "version": "版本 {{version}}",
+    "summary": "面向 Windows 的开源 Minecraft: Java 版启动器，在一个安静整洁的界面里管理独立实例、模组加载器、世界存档与下载任务。",
+    "perUserNote": "仅为当前 Windows 用户安装，无需管理员权限，你的 Minecraft 游戏文件会保持独立。",
+    "licenseLead": "本软件采用 GNU GPL-3.0-only 许可，安装无需同意任何附加协议。",
+    "updateNotice": "检测到已安装版本 {{installed}}，本次将更新至 {{target}}。",
+    "reinstallNotice": "此电脑已安装版本 {{version}}。",
+    "downgradeNotice": "检测到已安装更新版本 {{installed}}，此安装程序不会执行降级。"
+  },
+  "location": {
+    "title": "安装位置",
+    "description": "为 Voxelight Launcher 选择一个当前用户可写的文件夹。游戏目录与存档不会被改动。",
+    "fieldLabel": "目标文件夹",
+    "placeholder": "选择本地磁盘上的文件夹",
+    "spaceSummary": "需要约 {{required}}，此磁盘可用 {{available}}",
+    "spaceRequiredOnly": "需要约 {{required}} 可用空间",
+    "checking": "正在检查路径…",
+    "modeUpdateTitle": "从 {{from}} 更新至 {{to}}",
+    "modeUpdateHint": "将沿用现有安装目录，确保快捷方式与系统应用记录保持一致。",
+    "modeReinstallTitle": "重新安装 {{version}}",
+    "modeReinstallHint": "将沿用现有安装目录，已保存的账号、实例和设置均会保留。",
+    "modeFolderMissingHint": "已登记的安装目录中找不到 Voxelight Launcher，可以重新选择安装位置。",
+    "keptFolderUnusableHint": "安装程序会保留现有安装所在的文件夹，但该文件夹已无法使用。经典安装程序可以先移除旧版本，再安装到其他文件夹。也可以先在 Windows 设置中卸载 Voxelight Launcher，再重新运行安装程序。",
+    "classicInstallerFailed": "无法打开经典安装程序。请关闭安装程序后重新运行。",
+    "modeDowngradeTitle": "已安装更新的版本 {{installed}}",
+    "modeDowngradeHint": "不允许降级到 {{target}}。如果确需安装旧版本，请先卸载 {{installed}}。"
+  },
+  "pathErrors": {
+    "empty": "请输入目标文件夹路径。",
+    "invalidChars": "路径包含 Windows 不允许的字符或保留名称。",
+    "notAbsolute": "请输入完整的本地磁盘路径，例如 C:\\Users\\User\\AppData\\Local\\Voxelight Launcher。",
+    "driveRoot": "请选择子文件夹，不要直接安装到磁盘根目录。",
+    "protectedLocation": "请选择 Windows 与 Program Files 目录之外的用户文件夹。",
+    "sharedLocation": "请选择仅属于当前账户的文件夹。不允许使用 ProgramData、公用文件夹或磁盘根目录等共享位置。",
+    "reparsePoint": "所选路径经过符号链接或目录联接，安装程序不允许此类路径。",
+    "isFile": "该路径已存在同名文件，请选择文件夹。",
+    "driveMissing": "所选磁盘或上级目录不存在。",
+    "notWritable": "当前账户没有写入此文件夹的权限。",
+    "insufficientSpace": "该磁盘剩余空间不足，需要 {{required}}，当前仅剩 {{available}}。"
+  },
+  "options": {
+    "title": "安装选项",
+    "description": "在开始安装前确认快捷方式与完成后的启动行为。",
+    "shortcutsTitle": "桌面与开始菜单快捷方式",
+    "shortcutsHint": "在桌面和开始菜单创建快捷方式。关闭此项后将跳过这两处快捷方式。",
+    "shortcutsUpdateHint": "更新时会保持你现有的快捷方式不变。",
+    "launchTitle": "安装完成后启动 Voxelight",
+    "launchHint": "安装结束时自动启动 Voxelight Launcher。",
+    "launchElevatedHint": "安装程序正以管理员身份运行，无法以你的普通用户权限启动 Voxelight。安装完成后请从开始菜单打开 Voxelight。",
+    "summaryLabel": "安装摘要",
+    "summaryTarget": "目录：{{path}}",
+    "summaryActionInstall": "操作：全新安装 {{version}}",
+    "summaryActionUpdate": "操作：从 {{from}} 更新至 {{to}}",
+    "summaryActionReinstall": "操作：重新安装 {{version}}"
+  },
+  "installing": {
+    "title": "正在安装 Voxelight",
+    "subtitle": "安装完成前请勿关闭此窗口。",
+    "progressLabel": "安装进度",
+    "phases": {
+      "extract": "解压校验",
+      "install": "写入文件",
+      "verify": "校验完成"
+    },
+    "status": {
+      "extract": "正在校验并提取安装组件…",
+      "install": "正在安装 Voxelight Launcher 文件…",
+      "installOverwrite": "正在更新现有安装文件…",
+      "verify": "正在核对已安装文件并清理临时目录…"
+    },
+    "bytesWritten": "已写入 {{written}}，预计 {{expected}}"
+  },
+  "done": {
+    "title": "Voxelight 已就绪",
+    "description": "Voxelight Launcher {{version}} 已安装到所选目录。",
+    "installedAt": "安装目录：{{path}}",
+    "launchingNote": "正在启动 Voxelight Launcher。",
+    "launchFailed": "无法自动启动 Voxelight Launcher，请点击下方按钮或从开始菜单打开。",
+    "launchBlockedElevated": "安装程序正以管理员身份运行。若要使用普通用户权限启动 Voxelight，请关闭安装程序，然后从开始菜单打开 Voxelight Launcher。"
+  },
+  "error": {
+    "title": "安装未能完成",
+    "summary": "未对系统全局配置做出更改。可查看下方原因、复制详情或重新尝试。",
+    "detailsLabel": "技术详情",
+    "detailVersion": "版本：{{value}}",
+    "detailTarget": "目录：{{value}}",
+    "detailPhase": "阶段：{{value}}",
+    "detailExitCode": "退出代码：{{value}}",
+    "detailCode": "错误标识：{{value}}",
+    "detailNone": "无",
+    "reasons": {
+      "nsisExit1": "安装未完成即被取消或中止（退出代码 1）。请先关闭正在运行的 Voxelight Launcher 后重试。",
+      "nsisExit2": "安装脚本提前中止（退出代码 2）。请确认启动器已关闭、目录可写，且未安装更新版本。",
+      "nsisExit5": "Windows 拒绝写入所选目录（退出代码 5）。请更换当前用户可写的文件夹后重试。",
+      "nsisExit112": "安装期间目标磁盘空间不足（退出代码 112）。请清理空间或改选其他磁盘。",
+      "nsisExit1223": "安装操作在完成前被取消（退出代码 1223）。",
+      "nsisExit1602": "卸载旧版本的操作被取消（退出代码 1602）。",
+      "nsisExit1618": "系统正在运行另一个安装程序（退出代码 1618）。请等待其结束后重试。",
+      "nsisExitOther": "安装程序异常退出，退出代码为 {{code}}。",
+      "hashMismatch": "内置安装包的 SHA-256 完整性校验未通过。请从官方发布页重新下载 Voxelight 安装程序。",
+      "extractFailed": "无法将安装组件提取到临时文件夹。请检查可用磁盘空间与安全软件拦截情况。",
+      "spawnFailed": "无法启动 Windows 安装引擎，请检查安全软件设置后重试。",
+      "verifyFailed": "安装引擎已退出，但目标目录中未找到 voxelight-launcher.exe。",
+      "downgradeBlocked": "检测到已安装更新版本的 Voxelight Launcher，已拒绝降级覆盖。",
+      "alreadyInstalling": "当前已有安装任务正在运行。",
+      "launcherRunning": "Voxelight Launcher 仍在运行。关闭 Voxelight 后重试。"
+    }
+  },
+  "license": {
+    "title": "GNU 通用公共许可证第 3 版",
+    "description": "Voxelight Launcher 为依据 GPL-3.0-only 发布的自由软件，以下内容仅供查阅。",
+    "close": "关闭对话框",
+    "loading": "正在加载许可证文本…"
+  }
+}

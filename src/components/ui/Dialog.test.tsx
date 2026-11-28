@@ -45,3 +45,62 @@ it("tabs out of an arrow-focused manual tab in DOM order and returns to the sele
   expect(document.activeElement).toBe(first);
   expect(change).not.toHaveBeenCalled();
 });
+
+async function renderDialog(children: React.ReactNode, footer?: React.ReactNode) {
+  const i18n = createLauncherI18n("en-US", "en-US"); await i18n.initPromise;
+  await act(async () => root.render(<I18nextProvider i18n={i18n}>
+    <Dialog open onOpenChange={() => {}} title="Keyboard shortcuts" footer={footer}>{children}</Dialog>
+  </I18nextProvider>));
+  return container.querySelector<HTMLDialogElement>("dialog")!;
+}
+
+it("starts a dialog without input controls on its close button, never on a body action", async () => {
+  const action = vi.fn();
+  const dialog = await renderDialog(<p>Ctrl + 1 opens Play.</p>,
+    <button id="show-tour" onClick={action}>Show the welcome setup</button>);
+  expect(document.activeElement).toBe(dialog.querySelector("[data-dialog-close]"));
+  expect(document.activeElement).not.toBe(dialog.querySelector("#show-tour"));
+  expect(dialog.querySelector(".vx-dialog__header h2")?.getAttribute("tabindex")).toBe("-1");
+  expect(action).not.toHaveBeenCalled();
+});
+
+it("lets an explicit autofocus win over the close button and over a field", async () => {
+  let dialog = await renderDialog(<p>Remove it?</p>, <>
+    <button id="cancel" data-dialog-autofocus="true">Cancel</button><button id="accept">Remove</button>
+  </>);
+  expect(document.activeElement).toBe(dialog.querySelector("#cancel"));
+  await act(async () => root.render(<></>));
+  dialog = await renderDialog(<><input id="name" aria-label="Name" /><textarea id="notes" aria-label="Notes" data-dialog-autofocus="" /></>);
+  expect(document.activeElement).toBe(dialog.querySelector("#notes"));
+});
+
+it("still starts on the first input control ahead of body buttons", async () => {
+  const dialog = await renderDialog(<><button id="browse">Browse</button><input id="path" aria-label="Path" /></>);
+  expect(document.activeElement).toBe(dialog.querySelector("#path"));
+});
+
+async function renderDescribed(description: string) {
+  const i18n = createLauncherI18n("en-US", "en-US"); await i18n.initPromise;
+  await act(async () => root.render(<I18nextProvider i18n={i18n}>
+    <Dialog open onOpenChange={() => {}} title="Change loader" description={description} />
+  </I18nextProvider>));
+  const dialog = container.querySelector<HTMLDialogElement>("dialog")!;
+  return { dialog, paragraphs: [...dialog.querySelectorAll<HTMLParagraphElement>(".vx-dialog__header p")] };
+}
+
+it("shows a description with blank lines as separate paragraphs that all describe the dialog", async () => {
+  const { dialog, paragraphs } = await renderDescribed("Backup failed.\r\n\r\nChange the loader anyway?\n \n\nWorlds can lose modded blocks.");
+  expect(paragraphs.map(paragraph => paragraph.textContent)).toEqual(["Backup failed.", "Change the loader anyway?", "Worlds can lose modded blocks."]);
+  expect(dialog.getAttribute("aria-describedby")!.split(" ")).toEqual(paragraphs.map(paragraph => paragraph.id));
+  expect(new Set(paragraphs.map(paragraph => paragraph.id)).size).toBe(3);
+});
+
+it("keeps a one-paragraph description as a single described paragraph", async () => {
+  const { dialog, paragraphs } = await renderDescribed("Remove this server from the list?");
+  expect(paragraphs.map(paragraph => paragraph.textContent)).toEqual(["Remove this server from the list?"]);
+  expect(dialog.getAttribute("aria-describedby")).toBe(paragraphs[0].id);
+  await act(async () => root.render(<></>));
+  const empty = await renderDescribed("");
+  expect(empty.paragraphs).toEqual([]);
+  expect(empty.dialog.hasAttribute("aria-describedby")).toBe(false);
+});

@@ -1,88 +1,138 @@
 @layer features {
-/* The chosen image sits above the world scene but below the shell navigation
-   and page content. It is only visible while Home is the current page. */
-.vx-home-background {
+/* The chosen image sits across all pages below the shell navigation, ambient
+   overlay, and page content while pausing the 3D world scene. */
+.vx-app-background {
   position: fixed;
   inset: 0;
   z-index: 0;
-  background-color: var(--bg-base);
+  overflow: hidden;
+  background-color: var(--world-ink, var(--bg-base));
+  pointer-events: none;
+  opacity: 1;
+  animation: vx-home-background-fade-in 300ms var(--ease-out);
+}
+.vx-app-background__image,
+.vx-app-background__outgoing {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
   pointer-events: none;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 300ms var(--ease-out), visibility 0s linear 300ms;
+  filter: blur(calc(var(--background-blur-px, 8) * 1px));
+  transform: scale(calc(1 + var(--background-blur-px, 8) / 400));
+  transform-origin: center;
 }
-.vx-home-background[data-visible="true"] {
-  visibility: visible;
-  opacity: 1;
-  transition: opacity 300ms var(--ease-out), visibility 0s;
-  animation: vx-home-background-fade-in 300ms var(--ease-out);
+/* Outgoing photo fades out over the newly loaded image without unmounting the
+   host layer or revealing the world scene underneath. */
+.vx-app-background__outgoing {
+  animation: vx-home-background-crossfade-out 220ms var(--ease-out) forwards;
 }
-/* The home launch controls live on the left, so the reading scrim is strongest
-   there and dissolves towards the open side of the scene. A second band covers
-   the transparent window chrome and the controls above the character, whose
-   readability does not depend on the world scene showing through. */
-.vx-home-background::after {
+.vx-app-background[data-drift="true"] .vx-app-background__image {
+  animation: vx-app-background-drift var(--background-drift-duration, 90s) ease-in-out infinite alternate;
+}
+/* Global dim scrim plus stronger bands behind the transparent chrome bar and
+   the left Home launch controls so foreground text stays readable. */
+.vx-app-background::after {
   content: "";
   position: absolute;
   inset: 0;
+  z-index: 1;
   pointer-events: none;
   background:
     linear-gradient(180deg,
-      color-mix(in srgb, var(--bg-base) 88%, transparent) 0,
-      color-mix(in srgb, var(--bg-base) 64%, transparent) var(--shell-height, 82px),
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 82%, transparent) 0,
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 52%, transparent) var(--shell-height, 82px),
       transparent calc(var(--shell-height, 82px) + var(--space-7))),
     linear-gradient(90deg,
-      color-mix(in srgb, var(--bg-base) 82%, transparent) 0%,
-      color-mix(in srgb, var(--bg-base) 58%, transparent) 38%,
-      color-mix(in srgb, var(--bg-base) 22%, transparent) 66%,
-      transparent 88%);
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 72%, transparent) 0%,
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 44%, transparent) 38%,
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 14%, transparent) 66%,
+      transparent 88%),
+    linear-gradient(
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) calc(var(--background-dim, .35) * 100%), transparent),
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) calc(var(--background-dim, .35) * 100%), transparent));
+}
+/* Hide the paused world scene when a custom background is active so Layer 3
+   does not cover Layer 1 or Layer 2. */
+.vx-app-body:has(> .vx-app-background[data-visible="true"]) > .vx-global-scene {
+  opacity: 0;
+  visibility: hidden;
 }
 /* The chrome bar is transparent over the world scene by default. Over a photo
    the utility items and window controls need the same reading surface the
    solid material already gives them. */
-.vx-app-body:has(> .vx-home-background[data-visible="true"]) .vx-window-chrome__bar {
-  background: var(--bg-overlay);
+.vx-app-body:has(> .vx-app-background[data-visible="true"]) .vx-window-chrome__bar {
+  background: var(--surface-bar, var(--bg-overlay));
 }
 /* A custom image covers the world wordmark, so the world intro must not leave
    Home without its identity until the intro deadline. */
-:root[data-world-intro="on"] .vx-app-body:has(> .vx-home-background[data-visible="true"]) .vx-home__identity:not([data-picker-open="true"]) {
+:root[data-world-intro="on"] .vx-app-body:has(> .vx-app-background[data-visible="true"]) .vx-home__identity:not([data-picker-open="true"]) {
   opacity: 1;
 }
 @keyframes vx-home-background-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+@keyframes vx-home-background-crossfade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes vx-app-background-drift {
+  from {
+    transform: scale(calc(1.04 + var(--background-blur-px, 8) / 400)) translate3d(-1.2%, -0.8%, 0);
+  }
+  to {
+    transform: scale(calc(1.04 + var(--background-blur-px, 8) / 400)) translate3d(1.2%, 0.8%, 0);
+  }
+}
 }
 @layer overrides {
-[data-high-contrast="true"] .vx-home-background::after {
+[data-high-contrast="true"] .vx-app-background::after {
   background:
     linear-gradient(180deg,
-      color-mix(in srgb, var(--bg-base) 94%, transparent) 0,
-      color-mix(in srgb, var(--bg-base) 78%, transparent) var(--shell-height, 82px),
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 94%, transparent) 0,
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 78%, transparent) var(--shell-height, 82px),
       transparent calc(var(--shell-height, 82px) + var(--space-7))),
     linear-gradient(90deg,
-      color-mix(in srgb, var(--bg-base) 96%, transparent) 0%,
-      color-mix(in srgb, var(--bg-base) 84%, transparent) 48%,
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 96%, transparent) 0%,
+      color-mix(in srgb, var(--world-ink, var(--bg-base)) 84%, transparent) 48%,
       transparent 92%);
 }
-.vx-home-background[data-motion="reduced"],
-[data-reduced-motion="true"] .vx-home-background,
-[data-effects="lite"] .vx-home-background {
+.vx-app-background[data-motion="reduced"],
+[data-reduced-motion="true"] .vx-app-background,
+[data-effects="lite"] .vx-app-background {
   animation: none;
   transition: none;
 }
+.vx-app-background[data-motion="reduced"] .vx-app-background__image,
+[data-reduced-motion="true"] .vx-app-background__image,
+[data-effects="lite"] .vx-app-background__image {
+  animation: none;
+}
+.vx-app-background[data-motion="reduced"] .vx-app-background__outgoing,
+[data-reduced-motion="true"] .vx-app-background__outgoing,
+[data-effects="lite"] .vx-app-background__outgoing {
+  display: none;
+  animation: none;
+}
 @media (prefers-reduced-motion: reduce) {
-  .vx-home-background {
+  .vx-app-background {
     animation: none;
     transition: none;
+  }
+  .vx-app-background__image {
+    animation: none;
+  }
+  .vx-app-background__outgoing {
+    display: none;
+    animation: none;
   }
 }
 @media (forced-colors: active) {
   /* Forced colors drops the gradient scrims but keeps the URL image, so remove
      the layer entirely and let the forced-colors world canvas show instead. */
-  .vx-home-background { display: none; }
+  .vx-app-background { display: none; }
 }
 }

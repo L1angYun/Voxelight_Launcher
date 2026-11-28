@@ -17,18 +17,18 @@
 
 前往 [GitHub Releases](https://github.com/L1angYun/Voxelight_Launcher/releases) 或 [Gitee 镜像](https://gitee.com/liangyun_Liu/Voxelight_Launcher/releases) 下载 `VoxelightLauncher-<版本>-x64-setup.exe`（两端产物与 `SHA256SUMS.txt` 完全一致）。
 
-- 仅安装到当前用户目录，无需管理员权限（默认 `%LOCALAPPDATA%\Voxelight Launcher`），缺少 WebView2 时自动补装。
+- **Voxelight Setup** 安装器沿用启动器的外观，跟随你的主题与强调色；仅安装到当前用户目录，无需管理员权限（默认 `%LOCALAPPDATA%\Voxelight Launcher`），缺少 WebView2 时自动补装。
 - **官方发布版已内置 Microsoft Client ID 与 CurseForge API Key**，微软登录与 CurseForge 开箱即用；从源码自行构建的版本不含内置凭据，见[账号与服务凭据](#账号与服务凭据)。
 - 支持在 **设置 → 关于** 中核对文件大小与 SHA-256 后自动升级，且拒绝降级覆盖。可在 **更新通道** 中选择 **稳定版**（默认，仅正式发布）或 **测试版（Beta）**（额外接收 `-alpha.N` / `-beta.N` / `-rc.N` 预发布版本）；预发布版本待对应正式版发布后也会自动升级到正式版。
 
 ## 核心特性
 
 - **版本与加载器** — 覆盖全部正式版、快照、远古版（Beta/Alpha）与愚人节版；支持 Fabric、Quilt、Forge、NeoForge 与 OptiFine（导入官方安装器 JAR），并可为已有实例更换加载器（更换前自动备份）。
-- **实例与内容管理** — 独立实例目录，可按实例覆盖 Java、自动/手动内存、JVM 参数、窗口尺寸与游戏代理；支持实例备份恢复、克隆、个人备份或 Modrinth `.mrpack` 导出；支持世界导入备份、按世界管理数据包、截图浏览、可搜索筛选的实时游戏日志与崩溃诊断报告。
+- **实例与内容管理** — 实例与 PCL、HMCL 一致：每个实例就是某个游戏文件夹里的版本文件夹（`versions\<名称>\`），其他启动器安装的版本会直接显示为实例并按原样启动；可添加多个游戏文件夹，可为任意实例开启独立游戏目录，旧版 Voxelight 实例照常可用，并可在实例页一键转换。可按实例覆盖 Java、自动/手动内存、JVM 参数、窗口尺寸与游戏代理；支持实例备份恢复、克隆、个人备份或 Modrinth `.mrpack` 导出；支持世界导入备份、按世界管理数据包、截图浏览、可搜索筛选的实时游戏日志与崩溃诊断报告。
 - **模组与整合包生态** — 对接 Modrinth（自动拉取必需依赖、事务更新与回退）与 CurseForge，支持模组、资源包、光影与整合包搜索安装；支持导入 `.mrpack`、CurseForge、MultiMC / Prism 及 MCBBS 整合包；支持在线整合包差异计划更新与自动备份；支持拖放导入模组、整合包与皮肤，以及本地资源批量启停与删除。
 - **下载中心与本机代理** — 统一任务队列，支持断点续传、多连接、哈希校验、暂停/恢复/取消、全部重试与清理未完成项；支持仅官方源、自动测速优选与 BMCLAPI 优先；代理默认跟随系统，并支持自动检测 Windows 系统代理、环境变量与常见本机 HTTP 代理端口一键采用。
 - **账号与联机服务端** — 支持微软正版设备码登录（含 3D 皮肤预览、上传与披风选择）、离线账号及 Authlib 第三方认证；支持服务器列表测速、局域网发现、直连、IPv4/IPv6 与 NAT 网络检测，以及本地托管服务端（原版自动下载或导入 Paper/Spigot/Fabric/Forge/NeoForge JAR 及 `win_args.txt` 参数启动目录）和控制台管理。
-- **界面与多语言** — 内置 **7 门语言**（简体中文、繁體中文、English、日本語、한국어、Русский、Español），默认跟随 Windows 主题、语言、强调色与辅助功能设置；提供深浅主题、完全/精简特效（精简模式卸载 3D 世界以节省内存）、交互式首次使用引导（OOBE）、自定义首页背景、全局快捷键、设置搜索与一键还原初始状态（绝不删除 Minecraft 游戏文件）。
+- **界面与多语言** — 内置 **7 门语言**（简体中文、繁體中文、English、日本語、한국어、Русский、Español），默认跟随 Windows 主题、语言、强调色与辅助功能设置；提供深浅主题、完全/精简特效（精简模式卸载 3D 世界以节省内存）、交互式首次使用引导（OOBE）、液态玻璃背后的环境光层、全应用自定义背景、中国传统色配色预设、全局快捷键、设置搜索与一键还原初始状态（绝不删除 Minecraft 游戏文件）。
 - **Lumen 与本地 MCP（可选）** — 可选内置助手 **Lumen**，使用你自己的 OpenAI 兼容或 Anthropic API Key（或本机回环 Ollama / LM Studio），支持分级权限确认、崩溃主动唤醒诊断以及仅限 `127.0.0.1` 的本地 MCP 服务。未配置前在 **设置 → Lumen 与 MCP** 之外完全不可见。
 
 ## 账号与服务凭据
@@ -43,7 +43,7 @@
 | 数据 | 路径 |
 | --- | --- |
 | 启动器数据（设置、账号、日志、Java 运行时、备份、服务端、缓存） | `%LOCALAPPDATA%\dev.voxelight.launcher` |
-| 游戏目录（版本、库文件、资源文件、`instances\`） | 默认 `%APPDATA%\.minecraft`（可在 **设置 → 游戏** 修改） |
+| 游戏文件夹（版本、库文件、资源文件；每个实例就是 `versions\<名称>\`） | 默认 `%APPDATA%\.minecraft`，可在 **设置 → 游戏** 添加更多 |
 
 - 登录令牌、CurseForge Key、代理凭据与 Lumen API Key 均通过 **Windows DPAPI** 按当前 Windows 用户加密存储，导出配置预设时不会包含。
 - 卸载时默认保留应用数据；无论是卸载还是 **设置 → 通用 → 还原为初始状态**，均**绝不会删除你的 Minecraft 游戏目录、世界存档、模组、备份或托管服务端文件**。
@@ -72,8 +72,8 @@
 
 - 仅支持 64 位 Windows 与 Minecraft: Java 版。
 - 光影包需搭配 Iris 等光影加载器模组使用。
-- 内置服务端下载仅提供原版，其他服务端（包括基于 `win_args.txt` 启动的 Forge / NeoForge 服务端）需以 JAR 或目录导入；CurseForge 单项资源安装不自动解析依赖。
-- Windows NSIS 安装程序当前采用固定浅色外观，暂未动态跟随系统浅/深色主题。
+- 内置服务端下载仅提供原版，其他服务端（包括基于 `win_args.txt` 启动的 Forge / NeoForge 服务端）需以 JAR 或目录导入；Modrinth 与 CurseForge 的单项资源安装会解析并安装同类必需前置，跨分类依赖与 CurseForge 更新仅作检查而不自动安装，可选前置也不会自动安装。
+- Voxelight 安装程序会跟随 Windows 浅/深色主题与强调色；若系统缺少 WebView2 运行时，会回退到经典浅色 NSIS 界面以自动补装 WebView2。
 - 关闭窗口即退出启动器；未完成的下载可在 **下载** 页继续或重试。
 
 ## 从源码构建

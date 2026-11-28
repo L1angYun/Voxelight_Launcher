@@ -106,6 +106,28 @@ describe("AssistantDialog", () => {
     expect(onConfigure).toHaveBeenCalledTimes(1);
   });
 
+  it("sums up provider, model and permission in one meta line and keeps a badge only for warnings", async () => {
+    commandMock.mockResolvedValueOnce(statusFixture());
+    await renderDialog();
+    const summary = document.querySelector<HTMLElement>(".vx-assistant-bar .vx-assistant-summary")!;
+    expect([...summary.children].map((part) => part.textContent)).toEqual([
+      "OpenAI-compatible",
+      "gpt-4o-mini",
+      "Controlled",
+      "2 tools",
+    ]);
+    expect(document.querySelector(".vx-assistant-pill")).toBeNull();
+    expect(document.querySelector(".vx-assistant-warning")).toBeNull();
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    commandMock.mockResolvedValueOnce(statusFixture({ model: "", ready: false }));
+    await renderDialog();
+    const warning = document.querySelector<HTMLElement>(".vx-assistant-bar .vx-assistant-warning")!;
+    expect(warning.textContent).toBe("Model not configured");
+    expect(warning.querySelector("svg")).not.toBeNull();
+  });
+
   it("handles tool traces and Controlled-mode approval confirmation", async () => {
     const onMutated = vi.fn(async () => {});
     const notesCall: PendingToolCall = {
@@ -181,9 +203,10 @@ describe("AssistantDialog", () => {
     });
     await act(async () => buttonByText("Send").click());
 
-    expect(document.body.textContent).toContain("list_instances");
+    expect(document.body.textContent).toContain("List instances");
     expect(document.body.textContent).toContain("Approve Lumen action");
-    expect(document.body.textContent).toContain("update_instance_notes");
+    expect(document.body.textContent).toContain("Update instance notes");
+    expect(document.body.textContent).not.toContain("list_instances");
     expect(onMutated).not.toHaveBeenCalled();
 
     // Resolved details come first with translated labels; raw arguments stay in a closed disclosure.
@@ -200,6 +223,10 @@ describe("AssistantDialog", () => {
     expect(technical.open).toBe(false);
     expect(technical.querySelector("summary")?.textContent).toBe("Technical details");
     expect(technical.textContent).toContain("instanceId");
+    // The raw tool identifier moves out of the heading into the technical disclosure.
+    expect(card.querySelector(".vx-assistant-approval__head")?.textContent).toBe("Update instance notes");
+    expect(technical.querySelector(".vx-assistant-approval__tool-id")?.textContent).toBe("update_instance_notes");
+    expect(document.querySelector(".vx-assistant-trace .vx-assistant-trace__name")?.getAttribute("title")).toBe("list_instances");
     expect(card.querySelector('[role="note"]')).toBeNull();
     expect(card.querySelector('input[type="checkbox"]')).toBeNull();
 

@@ -90,14 +90,9 @@ fn game_root(
     instance_id: Option<&str>,
 ) -> Result<PathBuf, String> {
     let data = state.snapshot()?;
-    let instance = instance_id
-        .map(|id| {
-            data.instances
-                .iter()
-                .find(|instance| instance.id == id)
-                .ok_or("实例不存在")
-        })
-        .transpose()?;
+    // The same resolution as launch: a version-only caller still means the
+    // instance of that version, so its stored isolation decides the folder.
+    let instance = minecraft::target_instance(&data, version, instance_id)?;
     instances::checked_absolute(&minecraft::game_directory(&data.config, version, instance)?)
 }
 

@@ -1,39 +1,40 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { LayoutGroup, motion } from "motion/react";
+import { LayoutGroup } from "motion/react";
 import { useTranslation } from "react-i18next";
 import {
-  ArrowUpRight,
-  Folder,
   Grid2X2,
   LibraryBig,
   List,
-  Play,
+  MoreHorizontal,
   Plus,
+  RotateCcw,
   Search,
   Upload,
 } from "lucide-react";
 import { useLauncher } from "../../app/controller/LauncherProvider";
+import { useViewState } from "../../app/viewState";
 import { useOverture } from "../../visual/overture/OvertureProvider";
+import { command, type Config } from "../../lib/launcher";
+import { gameFolderChoices, instancesInGameFolder, sameGameFolderPath } from "../../lib/gameFolders";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
 import { Select } from "../../components/ui/Select";
 import { PageShell, PageHeader } from "../../components/ui/PageShell";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
+import { Dialog } from "../../components/ui/Dialog";
 import { InstanceCard } from "./InstanceCard";
 import { InstanceDetailPage } from "./InstanceDetailPage";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
 import { LibraryLaunchStatus } from "./LibraryLaunchStatus";
-import { VersionDirectoryDetailPage } from "./VersionDirectoryDetailPage";
 import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
 import { InstanceIdentity, InstanceIdentityProvider } from "./InstanceIdentity";
-import { glyphLoaderForVersionDirectory } from "./instanceGlyphs";
-import { MOTION, motionDuration } from "../../design/motion";
+import { motionDuration } from "../../design/motion";
+import { ICON } from "../../design/icons";
 import { useMotionTier } from "../../design/useMotionTier";
-import type { Instance, InstalledVersion } from "../../lib/launcher";
+import type { Instance } from "../../lib/launcher";
 import "./library-grid.css";
 
-type DetailKind = "instance" | "version-directory";
 const LIBRARY_BATCH = 48;
 
 export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
@@ -44,53 +45,50 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
   const groupId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const listScroll = useRef(0);
-  const previousDetail = useRef<{ key: string; kind: DetailKind; id: string } | null>(null);
+  const previousDetail = useRef<{ key: string; id: string } | null>(null);
   const previousResetTick = useRef(navResetTick);
   const resetReturn = useRef(false);
   const {
     data,
+    config,
     running,
     reload,
     selectInstance,
-    selectVersion,
     launch,
     progress,
     preparing,
     selectedRunningGame,
     selectedInstance: activeInstance,
-    selectedVersionId,
     gamePid,
     cancelPreparation,
+    run,
   } = useLauncher();
   const { play } = useOverture();
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState("recent");
-  const [view, setView] = useState<"grid" | "list">("grid");
+  const [query, setQuery] = useViewState("library.query", "");
+  const [sort, setSort] = useViewState("library.sort", "recent");
+  const [view, setView] = useViewState<"grid" | "list">("library.view", "grid");
   const [visibleLimit, setVisibleLimit] = useState(LIBRARY_BATCH);
   const [selectedId, setSelectedId] = useState<string>();
-  const [selectedVersionDirectory, setSelectedVersionDirectory] =
-    useState<string>();
-  const [scope, setScope] = useState<"instances" | "versions">("instances");
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [hiddenOpen, setHiddenOpen] = useState(false);
+  const [hiddenInstances, setHiddenInstances] = useState<Instance[]>([]);
+  const [hiddenError, setHiddenError] = useState("");
   const [revealListing, setRevealListing] = useState(false);
+  const folders = useMemo(() => gameFolderChoices(config), [config]);
+  const folderInstances = useMemo(
+    () => instancesInGameFolder(data.instances, config.gameDirectory),
+    [config.gameDirectory, data.instances],
+  );
   const selectedInstance = data.instances.find(
     (instance) => instance.id === selectedId,
   );
-  const versionDirectory = data.installedVersions.find(
-    (version) => version.id === selectedVersionDirectory,
-  );
-  const detailKind = versionDirectory ? "version-directory" : selectedInstance ? "instance" : undefined;
-  const detailId = versionDirectory?.id ?? selectedInstance?.id;
-  const actualDetailKey = detailKind && detailId ? `${detailKind}:${detailId}` : null;
+  const detailKey = selectedInstance ? `instance:${selectedInstance.id}` : null;
 
-  function openDetail(kind: DetailKind, id: string) {
-    // The browser can clamp scroll as soon as the shorter detail tree replaces
-    // the listing, so snapshot it before requesting that replacement.
-    if (!actualDetailKey) listScroll.current = rootRef.current?.closest("main")?.scrollTop ?? 0;
+  function openDetail(id: string) {
+    if (!detailKey) listScroll.current = rootRef.current?.closest("main")?.scrollTop ?? 0;
     resetReturn.current = false;
-    setSelectedId(kind === "instance" ? id : undefined);
-    setSelectedVersionDirectory(kind === "version-directory" ? id : undefined);
+    setSelectedId(id);
   }
 
   useLayoutEffect(() => {
@@ -102,15 +100,14 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
       if (main) main.scrollTop = 0;
       resetReturn.current = true;
       setSelectedId(undefined);
-      setSelectedVersionDirectory(undefined);
-      if (actualDetailKey) return;
+      if (detailKey) return;
       setVisibleLimit(LIBRARY_BATCH);
     }
 
     const previous = previousDetail.current;
-    if (actualDetailKey && detailKind && detailId) {
-      if (previous?.key === actualDetailKey) return;
-      previousDetail.current = { key: actualDetailKey, kind: detailKind, id: detailId };
+    if (detailKey && selectedInstance) {
+      if (previous?.key === detailKey) return;
+      previousDetail.current = { key: detailKey, id: selectedInstance.id };
       if (main) main.scrollTop = 0;
       root.querySelector<HTMLElement>(".vx-detail-header h1")?.focus({ preventScroll: true });
       return;
@@ -119,14 +116,12 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
     resetReturn.current = false;
     if (!previous) return;
     previousDetail.current = null;
-    // An external reload can remove the resolved entity without changing the
+    // An external reload can remove the resolved instance without changing the
     // selected ID. Clear it so a later reload cannot reopen a stale detail.
     if (selectedId !== undefined) setSelectedId(undefined);
-    if (selectedVersionDirectory !== undefined) setSelectedVersionDirectory(undefined);
 
     const card = [...root.querySelectorAll<HTMLButtonElement>(".vx-instance-card__select")].find((button) =>
-      previous.kind === "instance" ? button.closest<HTMLElement>("[data-instance-id]")?.dataset.instanceId === previous.id
-        : button.dataset.versionId === previous.id);
+      button.closest<HTMLElement>("[data-instance-id]")?.dataset.instanceId === previous.id);
     const heading = root.querySelector<HTMLElement>(".vx-library-page h1");
     let focusTarget = card ?? heading;
     if (main) {
@@ -139,14 +134,11 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
     }
     focusTarget?.focus({ preventScroll: true });
     setRevealListing(contentDuration > 0);
-  }, [actualDetailKey, contentDuration, detailId, detailKind, navResetTick, selectedId, selectedVersionDirectory]);
-  const scopeCount =
-    scope === "versions"
-      ? data.installedVersions.length
-      : data.instances.length;
+  }, [contentDuration, detailKey, navResetTick, selectedId, selectedInstance]);
+
   const instances = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    const filtered = data.instances.filter(
+    const filtered = folderInstances.filter(
       (instance) =>
         !normalized ||
         [
@@ -163,39 +155,55 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
         a.lastPlayed ?? a.createdAt,
       );
     });
-  }, [data.instances, query, sort]);
-  const versions = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const filtered = data.installedVersions.filter(
-      (version) => !normalized || version.id.toLowerCase().includes(normalized),
-    );
-    return sort === "recent"
-      ? filtered
-      : [...filtered].sort((a, b) =>
-          a.id.localeCompare(b.id, undefined, { numeric: true }),
-        );
-  }, [data.installedVersions, query, sort]);
-  const remainingCount = Math.max(0, (scope === "versions" ? versions.length : instances.length) - visibleLimit);
+  }, [folderInstances, query, sort]);
+  const remainingCount = Math.max(0, instances.length - visibleLimit);
+  const hasInstances = folderInstances.length > 0;
 
   async function launchInstance(instance: Instance) {
     selectInstance(instance.id);
     await launch(instance.id);
   }
+
+  async function switchGameFolder(path: string) {
+    if (sameGameFolderPath(path, config.gameDirectory)) return;
+    await run("folder.switch", async () => {
+      await command<Config>("set_active_game_folder", { path });
+      await reload();
+      setSelectedId(undefined);
+      setVisibleLimit(LIBRARY_BATCH);
+    });
+  }
+
+  async function openHidden() {
+    try {
+      setHiddenError("");
+      setHiddenInstances(await command<Instance[]>("list_hidden_instances"));
+      setHiddenOpen(true);
+    } catch (cause) {
+      setHiddenError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function restoreHidden(instance: Instance) {
+    await run("instance.restore", async () => {
+      await command("restore_instance", { instanceId: instance.id });
+      await reload();
+      setHiddenInstances((list) => list.filter((item) => item.id !== instance.id));
+    });
+  }
+
   async function installed(versionId: string, instanceId?: string) {
     await reload();
-    if (instanceId) selectInstance(instanceId);
-    else selectVersion(versionId);
-    if (instanceId) openDetail("instance", instanceId);
+    if (instanceId) {
+      selectInstance(instanceId);
+      openDetail(instanceId);
+    }
     setCreateOpen(false);
     setImportOpen(false);
     play({
       id: `instance-installed-${instanceId ?? versionId}-${Date.now()}`,
       kind: "instance-installed",
     });
-  }
-  async function launchVersion(versionId: string) {
-    selectVersion(versionId);
-    await launch(undefined, versionId);
   }
 
   const launchStatus = (
@@ -206,42 +214,42 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
       onCancel={cancelPreparation}
     />
   );
-  const content = versionDirectory ? (
-    <VersionDirectoryDetailPage key={actualDetailKey} version={versionDirectory}
-      onBack={() => setSelectedVersionDirectory(undefined)} onLaunch={() => void launchVersion(versionDirectory.id)} />
-  ) : selectedInstance ? (
-    <InstanceDetailPage key={actualDetailKey} instance={selectedInstance} onBack={() => setSelectedId(undefined)}
+  const content = selectedInstance ? (
+    <InstanceDetailPage key={detailKey} instance={selectedInstance} onBack={() => setSelectedId(undefined)}
       onChanged={reload} onLaunch={() => void launchInstance(selectedInstance)} />
   ) : (
     <PageShell className="vx-library-page" data-drill-return={revealListing && contentDuration > 0 ? "" : undefined}
       onAnimationEnd={(event) => { if (event.animationName === "vx-library-content-reveal") setRevealListing(false); }}>
       <PageHeader title={t("library:title")}
-        description={scope === "versions" ? t("library:subtitleVersions", { count: scopeCount }) : t("library:subtitle", { count: scopeCount })}
-        actions={<Segmented semantic="toggle" className="vx-library-scope" label={t("library:scopeLabel")} value={scope}
-          onChange={(value) => { setScope(value); setVisibleLimit(LIBRARY_BATCH); }}
-          options={[{value:"instances",label:t("library:scope.instances")},{value:"versions",label:t("library:scope.versions")}]} />} />
-      <div className="vx-library-commandbar">
-        <label className="vx-search">
-          <Search size={16} aria-hidden="true" />
+        description={t("library:subtitle", { count: folderInstances.length })} />
+      <div className="vx-library-commandbar" data-empty={hasInstances ? undefined : ""}>
+        {folders.length > 1 ? (
+          <Select
+            className="vx-library-folder-select"
+            aria-label={t("library:gameFolder")}
+            value={folders.find((folder) => sameGameFolderPath(folder.path, config.gameDirectory))?.path ?? folders[0]?.path}
+            onChange={(path) => void switchGameFolder(path)}
+            options={folders.map((folder) => ({
+              value: folder.path,
+              label: folder.label,
+              metadata: folder.label === folder.path ? undefined : folder.path,
+            }))}
+          />
+        ) : null}
+        {hasInstances ? <label className="vx-search">
+          <Search size={ICON.md} aria-hidden="true" />
           <input
             type="search"
-            aria-label={
-              scope === "versions"
-                ? t("library:searchVersions")
-                : t("library:search")
-            }
+            aria-label={t("library:search")}
             value={query}
             onFocus={() => setSearching(true)}
             onBlur={() => setSearching(false)}
             onChange={(event) => { setQuery(event.target.value); setVisibleLimit(LIBRARY_BATCH); }}
-            placeholder={
-              scope === "versions"
-                ? t("library:searchVersionsPlaceholder")
-                : t("library:searchPlaceholder")
-            }
+            placeholder={t("library:searchPlaceholder")}
           />
-        </label>
+        </label> : null}
         <div className="vx-library-commandbar__tools">
+          {hasInstances ? <>
           <Select
             className="vx-library-sort-select"
             aria-label={t("library:sort")}
@@ -254,14 +262,24 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
             ]}
           />
           <Segmented className="vx-library-view" semantic="toggle" label={t("library:viewLabel")} value={view} onChange={setView}
-            options={[{value:"grid",label:<span className="sr-only">{t("library:gridView")}</span>,icon:<Grid2X2 size={16} />},
-              {value:"list",label:<span className="sr-only">{t("library:listView")}</span>,icon:<List size={16} />}]} />
+            options={[{value:"grid",label:<span className="sr-only">{t("library:gridView")}</span>,icon:<Grid2X2 size={ICON.md} />},
+              {value:"list",label:<span className="sr-only">{t("library:listView")}</span>,icon:<List size={ICON.md} />}]} />
+          </> : null}
+          <details className="vx-library-more">
+            <summary aria-label={t("library:moreActions")} title={t("library:moreActions")}>
+              <MoreHorizontal size={ICON.md} aria-hidden="true" />
+            </summary>
+            <div className="vx-library-more__menu">
+              <button type="button" onClick={() => void openHidden()}>{t("library:showHiddenInstances")}</button>
+            </div>
+          </details>
+          {hiddenError ? <span role="alert">{hiddenError}</span> : null}
         </div>
         <div className="vx-library-commandbar__actions">
           <Button
             variant="secondary"
             size="md"
-            icon={<Upload size={15} />}
+            icon={<Upload size={ICON.md} />}
             onClick={() => setImportOpen(true)}
           >
             {t("library:importPack")}
@@ -269,50 +287,15 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
           <Button
             variant="primary"
             size="md"
-            icon={<Plus size={16} />}
+            icon={<Plus size={ICON.md} />}
             onClick={() => setCreateOpen(true)}
           >
             {t("library:createInstance")}
           </Button>
         </div>
       </div>
-      <SectionPanel selectionKey={`${scope}:${view}`}>
-      {scope === "versions" ? (
-        versions.length ? (
-          <div className={`vx-instance-sheet vx-instance-sheet--${view}`}>
-            {versions.slice(0, visibleLimit).map((version) => (
-              <VersionDirectoryCard
-                key={version.id}
-                version={version}
-                layoutOrder={tier === "full" && versions.length <= 40 && !searching ? `${sort}:${view}` : undefined}
-                selected={!activeInstance && version.id === selectedVersionId}
-                onOpen={() => openDetail("version-directory", version.id)}
-                onLaunch={() => void launchVersion(version.id)}
-              />
-            ))}
-          </div>
-        ) : (
-          <EmptyState
-            className="vx-library-empty"
-            icon={<LibraryBig size={24} />}
-            title={
-              query ? t("library:noSearchResults") : t("library:noVersions")
-            }
-            description={
-              query
-                ? t("library:noSearchDescription")
-                : t("library:noVersionsDescription")
-            }
-            action={
-              query ? (
-                <Button variant="ghost" onClick={() => { setQuery(""); setVisibleLimit(LIBRARY_BATCH); }}>
-                  {t("library:clearSearch")}
-                </Button>
-              ) : undefined
-            }
-          />
-        )
-      ) : data.instances.length === 0 ? (
+      <SectionPanel selectionKey={view}>
+      {!hasInstances ? (
         <div className="vx-instance-sheet vx-instance-sheet--create">
           <CreateInstanceTile onCreate={() => setCreateOpen(true)} />
         </div>
@@ -325,22 +308,19 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
               layoutOrder={tier === "full" && instances.length <= 40 && !searching ? `${sort}:${view}` : undefined}
               selected={instance.id === activeInstance?.id}
               running={running.some((game) => game.instanceId === instance.id)}
-              onOpen={() => openDetail("instance", instance.id)}
+              onOpen={() => openDetail(instance.id)}
               onLaunch={() => void launchInstance(instance)}
             />
           ))}
-          {!query ? (
-            <CreateInstanceTile onCreate={() => setCreateOpen(true)} />
-          ) : null}
         </div>
       ) : (
         <EmptyState
           className="vx-library-empty"
-          icon={<LibraryBig size={24} />}
+          icon={<LibraryBig size={ICON.xl} />}
           title={t("library:noSearchResults")}
           description={t("library:noSearchDescription")}
           action={
-            <Button variant="ghost" onClick={() => { setQuery(""); setVisibleLimit(LIBRARY_BATCH); }}>
+            <Button variant="secondary" onClick={() => { setQuery(""); setVisibleLimit(LIBRARY_BATCH); }}>
               {t("library:clearSearch")}
             </Button>
           }
@@ -352,6 +332,27 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
           {t("library:showMore", { count: Math.min(LIBRARY_BATCH, remainingCount), remaining: remainingCount })}
         </Button>
       )}
+      <Dialog open={hiddenOpen} onOpenChange={setHiddenOpen}
+        title={t("library:hiddenInstancesTitle")}
+        description={t("library:hiddenInstancesDescription")}
+        footer={<Button variant="ghost" onClick={() => setHiddenOpen(false)}>{t("common:actions.close")}</Button>}>
+        {hiddenInstances.length ? (
+          <ul className="vx-hidden-instances">
+            {hiddenInstances.map((instance) => (
+              <li key={instance.id}>
+                <span>
+                  <strong>{instance.name}</strong>
+                  <small>{instance.versionId}</small>
+                </span>
+                <Button variant="secondary" size="sm" icon={<RotateCcw size={ICON.sm} />}
+                  onClick={() => void restoreHidden(instance)}>
+                  {t("library:restoreInstance")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : <p>{t("library:noHiddenInstances")}</p>}
+      </Dialog>
       <CreateInstanceDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
@@ -366,7 +367,7 @@ export function LibraryPage({ navResetTick = 0 }: { navResetTick?: number }) {
     </PageShell>
   );
   return <LayoutGroup id={groupId}>
-    <InstanceIdentityProvider tier={tier} returningIdentity={!actualDetailKey ? previousDetail.current?.key : undefined}>
+    <InstanceIdentityProvider tier={tier} returningIdentity={!detailKey ? previousDetail.current?.key : undefined}>
       <div className="vx-library-drill" ref={rootRef} data-content-motion={contentDuration > 0 ? "" : undefined}
         style={{ "--vx-drill-content-duration": `${contentDuration}s` } as CSSProperties}>
         {content}
@@ -407,7 +408,7 @@ function CreateInstanceTile({ onCreate }: { onCreate: () => void }) {
         onClick={onCreate}
       >
         <span className="vx-instance-create__mark" aria-hidden="true">
-          <Plus size={22} strokeWidth={1.5} />
+          <Plus size={ICON.xl} />
           <i />
           <i />
           <i />
@@ -421,112 +422,7 @@ function CreateInstanceTile({ onCreate }: { onCreate: () => void }) {
             {t("library:createInstanceDescription")}
           </span>
         </span>
-        <span className="vx-instance-card__open">
-          <ArrowUpRight size={16} aria-hidden="true" />
-        </span>
       </button>
     </article>
-  );
-}
-
-export function VersionDirectoryCard({
-  version,
-  selected,
-  onOpen,
-  onLaunch,
-  layoutOrder,
-}: {
-  version: InstalledVersion;
-  selected: boolean;
-  onOpen: () => void;
-  onLaunch: () => void;
-  layoutOrder?: string;
-}) {
-  const { t } = useTranslation();
-  const [hovered, setHovered] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const loader = glyphLoaderForVersionDirectory(version.id);
-  const versionType = loader === "vanilla" ? version.type : null;
-  const title = t("library:minecraftVersion", { version: version.id });
-  const channel =
-    version.type === "release" || version.type === "snapshot"
-      ? t(`library:${version.type}`)
-      : version.type;
-  const java = version.javaMajor
-    ? t("library:javaVersion", { version: version.javaMajor })
-    : null;
-  const technical = java
-    ? t("library:versionRuntimeSummary", { channel, java })
-    : channel;
-  return (
-    <motion.article
-      className={`vx-instance-card${selected ? " is-selected" : ""}`}
-      {...(layoutOrder ? { layout: "position" as const, layoutDependency: layoutOrder, transition: { layout: { duration: motionDuration("full", "enter"), ease: MOTION.ease } } } : {})}
-      data-visual-owner="lattice"
-      data-version-directory={version.id}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget))
-          setFocused(false);
-      }}
-    >
-      <LatticeFrame
-        hovered={hovered}
-        focused={focused}
-        selected={selected}
-        signature={version.id}
-      />
-      <button
-        type="button"
-        className="vx-instance-card__select"
-        aria-current={selected ? "true" : undefined}
-        data-version-id={version.id}
-        onClick={onOpen}
-        aria-label={t("library:openVersionDirectory", { name: version.id })}
-      >
-        <span className="vx-instance-card__identity">
-          <InstanceIdentity
-            kind="version-directory"
-            name={t("library:minecraft")}
-            identity={version.id}
-            loader={loader}
-            versionId={version.id}
-            versionType={versionType}
-          />
-        </span>
-        <span className="vx-instance-card__information">
-          <span className="vx-instance-card__name" title={title}>
-            {title}
-          </span>
-          <span className="vx-instance-card__technical" title={technical}>
-            <span>{technical}</span>
-          </span>
-          <span
-            className="vx-instance-card__path"
-            title={t("library:versionDirectory")}
-          >
-            <Folder size={12} aria-hidden="true" />
-            <span>{t("library:versionDirectory")}</span>
-          </span>
-        </span>
-        <span className="vx-instance-card__open">
-          <ArrowUpRight size={16} aria-hidden="true" />
-        </span>
-      </button>
-      <div className="vx-instance-card__footer">
-        <Button
-          className="vx-instance-card__launch"
-          size="sm"
-          variant="secondary"
-          data-launch
-          icon={<Play size={14} />}
-          onClick={onLaunch}
-        >
-          {t("common:actions.launch")}
-        </Button>
-      </div>
-    </motion.article>
   );
 }

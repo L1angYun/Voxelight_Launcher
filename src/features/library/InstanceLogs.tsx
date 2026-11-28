@@ -5,7 +5,8 @@ import { command } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { LumenHelpButton } from "../assistant/LumenHelpButton";
 import { normalizeError } from "../../lib/errors";
-import { Button } from "../../components/ui/Button";
+import { RefreshCw } from "lucide-react";
+import { Button, IconButton } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
 import { Segmented } from "../../components/ui/Segmented";
 import { errorText, noticeText } from "./utils";
@@ -138,19 +139,20 @@ export function InstanceLogs({ versionId, instanceId }: { versionId: string; ins
       </div>
       {error ? <p role="alert">{errorText(error, t)}</p> : null}
       {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}
-      {result && diagnosis ? <section className="vx-detail-section"><h2>{diagnosis.title}</h2><p>{diagnosis.reason}</p><ul>{diagnosis.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul>{result.excerpt ? <details><summary>{t("library:logExcerpt")}</summary><pre>{result.excerpt}</pre></details> : null}</section> : <EmptyState title={t("library:noDiagnosisYet")} description={t("library:noDiagnosisDescription")} />}
+      {result && diagnosis ? <section className="vx-detail-section"><h2>{diagnosis.title}</h2><p>{diagnosis.reason}</p><ul>{diagnosis.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul>{result.excerpt ? <details><summary>{t("library:logExcerpt")}</summary><pre>{result.excerpt}</pre></details> : null}</section> : <EmptyState variant="inline" title={t("library:noDiagnosisYet")} description={t("library:noDiagnosisDescription")} />}
       <section className="vx-detail-section vx-game-log">
-        <div className="vx-game-log__heading">
+        <div className="vx-section-heading">
           <h2>{t("library:gameLog")}</h2>
-          <Button variant="ghost" disabled={logLoading} onClick={() => void loadGameLog()}>{t("library:refreshGameLog")}</Button>
+          <IconButton label={t("library:refresh")} icon={<RefreshCw />} disabled={logLoading} onClick={() => void loadGameLog()} />
         </div>
-        <div className="vx-game-log__toolbar">
+        {/* Search and level filters appear only once there are lines to filter. */}
+        {gameLog?.lines.length ? <div className="vx-game-log__toolbar">
           <input type="search" className="vx-game-log__search" value={search}
             aria-label={t("library:gameLogSearch")} placeholder={t("library:gameLogSearchPlaceholder")}
             onChange={(event) => setSearch(event.target.value)} />
           <Segmented semantic="toggle" label={t("library:gameLogLevelFilter")}
             value={level} options={filters} onChange={setLevel} className="vx-game-log__levels" />
-        </div>
+        </div> : null}
         {logError ? <p role="alert">{errorText(logError, t)}</p> : null}
         {gameLog?.path ? (
           <>
@@ -170,14 +172,19 @@ export function InstanceLogs({ versionId, instanceId }: { versionId: string; ins
             ) : gameLog.lines.length ? (
               <p className="vx-game-log__no-match">{t("library:gameLogNoMatch")}</p>
             ) : (
-              <EmptyState title={t("library:gameLogEmpty")} description={t("library:gameLogEmptyDescription")} />
+              <EmptyState variant="inline" title={t("library:gameLogEmpty")} description={t("library:gameLogEmptyDescription")} />
             )}
           </>
         ) : logLoading ? <p role="status">{t("common:status.loading")}</p> : !logError ? (
-          <EmptyState title={t("library:gameLogEmpty")} description={t("library:gameLogEmptyDescription")} />
+          <EmptyState variant="inline" title={t("library:gameLogEmpty")} description={t("library:gameLogEmptyDescription")} />
         ) : null}
       </section>
-      <section className="vx-detail-section"><h2>{t("library:launcherLogs")}</h2><pre className="vx-log-view" role="log">{logs.length ? logs.map((entry, index) => `[${entry.timestamp}] ${entry.message}${index === logs.length - 1 ? "" : "\n"}`).join("") : t("library:noLogs")}</pre></section>
+      {logs.length ? (
+        <section className="vx-detail-section">
+          <h2>{t("library:launcherLogs")}</h2>
+          <pre className="vx-log-view" role="log">{logs.map((entry) => `[${entry.timestamp}] ${entry.message}`).join("\n")}</pre>
+        </section>
+      ) : <EmptyState variant="inline" title={t("library:noLogs")} />}
     </div>
   );
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Verifies or updates the SemVer version across every manifest and lockfile in
-// the repository so package.json, package-lock.json, Cargo.toml, Cargo.lock,
-// tauri.conf.json, and licenses/dependency-inventory.json never drift apart.
+// the repository so package.json, package-lock.json, both Cargo manifests and
+// lockfiles, both tauri.conf.json files, and licenses/dependency-inventory.json
+// never drift apart.
 //
 // Usage:
 //   node scripts/version.mjs --check
@@ -14,8 +15,27 @@ export const STABLE_SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)
 export const PRERELEASE_SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(?:alpha|beta|rc)\.(?:[1-9][0-9]*)$/;
 export const VALID_SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:alpha|beta|rc)\.(?:[1-9][0-9]*))?$/;
 
-const CARGO_PACKAGE_RE = /(\[\[package\]\]\r?\nname = "voxelight-launcher"\r?\nversion = ")([^"]+)(")/;
-const CARGO_TOML_RE = /(^\[package\][\s\S]*?^version = ")([^"]+)(")/m;
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function cargoTomlVersionRe(packageName) {
+  return new RegExp(
+    `(^\\[package\\][\\s\\S]*?^name = "${escapeRegExp(packageName)}"\\r?\\nversion = ")([^"]+)(")`,
+    "m",
+  );
+}
+
+function cargoLockVersionRe(packageName) {
+  return new RegExp(
+    `(\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(packageName)}"\\r?\\nversion = ")([^"]+)(")`,
+  );
+}
+
+const CARGO_PACKAGE_RE = cargoLockVersionRe("voxelight-launcher");
+const CARGO_TOML_RE = cargoTomlVersionRe("voxelight-launcher");
+const SETUP_CARGO_PACKAGE_RE = cargoLockVersionRe("voxelight-setup");
+const SETUP_CARGO_TOML_RE = cargoTomlVersionRe("voxelight-setup");
 
 export function isPrereleaseVersion(version) {
   return PRERELEASE_SEMVER.test(version);
@@ -39,6 +59,9 @@ export function readVersions(root) {
   const cargoLock = CARGO_PACKAGE_RE.exec(readFileSync(path.join(root, "src-tauri", "Cargo.lock"), "utf8"))?.[2];
   const tauri = JSON.parse(readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8")).version;
   const inventory = JSON.parse(readFileSync(path.join(root, "licenses", "dependency-inventory.json"), "utf8")).version;
+  const setupCargoToml = SETUP_CARGO_TOML_RE.exec(readFileSync(path.join(root, "setup", "src-tauri", "Cargo.toml"), "utf8"))?.[2];
+  const setupCargoLock = SETUP_CARGO_PACKAGE_RE.exec(readFileSync(path.join(root, "setup", "src-tauri", "Cargo.lock"), "utf8"))?.[2];
+  const setupTauri = JSON.parse(readFileSync(path.join(root, "setup", "src-tauri", "tauri.conf.json"), "utf8")).version;
 
   return {
     "package.json": pkg,
@@ -48,6 +71,9 @@ export function readVersions(root) {
     "src-tauri/Cargo.lock": cargoLock,
     "src-tauri/tauri.conf.json": tauri,
     "licenses/dependency-inventory.json": inventory,
+    "setup/src-tauri/Cargo.toml": setupCargoToml,
+    "setup/src-tauri/Cargo.lock": setupCargoLock,
+    "setup/src-tauri/tauri.conf.json": setupTauri,
   };
 }
 
@@ -84,6 +110,14 @@ export function setVersions(root, nextVersion) {
   const cargoLock = readFileSync(cargoLockPath, "utf8");
   if (!CARGO_PACKAGE_RE.test(cargoLock)) throw new Error("Could not locate voxelight-launcher version in src-tauri/Cargo.lock.");
 
+  const setupCargoTomlPath = path.join(root, "setup", "src-tauri", "Cargo.toml");
+  const setupCargoToml = readFileSync(setupCargoTomlPath, "utf8");
+  if (!SETUP_CARGO_TOML_RE.test(setupCargoToml)) throw new Error("Could not locate voxelight-setup [package] version in setup/src-tauri/Cargo.toml.");
+
+  const setupCargoLockPath = path.join(root, "setup", "src-tauri", "Cargo.lock");
+  const setupCargoLock = readFileSync(setupCargoLockPath, "utf8");
+  if (!SETUP_CARGO_PACKAGE_RE.test(setupCargoLock)) throw new Error("Could not locate voxelight-setup version in setup/src-tauri/Cargo.lock.");
+
   replaceJsonVersion(path.join(root, "package.json"), (doc) => {
     doc.version = nextVersion;
   });
@@ -97,8 +131,21 @@ export function setVersions(root, nextVersion) {
   replaceJsonVersion(path.join(root, "licenses", "dependency-inventory.json"), (doc) => {
     doc.version = nextVersion;
   });
+  replaceJsonVersion(path.join(root, "setup", "src-tauri", "tauri.conf.json"), (doc) => {
+    doc.version = nextVersion;
+  });
   writeFileSync(cargoTomlPath, cargoToml.replace(CARGO_TOML_RE, `$1${nextVersion}$3`), "utf8");
   writeFileSync(cargoLockPath, cargoLock.replace(CARGO_PACKAGE_RE, `$1${nextVersion}$3`), "utf8");
+  writeFileSync(
+    setupCargoTomlPath,
+    setupCargoToml.replace(SETUP_CARGO_TOML_RE, `$1${nextVersion}$3`),
+    "utf8",
+  );
+  writeFileSync(
+    setupCargoLockPath,
+    setupCargoLock.replace(SETUP_CARGO_PACKAGE_RE, `$1${nextVersion}$3`),
+    "utf8",
+  );
 
   return checkVersions(root);
 }

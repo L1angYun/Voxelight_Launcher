@@ -2,13 +2,16 @@ import { createContext, forwardRef, useCallback, useContext, useEffect, useLayou
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from "lucide-react";
 import { Button, IconButton } from "./Button";
+import { ICON } from "../../design/icons";
 import { motionDuration, MOTION, type MotionTier } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
 
-export interface ToastMessage { message: string; kind?: "info" | "error" | "success"; id?: string; onDismiss?: () => void; action?: { label: string; onClick: () => void } }
+export type ToastKind = "info" | "success" | "warning" | "error";
+export interface ToastMessage { message: string; kind?: ToastKind; id?: string; onDismiss?: () => void; action?: { label: string; onClick: () => void } }
 interface ToastEntry extends ToastMessage { id: string; revision: number }
+const TOAST_ICONS = { info: Info, success: CircleCheck, warning: TriangleAlert, error: CircleAlert } as const;
 const empty = { notify: (_message: ToastMessage) => {}, dismiss: (_id?: string) => {} };
 const ToastContext = createContext(empty);
 export const useToast = () => useContext(ToastContext);
@@ -21,15 +24,18 @@ const Notification = forwardRef<HTMLDivElement, {
   toast: ToastEntry; tier: MotionTier; dismissLabel: string; dismiss: (id?: string, revision?: number) => void;
 }>(function Notification({ toast, tier, dismissLabel, dismiss }, ref) {
   const present = useIsPresent();
-  return <motion.div ref={ref} className={`vx-toast vx-toast--${toast.kind ?? "info"}`}
-    role={present ? toast.kind === "error" ? "alert" : "status" : undefined} aria-atomic="true"
+  const kind = toast.kind ?? "info";
+  const KindIcon = TOAST_ICONS[kind];
+  return <motion.div ref={ref} className={`vx-toast vx-toast--${kind}`}
+    role={present ? kind === "error" ? "alert" : "status" : undefined} aria-atomic="true"
     inert={!present || undefined} aria-hidden={!present || undefined}
     initial={{ opacity: 0, transform: tier === "full" ? `translateY(${MOTION.toast.offset}px)` : "none" }}
     animate={{ opacity: 1, transform: "none" }}
     exit={{ opacity: 0, transform: tier === "full" ? `translateY(${MOTION.toast.offset}px)` : "none",
       transition: { duration: motionDuration(tier, "exit"), ease: MOTION.easeExit } }}
     transition={{ duration: motionDuration(tier, "enter"), ease: MOTION.ease }}>
-    <span>{toast.message}</span>{toast.action ? <Button size="sm" variant="ghost" disabled={!present} onClick={() => { dismiss(toast.id, toast.revision); toast.action?.onClick(); }}>{toast.action.label}</Button> : null}<IconButton label={dismissLabel} icon={<X size={16} />} disabled={!present}
+    <span className="vx-toast__icon" aria-hidden="true"><KindIcon size={ICON.md} /></span>
+    <span className="vx-toast__body">{toast.message}</span>{toast.action ? <Button size="sm" variant="ghost" disabled={!present} onClick={() => { dismiss(toast.id, toast.revision); toast.action?.onClick(); }}>{toast.action.label}</Button> : null}<IconButton label={dismissLabel} icon={<X size={ICON.md} />} disabled={!present}
       onClick={() => dismiss(toast.id, toast.revision)} />
   </motion.div>;
 });

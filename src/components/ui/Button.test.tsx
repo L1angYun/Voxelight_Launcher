@@ -5,7 +5,7 @@ import { Play } from "lucide-react";
 import { expect, it } from "vitest";
 import { Button, IconButton } from "./Button";
 
-it.each([{ size: "sm", pixels: 14 }, { size: "md", pixels: 16 }, { size: "lg", pixels: 18 }] as const)(
+it.each([{ size: "sm", pixels: 14 }, { size: "md", pixels: 16 }, { size: "lg", pixels: 20 }] as const)(
   "fits a supplied icon to the $size button while retaining the action label",
   async ({ size, pixels }) => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -24,3 +24,15 @@ it.each([{ size: "sm", pixels: 14 }, { size: "md", pixels: 16 }, { size: "lg", p
     } finally { await act(async () => root.unmount()); container.remove(); }
   },
 );
+
+it("strips custom strokeWidth from button icons so CSS controls stroke weight", async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.createElement("div"); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Button size="lg" icon={<Play size={18} strokeWidth={1.25} />}>Launch</Button>));
+    const icon = container.querySelector(".vx-button__icon svg");
+    expect(icon?.getAttribute("width")).toBe("20");
+    expect(icon?.getAttribute("stroke-width")).not.toBe("1.25");
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});

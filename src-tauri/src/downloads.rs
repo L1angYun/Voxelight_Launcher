@@ -29,6 +29,16 @@ pub(crate) const RETRY_UNSUPPORTED: &str = "请回到对应资源、整合包或
 pub(crate) const ALREADY_RETRIED: &str = "此任务已经重试过，请在新的任务上操作";
 pub(crate) const BUSY: &str = "有任务正在下载或排队，请等待完成后再清理";
 const STILL_ACTIVE: &str = "该任务仍在执行或排队";
+/// Character previews are passive and never belong in download history. An
+/// older build could record an empty `default-skin` row; such rows are dropped
+/// once when the journal loads and are never written or published again.
+const PREVIEW_TASK_KIND: &str = "default-skin";
+
+/// Only a preview row that tracked no files is disposable history. A row that
+/// recorded files is real data and is kept as it is.
+fn is_empty_preview_task(job: &DownloadJob) -> bool {
+    job.kind == PREVIEW_TASK_KIND && job.completed == 0 && job.total == 0
+}
 
 /// What a task needs to run again from the Downloads page (U0256). Only the
 /// ids and names the user chose: never URLs, paths or secrets, so every retry
@@ -473,7 +483,12 @@ fn update_state(job: &mut DownloadJob, status: &str, stage: Option<&str>, messag
 }
 
 fn snapshot_of(state: &Scheduler) -> DownloadSnapshot {
-    let mut tasks = state.jobs.clone();
+    let mut tasks: Vec<DownloadJob> = state
+        .jobs
+        .iter()
+        .filter(|job| !is_empty_preview_task(job))
+        .cloned()
+        .collect();
     for task in &mut tasks {
         task.retryable = retry_plan(task, &state.jobs).is_ok();
     }
@@ -561,7 +576,8 @@ fn retry_job(request: &RetryRequest) -> (&'static str, String, String, Option<St
 // The caller holds the scheduler lock until the replace completes. A progress
 // write cannot publish older bytes after a terminal transition.
 fn write_journal(path: &Path, jobs: &[DownloadJob]) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(jobs).map_err(|error| error.to_string())?;
+    let kept: Vec<&DownloadJob> = jobs.iter().filter(|job| !is_empty_preview_task(job)).collect();
+    let bytes = serde_json::to_vec_pretty(&kept).map_err(|error| error.to_string())?;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -588,6 +604,10 @@ impl DownloadControl {
             let bytes = fs::read(&path)?;
             match serde_json::from_slice::<Vec<DownloadJob>>(&bytes) {
                 Ok(mut jobs) => {
+                    // One-time clean-up of the empty character-preview rows an
+                    // older build left in the journal. Only rows with no files
+                    // are removed; every other history entry is left untouched.
+                    jobs.retain(|job| !is_empty_preview_task(job));
                     for job in &mut jobs {
                         if matches!(job.status.as_str(), "running" | "paused" | "queued") {
                             update_state(
@@ -1714,6 +1734,47 @@ mod tests {
         let interrupted = job(&control, "old-running");
         assert_eq!(interrupted.status, "interrupted");
         assert!(interrupted.retryable);
+    }
+
+    #[test]
+    fn empty_character_preview_history_is_migrated_once_without_touching_other_rows() {
+        let mut with_file = row("preview-file", PREVIEW_TASK_KIND, "alex", "completed");
+        with_file["completed"] = serde_json::json!(1);
+        with_file["total"] = serde_json::json!(1);
+        with_file["bytesCompleted"] = serde_json::json!(64);
+        with_file["bytesTotal"] = serde_json::json!(64);
+        let mut planned = row("preview-planned", PREVIEW_TASK_KIND, "steve", "failed");
+        planned["total"] = serde_json::json!(2);
+        let journal = Journal::new(serde_json::json!([
+            row("preview-empty", PREVIEW_TASK_KIND, "steve", "completed"),
+            row("preview-interrupted", PREVIEW_TASK_KIND, "alex", "running"),
+            with_file,
+            planned,
+            row("install", "install", "1.20.1", "completed"),
+        ]));
+
+        let control = journal.load();
+        let ids = |control: &DownloadControl| control.list().into_iter().map(|job| job.id).collect::<Vec<_>>();
+        assert_eq!(ids(&control), ["preview-file", "preview-planned", "install"]);
+        assert_eq!((job(&control, "preview-file").completed, job(&control, "preview-file").total), (1, 1));
+        assert_eq!(job(&control, "preview-planned").total, 2);
+        assert_eq!(job(&control, "install").status, "completed");
+
+        // The migration is persisted, so the next start and the frontend never
+        // see the empty preview rows again.
+        let saved: Vec<DownloadJob> = serde_json::from_slice(&fs::read(journal.0.join("download-jobs.json")).unwrap()).unwrap();
+        assert_eq!(saved.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(), ["preview-file", "preview-planned", "install"]);
+        let reloaded = journal.load();
+        assert_eq!(ids(&reloaded), ["preview-file", "preview-planned", "install"]);
+
+        // A new character preview is passive: it may run, but it never becomes
+        // a journal row or a history entry, even before the next start.
+        let preview = control.enqueue(PREVIEW_TASK_KIND, "steve", "角色预览").unwrap();
+        assert_eq!(ids(&control), ["preview-file", "preview-planned", "install"]);
+        let saved: Vec<DownloadJob> = serde_json::from_slice(&fs::read(journal.0.join("download-jobs.json")).unwrap()).unwrap();
+        assert!(!saved.iter().any(|job| job.id == preview));
+        let reloaded = journal.load();
+        assert_eq!(ids(&reloaded), ["preview-file", "preview-planned", "install"]);
     }
 
     #[test]

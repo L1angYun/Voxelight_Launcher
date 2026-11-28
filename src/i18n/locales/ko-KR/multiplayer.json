@@ -8,7 +8,7 @@
     "network": "네트워크 검사"
   },
   "environment": "게임 환경",
-  "chooseEnvironment": "설치된 버전 선택",
+  "chooseEnvironment": "인스턴스 선택",
   "environmentRequired": "서버를 저장하거나 접속하기 전에 게임 환경을 선택하세요.",
   "refresh": "새로 고침",
   "addServer": "서버 추가",
@@ -95,6 +95,7 @@
   "sendCommand": "명령어 전송",
   "playerAction": "플레이어 관리 작업",
   "playerName": "플레이어 이름",
+  "playerNamePlaceholder": "예: Steve",
   "managePlayer": "플레이어 관리",
   "playerActions": {
     "whitelist add": "화이트리스트 추가",

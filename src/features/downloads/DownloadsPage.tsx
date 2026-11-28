@@ -1,25 +1,37 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Activity, Download, History, RefreshCw } from "lucide-react";
+import { Download, Globe, Library, RefreshCw } from "lucide-react";
+import { useViewState } from "../../app/viewState";
 import { EmptyState } from "../../components/ui/Feedback";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
-import { Button } from "../../components/ui/Button";
+import { Button, IconButton } from "../../components/ui/Button";
+import { useConfirm } from "../../components/ui/ConfirmDialog";
 import { Segmented } from "../../components/ui/Segmented";
+import { ICON } from "../../design/icons";
 import { formatBytes } from "../../i18n/format";
 import { LumenHelpButton } from "../assistant/LumenHelpButton";
 import { TaskList } from "./TaskList";
-import type { DownloadTasksModel } from "./useDownloadTasks";
+import { visibleDownloadTasks, type DownloadTasksModel } from "./useDownloadTasks";
 import "./downloads.css";
 
-export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
+export function DownloadsPage({ model, onNavigate }: {
+  model: DownloadTasksModel;
+  onNavigate?: (page: "discover" | "library") => void;
+}) {
   const { t, i18n } = useTranslation();
+  const confirm = useConfirm();
   const {
-    tasks, active, history, rates, busyTaskId, bulkBusy, loading, error,
+    active: modelActive, history: modelHistory, rates, busyTaskId, bulkBusy, loading, error,
     act, retryFailed, clearUnfinished, refresh,
   } = model;
-  const [historyFilter, setHistoryFilter] = useState<"all" | "failed" | "completed">("all");
-  const [historyLimit, setHistoryLimit] = useState(30);
+  // Defense in depth: a snapshot from an older backend may still carry empty
+  // character-preview rows. They never render, count, filter or clear.
+  const active = visibleDownloadTasks(modelActive);
+  const history = visibleDownloadTasks(modelHistory);
+  const totalTasks = visibleDownloadTasks(model.tasks).length;
+  const [historyFilter, setHistoryFilter] = useViewState<"all" | "failed" | "completed">("downloads.historyFilter", "all");
+  const [historyLimit, setHistoryLimit] = useViewState("downloads.historyLimit", 30);
   const [notice, setNotice] = useState("");
   const filteredHistory = historyFilter === "all" ? history : history.filter(task => task.status === historyFilter);
   const failedCount = history.filter(task => task.status === "failed").length;
@@ -44,7 +56,7 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   }
 
   async function clearFailedAndCancelled() {
-    if (!window.confirm(t("downloads:clearConfirm", { count: clearable }))) return;
+    if (!await confirm(t("downloads:clearConfirm", { count: clearable }), { tone: "danger" })) return;
     setNotice("");
     const result = await clearUnfinished();
     if (result) {
@@ -67,8 +79,8 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
   return (
     <PageShell className="vx-downloads-page">
       <PageHeader title={t("downloads:title")} description={t("downloads:subtitle")}
-        actions={<Button variant="secondary" size="sm" icon={<RefreshCw size={16} />}
-          disabled={busy} onClick={() => void refresh()}>{t("downloads:refresh")}</Button>} />
+        actions={<IconButton label={t("downloads:refresh")} icon={<RefreshCw />}
+          disabled={busy} onClick={() => void refresh()} />} />
 
       {errorText ? (
         <p className="vx-downloads-error" role="alert">
@@ -80,17 +92,29 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
           {notice}
         </p>
       ) : null}
-      <LoadingStatus active={loading && tasks.length === 0}>{t("common:status.loading")}</LoadingStatus>
-      {!loading && tasks.length === 0 && !errorText ? (
+      <LoadingStatus active={loading && totalTasks === 0}>{t("common:status.loading")}</LoadingStatus>
+      {!loading && totalTasks === 0 && !errorText ? (
         <EmptyState
-          className="vx-downloads-empty vx-panel"
-          icon={<Download size={24} />}
+          className="vx-downloads-empty"
+          variant="panel"
+          icon={<Download size={ICON.xl} />}
           title={t("downloads:empty.title")}
           description={t("downloads:empty.description")}
+          action={
+            <div className="vx-action-row">
+              {/* The same icons as the Discover and Library entries in the navigation. */}
+              <Button variant="primary" icon={<Globe />} onClick={() => onNavigate?.("discover")}>
+                {t("downloads:empty.discover")}
+              </Button>
+              <Button variant="ghost" icon={<Library />} onClick={() => onNavigate?.("library")}>
+                {t("downloads:empty.installGame")}
+              </Button>
+            </div>
+          }
         />
       ) : null}
 
-      {tasks.length > 0 ? (
+      {totalTasks > 0 ? (
         <div className="vx-task-center">
           <section
             className="vx-task-section vx-task-section--active vx-panel"
@@ -109,8 +133,8 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
             {active.length ? (
               <TaskList tasks={active} {...listProps} animateFirst />
             ) : (
-              <TaskSectionEmpty
-                kind="active"
+              <EmptyState
+                variant="inline"
                 title={t("downloads:empty.activeTitle")}
                 description={t("downloads:empty.activeDescription")}
               />
@@ -150,8 +174,8 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
             {filteredHistory.length ? (
               <TaskList tasks={filteredHistory.slice(0, historyLimit)} {...listProps} compact />
             ) : (
-              <TaskSectionEmpty
-                kind="history"
+              <EmptyState
+                variant="inline"
                 title={t(history.length ? "downloads:empty.filteredTitle" : "downloads:empty.historyTitle")}
                 description={t(history.length ? "downloads:empty.filteredDescription" : "downloads:empty.historyDescription")}
               />
@@ -162,31 +186,5 @@ export function DownloadsPage({ model }: { model: DownloadTasksModel }) {
         </div>
       ) : null}
     </PageShell>
-  );
-}
-
-function TaskSectionEmpty({
-  kind,
-  title,
-  description,
-}: {
-  kind: "active" | "history";
-  title: string;
-  description: string;
-}) {
-  const Icon = kind === "active" ? Activity : History;
-  return (
-    <div className="vx-task-section__empty" data-kind={kind}>
-      <span className="vx-task-section__empty-mark" aria-hidden="true">
-        <Icon size={17} strokeWidth={1.35} />
-        <i />
-        <i />
-        <i />
-      </span>
-      <span className="vx-task-section__empty-copy">
-        <strong>{title}</strong>
-        <span>{description}</span>
-      </span>
-    </div>
   );
 }

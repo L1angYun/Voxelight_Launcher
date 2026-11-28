@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveSmokeArtifact } from "./build-runtime.mjs";
@@ -33,6 +33,8 @@ const environment = {
   VOXELIGHT_LAUNCHER_GAME_DIR: path.join(work, "game"),
 };
 assertCleanInstallerAccount(config.productName);
+const rememberedKey = `Software\\voxelight\\${config.productName}`;
+const rememberedBefore = readRememberedInstallLocationState();
 const installer = resolveSmokeArtifact("installer", {
   repositoryRoot: project, productName: config.productName, version: config.version,
 });
@@ -94,8 +96,13 @@ async function eventually(predicate, timeout = 60000) {
   throw new Error("Timed out waiting for the uninstall worker");
 }
 
+function environmentValue(env, name) {
+  const entry = Object.entries(env).find(([key]) => key.toLowerCase() === name);
+  return entry?.[1];
+}
+
 function powershell(command, env = environment) {
-  const systemRoot = env.SystemRoot || env.windir;
+  const systemRoot = environmentValue(env, "systemroot") || environmentValue(env, "windir");
   assert(systemRoot, "SystemRoot is required for Windows PowerShell");
   const systemModules = path.join(
     systemRoot,
@@ -105,7 +112,7 @@ function powershell(command, env = environment) {
     "Modules",
   );
   const normalizedSystemModules = path.resolve(systemModules).toLowerCase();
-  const inheritedModules = (env.PSModulePath || "")
+  const inheritedModules = (environmentValue(env, "psmodulepath") || "")
     .split(path.delimiter)
     .filter(
       (entry) =>
@@ -141,6 +148,86 @@ function assertCleanInstallerAccount(productName) {
       VOXELIGHT_INSTALLER_PRODUCT: productName,
     },
   );
+}
+
+function rememberedPowerShell(command, extraEnvironment = {}) {
+  return powershell(
+    `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n${command}`,
+    {
+      ...environment,
+      VOXELIGHT_REMEMBERED_KEY: rememberedKey,
+      ...extraEnvironment,
+    },
+  );
+}
+
+function readRememberedInstallLocationState() {
+  return JSON.parse(
+    rememberedPowerShell(String.raw`
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($env:VOXELIGHT_REMEMBERED_KEY)
+if ($null -eq $key) {
+  [pscustomobject]@{ exists = $false; values = @() } | ConvertTo-Json -Compress -Depth 4
+} else {
+  try {
+    $values = @()
+    foreach ($name in $key.GetValueNames()) {
+      $kind = $key.GetValueKind($name).ToString()
+      $data = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      if ($data -is [byte[]]) { $data = [Convert]::ToBase64String($data) }
+      $values += [pscustomobject]@{ name = $name; kind = $kind; data = $data }
+    }
+    [pscustomobject]@{ exists = $true; values = @($values) } | ConvertTo-Json -Compress -Depth 4
+  } finally { $key.Close() }
+}`),
+  );
+}
+
+function restoreRememberedInstallLocationState(state) {
+  rememberedPowerShell(
+    String.raw`
+$keyPath = $env:VOXELIGHT_REMEMBERED_KEY
+$before = $env:VOXELIGHT_REMEMBERED_STATE | ConvertFrom-Json
+if (-not [bool]$before.exists) {
+  [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($keyPath, $false)
+} else {
+  $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($keyPath)
+  try {
+    foreach ($name in @($key.GetValueNames())) { $key.DeleteValue($name, $false) }
+    foreach ($value in @($before.values)) {
+      $kind = [Microsoft.Win32.RegistryValueKind]$value.kind
+      $data = $value.data
+      if ($kind -eq [Microsoft.Win32.RegistryValueKind]::Binary) {
+        $data = [Convert]::FromBase64String([string]$data)
+      }
+      $key.SetValue([string]$value.name, $data, $kind)
+    }
+  } finally { $key.Close() }
+}`,
+    { VOXELIGHT_REMEMBERED_STATE: JSON.stringify(state) },
+  );
+}
+
+function rememberedInstallLocation() {
+  const value = rememberedPowerShell(String.raw`
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($env:VOXELIGHT_REMEMBERED_KEY)
+if ($key) {
+  try {
+    $value = $key.GetValue('', $null)
+    if ($null -ne $value) { [Console]::Write($value) }
+  } finally { $key.Close() }
+}`);
+  return value || null;
+}
+
+function samePath(left, right) {
+  return Boolean(left && right) && path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+}
+
+async function removeSmokeTarget() {
+  assert.equal(path.dirname(target), path.join(local, "Temp"), "Refusing to remove an unexpected target");
+  assert.match(path.basename(target), /^VoxelightLauncherSmoke-[0-9a-f-]{36}$/i, "Unexpected smoke target name");
+  await rm(target, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 });
+  assert.equal(await exists(target), false, "The smoke target folder was not removed");
 }
 
 async function names(directory) {
@@ -430,6 +517,7 @@ try {
   );
   await run(path.join(target, "uninstall.exe"), ["/S"]);
   await eventually(async () => !(await exists(executable)));
+  await eventually(async () => !(await exists(path.join(target, "uninstall.exe"))));
   assert.equal(
     await readFile(path.join(target, "owned-install-fixture.txt"), "utf8"),
     "preserve this test-owned file",
@@ -475,6 +563,44 @@ try {
   console.error(error);
   process.exitCode = 1;
 } finally {
+  let cleanupError = null;
+  try {
+    restoreRememberedInstallLocationState(rememberedBefore);
+  } catch (error) {
+    cleanupError ??= error;
+    console.error(error);
+  }
+  try {
+    await removeSmokeTarget();
+  } catch (error) {
+    cleanupError ??= error;
+    console.error(error);
+  }
+  try {
+    const rememberedAfter = rememberedInstallLocation();
+    assert(
+      !samePath(rememberedAfter, target),
+      "The remembered install location still points at the temporary smoke target",
+    );
+  } catch (error) {
+    cleanupError ??= error;
+    console.error(error);
+  }
+  if (cleanupError) {
+    report.success = false;
+    report.cleanupError = String(cleanupError);
+    process.exitCode = 1;
+  } else {
+    report.cleanup = {
+      rememberedLocationExistedBefore: rememberedBefore.exists,
+      rememberedLocationRestored: true,
+      rememberedLocationPointsAtTarget: false,
+      targetRemoved: true,
+    };
+    report.checks.push(
+      "post-uninstall cleanup restored the remembered install location and removed the temporary target",
+    );
+  }
   report.finishedAt = new Date().toISOString();
   const destination =
     process.env.SMOKE_REPORT || path.join(work, "report.json");

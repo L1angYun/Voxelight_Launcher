@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // One foreground point pool: pointer orbit, rounded control outline, then back.
 import { DOT_SUBSTEP_SECONDS, DotField, seededRandom } from "./dots";
+import { DEFAULT_ACCENT } from "../../design/accent";
 import { MOTION } from "../../design/motion";
 
 export const CURSOR_HALO_POINT_COUNT = 30;
@@ -20,6 +21,9 @@ const CONTROLS = [
   "[data-halo]",
 ].join(",");
 const BLOCKED = "[data-no-halo],[inert]";
+// The same controls without the :not([disabled]) filters, to notice unavailable ones.
+const CONTROLS_ANY = CONTROLS.replace(/:not\(\[disabled\]\)/g, "");
+const HOVER_BLOCKED = "[data-selected],[aria-current='page']";
 
 type SavedStyle = {
   element: HTMLElement;
@@ -68,9 +72,10 @@ function nativeLayer(source: EventTarget | null): boolean {
   );
 }
 
-function usable(element: Element): boolean {
+function usable(element: Element, mode: "pointer" | "keyboard" = "pointer"): boolean {
+  const blocked = mode === "pointer" ? `${BLOCKED},${HOVER_BLOCKED}` : BLOCKED;
   if (
-    element.closest(`${BLOCKED},[aria-hidden='true'],[aria-disabled='true']`) ||
+    element.closest(`${blocked},[aria-hidden='true'],[aria-disabled='true']`) ||
     element.matches(":disabled")
   )
     return false;
@@ -84,12 +89,13 @@ function usable(element: Element): boolean {
   );
 }
 
-function resolveTarget(source: EventTarget | null): HTMLElement | null {
+function resolveTarget(source: EventTarget | null, mode: "pointer" | "keyboard" = "pointer"): HTMLElement | null {
   const element = source instanceof Element ? source : null;
+  const blocked = mode === "pointer" ? `${BLOCKED},${HOVER_BLOCKED}` : BLOCKED;
   if (
     !element ||
     nativeLayer(element) ||
-    element.closest(BLOCKED) ||
+    element.closest(blocked) ||
     element.closest("iframe")
   )
     return null;
@@ -103,7 +109,7 @@ function resolveTarget(source: EventTarget | null): HTMLElement | null {
       parent instanceof HTMLElement &&
       parent.dataset.visualOwner === "lattice" &&
       frameOf(parent) &&
-      usable(parent)
+      usable(parent, mode)
     )
       return parent;
   }
@@ -111,7 +117,7 @@ function resolveTarget(source: EventTarget | null): HTMLElement | null {
   if (element.closest("[data-visual-owner='lens'],.vx-glass-surface"))
     return null;
   const control = element.closest(CONTROLS);
-  return control instanceof HTMLElement && usable(control) ? control : null;
+  return control instanceof HTMLElement && usable(control, mode) ? control : null;
 }
 
 /** Equal arc-length samples, including all four rounded corners. */
@@ -176,7 +182,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   canvas.dataset.haloPoints = String(CURSOR_HALO_POINT_COUNT);
   canvas.dataset.haloState = "inactive";
   canvas.style.cssText =
-    "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999";
+    "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:var(--z-cursor, 1000)";
   let context: CanvasRenderingContext2D | null;
   try {
     context = canvas.getContext("2d");
@@ -213,7 +219,15 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   let targetObserver: MutationObserver | null = null;
   const targetResize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => schedule());
 
-  const pointerOverLens = () => Boolean(pointerElement?.closest("[data-visual-owner='lens']"));
+  // A control that is briefly unavailable (a launch guard, a busy button) keeps
+  // its own fill; orbiting dots over its label would cut the label's contrast.
+  const pointerOverUnavailable = () => {
+    const control = pointerElement?.closest(CONTROLS_ANY);
+    return control instanceof HTMLElement &&
+      Boolean(control.closest("[aria-disabled='true']") || control.matches(":disabled"));
+  };
+  const pointerOverLens = () => Boolean(pointerElement?.closest("[data-visual-owner='lens']"))
+    || pointerOverUnavailable();
 
   function updateOpacity(now: number) {
     const progress = Math.max(0, Math.min(1, (now - fadeStartedAt) / MOTION.cursor.lensFadeMs));
@@ -347,7 +361,10 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       clear();
       return;
     }
-    if (target && (!target.isConnected || !usable(target))) setTarget(null);
+    if (target && (!target.isConnected || !usable(target, keyboardElement ? "keyboard" : "pointer"))) {
+      setTarget(null);
+      keyboardElement = null;
+    }
     if (!inside && !target) {
       clear();
       return;
@@ -363,7 +380,24 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
         ? 1 / 60
         : Math.max(0, Math.min(MOTION.cursor.maxElapsedSeconds, (now - previousTime) / 1000));
     previousTime = now;
-    const bounds = target?.getBoundingClientRect();
+    let bounds = target?.getBoundingClientRect() ?? null;
+    const main = target?.closest<HTMLElement>(".vx-app-main") ?? null;
+    const mainRect = main ? main.getBoundingClientRect() : null;
+    const clip = mainRect && mainRect.width > 0 && mainRect.height > 0 ? mainRect : null;
+    if (target && bounds && clip && (
+      bounds.bottom <= clip.top ||
+      bounds.top >= clip.bottom ||
+      bounds.right <= clip.left ||
+      bounds.left >= clip.right
+    )) {
+      setTarget(null);
+      keyboardElement = null;
+      bounds = null;
+      if (!inside) {
+        clear();
+        return;
+      }
+    }
     const targetStyle = target ? getComputedStyle(target) : null;
     const pad = CURSOR_HALO_OUTSET_PX;
     const radius =
@@ -404,10 +438,17 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     }
     const style = getComputedStyle(document.documentElement);
     const indicator = style.getPropertyValue("--accent-indicator").trim()
-      || style.getPropertyValue("--accent").trim() || "#b4f17a";
+      || style.getPropertyValue("--accent").trim() || DEFAULT_ACCENT;
     const ink = style.getPropertyValue("--text-primary").trim() || "#ece7da";
     g.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    g.fillStyle = target ? ink : indicator;
+    g.fillStyle = keyboardElement ? indicator : target ? ink : indicator;
+    const clipped = Boolean(target && clip && typeof g.clip === "function");
+    if (clipped && clip) {
+      g.save();
+      g.beginPath();
+      g.rect(clip.left, clip.top, clip.width, clip.height);
+      g.clip();
+    }
     for (let index = 0; index < dots.count; index += 1) {
       g.globalAlpha = dots.alpha[index] * opacity;
       g.beginPath();
@@ -426,6 +467,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       g.arc(px, py, 2.2, 0, TWO_PI);
       g.fill();
     }
+    if (clipped) g.restore();
     g.globalAlpha = 1;
     if (
       keyboardElement &&
@@ -467,7 +509,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     savedOutline = null;
     initialize(px, py);
     syncOpacity();
-    setTarget(pointerOverLens() ? null : resolveTarget(pointerElement));
+    setTarget(pointerOverLens() ? null : resolveTarget(pointerElement, "pointer"));
     schedule();
   }
 
@@ -495,7 +537,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     }
     if (!(element instanceof HTMLElement) || !allowed()) return;
     if (!keyboardNavigation && !element.matches(":focus-visible")) return;
-    const next = resolveTarget(element);
+    const next = resolveTarget(element, "keyboard");
     if (!next) return;
     restoreStyle(savedOutline);
     savedOutline = null;
@@ -514,7 +556,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     savedOutline = null;
     const next = event.relatedTarget;
     if (next instanceof HTMLElement && allowed()) {
-      const nextTarget = resolveTarget(next);
+      const nextTarget = resolveTarget(next, "keyboard");
       if (
         nextTarget &&
         (keyboardNavigation || next.matches(":focus-visible"))
@@ -527,7 +569,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
       }
     }
     syncOpacity();
-    setTarget(inside && !pointerOverLens() ? resolveTarget(pointerElement) : null);
+    setTarget(inside && !pointerOverLens() ? resolveTarget(pointerElement, "pointer") : null);
     if (inside) schedule();
     else clear();
   }
@@ -548,11 +590,18 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
   }
   function policyChanged() {
     if (!allowed() || target && nativeLayer(target)) { clear(); return; }
-    if (target && (!target.isConnected || !usable(target))) {
+    if (target && (!target.isConnected || !usable(target, keyboardElement ? "keyboard" : "pointer"))) {
       if (!inside) { clear(); return; }
       keyboardElement = null;
-      if (pointerElement && !pointerElement.isConnected) pointerElement = null;
-      syncOpacity(); setTarget(null); schedule();
+      // A control replaced under a resting pointer (Launch becoming Cancel) is
+      // found again by hit-testing, so the halo outlines it instead of orbiting
+      // over its label until the next pointer move.
+      const under = typeof document.elementFromPoint === "function" ? document.elementFromPoint(px, py) : null;
+      if (under && !nativeLayer(under)) pointerElement = under;
+      else if (pointerElement && !pointerElement.isConnected) pointerElement = null;
+      syncOpacity();
+      setTarget(pointerOverLens() || !pointerElement ? null : resolveTarget(pointerElement));
+      schedule();
     }
   }
   function observeTargetAncestry() {
@@ -563,7 +612,7 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
         // Child-list observation detects removal/reparenting without scanning
         // descendant style/class writes from every animation in the app.
         childList: true, attributes: true,
-        attributeFilter: ["hidden", "disabled", "inert", "aria-hidden", "aria-disabled", "open"],
+        attributeFilter: ["hidden", "disabled", "inert", "aria-hidden", "aria-disabled", "open", "data-selected", "aria-current"],
       });
     }
   }
@@ -574,7 +623,15 @@ export function mountCursorHalo(container: HTMLElement): CursorHalo | null {
     g.setTransform(ratio, 0, 0, ratio, 0, 0);
     schedule();
   }
-  const scrolled = () => schedule();
+  const scrolled = () => {
+    if (!allowed()) return;
+    if (inside && !keyboardElement && typeof document.elementFromPoint === "function") {
+      pointerElement = document.elementFromPoint(px, py);
+      syncOpacity();
+      setTarget(pointerOverLens() ? null : resolveTarget(pointerElement, "pointer"));
+    }
+    schedule();
+  };
 
   const listeners: Array<[string, EventListener]> = [
     ["pointermove", move as EventListener],

@@ -35,9 +35,13 @@ SOURCE_DIRECTORIES = (
     "src-tauri/permissions",
     "src-tauri/icons",
     "src-tauri/installer",
+    # Voxelight Setup, the published installer, is built from this tree.
+    "setup",
 )
 TAURI_FILES = ("Cargo.toml", "Cargo.lock", "app.manifest", "build.rs", "tauri.conf.json")
 BLOCKED_PARTS = {".git", ".vs", "node_modules", "target", "dist", "releases", "_backup", "__pycache__"}
+# tauri-build writes capability schemas here on every build; they are outputs.
+GENERATED_DIRECTORIES = (("src-tauri", "gen"), ("setup", "src-tauri", "gen"))
 BLOCKED_FILES = {
     "steve.png",
     "alex.png",
@@ -102,6 +106,32 @@ REQUIRED = ROOT_FILES | {f"src-tauri/{name}" for name in TAURI_FILES} | {
     "scripts/signing-receipt.mjs",
     "scripts/tauri.mjs",
     "tests/fixtures/skin64.png",
+    # Voxelight Setup: everything `npm run setup:build` and the Setup Cargo
+    # build in scripts/build.ps1 read, plus the Setup i18n check.
+    "setup/index.html",
+    "setup/vitest.config.ts",
+    "setup/scripts/check-i18n.mjs",
+    "setup/src/main.tsx",
+    "setup/src/App.tsx",
+    "setup/src/setupApi.ts",
+    "setup/src/setup.css",
+    "setup/src/i18n/index.ts",
+    "setup/src/i18n/locales/zh-CN.json",
+    "setup/src/i18n/locales/zh-TW.json",
+    "setup/src/i18n/locales/en-US.json",
+    "setup/src/i18n/locales/ja-JP.json",
+    "setup/src/i18n/locales/ko-KR.json",
+    "setup/src/i18n/locales/ru-RU.json",
+    "setup/src/i18n/locales/es-ES.json",
+    "setup/src-tauri/Cargo.toml",
+    "setup/src-tauri/Cargo.lock",
+    "setup/src-tauri/build.rs",
+    "setup/src-tauri/tauri.conf.json",
+    "setup/src-tauri/app.manifest",
+    "setup/src-tauri/capabilities/default.json",
+    "setup/src-tauri/permissions/setup.toml",
+    "setup/src-tauri/src/main.rs",
+    "setup/src-tauri/src/lib.rs",
 }
 
 
@@ -109,6 +139,8 @@ def allowed(path: Path) -> bool:
     parts = tuple(part.lower() for part in path.relative_to(ROOT).parts)
     lower = parts[-1]
     if any(part in BLOCKED_PARTS for part in parts):
+        return False
+    if any(parts[:len(prefix)] == prefix for prefix in GENERATED_DIRECTORIES):
         return False
     is_locale = parts[:3] == ("src", "i18n", "locales")
     if (lower in BLOCKED_FILES and not is_locale) or lower.startswith(".env") or path.suffix.lower() in {".log", ".tmp", ".part", ".key", ".pem", ".p12", ".pfx", ".obj"}:

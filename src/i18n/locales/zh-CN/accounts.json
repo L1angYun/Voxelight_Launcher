@@ -3,6 +3,10 @@
   "subtitle": "管理账号、线上外观与本地预览。",
   "listTitle": "账号",
   "addAccount": "添加账号",
+  "status": {
+    "profileUnavailable": "外观暂不可用",
+    "sessionUnverified": "会话未验证"
+  },
   "loginTitle": "添加账号",
   "loginDescription": "选择登录方式，或创建离线账号。",
   "loginMethods": "登录方式",
@@ -52,7 +56,7 @@
     "start": "开始 Microsoft 登录",
     "deviceInstruction": "在 Microsoft 官方页面输入以下代码：",
     "openVerification": "打开 Microsoft 授权页面",
-    "waiting": "等待授权 · 剩余 {{minutes}}:{{seconds}} · 每 {{interval}} 秒检查",
+    "waiting": "正在等待授权，剩余 {{minutes}}:{{seconds}}，每 {{interval}} 秒检查一次。",
     "cancel": "取消此次授权"
   },
   "offline": {
@@ -93,8 +97,8 @@
     "unavailable": "3D 预览暂不可用，请重试或更换预览来源。",
     "loading": "正在读取账号外观…",
     "noAccountSkin": "尚未取得当前账号的皮肤",
-    "localNotice": "仅用于本地预览 · 不会修改账号外观",
-    "accountNotice": "线上账号来源 · 只有明确执行操作才会更改",
+    "localNotice": "仅用于本地预览，不会修改账号外观。",
+    "accountNotice": "来自线上账号，只有明确执行操作才会更改。",
     "import": "导入 PNG",
     "resetView": "重置视角",
     "restoreDefault": "恢复默认预览",
@@ -123,11 +127,11 @@
     "fallback": "默认角色暂不可用，可重试或导入本地预览。",
     "steve": {
       "name": "Steve",
-      "description": "经典模型 · 已校验客户端"
+      "description": "经典模型，已校验客户端"
     },
     "alex": {
       "name": "Alex",
-      "description": "纤细模型 · 已校验客户端"
+      "description": "纤细模型，已校验客户端"
     }
   },
   "notice": {

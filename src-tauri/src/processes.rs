@@ -663,12 +663,9 @@ pub(crate) fn diagnose_instance_inner(
     instance_id: Option<String>,
 ) -> Result<Diagnosis, String> {
     let data = state.snapshot()?;
-    let instance = instance_id
-        .as_ref()
-        .and_then(|id| data.instances.iter().find(|i| &i.id == id));
-    if instance_id.is_some() && instance.is_none() {
-        return Err("实例不存在".into());
-    }
+    // A version-only diagnose still belongs to that version's instance, so the
+    // dedicated directory, not the global isolation flag, is read.
+    let instance = crate::minecraft::target_instance(&data, &version_id, instance_id.as_deref())?;
     let root = crate::minecraft::game_directory(&data.config, &version_id, instance)?;
     let crashes = safe_join(&root, "crash-reports")?;
     let mut candidates = Vec::new();
@@ -857,13 +854,10 @@ pub(crate) fn read_game_log_inner(
     instance_id: Option<&str>,
 ) -> Result<GameLog, String> {
     // Resolve the directory with the same rules as diagnose_instance: a
-    // registered instance controls its own directory, otherwise the version
-    // directory (or the configured root) is used.
+    // registered instance controls its own directory, and a version-only
+    // caller still resolves to that version's instance.
     let data = state.snapshot()?;
-    let instance = instance_id.and_then(|id| data.instances.iter().find(|i| &i.id == id));
-    if instance_id.is_some() && instance.is_none() {
-        return Err("实例不存在".into());
-    }
+    let instance = crate::minecraft::target_instance(&data, version_id, instance_id)?;
     let root = crate::minecraft::game_directory(&data.config, version_id, instance)?;
     read_game_log_file(&root)
 }
@@ -1076,6 +1070,57 @@ mod tests {
         assert!(report.contains("Conclusion: Out of memory\n"));
         assert!(report.contains("access_token=[已隐藏]"));
         assert!(!report.contains("fixture-credential"));
+    }
+
+    #[test]
+    fn a_version_only_log_and_diagnosis_use_the_instance_isolation() {
+        let holder = crate::instances::StagingDirectory::create(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let root = holder.path().join("game");
+        std::fs::create_dir_all(root.join("logs")).unwrap();
+        std::fs::write(root.join("logs/latest.log"), b"[12:00:00] [main/INFO]: shared directory\n").unwrap();
+        std::fs::create_dir_all(root.join("crash-reports")).unwrap();
+        std::fs::write(root.join("crash-reports/crash.txt"), b"shared crash\n").unwrap();
+        std::fs::create_dir_all(root.join("versions/v/logs")).unwrap();
+        std::fs::write(root.join("versions/v/logs/latest.log"), b"[12:00:00] [main/INFO]: instance directory\n").unwrap();
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = crate::storage::LauncherState::test_fixture(
+            holder.path().join("data"),
+            crate::models::Persisted {
+                config,
+                instances: vec![crate::models::Instance {
+                    id: "v".into(),
+                    name: "Shared V".into(),
+                    version_id: "v".into(),
+                    game_directory: root.to_string_lossy().into_owned(),
+                    game_folder: root.to_string_lossy().into_owned(),
+                    kind: "version".into(),
+                    isolated: false,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        let log = super::read_game_log_inner(&state, "v", None).unwrap();
+        let text: String = log
+            .lines
+            .iter()
+            .map(|line| line.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("shared directory"), "{text}");
+        assert!(!text.contains("instance directory"), "{text}");
+        let diagnosis = super::diagnose_instance_inner(&state, "v".into(), None).unwrap();
+        assert!(diagnosis.excerpt.contains("shared crash"), "{}", diagnosis.excerpt);
     }
 
     #[test]

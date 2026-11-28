@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Box } from "lucide-react";
 import type { Instance } from "../../lib/launcher";
 import { LatticeFrame } from "../../visual/lattice/LatticeFrame";
+import { ICON } from "../../design/icons";
 import { cn } from "../../lib/utils";
 
 export function RecentInstances({
@@ -44,9 +45,12 @@ export function RecentInstances({
               onBlur={() => setFocused(undefined)}
             >
               <LatticeFrame signature={instance.id} hovered={hovered === instance.id} focused={focused === instance.id} selected={selected} />
-              <Box className="vx-recent-card__icon" size={25} strokeWidth={1.2} aria-hidden="true" />
+              <Box className="vx-recent-card__icon" size={ICON.xl} aria-hidden="true" />
               <span className="vx-recent-card__name" title={instance.name}>{instance.name}</span>
-              <span className="vx-recent-card__meta">{instance.versionId} · {!instance.loader || instance.loader === "vanilla" ? t("home:vanilla") : instance.loader}</span>
+              <span className="vx-recent-card__meta">
+                <span>{instance.versionId}</span>{" "}
+                <span className="vx-recent-card__loader">{!instance.loader || instance.loader === "vanilla" ? t("home:vanilla") : instance.loader}</span>
+              </span>
             </button>
           );
         })}

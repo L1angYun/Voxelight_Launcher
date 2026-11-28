@@ -8,7 +8,7 @@
     "network": "网络检测"
   },
   "environment": "游戏环境",
-  "chooseEnvironment": "选择已安装版本",
+  "chooseEnvironment": "选择实例",
   "environmentRequired": "保存或加入服务器前，先选择游戏环境。",
   "refresh": "刷新",
   "addServer": "添加服务器",
@@ -95,6 +95,7 @@
   "sendCommand": "发送命令",
   "playerAction": "玩家管理操作",
   "playerName": "玩家名称",
+  "playerNamePlaceholder": "例如 Steve",
   "managePlayer": "执行玩家管理",
   "playerActions": {
     "whitelist add": "加入白名单",

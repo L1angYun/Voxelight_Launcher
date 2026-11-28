@@ -4,19 +4,25 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateRawSync } from "node:zlib";
 import test from "node:test";
-import { installerName, projectVersion, tauriOutputName, writeMetadata, writeNew } from "../../scripts/release-metadata.mjs";
+import { SETUP_BINARY_MARKER, installerName, projectVersion, rawNsisName, tauriOutputName, writeMetadata, writeNew } from "../../scripts/release-metadata.mjs";
 import { checkManifest, prepare, sourceName, strictJson } from "../../scripts/prepare-release-assets.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const VERSION = "0.7.0";
-const INSTALLER = Buffer.from("MZ synthetic installer bytes");
+// Shaped like Voxelight Setup: an MZ header plus the marker the setup crate
+// compiles into its executable. A raw Tauri NSIS output has no such marker.
+const INSTALLER = Buffer.concat([
+  Buffer.from("MZ synthetic setup bytes"),
+  Buffer.from(SETUP_BINARY_MARKER, "ascii"),
+]);
+const RAW_NSIS = Buffer.from("MZ synthetic raw NSIS installer without a setup marker");
 
 const CRC = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -153,18 +159,39 @@ test("an existing empty output directory is accepted", () => {
 });
 
 test("the command line resolves relative paths from its working directory and exits nonzero on rejection", () => {
+  // The Windows sandbox blocks piped child stdio; capture through files.
+  const runScript = (args, cwd) => {
+    const stdoutFile = join(cwd, "prepare-stdout.log");
+    const stderrFile = join(cwd, "prepare-stderr.log");
+    const out = openSync(stdoutFile, "w");
+    const err = openSync(stderrFile, "w");
+    try {
+      const result = spawnSync(process.execPath, args, {
+        cwd, stdio: ["ignore", out, err], windowsHide: true,
+      });
+      assert.equal(result.error, undefined, result.error?.message);
+      return {
+        status: result.status,
+        stdout: readFileSync(stdoutFile, "utf8"),
+        stderr: readFileSync(stderrFile, "utf8"),
+      };
+    } finally {
+      closeSync(out);
+      closeSync(err);
+    }
+  };
   const f = fixture();
   const script = join(root, "scripts", "prepare-release-assets.mjs");
-  const ok = spawnSync(process.execPath, [script, "--version", VERSION, "--installer", join("inputs", installerName(VERSION)), "--source", join("inputs", "reviewed-source.zip"), "--out", "release-assets"], { cwd: f.base, encoding: "utf8" });
+  const ok = runScript([script, "--version", VERSION, "--installer", join("inputs", installerName(VERSION)), "--source", join("inputs", "reviewed-source.zip"), "--out", "release-assets"], f.base);
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(readdirSync(f.out).length, 4);
   assert.match(ok.stdout, /update\.json\.$/m);
   const g = fixture();
-  const bad = spawnSync(process.execPath, [script, "--version", VERSION, "--installer", g.installer, "--source", join(g.inputs, "missing.zip"), "--out", g.out], { encoding: "utf8" });
+  const bad = runScript([script, "--version", VERSION, "--installer", g.installer, "--source", join(g.inputs, "missing.zip"), "--out", g.out], g.base);
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /nonempty file/);
   assert.equal(existsSync(g.out), false);
-  const none = spawnSync(process.execPath, [script, "--version", VERSION], { encoding: "utf8" });
+  const none = runScript([script, "--version", VERSION], f.base);
   assert.notEqual(none.status, 0);
   assert.match(none.stderr, /required/);
 });
@@ -205,7 +232,7 @@ for (const kind of ["installer", "source", "manifest"]) {
 }
 
 test("rejects an installer that is not named VoxelightLauncher-<version>-x64-setup.exe", () => {
-  for (const name of ["Other-setup.exe", tauriOutputName(VERSION), installerName(VERSION).toLowerCase(), installerName("0.7.1")]) {
+  for (const name of ["Other-setup.exe", installerName(VERSION).toLowerCase(), installerName("0.7.1")]) {
     const f = fixture();
     const renamed = join(f.inputs, name);
     renameSync(f.installer, renamed);
@@ -433,12 +460,45 @@ test("release-metadata copies the final installer under the fixed name and write
   assert.equal(readdirSync(out).length, 4);
 });
 
-test("release-metadata accepts an installer already under the fixed name", () => {
+test("release-metadata accepts the Tauri output name only when the Setup marker is present", () => {
+  const marked = metadataRoot();
+  const meta = writeMetadata({ root: marked.base, installer: marked.installer, out: marked.out });
+  assert.equal(readFileSync(meta.installer).includes(Buffer.from(SETUP_BINARY_MARKER)), true);
+
+  const rawNamedAsSetup = metadataRoot();
+  writeFileSync(rawNamedAsSetup.installer, RAW_NSIS);
+  assert.throws(
+    () => writeMetadata({ root: rawNamedAsSetup.base, installer: rawNamedAsSetup.installer, out: rawNamedAsSetup.out }),
+    /Setup marker|raw NSIS/,
+  );
+  assert.equal(existsSync(rawNamedAsSetup.out), false);
+
+  const rawButRenamed = metadataRoot();
+  const renamed = join(rawButRenamed.base, "bundle", installerName(VERSION));
+  renameSync(rawButRenamed.installer, renamed);
+  writeFileSync(renamed, RAW_NSIS);
+  assert.throws(
+    () => writeMetadata({ root: rawButRenamed.base, installer: renamed, out: rawButRenamed.out }),
+    /Setup marker|raw NSIS/,
+  );
+  assert.equal(existsSync(rawButRenamed.out), false);
+});
+
+test("release-metadata accepts an installer already under the fixed name and refuses the raw NSIS payload", () => {
   const m = metadataRoot();
   const renamed = join(m.base, "bundle", installerName(VERSION));
   renameSync(m.installer, renamed);
-  writeMetadata({ root: m.base, installer: renamed, out: m.out });
+  const meta = writeMetadata({ root: m.base, installer: renamed, out: m.out });
   assert.equal(readdirSync(m.out).length, 2);
+  const manifest = JSON.parse(readFileSync(meta.manifest, "utf8"));
+  assert.equal(manifest.assets.length, 1);
+  assert.equal(manifest.assets[0].name, installerName(VERSION));
+
+  const raw = metadataRoot();
+  const rawPath = join(raw.base, "bundle", rawNsisName(VERSION));
+  renameSync(raw.installer, rawPath);
+  assert.throws(() => writeMetadata({ root: raw.base, installer: rawPath, out: raw.out }), /Refusing raw NSIS payload/);
+  assert.equal(existsSync(raw.out), false);
 });
 
 test("release-metadata refuses another version, a non-executable, an empty file, disagreeing versions and used outputs", () => {

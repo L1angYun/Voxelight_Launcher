@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
-import { Compass, Cpu, Download, FolderOpen, Layers, Library, Radar, RefreshCw, Settings, UserPlus } from "lucide-react";
+import { Compass, Cpu, Download, FolderOpen, Layers, Library, Radar, RefreshCw, RotateCcw, Settings, Sparkles, UserPlus } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Segmented } from "../components/ui/Segmented";
 import { Select } from "../components/ui/Select";
+import { useWorldAvailability, useWorldPaused } from "../components/world/worldAvailability";
+import { canReplayWorldIntro, requestWorldIntroReplay } from "../components/world/worldReplay";
 import { LOCALE_LABELS, SUPPORTED_LOCALES } from "../i18n";
 import { useMotionTier } from "../design/useMotionTier";
+import { useAppearance } from "./AppearanceProvider";
 import { normalizeError } from "../lib/errors";
 import {
   command,
@@ -25,6 +28,7 @@ const oobeSteps = [
   { id: "welcome", titleKey: "shell:tour.oobe.welcome.title", bodyKey: "shell:tour.oobe.welcome.body" },
   { id: "account", titleKey: "shell:tour.oobe.account.title", bodyKey: "shell:tour.oobe.account.body" },
   { id: "environment", titleKey: "shell:tour.oobe.environment.title", bodyKey: "shell:tour.oobe.environment.body" },
+  { id: "lumen", titleKey: "shell:tour.oobe.lumen.title", bodyKey: "shell:tour.oobe.lumen.body" },
   { id: "ready", titleKey: "shell:tour.oobe.ready.title", bodyKey: "shell:tour.oobe.ready.body" },
 ] as const;
 
@@ -44,13 +48,18 @@ function focusable(card: HTMLElement): HTMLElement[] {
 export function FirstRunTour({
   reopen = false,
   onDismissed,
+  onSetUpLumen,
 }: {
   reopen?: boolean;
   onDismissed?: () => void;
+  onSetUpLumen?: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const { bootstrapped, config, data, setConfig, saveConfig, setTourCompleted, reload } = useLauncher();
-  const { tier } = useMotionTier();
+  const { tier, sceneStatic } = useMotionTier();
+  const appearance = useAppearance();
+  const availability = useWorldAvailability();
+  const worldPaused = useWorldPaused();
   const [step, setStep] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [draft, setDraft] = useState<Config>(config);
@@ -65,6 +74,7 @@ export function FirstRunTour({
   const [finishing, setFinishing] = useState(false);
 
   const cardRef = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
   const closing = useRef(false);
   const focusNextAfterBack = useRef(false);
@@ -77,6 +87,7 @@ export function FirstRunTour({
   const visible = bootstrapped && !dismissed && (reopen || !config.tourCompleted);
   const current = oobeSteps[step];
   const last = step === oobeSteps.length - 1;
+  const isLumen = current.id === "lumen";
   const accounts = data?.accounts ?? [];
 
   const revertPreview = useCallback(() => {
@@ -104,7 +115,7 @@ export function FirstRunTour({
     }
   }, [onDismissed, revertPreview, setTourCompleted]);
 
-  const finish = useCallback(async () => {
+  const finish = useCallback(async (after?: () => void) => {
     if (closing.current) return;
     closing.current = true;
     setFinishing(true);
@@ -128,6 +139,7 @@ export function FirstRunTour({
     }
     setDismissed(true);
     onDismissed?.();
+    after?.();
     try {
       void setTourCompleted(true).catch(() => {});
     } catch {
@@ -144,7 +156,15 @@ export function FirstRunTour({
     setStep(step - 1);
   };
 
+  // "Later" behaves like Next here: the next step is the final orientation.
+  function later() {
+    if (!isLumen) return;
+    focusNextAfterBack.current = true;
+    setStep(Math.min(step + 1, oobeSteps.length - 1));
+  }
+
   function previewAppearance<K extends keyof AppearancePatch>(key: K, value: NonNullable<AppearancePatch[K]>) {
+    if (Object.is(draftRef.current[key], value)) return;
     const next = { ...draftRef.current, [key]: value };
     draftRef.current = next;
     setDraft(next);
@@ -279,8 +299,8 @@ export function FirstRunTour({
     if (!visible) return;
     closing.current = false;
     const focusCard = () => {
-      const card = cardRef.current;
-      if (card?.isConnected) card.focus({ preventScroll: true });
+      const target = headingRef.current?.isConnected ? headingRef.current : cardRef.current;
+      if (target?.isConnected) target.focus({ preventScroll: true });
     };
     focusCard();
     const closingDialog = document.querySelector<HTMLDialogElement>("dialog[open]");
@@ -322,15 +342,29 @@ export function FirstRunTour({
       const first = items[0];
       const lastItem = items[items.length - 1];
       const active = document.activeElement;
-      if (!card.contains(active)) {
+      // Outside the card, or on the card frame, Tab enters the controls from
+      // the matching end.
+      if (!card.contains(active) || active === card) {
         event.preventDefault();
         (event.shiftKey ? lastItem : first).focus();
         return;
       }
-      if (event.shiftKey && (active === first || active === card)) {
+      // A non-tabbable target inside the card (the step title) keeps reading
+      // order: Tab moves to the next control after it, Shift+Tab to the one
+      // before it, and only the ends wrap.
+      if (active && !items.includes(active as HTMLElement)) {
+        const position = (item: HTMLElement) => active.compareDocumentPosition(item);
+        const target = event.shiftKey
+          ? items.filter((item) => position(item) & Node.DOCUMENT_POSITION_PRECEDING).pop() ?? lastItem
+          : items.find((item) => position(item) & Node.DOCUMENT_POSITION_FOLLOWING) ?? first;
+        event.preventDefault();
+        target.focus();
+        return;
+      }
+      if (event.shiftKey && active === first) {
         event.preventDefault();
         lastItem.focus();
-      } else if (!event.shiftKey && (active === lastItem || active === card)) {
+      } else if (!event.shiftKey && active === lastItem) {
         event.preventDefault();
         first.focus();
       }
@@ -345,6 +379,16 @@ export function FirstRunTour({
   const highestJava = javaList && javaList.length > 0
     ? Math.max(...javaList.map((item) => item.major))
     : null;
+  const canReplayIntro = canReplayWorldIntro({
+    effects: draft.effects === "lite" || appearance.effects === "lite" ? "lite" : "full",
+    material: draft.worldMaterial,
+    scene: draft.worldScene,
+    reducedMotion: Boolean(appearance.reducedMotion),
+    highContrast: Boolean(appearance.highContrast),
+    sceneStatic,
+    availability,
+    paused: worldPaused,
+  });
 
   return (
     <div className="vx-tour">
@@ -394,18 +438,30 @@ export function FirstRunTour({
         </div>
 
         <div className="vx-oobe__header">
-          <h2 className="vx-tour__heading">{t(current.titleKey)}</h2>
+          <h2 ref={headingRef} className="vx-tour__heading" tabIndex={-1}>{t(current.titleKey)}</h2>
           <p className="vx-tour__body" id={bodyId}>{t(current.bodyKey)}</p>
         </div>
 
         {step === 0 ? (
           <div className="vx-oobe__stack">
-            <div className="vx-oobe__telemetry" aria-hidden="true">
-              <span>{t(`settings:worldScene.${draft.worldScene}`)}</span>
-              <span>·</span>
-              <span>{t(`settings:worldMaterial.${draft.worldMaterial}`)}</span>
-              <span>·</span>
-              <span>{t(`settings:theme.${draft.theme}`)}</span>
+            <div className="vx-oobe__panel-head">
+              <div className="vx-oobe__telemetry" aria-hidden="true">
+                <span>{t(`settings:worldScene.${draft.worldScene}`)}</span>
+                <span>{t(`settings:worldMaterial.${draft.worldMaterial}`)}</span>
+                <span>{t(`settings:theme.${draft.theme}`)}</span>
+              </div>
+              {canReplayIntro ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<RotateCcw size={14} />}
+                  data-world-intro-replay=""
+                  aria-label={t("settings:worldPreview.replayIntro")}
+                  onClick={requestWorldIntroReplay}
+                >
+                  {t("settings:worldPreview.replayIntro")}
+                </Button>
+              ) : null}
             </div>
             <div className="vx-oobe__grid">
             <div className="vx-oobe__field">
@@ -635,7 +691,31 @@ export function FirstRunTour({
           </div>
         ) : null}
 
-        {step === 3 ? (
+        {isLumen ? (
+          <div className="vx-oobe__stack">
+            <div className="vx-oobe__panel">
+              <span className="vx-oobe__label">
+                <Sparkles size={14} aria-hidden="true" />
+                {t("shell:assistant.title")}
+              </span>
+              <ul className="vx-oobe__lumen-points">
+                <li>{t("shell:tour.oobe.lumen.ownKey")}</li>
+                <li>{t("shell:tour.oobe.lumen.readOnly")}</li>
+                <li>{t("shell:tour.oobe.lumen.asksFirst")}</li>
+              </ul>
+              <div className="vx-oobe__lumen-actions">
+                <Button variant="primary" loading={finishing} onClick={() => void finish(onSetUpLumen)}>
+                  {t("shell:tour.oobe.lumen.setUp")}
+                </Button>
+                <Button variant="secondary" disabled={finishing} onClick={later}>
+                  {t("shell:tour.oobe.lumen.later")}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {current.id === "ready" ? (
           <div className="vx-oobe__stack">
             <div className="vx-oobe__chips">
               <span className="vx-oobe__chip">

@@ -80,9 +80,6 @@ async function prepare(page: Page, theme: Theme, effects: Effects) {
     });
     if (api) attach(api);
   });
-  await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ hits: [] }),
-  }));
   await page.goto("/");
   await page.waitForFunction((mode) => {
     const scene = document.querySelector<HTMLElement>(".world-scene");

@@ -10,21 +10,26 @@ const project = { project_id: "P7dR8mSH", slug: "fabric-api", title: "Fabric API
   author: "Fixture", project_type: "mod", versions: ["1.21.1"] };
 
 async function remote(page: Page, gameVersions = ["1.21.1"]) {
-  const urls: string[] = [];
   const responseProject = { ...project, versions: gameVersions };
-  await page.route("https://api.modrinth.com/v2/search?**", route => {
-    urls.push(route.request().url());
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [responseProject] }) });
-  });
   await page.addInitScript(({ project, gameVersions }) => {
-    const host = window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: unknown) => Promise<unknown> } };
+    const host = window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> } };
     const original = host.__TAURI_INTERNALS__.invoke;
-    host.__TAURI_INTERNALS__.invoke = (name, args) => name === "get_modrinth_project_details"
-      ? Promise.resolve({ project, dependencies: [], versions: [{ id: "fixture-resource-version", name: "Fabric API",
-        versionNumber: "fixture", datePublished: "2026-01-01", gameVersions, loaders: ["fabric"], compatible: false }] })
-      : original(name, args);
+    host.__TAURI_INTERNALS__.invoke = (name, args) => {
+      if (name === "search_modrinth") {
+        (window as unknown as { __discoverSearches: Record<string, unknown>[] }).__discoverSearches.push(args ?? {});
+        return Promise.resolve({ hits: [project], totalHits: 1, nextOffset: 1 });
+      }
+      if (name === "get_modrinth_project_details") return Promise.resolve({ project, dependencies: [],
+        versions: [{ id: "fixture-resource-version", name: "Fabric API",
+          versionNumber: "fixture", datePublished: "2026-01-01", gameVersions, loaders: ["fabric"], compatible: false }] });
+      if (name === "get_modrinth_project_versions") return Promise.resolve({ versions: [], hasMore: false });
+      return original(name, args);
+    };
+    (window as unknown as { __discoverSearches: Record<string, unknown>[] }).__discoverSearches = [];
   }, { project: responseProject, gameVersions });
-  return urls;
+  return () => page.evaluate(() => (window as unknown as {
+    __discoverSearches: Record<string, unknown>[];
+  }).__discoverSearches);
 }
 
 async function open(page: Page) {
@@ -37,8 +42,8 @@ async function calls(page: Page) {
     __appearanceFixtures: { calls: { name: string; args?: Record<string, unknown> }[] };
   }).__appearanceFixtures.calls);
 }
-const targetDialog = (page: Page) => page.getByRole("dialog", { name: "选择安装位置 · Fabric API", exact: true });
-const install = (page: Page) => page.getByRole("button", { name: /^安装 · / }).first().click();
+const targetDialog = (page: Page) => page.getByRole("dialog", { name: "选择 Fabric API 的安装位置", exact: true });
+const install = (page: Page) => page.getByRole("button", { name: /^安装到/ }).first().click();
 
 test.afterEach(async ({ page }, info) => {
   const runtime = await page.evaluate(() => {
@@ -60,7 +65,7 @@ for (const versionDirectoryCount of [1, 0]) {
       await page.getByRole("button", { name: "查看详情", exact: true }).click();
       const details = page.getByRole("dialog", { name: "Fabric API", exact: true });
       await expect(details).toBeVisible();
-      await details.getByRole("button", { name: /^安装 · / }).click();
+      await details.getByRole("button", { name: /^安装最新兼容版到/ }).click();
     } else await install(page);
     const dialog = targetDialog(page);
     await expect(dialog).toBeVisible();
@@ -92,26 +97,31 @@ test("R3-3 compatible Fabric instance is offered while a vanilla instance is sel
   const dialog = targetDialog(page);
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("现有 Fabric 实例", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("radiogroup").getByRole("radio")).toHaveCount(1);
+  // The existing Fabric instance, then "New instance" as the last option of the same group.
+  await expect(dialog.getByRole("radiogroup").getByRole("radio")).toHaveCount(2);
+  await expect(dialog.getByRole("radiogroup").getByRole("radio").last()).toContainText("新建实例");
   await expect(dialog.getByText("fabric-loader-0.16.9-1.21.1", { exact: true })).toHaveCount(0);
   await dialog.getByText(/不兼容/).click();
   await expect(dialog.getByText("原版，无法加载模组", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("existing-targets.png") });
-  await dialog.getByRole("button", { name: "安装到 现有 Fabric 实例", exact: true }).click();
+  await dialog.getByRole("button", { name: "安装到现有 Fabric 实例", exact: true }).click();
   await expect.poll(async () => (await calls(page)).some(call => call.name === "install_resource")).toBe(true);
   const installed = (await calls(page)).find(call => call.name === "install_resource");
   expect(installed?.args).toMatchObject({ instanceId: "fabric-existing", versionId: "fabric-loader-0.16.9-1.21.1" });
   expect((await calls(page)).some(call => call.name === "create_instance_for_resource")).toBe(false);
 });
 
-test("R3-3 a selected Fabric target stays one click and searches with real game and loader facets", async ({ page }) => {
+test("R3-3 a selected Fabric target stays one click and searches with the real game and loader", async ({ page }) => {
   await installLauncherFixture(page, { instanceLoader: "fabric" });
-  const urls = await remote(page); await open(page);
-  await expect.poll(() => {
-    const facets: string[] = JSON.parse(new URL(urls.at(-1)!).searchParams.get("facets") ?? "[]").flat();
-    return facets.includes("versions:1.21.1") && facets.includes("categories:fabric");
+  const searches = await remote(page); await open(page);
+  await expect.poll(async () => {
+    const search = (await searches()).at(-1);
+    return search?.gameVersion === "1.21.1" && search?.loader === "fabric";
   }).toBe(true);
-  expect(urls.every(url => !decodeURIComponent(url).includes("versions:fabric-loader-"))).toBe(true);
+  expect(await searches()).toEqual(expect.arrayContaining([
+    expect.objectContaining({ offset: 0, limit: 24, gameVersion: "1.21.1", loader: "fabric" }),
+  ]));
+  expect((await searches()).every(search => search.gameVersion !== "fabric-loader-0.16.9-1.21.1")).toBe(true);
   await install(page);
   await expect.poll(async () => (await calls(page)).some(call => call.name === "install_resource")).toBe(true);
   await expect(targetDialog(page)).toHaveCount(0);
@@ -130,7 +140,7 @@ for (const language of ["zh-CN", "en-US"] as const) {
   test(`R3-3 review ${language}: snapshot-only projects explain the empty plan and retain an external action`, async ({ page }, info) => {
     await installLauncherFixture(page, { language, resourceGameVersions: ["24w20a"] });
     await remote(page, ["24w20a"]); await open(page);
-    await page.getByRole("button", { name: language === "en-US" ? /^Install · / : /^安装 · / }).first().click();
+    await page.getByRole("button", { name: language === "en-US" ? /^Install into / : /^安装到/ }).first().click();
     const dialog = page.locator('.vx-install-target');
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveCSS("opacity", "1");
@@ -199,8 +209,8 @@ test("R3-3 Downloads navigation does not cancel the combined install or lose the
 test("R3-3 English progress names the real loader stage in the chooser and Downloads", async ({ page }, info) => {
   await installLauncherFixture(page, { noInstances: true, language: "en-US", resourceCreateDelay: 30000 });
   await remote(page); await open(page);
-  await page.getByRole("button", { name: /^Install · / }).first().click();
-  const dialog = page.getByRole("dialog", { name: "Choose install location · Fabric API", exact: true });
+  await page.getByRole("button", { name: /^Install into / }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Choose install location for Fabric API", exact: true });
   await dialog.getByRole("button", { name: "Create and install", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Cancel installation", exact: true })).toBeVisible();
   await expect.soft(dialog).toContainText("Verifying loader libraries", { timeout: 1500 });

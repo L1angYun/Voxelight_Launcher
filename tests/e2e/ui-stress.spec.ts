@@ -66,25 +66,27 @@ async function expectKeyboardFocus(page: Page) {
 test("200% pseudo-locale and schema-backed worst-case data stay usable at every supported width", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await installLauncherFixture(page, { stress: true });
-  await page.route("https://api.modrinth.com/v2/search?**", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        hits: [{
-          project_id: "advanced-rendering",
-          slug: "advanced-rendering",
-          title: "Advanced Rendering Performance and Compatibility Toolkit for Community Modpacks",
-          description: "A detailed rendering toolkit for long-running community worlds, modpack reviewers, and players who need predictable frame pacing across many different hardware configurations.",
-          icon_url: null,
-          downloads: 12345678,
-          author: "Senior Product Design Engineer, Platform Infrastructure",
-          project_type: "mod",
-          versions: ["1.21.1"],
-        }],
-      }),
-    });
-  });
+  await installLauncherFixture(page, { stress: true, modrinthSearch: { hits: [{
+    project_id: "advanced-rendering",
+    slug: "advanced-rendering",
+    title: "Advanced Rendering Performance and Compatibility Toolkit for Community Modpacks",
+    description: "A detailed rendering toolkit for long-running community worlds, modpack reviewers, and players who need predictable frame pacing across many different hardware configurations.",
+    icon_url: null,
+    downloads: 12345678,
+    author: "Senior Product Design Engineer, Platform Infrastructure",
+    project_type: "mod",
+    versions: ["1.21.1"],
+  }, {
+    project_id: "second-rendering",
+    slug: "second-rendering",
+    title: "Second Rendering Fixture",
+    description: "A second result so the paged heading, filters and Load more are exercised.",
+    icon_url: null,
+    downloads: 1234,
+    author: "Fixture Author",
+    project_type: "mod",
+    versions: ["1.21.1"],
+  }], totalHits: 3 } });
   await page.goto("/?next-ui&stress-locale");
   await expect(page.locator("body")).toContainText("⟦");
   for (const width of [1050, 1440, 1920]) {
@@ -107,9 +109,6 @@ test("200% pseudo-locale and schema-backed worst-case data stay usable at every 
 
 test("empty accounts, instances, resources and tasks keep one useful state and no overflow", async ({ page }) => {
   await installLauncherFixture(page, { noAccount: true, noInstances: true });
-  await page.route("https://api.modrinth.com/v2/search?**", async (route) => {
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [] }) });
-  });
   await page.setViewportSize({ width: 1050, height: 720 });
   await page.goto("/?next-ui");
   for (const id of pageIds) {

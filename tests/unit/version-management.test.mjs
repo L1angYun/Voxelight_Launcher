@@ -14,6 +14,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 function fixtureRepo(version = "0.6.0") {
   const dir = mkdtempSync(path.join(tmpdir(), "vx-version-test-"));
   mkdirSync(path.join(dir, "src-tauri"), { recursive: true });
+  mkdirSync(path.join(dir, "setup", "src-tauri"), { recursive: true });
   mkdirSync(path.join(dir, "licenses"), { recursive: true });
   writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "voxelight-launcher", version }, null, 2) + "\n");
   writeFileSync(
@@ -27,6 +28,12 @@ function fixtureRepo(version = "0.6.0") {
   );
   writeFileSync(path.join(dir, "src-tauri", "tauri.conf.json"), JSON.stringify({ productName: "Voxelight Launcher", version }, null, 2) + "\n");
   writeFileSync(path.join(dir, "licenses", "dependency-inventory.json"), JSON.stringify({ project: "Voxelight Launcher", version }, null, 2) + "\n");
+  writeFileSync(path.join(dir, "setup", "src-tauri", "Cargo.toml"), `[package]\nname = "voxelight-setup"\nversion = "${version}"\n`);
+  writeFileSync(
+    path.join(dir, "setup", "src-tauri", "Cargo.lock"),
+    `[[package]]\nname = "other-setup-dep"\nversion = "0.6.0"\n\n[[package]]\nname = "voxelight-setup"\nversion = "${version}"\n`,
+  );
+  writeFileSync(path.join(dir, "setup", "src-tauri", "tauri.conf.json"), JSON.stringify({ productName: "Voxelight Setup", version }, null, 2) + "\n");
   return dir;
 }
 
@@ -46,17 +53,58 @@ test("validateSemver accepts stable and alpha/beta/rc pre-releases and rejects m
   }
 });
 
-test("setVersions updates all six manifest fields atomically without touching other Cargo.lock deps", () => {
+test("setVersions updates launcher and setup manifests without touching other Cargo.lock deps", () => {
   const dir = fixtureRepo("0.6.0");
   try {
     const updated = setVersions(dir, "0.7.0-beta.1");
     assert.equal(updated.version, "0.7.0-beta.1");
     assert.equal(updated.prerelease, true);
+    assert.equal(Object.keys(updated.versions).length, 10);
+
     const cargoLock = readFileSync(path.join(dir, "src-tauri", "Cargo.lock"), "utf8");
     assert.match(cargoLock, /name = "other-dep"\nversion = "0\.6\.0"/);
     assert.match(cargoLock, /name = "voxelight-launcher"\nversion = "0\.7\.0-beta\.1"/);
+
+    const setupCargoToml = readFileSync(path.join(dir, "setup", "src-tauri", "Cargo.toml"), "utf8");
+    assert.match(setupCargoToml, /name = "voxelight-setup"\nversion = "0\.7\.0-beta\.1"/);
+    const setupCargoLock = readFileSync(path.join(dir, "setup", "src-tauri", "Cargo.lock"), "utf8");
+    assert.match(setupCargoLock, /name = "other-setup-dep"\nversion = "0\.6\.0"/);
+    assert.match(setupCargoLock, /name = "voxelight-setup"\nversion = "0\.7\.0-beta\.1"/);
+    const setupTauri = JSON.parse(readFileSync(path.join(dir, "setup", "src-tauri", "tauri.conf.json"), "utf8"));
+    assert.equal(setupTauri.version, "0.7.0-beta.1");
+    assert.equal(setupTauri.productName, "Voxelight Setup");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("checkVersions rejects drift in every setup manifest", () => {
+  const targets = [
+    {
+      file: path.join("setup", "src-tauri", "Cargo.toml"),
+      mutate: (file) => writeFileSync(file, readFileSync(file, "utf8").replace('version = "0.6.0"', 'version = "0.5.0"')),
+      detail: "setup/src-tauri/Cargo.toml: 0.5.0",
+    },
+    {
+      file: path.join("setup", "src-tauri", "Cargo.lock"),
+      mutate: (file) => writeFileSync(file, readFileSync(file, "utf8").replace('name = "voxelight-setup"\nversion = "0.6.0"', 'name = "voxelight-setup"\nversion = "0.5.0"')),
+      detail: "setup/src-tauri/Cargo.lock: 0.5.0",
+    },
+    {
+      file: path.join("setup", "src-tauri", "tauri.conf.json"),
+      mutate: (file) => writeFileSync(file, JSON.stringify({ productName: "Voxelight Setup", version: "0.5.0" }, null, 2) + "\n"),
+      detail: "setup/src-tauri/tauri.conf.json: 0.5.0",
+    },
+  ];
+  for (const target of targets) {
+    const dir = fixtureRepo("0.6.0");
+    try {
+      const file = path.join(dir, target.file);
+      target.mutate(file);
+      assert.throws(() => checkVersions(dir), new RegExp(target.detail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -66,7 +114,7 @@ test("release-metadata and prepare-release-assets support explicit --prerelease 
     const bundle = path.join(dir, "bundle");
     mkdirSync(bundle, { recursive: true });
     const installer = path.join(bundle, "Voxelight Launcher_0.7.0-beta.1_x64-setup.exe");
-    writeFileSync(installer, Buffer.concat([Buffer.from("MZ"), Buffer.alloc(128, 1)]));
+    writeFileSync(installer, Buffer.concat([Buffer.from("MZ"), Buffer.alloc(128, 1), Buffer.from("VOXELIGHT_SETUP_HOST_V1", "ascii")]));
     const metaOut = path.join(dir, "meta");
     assert.throws(() => writeMetadata({ root: dir, installer, out: metaOut }), /not a stable/);
     const meta = writeMetadata({ root: dir, installer, out: metaOut, prerelease: true });

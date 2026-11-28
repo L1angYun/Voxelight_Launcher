@@ -121,6 +121,7 @@ export async function prepareIntroContrast(page: Page, targets: ContrastTarget[]
         const observations = observed.observations.sort((a, b) => a.epochMs - b.epochMs);
         const candidates: Array<{ report: WorldContrastReport; data: Buffer; timestamp: number; before: TextContrastMetadata;
           after: TextContrastMetadata; frame: ScreencastFrame & { receivedEpochMs: number } }> = [];
+        let fadingFrames = 0;
         for (const frame of [...frames].sort((a, b) => (a.metadata.timestamp ?? 0) - (b.metadata.timestamp ?? 0))) {
           if (!Number.isFinite(frame.metadata.timestamp)) continue;
           const timestamp = frame.metadata.timestamp! * 1000;
@@ -128,9 +129,17 @@ export async function prepareIntroContrast(page: Page, targets: ContrastTarget[]
           const next = observations.find(item => item.epochMs >= timestamp);
           if (!before || !next || before === next || before.before.intro !== "on" || next.before.intro !== "on") continue;
           validateContrastLayout(before, next);
-          if (before.scrim !== next.scrim || JSON.stringify(before.regions.map(region => [region.text, region.foreground, region.paintOpacity, region.paintVisible])) !==
-            JSON.stringify(next.regions.map(region => [region.text, region.foreground, region.paintOpacity, region.paintVisible])))
+          // Targets that are only nominal during the entrance (the Home title and
+          // metadata) fade in part way through it. A frame taken while that fade
+          // runs proves no single paint state, so it is left out; any other
+          // change of text, color, scrim or visibility still fails the capture.
+          const stable = (metadata: TextContrastMetadata) => JSON.stringify(metadata.regions.map(region =>
+            [region.text, region.foreground, region.nominalOnly, ...(region.nominalOnly ? [] : [region.paintOpacity, region.paintVisible])]));
+          const fading = (metadata: TextContrastMetadata) => JSON.stringify(metadata.regions.filter(region => region.nominalOnly)
+            .map(region => [region.paintOpacity, region.paintVisible]));
+          if (before.scrim !== next.scrim || stable(before) !== stable(next))
             throw new Error("Intro text color, visibility or scrim changed across a compositor bracket");
+          if (fading(before) !== fading(next)) { fadingFrames++; continue; }
           if (frame.metadata.pageScaleFactor !== 1 || frame.metadata.offsetTop !== 0 || frame.metadata.scrollOffsetX !== 0 || frame.metadata.scrollOffsetY !== 0 ||
             frame.metadata.deviceWidth !== viewport.width || frame.metadata.deviceHeight !== viewport.height)
             throw new Error("Intro screencast geometry does not match the measured CSS viewport");
@@ -138,7 +147,7 @@ export async function prepareIntroContrast(page: Page, targets: ContrastTarget[]
           candidates.push({ report: analyzeTextContrast(data, before, after.before), data, timestamp, before, after: next, frame });
         }
         if (!candidates.length) throw new Error(`No real compositor frame has two ready intro-on observations: ${JSON.stringify({
-          frames: frames.length, observations: observations.length, lastState: observed.lastState, metadataErrors: observed.metadataErrors })}`);
+          frames: frames.length, observations: observations.length, fadingFrames, lastState: observed.lastState, metadataErrors: observed.metadataErrors })}`);
         // Retain the worst contrast margin among the bounded, proven intro frames,
         // rather than selecting a later/earlier frame because it passes a threshold.
         candidates.sort((a, b) => Math.min(...a.report.regions.map(region => region.contrast / region.minimum)) -
@@ -148,7 +157,11 @@ export async function prepareIntroContrast(page: Page, targets: ContrastTarget[]
           receivedEpochMs: chosen.frame.receivedEpochMs, metadata: chosen.frame.metadata,
           domBefore: chosen.before.before, domAfter: chosen.after.before,
           beforeEpochMs: chosen.before.epochMs, afterEpochMs: chosen.after.epochMs,
-          candidateFrames: candidates.length, observedFrames: frames.length, observations: observations.length,
+          candidateFrames: candidates.length, fadingFrames, observedFrames: frames.length, observations: observations.length,
+          // Frames in which the faded-in title and metadata were fully painted,
+          // so their measured contrast is the composited one, not only nominal.
+          paintedCandidateFrames: candidates.filter(candidate => candidate.before.regions
+            .every(region => !region.nominalOnly || (region.paintVisible && region.paintOpacity >= .999))).length,
           selection: "lowest contrast margin among the captured, double-on-bracketed compositor frames",
           candidateTimestampsEpochMs: candidates.map(candidate => candidate.timestamp) };
         await writeFile(path, chosen.data);

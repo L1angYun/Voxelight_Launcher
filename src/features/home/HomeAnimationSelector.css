@@ -8,7 +8,7 @@
   min-width: 0;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms var(--ease-out);
+  transition: opacity var(--duration-fast) var(--ease-out);
 }
 .vx-home-animation-selector[data-visible="true"],
 .vx-home-animation-selector:focus-within,

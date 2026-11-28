@@ -19,10 +19,10 @@ export function MultiplayerPage() {
 
   return (
     <PageShell className="vx-multiplayer-page">
-      <PageHeader title={t("multiplayer:title")} description={t("multiplayer:subtitle")} />
-      <Segmented className="vx-multiplayer-tabs" semantic="tabs" label={t("multiplayer:views")} value={tab} onChange={setTab}
-        idPrefix="multiplayer-tab" panelId={(id) => `multiplayer-panel-${id}`}
-        options={(["servers", "managed", "network"] as const).map((value) => ({ value, label: t(`multiplayer:tab.${value}`) }))} />
+      <PageHeader title={t("multiplayer:title")} description={t("multiplayer:subtitle")}
+        actions={<Segmented className="vx-multiplayer-tabs" semantic="tabs" label={t("multiplayer:views")} value={tab} onChange={setTab}
+          idPrefix="multiplayer-tab" panelId={(id) => `multiplayer-panel-${id}`}
+          options={(["servers", "managed", "network"] as const).map((value) => ({ value, label: t(`multiplayer:tab.${value}`) }))} />} />
       {errorText ? <p className="vx-multiplayer-error" role="alert">{errorText}</p> : null}
       {notice ? <p className="vx-multiplayer-notice" role="status">{t(`multiplayer:notice.${notice}`)}</p> : null}
       <SectionPanel selectionKey={tab} role="tabpanel" id={`multiplayer-panel-${tab}`} aria-labelledby={`multiplayer-tab-${tab}`}>

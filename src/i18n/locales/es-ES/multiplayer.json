@@ -8,7 +8,7 @@
     "network": "Prueba de red"
   },
   "environment": "Entorno del juego",
-  "chooseEnvironment": "Elige una versión instalada",
+  "chooseEnvironment": "Elige una instancia",
   "environmentRequired": "Elige un entorno del juego antes de guardar un servidor o unirte a él.",
   "refresh": "Actualizar",
   "addServer": "Añadir servidor",
@@ -96,6 +96,7 @@
   "sendCommand": "Enviar comando",
   "playerAction": "Acción sobre jugador",
   "playerName": "Nombre del jugador",
+  "playerNamePlaceholder": "p. ej., Steve",
   "managePlayer": "Gestionar jugador",
   "playerActions": {
     "whitelist add": "Añadir a lista blanca",

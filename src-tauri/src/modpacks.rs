@@ -841,13 +841,37 @@ fn dependencies(
     }
     Ok((minecraft, loader))
 }
+/// A test's stand-in for the Minecraft and loader install of an import, run
+/// when the import has no window (never in a release build).
+#[cfg(test)]
+type ImportInstall = Box<dyn FnOnce(&BTreeMap<String, String>) -> Result<(String, String, String), String>>;
+
+#[cfg(test)]
+thread_local! {
+    static IMPORT_INSTALL: std::cell::RefCell<Option<ImportInstall>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_import_install(
+    install: impl FnOnce(&BTreeMap<String, String>) -> Result<(String, String, String), String> + 'static,
+) {
+    IMPORT_INSTALL.with(|slot| *slot.borrow_mut() = Some(Box::new(install)));
+}
+
 async fn install_dependencies(
     state: &LauncherState,
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     values: &BTreeMap<String, String>,
 ) -> Result<(String, String, String), String> {
     let (minecraft, loader) = dependencies(values)?;
     state.control.checkpoint().await?;
+    let Some(app) = app else {
+        #[cfg(test)]
+        if let Some(install) = IMPORT_INSTALL.with(|slot| slot.borrow_mut().take()) {
+            return install(values);
+        }
+        return Err("安装整合包依赖需要启动器窗口".into());
+    };
     if let Some((kind, version)) = loader {
         let result =
             crate::loaders::install_loader_inner(state, app, &kind, &minecraft, &version).await?;
@@ -1802,8 +1826,147 @@ fn inspect_import_archive(
     Ok(ImportMarkers { personal_only, modrinth, curse, mcbbs_entry, multimc_prefix })
 }
 
+/// Import staging lives beside `versions/`, not inside it: PCL and HMCL list
+/// every folder in `versions/`, and a crash must not leave a fake instance
+/// there. It stays on the same volume so publishing is a rename.
+pub(crate) const PACK_STAGING_DIRECTORY: &str = ".voxelight-staging";
+
+/// A disposable but exclusively owned staging directory for pack extraction.
+fn pack_staging_directory(root: &Path) -> Result<instances::StagingDirectory, String> {
+    let parent = safe_join(root, PACK_STAGING_DIRECTORY)?;
+    std::fs::create_dir_all(&parent)
+        .map_err(|error| format!("无法创建整合包暂存目录：{error}"))?;
+    instances::StagingDirectory::create(safe_join(
+        &parent,
+        &format!(".pack-staging-{}", uuid::Uuid::new_v4()),
+    )?)
+}
+
+/// A complete stage that could not be published is renamed to this prefix
+/// (or, if even that fails, marked with `KEPT_STAGE_MARKER`). The startup
+/// sweep removes only `.pack-staging-*` and `.copy-*` without the marker, so
+/// the folder an error message names is still there after a restart.
+pub(crate) const KEPT_STAGE_PREFIX: &str = ".kept-";
+pub(crate) const KEPT_STAGE_MARKER: &str = ".voxelight-kept";
+
+/// Keep a finished stage the final rename could not publish, and return where
+/// it now is.
+fn keep_unpublished_stage(stage: &Path) -> PathBuf {
+    let name = stage
+        .file_name()
+        .map(|name| name.to_string_lossy().trim_start_matches('.').to_owned())
+        .unwrap_or_default();
+    if let Some(parent) = stage.parent().filter(|_| !name.is_empty()) {
+        if let Ok(kept) = safe_join(parent, &format!("{KEPT_STAGE_PREFIX}{name}")) {
+            if std::fs::rename(stage, &kept).is_ok() {
+                return kept;
+            }
+        }
+    }
+    let _ = std::fs::write(stage.join(KEPT_STAGE_MARKER), b"");
+    stage.to_owned()
+}
+
+/// Publish a finished stage at `target`. A failure keeps the complete stage
+/// out of the startup sweep's reach and reports where it is.
+fn publish_stage(
+    stage: &mut instances::StagingDirectory,
+    target: &Path,
+) -> Result<(), (PathBuf, String)> {
+    stage
+        .publish(target)
+        .map_err(|error| (keep_unpublished_stage(stage.path()), error.to_string()))
+}
+
+/// The folder name an import will receive. It must check the real
+/// `<game folder>/versions/` (not `versions/versions/`), so importing the same
+/// pack twice yields `<name>-2`.
+fn import_folder_name(
+    state: &LauncherState,
+    config: &crate::models::Config,
+    root: &Path,
+    desired: &str,
+    fallback: &str,
+) -> Result<String, String> {
+    let name = crate::commands::unique_version_folder_name(root, desired, fallback);
+    crate::commands::require_non_official_folder_name(state, config, &name)?;
+    Ok(name)
+}
+
+/// Remove disposable import/copy staging left by a crash. `restore-*`,
+/// `before-restore-*` and world-copy folders are durable recovery material and
+/// are deliberately not touched here.
+fn cleanup_stale_pack_staging_unlocked(state: &LauncherState) {
+    let Ok(config) = state.snapshot().map(|data| data.config) else {
+        return;
+    };
+    for folder in config.game_folder_roots() {
+        let Ok(root) = crate::processes::configured_game_root(Path::new(&folder)) else {
+            continue;
+        };
+        let Ok(parent) = safe_join(&root, PACK_STAGING_DIRECTORY) else {
+            continue;
+        };
+        let Ok(entries) = std::fs::read_dir(&parent) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !(name.starts_with(".pack-staging-") || name.starts_with(".copy-")) {
+                continue;
+            }
+            let path = entry.path();
+            if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+                && !path.join(KEPT_STAGE_MARKER).exists()
+            {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+}
+
+/// The startup sweep: once per launcher process and only while no operation
+/// (import, copy, restore, install, launch preparation) owns the lock. A
+/// bootstrap called by a reload while an import runs must leave its stage alone.
+pub(crate) fn cleanup_stale_pack_staging_at_startup(state: &LauncherState) {
+    #[cfg(test)]
+    SWEEP_THREADS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((state.data_dir.clone(), std::thread::current().id()));
+    if state
+        .startup_sweep_attempted
+        .swap(true, std::sync::atomic::Ordering::AcqRel)
+    {
+        return;
+    }
+    let Ok(_operation) = state.operation.try_lock() else {
+        return;
+    };
+    cleanup_stale_pack_staging_unlocked(state);
+    crate::commands::cleanup_stale_world_copies(state);
+    crate::commands::cleanup_stale_profile_backups(state);
+}
+
+/// Test-only record of the thread each startup sweep ran on, keyed by data
+/// folder so tests running in parallel do not see each other's sweeps.
+#[cfg(test)]
+pub(crate) static SWEEP_THREADS: std::sync::Mutex<Vec<(PathBuf, std::thread::ThreadId)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Kept for targeted tests: sweep without the once-per-process gate.
+#[cfg(test)]
+pub(crate) fn cleanup_stale_pack_staging(state: &LauncherState) {
+    let Ok(_operation) = state.operation.try_lock() else {
+        return;
+    };
+    cleanup_stale_pack_staging_unlocked(state);
+    crate::commands::cleanup_stale_world_copies(state);
+    crate::commands::cleanup_stale_profile_backups(state);
+}
+
 async fn import_inner(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     state: &Arc<LauncherState>,
     archive: &Path,
     name: Option<String>,
@@ -1823,13 +1986,12 @@ async fn import_inner(
         Ok::<_, String>(markers)
     }).await.map_err(|error| error.to_string())??;
     let ImportMarkers { personal_only: personal, modrinth, curse, mcbbs_entry, multimc_prefix } = markers;
-    let root = instances::instance_root(state)?;
-    let token = uuid::Uuid::new_v4().to_string();
-    let stage_name = safe_join(&root, &format!(".pack-staging-{token}"))?;
-    let final_dir = safe_join(&root, &token)?;
-    if final_dir.exists() {
-        return Err("整合包目标已存在".into());
-    }
+    let config = state.snapshot()?.config;
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
+    let versions = safe_join(&root, "versions")?;
+    tokio::fs::create_dir_all(&versions)
+        .await
+        .map_err(|error| format!("无法创建版本目录：{error}"))?;
     // An online install names its project and version; only the platform's own
     // manifest may carry that baseline, so no other format is tried.
     if origin.as_ref().is_some_and(|origin| !origin.matches_archive(modrinth, curse)) {
@@ -1838,7 +2000,7 @@ async fn import_inner(
             _ => "Modrinth 整合包缺少 modrinth.index.json，已停止导入".into(),
         });
     }
-    let mut owned_stage = instances::StagingDirectory::create(stage_name)?;
+    let mut owned_stage = pack_staging_directory(&root)?;
     let stage = owned_stage.path();
     let staged = if modrinth {
         mrpack_into(state, archive, stage, optional).await?
@@ -1851,7 +2013,15 @@ async fn import_inner(
     } else if let Some(prefix) = multimc_prefix.as_deref() {
         multimc_into(state, archive, stage, prefix).await?
     } else if personal {
-        return import_personal_backup(app, state, archive, &mut owned_stage, &final_dir, name).await;
+        return import_personal_backup(
+            app,
+            state,
+            archive,
+            &mut owned_stage,
+            &root,
+            name,
+        )
+        .await;
     } else {
         return Err("无法识别整合包。支持 .mrpack、CurseForge、MultiMC/Prism、MCBBS 整合包和本启动器带清单的个人备份 ZIP；普通未知 ZIP 不会盲目覆盖游戏目录。".into());
     };
@@ -1865,24 +2035,54 @@ async fn import_inner(
     if expanded > MAX_PACK_BYTES {
         return Err("整合包下载与覆盖文件合计超过 8 GiB".into());
     }
+    let parents = crate::commands::LoaderParents::before_install(state, &root, &config.game_directory);
     let (version_id, loader, loader_version) =
         install_dependencies(state, app, &index.dependencies).await?;
     state.control.checkpoint().await?;
+    // Every import becomes versions/<name>/, with a profile that inherits the
+    // installed vanilla base exactly like PCL and HMCL.
+    let base = crate::resources::version_context(&root, &version_id)
+        .map(|(base, _)| base)
+        .unwrap_or_else(|_| version_id.clone());
+    let desired = name.as_deref().unwrap_or(&index.name);
+    let folder = import_folder_name(state, &config, &root, desired, &base)?;
+    let final_dir = safe_join(&versions, &folder)?;
+    if final_dir.exists() {
+        return Err("整合包目标已存在".into());
+    }
     write_import_lock(stage, &staged, origin.as_ref().filter(|origin| origin.matches_archive(modrinth, curse)), &inventory, optional)?;
-    let instance = instances::build_instance(
-        name.as_deref().unwrap_or(&index.name),
+    crate::commands::write_instance_profile_at(
+        state,
+        &root,
+        stage,
+        &folder,
+        &base,
         &version_id,
+        &loader,
+    )?;
+    // Publish only after every inventoried file and both generated manifest
+    // files are still present. A concurrent cleanup or failed write must never
+    // turn into a successful registration with silently missing mods.
+    instances::verify_staged_files(stage, &inventory)?;
+    instances::require_staged_file(stage, &format!("{folder}.json"))?;
+    instances::require_staged_file(stage, ".launcher-pack.json")?;
+    let mut instance = instances::build_version_instance(
+        desired,
+        &folder,
         &final_dir,
+        &config.game_directory,
         &loader,
         &loader_version,
     )?;
+    // The loader folder this import installed is hidden behind the pack.
+    instance.derived_from = parents.derived_from(&version_id, &folder);
     let StagedPack { downloaded, skipped, warnings, .. } = staged;
     // Cancelling while the lock is written must still leave only the disposable stage.
     state.control.checkpoint().await?;
-    if let Err(error) = owned_stage.publish(&final_dir) {
-        return Err(format!("{PACK_STAGE_KEPT} {}：{error}", owned_stage.path().display()));
+    if let Err((kept, error)) = publish_stage(&mut owned_stage, &final_dir) {
+        return Err(format!("{PACK_STAGE_KEPT} {}：{error}", kept.display()));
     }
-    let instance = instances::register(state, instance)
+    let instance = instances::register_version_instance(state, instance)
         .map_err(|e| format!("{PACK_FILES_KEPT} {}，登记失败：{e}", final_dir.display()))?;
     Ok(PackImportResult {
         instance,
@@ -1892,11 +2092,11 @@ async fn import_inner(
     })
 }
 async fn import_personal_backup(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     state: &Arc<LauncherState>,
     archive: &Path,
     owned_stage: &mut instances::StagingDirectory,
-    final_dir: &Path,
+    root: &Path,
     name: Option<String>,
 ) -> Result<PackImportResult, String> {
     let stage = owned_stage.path();
@@ -1918,28 +2118,65 @@ async fn import_personal_backup(
     }).await.map_err(|error| error.to_string())??;
     let old: Instance =
         serde_json::from_value(metadata["instance"].clone()).map_err(|_| "个人备份缺少实例信息")?;
+    let mut backed_up_files: Vec<instances::FileRecord> = serde_json::from_value(metadata["files"].clone())
+        .map_err(|_| "个人备份缺少文件校验清单")?;
+    // A version-folder instance's backup carries its own profile (and, for a
+    // vanilla folder, its client jar) at the top level. The import writes a
+    // fresh profile for its new folder, so the old ones leave the stage and the
+    // file list it checks, before anything is downloaded.
+    if old.is_version_folder() {
+        drop_old_profile_files(owned_stage.path(), &old.version_id, &mut backed_up_files)?;
+    }
     let old_value = serde_json::to_value(&old).map_err(|e| e.to_string())?;
     let deps=serde_json::from_value::<BTreeMap<String,String>>(metadata["dependencies"].clone()).ok().filter(|v|!v.is_empty())
         .or_else(|| {
             let loader=old_value["loader"].as_str().unwrap_or("vanilla");
             if loader.is_empty()||loader=="vanilla" {Some(BTreeMap::from([("minecraft".into(),old.version_id.clone())]))}else{None}
         }).ok_or("此旧个人备份缺少加载器依赖元数据，无法保证正确安装。请先在原启动器重新导出带依赖的新备份。")?;
+    let parents =
+        crate::commands::LoaderParents::before_install(state, root, &state.snapshot()?.config.game_directory);
     let (version_id, loader, loader_version) = install_dependencies(state, app, &deps).await?;
-    let instance = instances::build_instance(
-        name.as_deref().unwrap_or(&old.name),
+    state.control.checkpoint().await?;
+    let config = state.snapshot()?.config;
+    let versions = safe_join(root, "versions")?;
+    let base = crate::resources::version_context(root, &version_id)
+        .map(|(base, _)| base)
+        .unwrap_or_else(|_| version_id.clone());
+    let desired = name.as_deref().unwrap_or(&old.name);
+    let folder = import_folder_name(state, &config, root, desired, &base)?;
+    let final_dir = safe_join(&versions, &folder)?;
+    if final_dir.exists() {
+        return Err("个人备份目标已存在".into());
+    }
+    crate::commands::write_instance_profile_at(
+        state,
+        root,
+        owned_stage.path(),
+        &folder,
+        &base,
         &version_id,
-        final_dir,
+        &loader,
+    )?;
+    instances::verify_staged_files(owned_stage.path(), &backed_up_files)?;
+    instances::require_staged_file(owned_stage.path(), &format!("{folder}.json"))?;
+    let mut instance = instances::build_version_instance(
+        desired,
+        &folder,
+        &final_dir,
+        &config.game_directory,
         &loader,
         &loader_version,
     )?;
+    // The loader folder this import installed is hidden behind the instance.
+    instance.derived_from = parents.derived_from(&version_id, &folder);
     state.control.checkpoint().await?;
-    if let Err(error) = owned_stage.publish(final_dir) {
+    if let Err((kept, error)) = publish_stage(owned_stage, &final_dir) {
         return Err(format!(
             "无法提交个人备份，完整暂存目录保留在 {}：{error}",
-            owned_stage.path().display()
+            kept.display()
         ));
     }
-    let instance = instances::register(state, instance).map_err(|error| {
+    let instance = instances::register_version_instance(state, instance).map_err(|error| {
         format!("个人备份已完整保留在 {}，登记失败：{error}", final_dir.display())
     })?;
     Ok(PackImportResult {
@@ -1948,6 +2185,27 @@ async fn import_personal_backup(
         skipped_optional: 0,
         warnings: Vec::new(),
     })
+}
+
+/// Leave a version-folder backup's own `<id>.json`, `<id>.jar` and
+/// `<id>.json.backup-*` (top level, compared without case) out of the stage
+/// and out of `files`. The import writes a new profile for its own folder.
+fn drop_old_profile_files(stage: &Path, old_id: &str, files: &mut Vec<FileRecord>) -> Result<(), String> {
+    let profile = format!("{old_id}.json").to_ascii_lowercase();
+    let jar = format!("{old_id}.jar").to_ascii_lowercase();
+    let backup = format!("{profile}.backup-");
+    let old_file = |relative: &str| {
+        let lower = relative.to_ascii_lowercase();
+        !relative.contains('/') && (lower == profile || lower == jar || lower.starts_with(&backup))
+    };
+    for record in files.iter().filter(|record| old_file(&record.relative)) {
+        let path = safe_join(stage, &record.relative)?;
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+            fs::remove_file(&path).map_err(|error| format!("无法移除个人备份中的旧版本配置：{error}"))?;
+        }
+    }
+    files.retain(|record| !old_file(&record.relative));
+    Ok(())
 }
 
 /// The Modrinth API base; tests point it at a local server.
@@ -2112,7 +2370,7 @@ pub async fn import_modpack(
     let _operation = state.operation.lock().await;
     let task = state.control.begin("modpack", &path, "导入整合包")?;
     let result = import_inner(
-        &app,
+        Some(&app),
         state.inner(),
         &archive,
         name,
@@ -2290,7 +2548,7 @@ async fn install_modrinth_modpack_body(
         )
         .await?;
         import_inner(
-            app,
+            Some(app),
             state,
             &archive,
             name.or(Some(project.title)),
@@ -2343,7 +2601,7 @@ async fn install_curseforge_modpack_body(
     )
     .await?;
     import_inner(
-        app,
+        Some(app),
         state,
         &archive,
         name.or(Some(project.name)),
@@ -2858,12 +3116,201 @@ mod tests {
         let (_, body) = source.split_once("async fn import_inner(").unwrap();
         let (body, _) = body.split_once("\n}").unwrap();
         let origin = body.find("if origin.as_ref().is_some_and(|origin| !origin.matches_archive(modrinth, curse)) {").unwrap();
-        let stage = body.find("instances::StagingDirectory::create(stage_name)?").unwrap();
+        let stage = body.find("pack_staging_directory(&root)?").unwrap();
         assert!(origin < stage, "a non-Modrinth archive with a Modrinth origin stops before staging");
         let lock = body.find("write_import_lock(").unwrap();
-        let publish = body.find("owned_stage.publish(&final_dir)").unwrap();
+        let publish = body.find("publish_stage(&mut owned_stage, &final_dir)").unwrap();
         let checkpoint = body[lock..publish].rfind("state.control.checkpoint().await?;").map(|at| lock + at);
         assert!(checkpoint.is_some_and(|at| at > lock), "cancellation is checked after the lock and before publishing");
+    }
+
+    const IMPORT_FABRIC: &str = "fabric-loader-0.16.9-1.21.1";
+
+    /// An empty game folder under `root` and its launcher state.
+    fn import_fixture(root: &Path) -> Arc<LauncherState> {
+        let game = root.join("game");
+        fs::create_dir_all(&game).unwrap();
+        let mut config = crate::models::Config {
+            game_directory: game.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        Arc::new(LauncherState::test_fixture(
+            root.join("data"),
+            crate::models::Persisted { config, ..Default::default() },
+            crate::storage::test_client(),
+        ))
+    }
+
+    /// What the Fabric 1.21.1 install writes into `game`: the vanilla base and
+    /// the loader folder, each only if it is not there yet.
+    fn import_fabric_install(
+        game: PathBuf,
+    ) -> impl FnOnce(&BTreeMap<String, String>) -> Result<(String, String, String), String> {
+        move |deps| {
+            assert_eq!(deps.get("minecraft").map(String::as_str), Some("1.21.1"));
+            assert_eq!(deps.get("fabric-loader").map(String::as_str), Some("0.16.9"));
+            for (id, metadata) in [
+                ("1.21.1", json!({ "id": "1.21.1", "type": "release", "mainClass": "net.minecraft.client.main.Main" })),
+                (IMPORT_FABRIC, json!({
+                    "id": IMPORT_FABRIC, "inheritsFrom": "1.21.1",
+                    "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+                    "launcherMetadata": { "loader": "fabric", "loaderVersion": "0.16.9" },
+                    "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16.9" }]
+                })),
+            ] {
+                let directory = game.join("versions").join(id);
+                if !directory.exists() {
+                    fs::create_dir_all(&directory).unwrap();
+                    fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+                }
+            }
+            Ok((IMPORT_FABRIC.into(), "fabric".into(), "0.16.9".into()))
+        }
+    }
+
+    /// The names of the regular files directly in `directory`, sorted.
+    fn top_level_files(directory: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(directory)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_type().unwrap().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn visible_versions(state: &LauncherState) -> Vec<String> {
+        instances::sync_version_instances(state).unwrap();
+        let mut versions: Vec<String> = instances::visible_instances(&state.snapshot().unwrap())
+            .into_iter()
+            .map(|instance| instance.version_id)
+            .collect();
+        versions.sort();
+        versions
+    }
+
+    #[test]
+    fn a_personal_backup_of_a_version_folder_imports_into_a_free_and_a_taken_name() {
+        let root = test_root();
+        // The instance on the old PC: a named Fabric instance with its mods and
+        // worlds, and a client jar and profile backup left in its folder.
+        let source = import_fixture(&root.join("source"));
+        let source_game = root.join("source/game");
+        import_fabric_install(source_game.clone())(&BTreeMap::from([
+            ("minecraft".to_owned(), "1.21.1".to_owned()),
+            ("fabric-loader".to_owned(), "0.16.9".to_owned()),
+        ]))
+        .unwrap();
+        crate::commands::write_instance_profile(&source, &source_game, "Pack", "1.21.1", IMPORT_FABRIC, "fabric")
+            .unwrap();
+        let pack = source_game.join("versions/Pack");
+        fs::create_dir_all(pack.join("mods")).unwrap();
+        fs::write(pack.join("mods/sodium.jar"), b"mod bytes").unwrap();
+        fs::create_dir_all(pack.join("saves/World")).unwrap();
+        fs::write(pack.join("saves/World/level.dat"), b"world bytes").unwrap();
+        fs::write(pack.join("Pack.jar"), b"old client copy").unwrap();
+        fs::write(pack.join("Pack.json.backup-0d9f2c"), b"{}").unwrap();
+        let game_folder = source.snapshot().unwrap().config.game_directory;
+        let record = instances::register_version_instance(
+            &source,
+            instances::build_version_instance("Pack", "Pack", &pack, &game_folder, "fabric", "0.16.9").unwrap(),
+        )
+        .unwrap();
+        let archive = root.join("Pack backup.zip");
+        let (exporter, output) = (source.clone(), archive.to_string_lossy().into_owned());
+        block_on(async move {
+            tokio::task::spawn_blocking(move || instances::export_zip_inner(&exporter, &record.id, &output)).await
+        })
+        .unwrap()
+        .unwrap();
+
+        // A new PC: an empty game folder, where the original name is free.
+        let target = import_fixture(&root.join("target"));
+        let target_game = root.join("target/game");
+        set_import_install(import_fabric_install(target_game.clone()));
+        let first = block_on(import_inner(None, &target, &archive, None, None, false, None)).unwrap();
+        assert_eq!(first.instance.version_id, "Pack");
+        let folder = target_game.join("versions/Pack");
+        assert_eq!(top_level_files(&folder), ["Pack.json"], "only the new profile");
+        let profile: Value = serde_json::from_slice(&fs::read(folder.join("Pack.json")).unwrap()).unwrap();
+        assert_eq!((profile["id"].as_str(), profile["inheritsFrom"].as_str()), (Some("Pack"), Some("1.21.1")));
+        assert!(instances::profile_is_owned(&target.snapshot().unwrap(), &folder.join("Pack.json")));
+        assert_eq!(fs::read(folder.join("mods/sodium.jar")).unwrap(), b"mod bytes");
+        assert_eq!(fs::read(folder.join("saves/World/level.dat")).unwrap(), b"world bytes");
+        // The loader folder this import installed is hidden behind it.
+        assert_eq!(first.instance.derived_from.as_deref(), Some(IMPORT_FABRIC));
+        assert_eq!(visible_versions(&target), ["1.21.1", "Pack"]);
+
+        // The same backup again: the name is taken, so it gets its own folder
+        // without the old profile beside the new one.
+        set_import_install(import_fabric_install(target_game.clone()));
+        let second = block_on(import_inner(None, &target, &archive, None, None, false, None)).unwrap();
+        assert_eq!(second.instance.version_id, "Pack-2");
+        let folder = target_game.join("versions/Pack-2");
+        assert_eq!(top_level_files(&folder), ["Pack-2.json"]);
+        assert_eq!(fs::read(folder.join("mods/sodium.jar")).unwrap(), b"mod bytes");
+        assert_eq!(second.instance.derived_from, None, "the loader folder was already there");
+        assert_eq!(visible_versions(&target), ["1.21.1", "Pack", "Pack-2"]);
+        drop((source, target));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn an_imported_pack_hides_only_a_loader_folder_its_own_install_created() {
+        let root = test_root();
+        let state = import_fixture(&root);
+        let game = root.join("game");
+        let archive = root.join("pack.mrpack");
+        let index = json!({
+            "formatVersion": 1, "game": "minecraft", "versionId": "1.0.0", "name": "Fixture Pack",
+            "files": [], "dependencies": { "minecraft": "1.21.1", "fabric-loader": "0.16.9" }
+        })
+        .to_string();
+        write_zip_entries(&archive, &[
+            ("modrinth.index.json", index.as_bytes()),
+            ("overrides/config/pack.txt", b"config"),
+        ]);
+        set_import_install(import_fabric_install(game.clone()));
+        let first = block_on(import_inner(None, &state, &archive, None, None, false, None)).unwrap();
+        assert_eq!(first.instance.version_id, "Fixture Pack");
+        assert_eq!(first.instance.derived_from.as_deref(), Some(IMPORT_FABRIC));
+        assert_eq!(visible_versions(&state), ["1.21.1", "Fixture Pack"], "the new loader folder is hidden");
+
+        // Once the user shows the loader folder it is theirs: a later import
+        // that reuses it leaves it visible.
+        let parent = state.snapshot().unwrap().instances.into_iter().find(|record| record.version_id == IMPORT_FABRIC).unwrap();
+        instances::restore_instance_inner(&state, &parent.id).unwrap();
+        set_import_install(import_fabric_install(game.clone()));
+        let second = block_on(import_inner(None, &state, &archive, None, None, false, None)).unwrap();
+        assert_eq!(second.instance.version_id, "Fixture Pack-2");
+        assert_eq!(second.instance.derived_from, None);
+        assert_eq!(visible_versions(&state), ["1.21.1", "Fixture Pack", "Fixture Pack-2", IMPORT_FABRIC]);
+        drop(state);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn imports_install_into_named_version_folders_with_verified_profiles() {
+        let source = crate::storage::executable_source(include_str!("modpacks.rs"));
+        let (_, body) = source.split_once("async fn import_inner(").unwrap();
+        let (body, _) = body.split_once("\n}").unwrap();
+        assert!(!body.contains("instance_root("), "imports no longer use <root>/instances/<uuid>");
+        assert!(body.contains("safe_join(&root, \"versions\")"));
+        assert!(body.contains("pack_staging_directory("), "staging is outside versions/");
+        assert!(body.contains("import_folder_name("));
+        assert!(body.contains("write_instance_profile_at("));
+        assert!(body.contains("verify_staged_files("), "the inventory is verified before publish");
+        assert!(body.find("verify_staged_files(").unwrap() < body.find("publish_stage(&mut owned_stage, &final_dir)").unwrap());
+        assert!(body.contains("build_version_instance("));
+        assert!(body.contains("register_version_instance("));
+        let (_, personal) = source.split_once("async fn import_personal_backup(").unwrap();
+        let (personal, _) = personal.split_once("\n}").unwrap();
+        assert!(!personal.contains("instance_root("));
+        assert!(personal.contains("write_instance_profile_at("));
+        assert!(personal.contains("build_version_instance("));
+        assert!(personal.contains("register_version_instance("));
     }
 
     #[test]
@@ -3519,7 +3966,7 @@ mod tests {
         let import = body("async fn import_inner(");
         let guard = import.find("crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;").unwrap();
         assert!(guard < import.find("inspect_import_archive(").unwrap());
-        assert!(guard < import.find("instances::StagingDirectory::create(stage_name)?").unwrap());
+        assert!(guard < import.find("pack_staging_directory(&root)?").unwrap());
         // The shared inspection applies the ZIP limits before detection decides
         // which import branch (and which budget) the archive belongs to.
         let inspect = body("fn inspect_import_archive(");
@@ -4796,9 +5243,212 @@ mod tests {
         }
         // The real messages start with these constants.
         let source = crate::storage::executable_source(include_str!("modpacks.rs"));
-        assert!(source.contains("format!(\"{PACK_STAGE_KEPT} {}：{error}\", owned_stage.path().display())"));
+        assert!(source.contains("format!(\"{PACK_STAGE_KEPT} {}：{error}\", kept.display())"));
         assert!(source.contains("format!(\"{PACK_FILES_KEPT} {}，登记失败：{e}\", final_dir.display())"));
         drop(state);
         cleanup(&root);
+    }
+
+    #[test]
+    fn a_second_import_of_the_same_name_gets_a_folder_suffix() {
+        let holder = instances::StagingDirectory::create(test_root()).unwrap();
+        let root = holder.path().join("game");
+        std::fs::create_dir_all(root.join("versions/Pack")).unwrap();
+        let config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        let state = LauncherState::test_fixture(
+            holder.path().join("data"),
+            crate::models::Persisted { config: config.clone(), ..Default::default() },
+            crate::storage::test_client(),
+        );
+        assert_eq!(
+            import_folder_name(&state, &config, &root, "Pack", "1.21.1").unwrap(),
+            "Pack-2",
+            "the check looks in <root>/versions, not versions/versions"
+        );
+        std::fs::create_dir_all(root.join("versions/Pack-2")).unwrap();
+        assert_eq!(
+            import_folder_name(&state, &config, &root, "Pack", "1.21.1").unwrap(),
+            "Pack-3"
+        );
+    }
+
+    #[test]
+    fn n9_imports_refuse_an_official_version_folder_name() {
+        let holder = instances::StagingDirectory::create(test_root()).unwrap();
+        let root = holder.path().join("game");
+        std::fs::create_dir_all(root.join("versions")).unwrap();
+        let config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        let state = LauncherState::test_fixture(
+            holder.path().join("data"),
+            crate::models::Persisted { config: config.clone(), ..Default::default() },
+            crate::storage::test_client(),
+        );
+        let manifest = serde_json::json!({
+            "latest": { "release": "1.19.4", "snapshot": "1.19.4" },
+            "versions": [{
+                "id": "1.19.4", "type": "release",
+                "url": "https://piston-meta.mojang.com/v1/packages/a/1.19.4.json",
+                "sha1": "a".repeat(40)
+            }]
+        });
+        std::fs::write(state.data_dir.join("version-manifest-mojang.json"), manifest.to_string()).unwrap();
+        let error = import_folder_name(&state, &config, &root, "1.19.4", "1.21.1").unwrap_err();
+        assert_eq!(crate::errors::expected(error).code, "instance.officialVersionName");
+    }
+
+    #[test]
+    fn n2_a_bootstrap_during_an_import_never_deletes_its_stage() {
+        let holder = instances::StagingDirectory::create(test_root()).unwrap();
+        let root = holder.path().join("game");
+        std::fs::create_dir_all(root.join("versions")).unwrap();
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = std::sync::Arc::new(LauncherState::test_fixture(
+            holder.path().join("data"),
+            crate::models::Persisted { config, ..Default::default() },
+            crate::storage::test_client(),
+        ));
+        let mut running = pack_staging_directory(&root).unwrap();
+        let running_path = running.path().to_path_buf();
+        std::fs::create_dir_all(running.path().join("mods")).unwrap();
+        std::fs::write(running.path().join("mods/a.jar"), b"still importing").unwrap();
+        running.preserve();
+
+        // An import owns the operation lock while bootstrap is called by a
+        // reload. The sweep must skip, not delete the live staging directory.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        {
+            let _import = state.operation.try_lock().unwrap();
+            runtime.block_on(crate::commands::bootstrap_inner(&state)).unwrap();
+        }
+        assert!(running_path.join("mods/a.jar").is_file(), "the running import keeps its files");
+
+        // The sweep is once per process: a later reload must not delete a new
+        // import either, and must not run the missed sweep retrospectively.
+        let mut later = pack_staging_directory(&root).unwrap();
+        let later_path = later.path().to_path_buf();
+        later.preserve();
+        runtime.block_on(crate::commands::bootstrap_inner(&state)).unwrap();
+        assert!(later_path.is_dir(), "a second bootstrap does not sweep again");
+
+        // A different process (fresh state) still cleans a leftover stage.
+        let mut leftover = pack_staging_directory(&root).unwrap();
+        let leftover_path = leftover.path().to_path_buf();
+        leftover.preserve();
+        let fresh = LauncherState::test_fixture(
+            holder.path().join("data2"),
+            crate::models::Persisted {
+                config: state.snapshot().unwrap().config,
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        cleanup_stale_pack_staging_at_startup(&fresh);
+        assert!(!leftover_path.exists(), "the startup sweep removes abandoned stages");
+
+        // L5: the sweep deletes folders, so it runs on the blocking pool and
+        // never on the async thread that drives bootstrap.
+        let driver = std::thread::current().id();
+        let single = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        single.block_on(crate::commands::bootstrap_inner(&state)).unwrap();
+        let swept_on: Vec<_> = SWEEP_THREADS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(directory, _)| *directory == state.data_dir)
+            .map(|(_, thread)| *thread)
+            .collect();
+        assert_eq!(swept_on.len(), 3, "one sweep call per bootstrap");
+        assert!(swept_on.iter().all(|thread| *thread != driver), "never on the async driver thread");
+    }
+
+    #[test]
+    fn pack_staging_lives_outside_versions_and_is_cleaned_at_startup() {
+        let holder = instances::StagingDirectory::create(test_root()).unwrap();
+        let root = holder.path().join("game");
+        std::fs::create_dir_all(root.join("versions/Pack")).unwrap();
+        let mut stage = pack_staging_directory(&root).unwrap();
+        let staged = stage.path().to_path_buf();
+        assert!(
+            staged.starts_with(root.join(PACK_STAGING_DIRECTORY)),
+            "{}",
+            staged.display()
+        );
+        assert!(!staged.starts_with(root.join("versions")), "never inside versions/");
+        stage.preserve();
+        let keep = root.join(PACK_STAGING_DIRECTORY).join("notes.txt");
+        std::fs::write(&keep, b"not ours").unwrap();
+        let restore = root.join(PACK_STAGING_DIRECTORY).join(".restore-active");
+        let previous = root.join(PACK_STAGING_DIRECTORY).join(".before-restore-active");
+        std::fs::create_dir_all(&restore).unwrap();
+        std::fs::create_dir_all(&previous).unwrap();
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = LauncherState::test_fixture(
+            holder.path().join("data"),
+            crate::models::Persisted { config, ..Default::default() },
+            crate::storage::test_client(),
+        );
+        cleanup_stale_pack_staging(&state);
+        assert!(!staged.exists(), "an interrupted import leaves no stage");
+        assert!(keep.is_file(), "a file we do not own is kept");
+        assert!(restore.is_dir() && previous.is_dir(), "restore staging is durable, not disposable");
+        assert!(root.join("versions/Pack").is_dir());
+    }
+
+    #[test]
+    fn l3_a_stage_that_could_not_be_published_survives_the_startup_sweep() {
+        let holder = instances::StagingDirectory::create(test_root()).unwrap();
+        let root = holder.path().join("game");
+        // The target already holds a non-empty folder, so the final rename of
+        // the finished stage fails exactly as a locked or taken target would.
+        std::fs::create_dir_all(root.join("versions/Pack/mods")).unwrap();
+        let mut stage = pack_staging_directory(&root).unwrap();
+        std::fs::write(stage.path().join("Pack.json"), b"{}").unwrap();
+        std::fs::create_dir_all(stage.path().join("mods")).unwrap();
+        std::fs::write(stage.path().join("mods/a.jar"), b"mod").unwrap();
+        let (kept, _error) = publish_stage(&mut stage, &root.join("versions/Pack")).unwrap_err();
+        drop(stage);
+        assert!(kept.join("mods/a.jar").is_file(), "the complete stage is kept: {}", kept.display());
+        assert!(
+            kept.file_name().unwrap().to_string_lossy().starts_with(KEPT_STAGE_PREFIX),
+            "{}",
+            kept.display()
+        );
+        // A stage that could not even be renamed is kept by its marker.
+        let mut marked = pack_staging_directory(&root).unwrap();
+        marked.preserve();
+        std::fs::write(marked.path().join(KEPT_STAGE_MARKER), b"").unwrap();
+        let abandoned = pack_staging_directory(&root).unwrap();
+        let abandoned_path = abandoned.path().to_path_buf();
+        let mut abandoned = abandoned;
+        abandoned.preserve();
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = LauncherState::test_fixture(
+            holder.path().join("data"),
+            crate::models::Persisted { config, ..Default::default() },
+            crate::storage::test_client(),
+        );
+        cleanup_stale_pack_staging_at_startup(&state);
+        assert!(kept.join("mods/a.jar").is_file(), "the folder the message names is still there");
+        assert!(marked.path().is_dir(), "a marked stage is kept too");
+        assert!(!abandoned_path.exists(), "an abandoned stage is still swept");
+        assert!(root.join("versions/Pack/mods").is_dir(), "the taken target is untouched");
     }
 }

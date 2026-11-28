@@ -143,7 +143,7 @@ test("round6 useful empty and missing-character states keep independent recovery
   await expect(page.getByRole("dialog")).toBeVisible();
 });
 
-test("round6 unbroken version-directory names stay inside the launch dock", async ({ page }) => {
+test("round6 unbroken instance names stay inside the launch dock and library card", async ({ page }) => {
   await page.setViewportSize({ width: 1050, height: 720 });
   await installLauncherFixture(page);
   await page.addInitScript(() => {
@@ -152,18 +152,39 @@ test("round6 unbroken version-directory names stay inside the launch dock", asyn
     api.invoke = async (name, args) => {
       const result = await original(name, args);
       if (name === "bootstrap") {
-        const data = result as { instances: { versionId: string }[]; installedVersions: { id: string }[] };
-        data.instances[0].versionId = "CustomVersion".repeat(8);
-        data.installedVersions[0].id = data.instances[0].versionId;
+        const data = result as { instances: { name: string; versionId: string }[]; installedVersions: { id: string }[] };
+        const longName = "CustomVersion".repeat(8);
+        data.instances[0].name = longName;
+        data.instances[0].versionId = longName;
+        data.installedVersions[0].id = longName;
       }
       return result;
     };
   });
   await page.goto("/");
+  await expect(page.locator(".vx-home__console-name")).toHaveText("CustomVersion".repeat(8));
   const dock = (await page.locator(".vx-home__stage").boundingBox())!;
+  const title = (await page.locator(".vx-home__console-name").boundingBox())!;
+  expect(title.x).toBeGreaterThanOrEqual(dock.x);
+  expect(title.x + title.width).toBeLessThanOrEqual(dock.x + dock.width);
   const version = (await page.locator(".vx-home__meta li").first().boundingBox())!;
+  await expect(page.locator(".vx-home__meta li").first()).toContainText("Java 21");
   expect(version.x + version.width).toBeLessThanOrEqual(dock.x + dock.width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await assertCompleteLaunch(page, page.getByRole("button", { name: "启动游戏", exact: true }));
+
+  await page.locator('[data-page="library"]').click();
+  const card = page.locator('.vx-instance-card[data-instance-id="fixture-world"]');
+  await expect(card).toBeVisible();
+  await expect(card).toBeInViewport({ ratio: 1 });
+  const cardBox = (await card.boundingBox())!;
+  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  expect(cardBox.x).toBeGreaterThanOrEqual(0);
+  expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(viewport.width);
+  const name = (await card.locator(".vx-instance-card__name").boundingBox())!;
+  expect(name.x).toBeGreaterThanOrEqual(cardBox.x);
+  expect(name.x + name.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("round6 four recent instances fit the minimum viewport without decorative overflow", async ({ page }) => {

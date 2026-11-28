@@ -6,12 +6,14 @@ import { normalizeError } from "../../lib/errors";
 import type { BackupRecoveryPaths, InstanceBackup, RecoverInstanceRestoreResult, RestoreInstanceBackupResult } from "./types";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Dialog } from "../../components/ui/Dialog";
+import { useConfirm } from "../../components/ui/ConfirmDialog";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { useInstanceBackups } from "./useInstanceContent";
 import { ModpackUpdate } from "./ModpackUpdate";
 import { errorText, loaderText, noticeText, sizeText } from "./utils";
 import { formatDate } from "../../i18n/format";
+import { Segmented } from "../../components/ui/Segmented";
 
 interface SharePreview {
   downloadReferences: string[];
@@ -28,6 +30,7 @@ export function InstanceOverview({
   onChanged: () => Promise<void>;
 }) {
   const { t, i18n } = useTranslation();
+  const confirm = useConfirm();
   const { run } = useLauncher();
   const {
     backups, warnings, recovery,
@@ -64,13 +67,51 @@ export function InstanceOverview({
     });
   const clone = () =>
     void run("instance.clone", async () => {
-      await command("clone_instance", {
-        instanceId: instance.id,
-        name: t("library:cloneName", { name: instance.name }),
-      });
+      await command("copy_instance", { instanceId: instance.id });
       setNotice("instanceCloned");
       await onChanged();
     });
+  const isolated = instance.kind === "version" ? instance.isolated !== false : true;
+  const [isolationOpen, setIsolationOpen] = useState(false);
+  const isolate = (copyWorlds: boolean) => {
+    setIsolationOpen(false);
+    void run("instance.isolation", async () => {
+      await command("set_instance_isolation", {
+        instanceId: instance.id,
+        isolated: true,
+        copyWorlds,
+      });
+      setNotice("instanceIsolated");
+      await onChanged();
+    });
+  };
+  const switchIsolation = async (next: "isolated" | "shared") => {
+    if ((next === "isolated") === isolated) return;
+    if (next === "isolated") {
+      // One dialog with three explicit choices: copy worlds, start empty, or
+      // cancel. Cancelling never silently isolates.
+      setIsolationOpen(true);
+      return;
+    }
+    if (!await confirm(t("library:isolationShareConfirm", { name: instance.name }))) return;
+    void run("instance.isolation", async () => {
+      await command("set_instance_isolation", {
+        instanceId: instance.id,
+        isolated: false,
+        copyWorlds: false,
+      });
+      setNotice("instanceShared");
+      await onChanged();
+    });
+  };
+  const convert = async () => {
+    if (!await confirm(t("library:convertConfirm", { name: instance.name }))) return;
+    void run("instance.convert", async () => {
+      await command("convert_managed_instance", { instanceId: instance.id });
+      setNotice("instanceConverted");
+      await onChanged();
+    });
+  };
   const restoreFailureText = (code: string, params: Record<string, unknown>) => {
     if (params.kind === "packUpdate") {
       if (code === "backup.restoreRecoveryRequired") return t("library:modpackUpdate.recoveryRequired");
@@ -90,10 +131,13 @@ export function InstanceOverview({
         : undefined,
     });
   };
-  const restore = () => {
-    if (!chosenBackup || recovery || !window.confirm(t("library:backupRestoreConfirm", {
-      name: instance.name, date: formatDate(chosenBackup.createdAt, i18n.language),
-    }))) return;
+  const restore = async () => {
+    if (!chosenBackup || recovery || !await confirm(
+      t("library:backupRestoreConfirm", {
+        name: instance.name, date: formatDate(chosenBackup.createdAt, i18n.language),
+      }),
+      { tone: "danger" },
+    )) return;
     void run("instance.restore", async () => {
       setRestoreFeedback(null);
       setNotice("");
@@ -112,10 +156,11 @@ export function InstanceOverview({
       await onChanged();
     });
   };
-  const recover = () => {
+  const recover = async () => {
     if (!recovery) return;
     const packUpdate = recovery.kind === "packUpdate";
-    if (!window.confirm(t(packUpdate ? "library:modpackUpdate.recoverConfirm" : "library:backupRecoverConfirm", { name: instance.name }))) return;
+    // Recovery puts back the verified original, so it is not a danger action.
+    if (!await confirm(t(packUpdate ? "library:modpackUpdate.recoverConfirm" : "library:backupRecoverConfirm", { name: instance.name }))) return;
     void run("instance.restore", async () => {
       setRestoreFeedback(null);
       setNotice("");
@@ -174,6 +219,9 @@ export function InstanceOverview({
     <div className="vx-detail-stack">
       <section className="vx-detail-section vx-overview-ledger">
         <h2>{t("library:overview")}</h2>
+        {instance.issue ? (
+          <p className="vx-inline-notice" role="alert">{t(`library:instanceIssue.${instance.issue}`)}</p>
+        ) : null}
         <dl className="vx-facts">
           <div>
             <dt>{t("library:version")}</dt>
@@ -182,6 +230,26 @@ export function InstanceOverview({
           <div>
             <dt>{t("library:loader")}</dt>
             <dd>{loaderText(instance, t)}</dd>
+          </div>
+          <div>
+            <dt>{t("library:isolation")}</dt>
+            <dd>
+              {instance.kind === "version" ? (
+                <Segmented
+                  className="vx-instance-isolation"
+                  semantic="toggle"
+                  label={t("library:isolation")}
+                  value={isolated ? "isolated" : "shared"}
+                  onChange={switchIsolation}
+                  options={[
+                    { value: "isolated", label: t("library:isolatedDirectory") },
+                    { value: "shared", label: t("library:sharedDirectory") },
+                  ]}
+                />
+              ) : (
+                isolated ? t("library:isolatedDirectory") : t("library:sharedDirectory")
+              )}
+            </dd>
           </div>
           <div>
             <dt>{t("library:directory")}</dt>
@@ -212,11 +280,19 @@ export function InstanceOverview({
             {t("library:openFolder")}
           </Button>
           <Button variant="secondary" onClick={clone}>
-            {t("library:clone")}
+            {t("library:copyInstance")}
           </Button>
+          {instance.kind !== "version" ? (
+            <Button variant="secondary" onClick={convert}>
+              {t("library:convertInstance")}
+            </Button>
+          ) : null}
         </div>
       </section>
       <div className="vx-overview-operations">
+        {!isolated ? (
+          <p className="vx-muted" role="note">{t("library:sharedRootHint")}</p>
+        ) : null}
         <section className="vx-detail-section">
           <div className="vx-section-heading">
             <h2>{t("library:backups")}</h2>
@@ -256,14 +332,15 @@ export function InstanceOverview({
               ) : null}
             </div>
           ) : null}
-          <div className="vx-action-row">
+          <div className="vx-backup-restore">
             <Select
               aria-label={t("library:backupToRestore")}
               value={selectedBackup}
               onChange={setSelectedBackup}
               options={[{ value: "", label: backupsBusy ? t("common:status.loading") : t("library:selectBackup") },
                 ...backups.map((backup) => ({ value: backup.id,
-                  label: `${formatDate(backup.createdAt, i18n.language)} · ${sizeText(backup.size, i18n.language)}` }))]} />
+                  label: formatDate(backup.createdAt, i18n.language),
+                  metadata: sizeText(backup.size, i18n.language) }))]} />
             <Button
               variant="secondary"
               disabled={!chosenBackup || backupsBusy || Boolean(recovery)}
@@ -285,72 +362,88 @@ export function InstanceOverview({
             <Button variant="secondary" onClick={exportZip}>
               {t("library:exportZip")}
             </Button>
-            <Button variant="secondary" onClick={previewPack}>
-              {t("library:exportPack")}
-            </Button>
           </div>
-          <div className="vx-check-grid">
-            <label>
-              <input
-                type="checkbox"
-                checked={includeConfigs}
-                onChange={(event) => setIncludeConfigs(event.target.checked)}
-              />{" "}
-              {t("library:includeConfigs")}
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={includeResourcePacks}
-                onChange={(event) =>
-                  setIncludeResourcePacks(event.target.checked)
-                }
-              />{" "}
-              {t("library:includeResourcePacks")}
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={includeShaderPacks}
-                onChange={(event) =>
-                  setIncludeShaderPacks(event.target.checked)
-                }
-              />{" "}
-              {t("library:includeShaderPacks")}
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={includeSaves}
-                onChange={(event) => setIncludeSaves(event.target.checked)}
-              />{" "}
-              {t("library:includeSaves")}
-            </label>
-            {includeResourcePacks || includeShaderPacks ? (
+          {/* The pack options come before the action they shape. */}
+          <fieldset className="vx-export-pack">
+            <legend>{t("library:exportPackContents")}</legend>
+            <div className="vx-check-grid">
               <label>
                 <input
                   type="checkbox"
-                  checked={includeOwnedAssets}
+                  checked={includeConfigs}
+                  onChange={(event) => setIncludeConfigs(event.target.checked)}
+                />{" "}
+                {t("library:includeConfigs")}
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={includeResourcePacks}
                   onChange={(event) =>
-                    setIncludeOwnedAssets(event.target.checked)
+                    setIncludeResourcePacks(event.target.checked)
                   }
                 />{" "}
-                {t("library:includeOwnedAssets")}
+                {t("library:includeResourcePacks")}
               </label>
-            ) : null}
-          </div>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={includeShaderPacks}
+                  onChange={(event) =>
+                    setIncludeShaderPacks(event.target.checked)
+                  }
+                />{" "}
+                {t("library:includeShaderPacks")}
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={includeSaves}
+                  onChange={(event) => setIncludeSaves(event.target.checked)}
+                />{" "}
+                {t("library:includeSaves")}
+              </label>
+              {includeResourcePacks || includeShaderPacks ? (
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={includeOwnedAssets}
+                    onChange={(event) =>
+                      setIncludeOwnedAssets(event.target.checked)
+                    }
+                  />{" "}
+                  {t("library:includeOwnedAssets")}
+                </label>
+              ) : null}
+            </div>
+            <div className="vx-action-row">
+              <Button variant="secondary" onClick={previewPack}>
+                {t("library:exportPack")}
+              </Button>
+            </div>
+          </fieldset>
         </section>
       </div>
+      <Dialog open={isolationOpen} onOpenChange={(open) => { if (!open) setIsolationOpen(false); }}
+        title={t("library:isolationChoiceTitle", { name: instance.name })}
+        description={t("library:isolationExplain", { name: instance.name })}
+        footer={<>
+          <Button variant="ghost" data-dialog-autofocus onClick={() => setIsolationOpen(false)}>{t("common:actions.cancel")}</Button>
+          <Button variant="secondary" onClick={() => isolate(false)}>{t("library:isolationChoiceEmpty")}</Button>
+          <Button variant="primary" onClick={() => isolate(true)}>{t("library:isolationChoiceCopy")}</Button>
+        </>}>
+        <p>{t("library:isolationChoiceHint")}</p>
+      </Dialog>
       {share?.instanceId === instance.id ? <Dialog open onOpenChange={(open) => { if (!open) setShare(null); }}
         title={t("library:sharePreview.title")} description={t("library:sharePreview.description")}
-        footer={<><Button variant="ghost" onClick={() => setShare(null)}>{t("common:actions.cancel")}</Button>
+        footer={<><Button variant="ghost" data-dialog-autofocus onClick={() => setShare(null)}>{t("common:actions.cancel")}</Button>
           <Button variant="primary" onClick={exportPack}>{t("library:sharePreview.confirm")}</Button></>}>
         <details open><summary>{t("library:sharePreview.references", { count: share.preview.downloadReferences.length })}</summary>
           <ul>{share.preview.downloadReferences.map((path) => <li className="vx-path" key={path}>{path}</li>)}</ul></details>
         <details open><summary>{t("library:sharePreview.bundled", { count: share.preview.bundledFiles.length })}</summary>
           <ul>{share.preview.bundledFiles.map((path) => <li className="vx-path" key={path}>{path}</li>)}</ul></details>
         <details><summary>{t("library:sharePreview.excluded", { count: share.preview.excludedFiles.length })}</summary>
-          <ul>{share.preview.excludedFiles.map((file) => <li className="vx-path" key={file.path}>{file.path} · {t(`library:sharePreview.reason.${file.reason}`)}</li>)}</ul></details>
+          <ul>{share.preview.excludedFiles.map((file) => <li className="vx-path vx-share-excluded" key={file.path}><span>{file.path}</span>{" "}<span>{t(`library:sharePreview.reason.${file.reason}`)}</span></li>)}</ul></details>
       </Dialog> : null}
       {notice ? (
         <p className="vx-inline-notice">{noticeText(notice, t)}</p>

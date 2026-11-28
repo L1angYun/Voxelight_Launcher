@@ -42,6 +42,17 @@ pub(crate) const RESOURCE_RECOVERY_CONFLICT: &str = "resource.recoveryConflict";
 pub(crate) const RESOURCE_RECOVERY_INCOMPLETE: &str = "resource.recoveryIncomplete";
 pub(crate) const RESOURCE_RECOVERY_NOT_NEEDED: &str = "resource.recoveryNotNeeded";
 pub(crate) const RESOURCE_RECOVERY_REQUIRED: &str = "存在未完成的资源事务，请先在更新历史中恢复。";
+/// Followed by the human-readable name of the enabled incompatible project.
+pub(crate) const RESOURCE_DEPENDENCY_INCOMPATIBLE_PREFIX: &str = "已启用不兼容的项目：";
+/// Followed by the reason (too many projects or too deep).
+pub(crate) const RESOURCE_DEPENDENCY_LIMIT_PREFIX: &str = "必需前置依赖图超出安全上限：";
+/// Followed by the project name involved in the required-dependency cycle.
+pub(crate) const RESOURCE_DEPENDENCY_CYCLE_PREFIX: &str = "必需前置存在循环依赖：";
+/// Followed by `<project name>\t<reason>` when a required dependency has no
+/// usable compatible file or fails validation.
+pub(crate) const RESOURCE_DEPENDENCY_UNAVAILABLE_PREFIX: &str = "必需前置不可用：";
+/// Followed by the conflict description (two required versions or colliding filenames).
+pub(crate) const RESOURCE_DEPENDENCY_CONFLICT_PREFIX: &str = "必需前置冲突：";
 pub(crate) const RESTORE_PENDING: &str = "此实例有未完成的备份恢复或整合包更新，请先在实例备份中恢复，再启动或修改实例。";
 pub(crate) const INSTALL_GAME_RUNNING: &str = "同一游戏目录中有游戏正在运行。请先退出游戏，再安装版本或加载器。";
 /// Factory-reset refusals. These deliberately do not reuse the launcher-update
@@ -59,7 +70,52 @@ pub(crate) const RESET_SECRETS_LOCKED: &str = "无法删除已保存的密钥，
 pub(crate) const RESET_CREDENTIALS_PENDING: &str = "还原初始状态时未能删除全部加密凭据";
 
 pub(crate) const LOADER_REINSTALL_PREFIX: &str = "加载器版本元数据损坏，需重新安装：";
+pub(crate) const LOADER_ARTIFACT_MISSING_PREFIX: &str = "缺少安装器后处理生成的文件：";
+pub(crate) const GAME_FOLDER_NOT_FOUND: &str = "gameFolder.notFound";
+pub(crate) const GAME_FOLDER_UNSUPPORTED: &str = "gameFolder.unsupported";
+pub(crate) const GAME_FOLDER_UNAVAILABLE_PREFIX: &str = "gameFolder.unavailable:";
+/// Reason codes of `gameFolder.unavailable`; the interface translates them.
+pub(crate) const GAME_FOLDER_INVALID_PATH: &str = "invalidPath";
+pub(crate) const GAME_FOLDER_OPEN_FAILED: &str = "openFailed";
+pub(crate) const GAME_FOLDER_NESTED: &str = "gameFolder.nested";
+pub(crate) const GAME_FOLDER_DATA_DIRECTORY: &str = "gameFolder.dataDirectory";
+pub(crate) const INSTANCE_SHARED_ROOT: &str = "instance.sharedRootRequired";
+pub(crate) const INSTANCE_DELETE_CONFIRM_REQUIRED: &str = "instance.deleteConfirmRequired";
+/// Followed by the names of the instances that inherit from the folder, one
+/// per line. Deleting the folder would stop every one of them from launching.
+pub(crate) const INSTANCE_DELETE_DEPENDANTS_PREFIX: &str = "instance.deleteDependants:";
+pub(crate) const INSTANCE_OFFICIAL_NAME: &str = "instance.officialVersionName";
+/// A loader switch would rewrite a version profile that is not the instance's
+/// own: an official version, a complete standalone profile, or a folder other
+/// instances inherit from.
+pub(crate) const INSTANCE_LOADER_SWITCH_SHARED: &str = "instance.loaderSwitchShared";
+/// A loader switch would rewrite the version folder a loader installer created
+/// (for example `fabric-loader-0.16.9-1.21.1`), which the next install of that
+/// loader overwrites again. A copy of the instance can be switched.
+pub(crate) const INSTANCE_LOADER_SWITCH_INSTALLER_FOLDER: &str = "instance.loaderSwitchInstallerFolder";
+/// The selected backup was made of another kind of instance (for example the
+/// managed instance before its conversion), so it cannot be restored in place.
+pub(crate) const BACKUP_KIND_MISMATCH: &str = "backup.kindMismatch";
+/// Followed by the operating-system failure when the folder could not be moved
+/// to the Recycle Bin. The files were not deleted.
+pub(crate) const INSTANCE_RECYCLE_FAILED_PREFIX: &str = "instance.recycleFailed:";
+/// Followed by the reason this path's volume cannot use the Recycle Bin. The
+/// interface offers the separately confirmed permanent delete instead.
+pub(crate) const INSTANCE_RECYCLE_UNAVAILABLE_PREFIX: &str = "instance.recycleUnavailable:";
+/// Followed by the stable reason code of an unlaunchable version folder.
+pub(crate) const INSTANCE_LAUNCH_BLOCKED_PREFIX: &str = "instance.launchBlocked:";
+pub(crate) const INSTANCE_FOLDER_UNSAFE: &str = "instance.folderUnsafe";
+pub(crate) const INSTANCE_FOLDER_NAME_INVALID: &str = "instance.folderNameInvalid";
+pub(crate) const INSTANCE_FOLDER_NAME_TAKEN: &str = "instance.folderNameTaken";
+pub(crate) const INSTANCE_CREATE_UNSUPPORTED_LOADER: &str = "instance.createUnsupportedLoader";
+pub(crate) const INSTANCE_CONVERT_UNSUPPORTED: &str = "instance.convertUnsupported";
+pub(crate) const INSTANCE_CONVERT_NOT_NEEDED: &str = "instance.convertNotNeeded";
+pub(crate) const INSTANCE_CONVERSION_NOT_PENDING: &str = "instance.conversionNotPending";
+pub(crate) const INSTANCE_ISOLATION_UNSUPPORTED: &str = "instance.isolationUnsupported";
+pub(crate) const INSTANCE_ISOLATION_COPY_ONLY: &str = "instance.isolationCopyOnly";
 pub(crate) const PROFILE_CONFLICT_PREFIX: &str = "版本配置的来源无法确认，原文件已保留：";
+pub(crate) const PROFILE_OFFLINE_UNVERIFIED_PREFIX: &str =
+    "离线状态下无法校验现有版本配置，请联网一次后再启动：";
 pub(crate) const ACCOUNT_SESSION_CHANGED: &str = "账号会话已更换或移除，请重新选择账号";
 pub(crate) const CREDENTIAL_CLEANUP_PENDING: &str = "账号已从资料中移除，但加密凭据清理待重试";
 pub(crate) const CREDENTIAL_RECOVERY_FAILED: &str = "无法恢复账号原有的加密凭据，请重新登录";
@@ -81,6 +137,63 @@ pub fn expected(detail: impl Into<String>) -> AppError {
     if crate::network::Error::is_code(&detail) {
         return AppError::new(detail);
     }
+    if matches!(
+        detail.as_str(),
+        GAME_FOLDER_NOT_FOUND
+            | GAME_FOLDER_UNSUPPORTED
+            | GAME_FOLDER_NESTED
+            | GAME_FOLDER_DATA_DIRECTORY
+            | INSTANCE_SHARED_ROOT
+            | INSTANCE_DELETE_CONFIRM_REQUIRED
+            | INSTANCE_OFFICIAL_NAME
+            | INSTANCE_LOADER_SWITCH_SHARED
+            | INSTANCE_LOADER_SWITCH_INSTALLER_FOLDER
+            | INSTANCE_FOLDER_UNSAFE
+            | INSTANCE_FOLDER_NAME_INVALID
+            | INSTANCE_FOLDER_NAME_TAKEN
+            | INSTANCE_CREATE_UNSUPPORTED_LOADER
+            | INSTANCE_CONVERT_UNSUPPORTED
+            | INSTANCE_CONVERT_NOT_NEEDED
+            | INSTANCE_CONVERSION_NOT_PENDING
+            | INSTANCE_ISOLATION_UNSUPPORTED
+            | INSTANCE_ISOLATION_COPY_ONLY
+    ) {
+        return AppError::new(detail);
+    }
+    if let Some(names) = detail.strip_prefix(INSTANCE_DELETE_DEPENDANTS_PREFIX) {
+        let names: Vec<&str> = names.lines().filter(|name| !name.trim().is_empty()).collect();
+        return AppError::new("instance.deleteDependants")
+            .with_param("instances", names.join("、"))
+            .with_detail(detail);
+    }
+    if let Some(reason) = detail.strip_prefix(INSTANCE_LAUNCH_BLOCKED_PREFIX) {
+        return AppError::new("instance.launchBlocked")
+            .with_param("reason", reason.trim())
+            .with_detail(detail);
+    }
+    if let Some(reason) = detail.strip_prefix(INSTANCE_RECYCLE_UNAVAILABLE_PREFIX) {
+        return AppError::new("instance.recycleUnavailable")
+            .with_param("reason", reason.trim())
+            .with_detail(detail);
+    }
+    if let Some(reason) = detail.strip_prefix(INSTANCE_RECYCLE_FAILED_PREFIX) {
+        // `<reason code>[:<system error code>]`; the interface translates the
+        // reason and shows the system code as it is.
+        let (reason, code) = reason
+            .trim()
+            .split_once(':')
+            .map_or((reason.trim(), None), |(reason, code)| (reason, Some(code)));
+        let mut error = AppError::new("instance.recycleFailed").with_param("reason", reason);
+        if let Some(code) = code {
+            error = error.with_param("code", code);
+        }
+        return error.with_detail(detail);
+    }
+    if let Some(reason) = detail.strip_prefix(GAME_FOLDER_UNAVAILABLE_PREFIX) {
+        return AppError::new("gameFolder.unavailable")
+            .with_param("reason", reason.trim())
+            .with_detail(detail);
+    }
     if let Some(id) = detail.strip_prefix(LOADER_REINSTALL_PREFIX) {
         return AppError::new("version.loaderReinstall")
             .with_param("id", id)
@@ -91,6 +204,14 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             .with_param("id", id.lines().next().unwrap_or_default())
             .with_detail(detail);
     }
+    if let Some(id) = detail.strip_prefix(PROFILE_OFFLINE_UNVERIFIED_PREFIX) {
+        return AppError::new("version.offlineUnverified")
+            .with_param("id", id.lines().next().unwrap_or_default())
+            .with_detail(detail);
+    }
+    if detail.starts_with(LOADER_ARTIFACT_MISSING_PREFIX) {
+        return AppError::new("version.loaderArtifactMissing").with_detail(detail);
+    }
     if let Some(key) = detail.strip_prefix(crate::server_manager::import::IMPORT_PROPERTIES) {
         return AppError::new("server.importProperties")
             .with_param("key", key)
@@ -99,6 +220,56 @@ pub fn expected(detail: impl Into<String>) -> AppError {
     if let Some(files) = detail.strip_prefix(crate::modpacks::MANUAL_DOWNLOAD) {
         return AppError::new("modpack.manualDownload")
             .with_param("files", files)
+            .with_detail(detail);
+    }
+    if let Some(rest) = detail.strip_prefix(crate::curseforge::MANUAL_DOWNLOAD) {
+        let file_id = rest.split_once('\n').map_or(rest, |(id, _)| id);
+        return AppError::new("resource.manualDownload")
+            .with_param("fileId", file_id)
+            .with_detail(detail);
+    }
+    if let Some(project) = detail.strip_prefix(RESOURCE_DEPENDENCY_INCOMPATIBLE_PREFIX) {
+        return AppError::new("resource.dependencyIncompatible")
+            .with_param("project", project)
+            .with_detail(detail);
+    }
+    if let Some(reason) = detail.strip_prefix(RESOURCE_DEPENDENCY_LIMIT_PREFIX) {
+        return AppError::new("resource.dependencyLimit")
+            .with_param("reason", reason)
+            .with_detail(detail);
+    }
+    if let Some(project) = detail.strip_prefix(RESOURCE_DEPENDENCY_CYCLE_PREFIX) {
+        return AppError::new("resource.dependencyCycle")
+            .with_param("project", project)
+            .with_detail(detail);
+    }
+    if let Some(rest) = detail.strip_prefix(RESOURCE_DEPENDENCY_UNAVAILABLE_PREFIX) {
+        let name = rest.split_once('\t').map_or(rest, |(name, _)| name);
+        return AppError::new("resource.dependencyUnavailable")
+            .with_param("name", name)
+            .with_detail(detail);
+    }
+    if detail.starts_with(RESOURCE_DEPENDENCY_CONFLICT_PREFIX) {
+        return AppError::new("resource.dependencyConflict").with_detail(detail);
+    }
+    if let Some(rest) = detail.strip_prefix(crate::curseforge::DEPENDENCY_INSTALL_FIRST) {
+        let encoded = rest.rsplit_once('\t').map_or(rest, |(_, encoded)| encoded);
+        let value: Value = serde_json::from_str(encoded).unwrap_or(Value::Null);
+        let mut error = AppError::new("resource.dependencyInstallFirst")
+            .with_param("name", value["name"].as_str().unwrap_or_default());
+        if let Some(folder) = value["folder"].as_str().filter(|folder| !folder.is_empty()) {
+            error = error.with_param("folder", folder);
+        }
+        return error.with_detail(detail);
+    }
+    if let Some(rest) = detail.strip_prefix(crate::curseforge::DEPENDENCY_MANUAL_DOWNLOAD) {
+        let encoded = rest.rsplit_once('\t').map_or(rest, |(_, encoded)| encoded);
+        let value: Value = serde_json::from_str(encoded).unwrap_or(Value::Null);
+        return AppError::new("resource.dependencyManualDownload")
+            .with_param("name", value["name"].as_str().unwrap_or_default())
+            .with_param("url", value["url"].as_str().unwrap_or_default())
+            .with_param("file", value["file"].as_str().unwrap_or_default())
+            .with_param("folder", value["folder"].as_str().unwrap_or("mods"))
             .with_detail(detail);
     }
     if let Some(port) = crate::assistant::mcp::unavailable_port(&detail) {
@@ -221,6 +392,17 @@ pub fn expected(detail: impl Into<String>) -> AppError {
             | "个人备份导出路径必须以 .zip 结尾" => "backup.path",
             "资源路径不安全" | "资源路径越界" => "resource.pathUnsafe",
             "无法读取资源目录，请检查访问权限" => "resource.unavailable",
+            "依赖图包含仅服务端资源，不能安装到客户端"
+            | "依赖文件类型不匹配，未修改任何资源"
+            | "依赖图出现不支持的依赖关系类型"
+            | "必需前置没有可核验的项目标识"
+            | "不兼容依赖没有可核验标识，无法安全继续"
+            | "CurseForge 必需前置不支持固定文件版本"
+            | "CurseForge 安装计划缺少文件"
+            | "CurseForge 安装计划包含错误的文件类型"
+            | "缺少根资源计划"
+            | "已安装的必需前置不应再次下载" => "resource.dependencyInvalid",
+            "两个依赖项目需要同名文件，无法安全安装" => "resource.dependencyConflict",
             crate::content::DATAPACK_INVALID => "datapack.invalid",
             crate::content::DATAPACK_EXISTS => "datapack.exists",
             crate::content::DATAPACK_NOT_FOUND => "datapack.notFound",
@@ -328,6 +510,53 @@ pub fn expected(detail: impl Into<String>) -> AppError {
     AppError::new(code).with_detail(detail)
 }
 
+/// The remote source of a Discover search, project or version page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DiscoverSource {
+    Modrinth,
+    CurseForge,
+}
+
+/// A Discover failure as a code the page can explain. Launcher-wide codes
+/// (proxy, the missing CurseForge key) stay as they are; a refused request,
+/// the paging limits and every source failure get a Discover code, so a search
+/// never ends in the generic error.
+pub(crate) fn discover_error(source: DiscoverSource, error: AppError) -> AppError {
+    if error.code != "internal.unexpected" {
+        return error;
+    }
+    let detail = error.detail.unwrap_or_default();
+    let code = if detail.starts_with(crate::resources::DISCOVER_REQUEST_INVALID) {
+        "discover.requestInvalid"
+    } else {
+        match detail.as_str() {
+            crate::resources::SEARCH_PAGE_LIMIT => "discover.pageLimit",
+            crate::resources::VERSION_PAGE_LIMIT => "discover.versionPageLimit",
+            crate::resources::MODRINTH_NOT_FOUND | crate::curseforge::NOT_FOUND => {
+                "discover.projectNotFound"
+            }
+            crate::resources::MODRINTH_UNREACHABLE | crate::resources::MODRINTH_READ_FAILED => {
+                "discover.modrinthUnreachable"
+            }
+            crate::resources::MODRINTH_RATE_LIMITED => "discover.modrinthRateLimited",
+            crate::curseforge::CF_UNREACHABLE | crate::curseforge::CF_READ_FAILED => {
+                "discover.curseforgeUnreachable"
+            }
+            crate::curseforge::CF_RATE_LIMITED => "discover.curseforgeRateLimited",
+            crate::curseforge::CF_REFUSED => "discover.curseforgeRefused",
+            _ => match source {
+                DiscoverSource::Modrinth => "discover.modrinthFailed",
+                DiscoverSource::CurseForge => "discover.curseforgeFailed",
+            },
+        }
+    };
+    AppError::new(code).with_detail(detail)
+}
+
+pub(crate) fn discover_failure(source: DiscoverSource, detail: impl Into<String>) -> AppError {
+    discover_error(source, expected(detail))
+}
+
 /// The reason a pre-switch backup was refused, so the user can decide whether
 /// to switch without one. The free-space refusal carries both sizes in MB.
 fn loader_backup_failure(reason: &str) -> AppError {
@@ -352,6 +581,45 @@ fn loader_backup_failure(reason: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fb_adopt_2_new_instance_and_folder_errors_have_stable_codes_and_params() {
+        use super::*;
+        let dependants = expected(format!(
+            "{INSTANCE_DELETE_DEPENDANTS_PREFIX}1.21.1-Fabric\n1.21.1-Forge"
+        ));
+        assert_eq!(dependants.code, "instance.deleteDependants");
+        assert_eq!(dependants.params["instances"], "1.21.1-Fabric、1.21.1-Forge");
+        assert_eq!(expected(INSTANCE_OFFICIAL_NAME).code, "instance.officialVersionName");
+        assert_eq!(
+            expected(INSTANCE_LOADER_SWITCH_SHARED).code,
+            "instance.loaderSwitchShared"
+        );
+        assert_eq!(
+            expected(INSTANCE_LOADER_SWITCH_INSTALLER_FOLDER).code,
+            "instance.loaderSwitchInstallerFolder"
+        );
+        let blocked = expected(format!("{INSTANCE_LAUNCH_BLOCKED_PREFIX}baseMissing"));
+        assert_eq!(blocked.code, "instance.launchBlocked");
+        assert_eq!(blocked.params["reason"], "baseMissing");
+        let recycle = expected(format!("{INSTANCE_RECYCLE_FAILED_PREFIX}aborted"));
+        assert_eq!(recycle.code, "instance.recycleFailed");
+        assert_eq!(recycle.params["reason"], "aborted");
+        assert!(!recycle.params.contains_key("code"));
+        let shell = expected(format!("{INSTANCE_RECYCLE_FAILED_PREFIX}shellError:0x7C"));
+        assert_eq!(shell.params["reason"], "shellError");
+        assert_eq!(shell.params["code"], "0x7C");
+        let unavailable = expected(format!(
+            "{INSTANCE_RECYCLE_UNAVAILABLE_PREFIX}networkShare"
+        ));
+        assert_eq!(unavailable.code, "instance.recycleUnavailable");
+        assert_eq!(unavailable.params["reason"], "networkShare");
+        assert_eq!(expected(GAME_FOLDER_NESTED).code, "gameFolder.nested");
+        assert_eq!(
+            expected(GAME_FOLDER_DATA_DIRECTORY).code,
+            "gameFolder.dataDirectory"
+        );
+    }
 
     #[test]
     fn c2_install_while_a_game_runs_has_a_stable_code() {
@@ -506,6 +774,97 @@ mod tests {
             "config.presetInvalid"
         );
         assert_eq!(expected("下载源无效".to_string()).code, "config.invalid");
+    }
+
+    #[test]
+    fn u27_a_curseforge_file_to_download_by_hand_has_its_own_code_and_file_id() {
+        let detail = format!("{}8675309\n「Fixture」文件 8675309 禁止第三方分发或未提供可用下载地址。", crate::curseforge::MANUAL_DOWNLOAD);
+        let error = expected(detail.clone());
+        assert_eq!(error.code, "resource.manualDownload");
+        assert_eq!(error.params["fileId"], "8675309");
+        assert_eq!(error.detail.as_deref(), Some(detail.as_str()));
+    }
+
+    #[test]
+    fn curseforge_dependency_errors_have_stable_codes_and_params() {
+        let incompatible = format!("{RESOURCE_DEPENDENCY_INCOMPATIBLE_PREFIX}Incompatible Mod (incompatible.jar)");
+        let error = expected(incompatible.clone());
+        assert_eq!(error.code, "resource.dependencyIncompatible");
+        assert_eq!(error.params["project"], "Incompatible Mod (incompatible.jar)");
+        assert_eq!(error.detail.as_deref(), Some(incompatible.as_str()));
+
+        let limit = format!("{RESOURCE_DEPENDENCY_LIMIT_PREFIX}超过 16 层");
+        let error = expected(limit.clone());
+        assert_eq!(error.code, "resource.dependencyLimit");
+        assert_eq!(error.params["reason"], "超过 16 层");
+        assert_eq!(error.detail.as_deref(), Some(limit.as_str()));
+
+        let cycle = format!("{RESOURCE_DEPENDENCY_CYCLE_PREFIX}Dependency");
+        let error = expected(cycle.clone());
+        assert_eq!(error.code, "resource.dependencyCycle");
+        assert_eq!(error.params["project"], "Dependency");
+        assert_eq!(error.detail.as_deref(), Some(cycle.as_str()));
+
+        let unavailable = format!(
+            "{RESOURCE_DEPENDENCY_UNAVAILABLE_PREFIX}Fabric API\tCurseForge 必需前置「Fabric API」没有适用于当前游戏版本和加载器的文件"
+        );
+        let error = expected(unavailable.clone());
+        assert_eq!(error.code, "resource.dependencyUnavailable");
+        assert_eq!(error.params["name"], "Fabric API");
+        assert_eq!(error.detail.as_deref(), Some(unavailable.as_str()));
+
+        let conflict = format!("{RESOURCE_DEPENDENCY_CONFLICT_PREFIX}项目 789 被要求使用两个不同版本，未修改任何资源");
+        let error = expected(conflict.clone());
+        assert_eq!(error.code, "resource.dependencyConflict");
+        assert_eq!(error.detail.as_deref(), Some(conflict.as_str()));
+
+        for detail in [
+            "依赖图包含仅服务端资源，不能安装到客户端",
+            "依赖文件类型不匹配，未修改任何资源",
+            "依赖图出现不支持的依赖关系类型",
+            "必需前置没有可核验的项目标识",
+            "不兼容依赖没有可核验标识，无法安全继续",
+            "CurseForge 必需前置不支持固定文件版本",
+            "CurseForge 安装计划缺少文件",
+            "CurseForge 安装计划包含错误的文件类型",
+        ] {
+            assert_eq!(expected(detail).code, "resource.dependencyInvalid", "{detail}");
+        }
+
+        let install_first = format!(
+            "{}「Entity Model Features」属于其他资源分类\t{}",
+            crate::curseforge::DEPENDENCY_INSTALL_FIRST,
+            serde_json::json!({
+                "name": "Entity Model Features",
+                "folder": "mods",
+            })
+        );
+        let error = expected(install_first.clone());
+        assert_eq!(error.code, "resource.dependencyInstallFirst");
+        assert_eq!(error.params["name"], "Entity Model Features");
+        assert_eq!(error.params["folder"], "mods");
+        assert_eq!(error.detail.as_deref(), Some(install_first.as_str()));
+
+        let manual = format!(
+            "{}「Dependency」文件 dependency.jar（9001）禁止第三方分发\t{}",
+            crate::curseforge::DEPENDENCY_MANUAL_DOWNLOAD,
+            serde_json::json!({
+                "name": "Dependency",
+                "file": "dependency.jar",
+                "url": "https://www.curseforge.com/projects/789",
+                "folder": "resourcepacks",
+            })
+        );
+        let error = expected(manual.clone());
+        assert_eq!(error.code, "resource.dependencyManualDownload");
+        assert_eq!(error.params["name"], "Dependency");
+        assert_eq!(error.params["file"], "dependency.jar");
+        assert_eq!(
+            error.params["url"],
+            "https://www.curseforge.com/projects/789"
+        );
+        assert_eq!(error.params["folder"], "resourcepacks");
+        assert_eq!(error.detail.as_deref(), Some(manual.as_str()));
     }
 
     #[test]
@@ -666,5 +1025,79 @@ mod tests {
             assert_eq!(expected(detail.clone()).code, code, "{detail}");
             assert_eq!(crate::errors::AppError::from(detail).code, code);
         }
+    }
+
+    #[test]
+    fn discover_failures_have_their_own_codes_and_keep_launcher_codes() {
+        use crate::curseforge::{
+            CF_HTTP_FAILED, CF_RATE_LIMITED, CF_READ_FAILED, CF_REFUSED, CF_UNREACHABLE, NOT_FOUND,
+        };
+        use crate::resources::{
+            curseforge_sort, modrinth_search_query, search_limit, search_offset, version_offset,
+            MODRINTH_NOT_FOUND, MODRINTH_RATE_LIMITED, MODRINTH_READ_FAILED, MODRINTH_UNREACHABLE,
+        };
+        use DiscoverSource::{CurseForge, Modrinth};
+        let window = search_offset(Some(9977), 24).unwrap_err();
+        let query = modrinth_search_query(&"x".repeat(501), "mod", None, None, None, None, None)
+            .unwrap_err();
+        let cases = [
+            (Modrinth, expected(window.clone()), "discover.pageLimit"),
+            (CurseForge, expected(window), "discover.pageLimit"),
+            (Modrinth, expected(search_limit(Some(51)).unwrap_err()), "discover.requestInvalid"),
+            (CurseForge, expected(curseforge_sort(Some("relevance")).unwrap_err()), "discover.requestInvalid"),
+            (Modrinth, expected(query), "discover.requestInvalid"),
+            (Modrinth, version_offset(Some(301)).unwrap_err(), "discover.versionPageLimit"),
+            (Modrinth, expected(MODRINTH_UNREACHABLE), "discover.modrinthUnreachable"),
+            (Modrinth, expected(MODRINTH_READ_FAILED), "discover.modrinthUnreachable"),
+            (Modrinth, expected(MODRINTH_RATE_LIMITED), "discover.modrinthRateLimited"),
+            (Modrinth, expected(MODRINTH_NOT_FOUND), "discover.projectNotFound"),
+            (Modrinth, expected("Modrinth 请求失败（HTTP 502）"), "discover.modrinthFailed"),
+            (Modrinth, expected("Modrinth 返回的资源信息无法解析"), "discover.modrinthFailed"),
+            (CurseForge, expected(CF_UNREACHABLE), "discover.curseforgeUnreachable"),
+            (CurseForge, expected(CF_READ_FAILED), "discover.curseforgeUnreachable"),
+            (CurseForge, expected(CF_RATE_LIMITED), "discover.curseforgeRateLimited"),
+            (CurseForge, expected(CF_REFUSED), "discover.curseforgeRefused"),
+            (CurseForge, expected(NOT_FOUND), "discover.projectNotFound"),
+            (CurseForge, expected(format!("{CF_HTTP_FAILED}500）")), "discover.curseforgeFailed"),
+            (CurseForge, expected("CurseForge 数据格式无法解析"), "discover.curseforgeFailed"),
+            // Launcher-wide codes keep their own explanation.
+            (Modrinth, expected(crate::network::Error::Authentication.code()), "proxy.authentication"),
+            (
+                CurseForge,
+                expected("请先在设置中保存你自己申请的 CurseForge API Key；不会使用其它启动器的 Key。"),
+                "auth.serviceKeyMissing",
+            ),
+        ];
+        for (source, error, code) in cases {
+            let detail = error.detail.clone();
+            let mapped = discover_error(source, error);
+            assert_eq!(mapped.code, code, "{detail:?}");
+            assert_ne!(mapped.code, "internal.unexpected");
+            if code.starts_with("discover.") {
+                assert_eq!(mapped.detail, detail, "the diagnostic detail is kept");
+            }
+        }
+        assert_eq!(
+            discover_failure(Modrinth, MODRINTH_RATE_LIMITED).code,
+            "discover.modrinthRateLimited"
+        );
+    }
+
+    #[test]
+    fn fb_launch_version_error_codes_map_stably() {
+        let offline = expected(format!("{PROFILE_OFFLINE_UNVERIFIED_PREFIX}1.21.1"));
+        assert_eq!(offline.code, "version.offlineUnverified");
+        assert_eq!(offline.params["id"], "1.21.1");
+
+        let conflict = expected(format!("{PROFILE_CONFLICT_PREFIX}1.21.1\n原有版本元数据保存在 C:\\backup"));
+        assert_eq!(conflict.code, "version.profileConflict");
+        assert_eq!(conflict.params["id"], "1.21.1");
+
+        let reinstall = expected(format!("{LOADER_REINSTALL_PREFIX}1.21.1-fabric-0.19.3"));
+        assert_eq!(reinstall.code, "version.loaderReinstall");
+        assert_eq!(reinstall.params["id"], "1.21.1-fabric-0.19.3");
+
+        let artifact = expected(format!("{LOADER_ARTIFACT_MISSING_PREFIX}client-srg.jar；请重新安装对应加载器"));
+        assert_eq!(artifact.code, "version.loaderArtifactMissing");
     }
 }

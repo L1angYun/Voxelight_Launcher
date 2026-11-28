@@ -78,7 +78,8 @@ test("review D3: create tabs use the smaller natural minimum and loader height a
   const dialog = await openCreate(page);
   const panel = dialog.locator(".vx-create-panel"), slot = dialog.locator(".vx-create-loader-slot");
   const choice = slot.locator('[role="combobox"]');
-  await expect(panel).toHaveCSS("min-block-size", "197px");
+  // R9: the panel takes its content's height; no fixed 197px floor.
+  await expect(panel).toHaveCSS("min-block-size", "auto");
   expect((await slot.boundingBox())!.height).toBe(0);
   await expect(choice).toBeDisabled();
   await expect(slot).toHaveAttribute("inert", "");
@@ -87,7 +88,6 @@ test("review D3: create tabs use the smaller natural minimum and loader height a
   await page.screenshot({ path: info.outputPath("create-vanilla.png") });
   await dialog.getByRole("tab").nth(1).click();
   const imported = await dialog.boundingBox(), importPanel = await panel.boundingBox();
-  expect(importPanel!.height).toBe(197);
   expect(imported!.height).toBeLessThan(vanilla!.height - 80);
   await page.screenshot({ path: info.outputPath("create-import.png") });
   await dialog.getByRole("tab").first().click();
@@ -164,8 +164,9 @@ for (const width of [1280, 1050]) test(`library commandbar: 38px fields keep 12p
     expect(control.x).toBeGreaterThanOrEqual(0);
     expect(control.right).toBeLessThanOrEqual(width);
   }
-  expect(measured.controls.find(control => control.className.includes("vx-library-view"))!.padding).toBe("2px");
+  // R9: the view toggle is the shared segmented track (4px inset, 30px segments, concentric 8px corners).
+  expect(measured.controls.find(control => control.className.includes("vx-library-view"))!.padding).toBe("4px");
   expect(measured.inner).toHaveLength(2);
-  expect(measured.inner.every(control => control.height === 32 && control.radius === "12px")).toBe(true);
+  expect(measured.inner.every(control => control.height === 30 && control.radius === "8px")).toBe(true);
   await page.screenshot({ path: info.outputPath(`library-toolbar-${width}.png`) });
 });

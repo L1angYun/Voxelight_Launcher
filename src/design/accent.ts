@@ -2,8 +2,6 @@ export interface AccentScale {
   base: string;
   hover: string;
   active: string;
-  soft: string;
-  border: string;
   foreground: string;
   ink: string;
   indicator: string;
@@ -15,11 +13,21 @@ interface Oklch {
   h: number;
 }
 
-const DEFAULT_ACCENT = "#b4f17a";
+/**
+ * Windows' own default system accent. Voxelight has no brand accent: when the
+ * native system accent cannot be read (preview, tests, non-Windows builds),
+ * this is the fallback and the initial value of the custom colour picker.
+ */
+export const DEFAULT_ACCENT = "#0078d4";
 // At the corrected edge coordinates, the darkest of 576 adjacent medians is
 // (223,221.5,215.5), left of the full-mode Close control. Subtract four per
 // channel and round down to an 8-bit color. Ink is unchanged.
 const LIGHT_INDICATOR_COMPOSITE_REFERENCE = "#dbd9d3";
+
+// Calibrated against the R9 reading surfaces: E0/E1/E1+ and the composite of
+// controls sitting on the E4 overlay (dark) or the light reading plane.
+const DARK_SURFACES = ["#07080b", "#0e1013", "#131417", "#232528", "#2f3033"];
+const LIGHT_SURFACES = ["#f3f1eb", "#fcfaf6", "#ffffff"];
 
 function clamp(value: number, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
@@ -89,18 +97,6 @@ export function contrast(first: string, second: string): number {
   return (light + 0.05) / (dark + 0.05);
 }
 
-function mix(first: string, second: string, amount: number): string {
-  const a = channels(normalizeHex(first));
-  const b = channels(normalizeHex(second));
-  return `#${a
-    .map((channel, index) =>
-      Math.round((channel * amount + b[index] * (1 - amount)) * 255)
-        .toString(16)
-        .padStart(2, "0"),
-    )
-    .join("")}`;
-}
-
 function readableAccent(base: string, oklch: Oklch, surfaces: string[], minimum: number, theme: "dark" | "light"): string {
   let result = base;
   for (let step = 1; step <= 100 && surfaces.some(surface => contrast(result, surface) < minimum); step++) {
@@ -110,34 +106,45 @@ function readableAccent(base: string, oklch: Oklch, surfaces: string[], minimum:
   return result;
 }
 
+/** Text on the solid accent gets a small margin over 4.5:1: composited fills
+ * (glass, anti-aliasing) render a step lighter than the token, and the Windows
+ * blue fallback #0078d4 sits at only 4.53:1 against white. */
+export const FILL_TEXT_MINIMUM = 4.6;
+
+/**
+ * The solid accent is the one primary-button fill, so it must carry the chosen
+ * foreground. Keep the hue and chroma, nudge only OKLCH lightness until the
+ * FILL_TEXT_MINIMUM floor is met. Used for base, hover and active fills.
+ */
+function readableFill(candidate: string, oklch: Oklch, foreground: string, minimum = FILL_TEXT_MINIMUM): string {
+  if (contrast(candidate, foreground) >= minimum) return candidate;
+  const direction = foreground === "#ffffff" ? 0 : 1;
+  for (let step = 1; step <= 100; step++) {
+    const next = oklchToHex({ ...oklch, l: oklch.l + (direction - oklch.l) * step / 100 });
+    if (contrast(next, foreground) >= minimum) return next;
+  }
+  return direction === 0 ? "#000000" : "#ffffff";
+}
+
 export function buildAccentScale(color: string, theme: "dark" | "light"): AccentScale {
   const base = normalizeHex(color);
   const oklch = hexToOklch(base);
-  const background = theme === "dark" ? "#0d141a" : "#f3f6ef";
-  const hover = oklchToHex({
-    ...oklch,
-    l: clamp(oklch.l + (theme === "dark" ? 0.06 : -0.04)),
-  });
-  const active = oklchToHex({
-    ...oklch,
-    l: clamp(oklch.l + (theme === "dark" ? -0.06 : -0.1)),
-  });
+  // Pick the foreground from the user's exact colour first; only then guard the
+  // fills, so ink and indicator stay derived from the original chroma.
   const foreground = contrast("#101418", base) >= contrast("#ffffff", base) ? "#101418" : "#ffffff";
-  const surfaces = theme === "light" ? ["#f3f1eb", "#faf9f5", "#eae7e0"] : ["#141516", "#242527", "#0d0f14"];
+  const hoverOklch = { ...oklch, l: clamp(oklch.l + (theme === "dark" ? 0.06 : -0.04)) };
+  const activeOklch = { ...oklch, l: clamp(oklch.l + (theme === "dark" ? -0.06 : -0.1)) };
+  const fill = readableFill(base, oklch, foreground);
+  const hover = readableFill(oklchToHex(hoverOklch), hoverOklch, foreground);
+  const active = readableFill(oklchToHex(activeOklch), activeOklch, foreground);
+  const surfaces = theme === "light" ? LIGHT_SURFACES : DARK_SURFACES;
   // Signal fills retain the user's exact color. Text has a separate bounded
   // lightness search, tested against the lightest/darkest content surfaces.
   const ink = readableAccent(base, oklch, surfaces, 4.5, theme);
+  // Keyboard focus rings and progress need only the 3:1 non-text floor; in
+  // dark mode a very deep system colour needs the same bounded search.
   const indicator = theme === "light"
     ? readableAccent(base, oklch, [...surfaces, LIGHT_INDICATOR_COMPOSITE_REFERENCE], 3, theme)
-    : base;
-  return {
-    base,
-    hover,
-    active,
-    soft: mix(base, background, 0.16),
-    border: mix(base, background, 0.42),
-    foreground,
-    ink,
-    indicator,
-  };
+    : readableAccent(base, oklch, surfaces, 3, theme);
+  return { base: fill, hover, active, foreground, ink, indicator };
 }

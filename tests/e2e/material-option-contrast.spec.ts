@@ -68,7 +68,8 @@ for (const theme of ["dark", "light"] as const) for (const effects of ["full", "
         await page.locator('button[data-page="library"]').click();
         if (scenario === "create") {
           await page.locator(".vx-library-commandbar__actions").getByRole("button", { name: "创建实例", exact: true }).click();
-          await page.locator('.vx-create-dialog [id$="-create-game-version"]').click();
+          // Game versions are an inline list now; the sort menu is the dialog's popup.
+          await page.locator('.vx-create-dialog [id$="-create-version-sort"]').click();
         } else {
           await page.locator('.vx-instance-card[data-instance-id="fixture-world"] .vx-instance-card__select').click();
           await expect(page.locator(".vx-detail-workspace")).toHaveCSS("opacity", "1");

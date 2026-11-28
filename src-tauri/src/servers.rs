@@ -107,14 +107,7 @@ fn target<'a>(
     instance_id: Option<&'a str>,
 ) -> Result<ServerTarget<'a>, String> {
     let data = state.snapshot()?;
-    let instance = instance_id
-        .map(|id| {
-            data.instances
-                .iter()
-                .find(|i| i.id == id)
-                .ok_or("实例不存在")
-        })
-        .transpose()?;
+    let instance = minecraft::target_instance(&data, version, instance_id)?;
     let root = minecraft::game_directory(&data.config, version, instance)?;
     Ok(ServerTarget {
         path: safe_join(&root, "servers.dat")?,

@@ -18,14 +18,20 @@ import { clearCurvatureMapCache, curvatureMapImage } from "./refractionImage";
 import { resetSurfaceOptics, syncSurfaceOptics } from "./liveOptics";
 import { createGlassRenderer } from "./renderer";
 import type { GlassMode, GlassOptics, GlassQuality, GlassRenderer, GlassSurfaceModel, GlassVariant } from "./types";
+import { getAmbientBusyness, subscribeAmbientState } from "../ambient/ambientController";
 import { cn } from "../../lib/utils";
+import { DEFAULT_ACCENT } from "../../design/accent";
 import "./glass.css";
 
-const presets: Record<GlassVariant, { radius: number; opacity: number }> = {
-  nav: { radius: 22, opacity: 0.32 },
-  control: { radius: 999, opacity: 0.28 },
-  dialog: { radius: 24, opacity: 0.7 },
-  toast: { radius: 16, opacity: 0.56 },
+const presets: Record<GlassVariant, {
+  radius: number;
+  opacity: number;
+  tint: { dark: readonly [number, number]; light: readonly [number, number] };
+}> = {
+  nav: { radius: 22, opacity: 0.32, tint: { dark: [0.20, 0.32], light: [0.22, 0.32] } },
+  control: { radius: 999, opacity: 0.28, tint: { dark: [0.18, 0.28], light: [0.20, 0.28] } },
+  dialog: { radius: 20, opacity: 0.64, tint: { dark: [0.42, 0.64], light: [0.44, 0.64] } },
+  toast: { radius: 16, opacity: 0.54, tint: { dark: [0.34, 0.52], light: [0.38, 0.54] } },
 };
 
 interface RegisteredSurface {
@@ -93,8 +99,8 @@ function LensReflection({ id, shape }: { id: string; shape: CurvatureGeometry })
       <filter id={`${id}-soft`} x="-15%" y="-15%" width="130%" height="130%"><feGaussianBlur stdDeviation="2.2" /></filter>
     </defs>
     <path data-vx-contour d={path} fill="none" stroke={`url(#${id}-light)`} strokeWidth="10"
-      opacity="0.18" filter={`url(#${id}-soft)`} />
-    <path data-vx-contour d={path} fill="none" stroke={`url(#${id}-light)`} strokeWidth="0.9" />
+      opacity="0.26" filter={`url(#${id}-soft)`} />
+    <path data-vx-contour d={path} fill="none" stroke={`url(#${id}-light)`} strokeWidth="1.15" />
     {/* The surface clips at this contour. A centered 2px stroke leaves the
         requested 1px boundary inside the real, spring-driven silhouette. */}
     <path data-vx-contour data-vx-boundary d={path} fill="none"
@@ -136,7 +142,7 @@ export function GlassProvider({
       time: performance.now(),
       accent: getComputedStyle(rootRef.current ?? document.documentElement)
         .getPropertyValue("--accent")
-        .trim() || "#b4f17a",
+        .trim() || DEFAULT_ACCENT,
       motion: !preferences.reducedMotion && !preferences.reducedTransparency && !preferences.highContrast,
       light: document.documentElement.dataset.theme === "light",
       pointer: pointerRef.current,
@@ -154,8 +160,16 @@ export function GlassProvider({
     const renderer = rendererRef.current;
     if (!root || !renderer) return;
     const preset = presets[surface.variant];
+    const theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    const [tintBase, tintMax] = preset.tint[theme];
+    const clientRect = surface.element.getBoundingClientRect();
+    const busy = getAmbientBusyness(clientRect);
+    const nextTint = (tintBase + (tintMax - tintBase) * busy).toFixed(3);
+    if (surface.element.style.getPropertyValue("--vx-glass-tint") !== nextTint) {
+      surface.element.style.setProperty("--vx-glass-tint", nextTint);
+    }
     const rootBounds = root.getBoundingClientRect();
-    const rect = relativeRect(rootBounds, surface.element.getBoundingClientRect());
+    const rect = relativeRect(rootBounds, clientRect);
     let clip = rect;
     for (let parent = surface.element.parentElement; parent && parent !== root; parent = parent.parentElement) {
       const style = getComputedStyle(parent);
@@ -176,6 +190,18 @@ export function GlassProvider({
       ...(optics ? { optics } : {}),
     };
     renderer.upsert(model);
+  }, []);
+
+  const syncAllTints = useCallback(() => {
+    for (const surface of surfacesRef.current.values()) {
+      const theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+      const [tintBase, tintMax] = presets[surface.variant].tint[theme];
+      const busy = getAmbientBusyness(surface.element.getBoundingClientRect());
+      const nextTint = (tintBase + (tintMax - tintBase) * busy).toFixed(3);
+      if (surface.element.style.getPropertyValue("--vx-glass-tint") !== nextTint) {
+        surface.element.style.setProperty("--vx-glass-tint", nextTint);
+      }
+    }
   }, []);
 
   // A control that publishes live deformation is measured again on every frame,
@@ -241,12 +267,26 @@ export function GlassProvider({
     root.addEventListener("pointermove", onPointer, { passive: true });
     root.addEventListener("pointerleave", onPointerLeave);
     root.addEventListener("scroll", syncPositions, { capture: true, passive: true });
-    const themeObserver = new MutationObserver(updateFrame);
+    const themeObserver = new MutationObserver(() => {
+      syncAllTints();
+      updateFrame();
+    });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style"] });
+    const unsubscribeAmbient = subscribeAmbientState(syncAllTints);
+    const lastJellyPress = new WeakMap<HTMLElement, string>();
     const poseObserver = new MutationObserver((records) => {
-      // Only spring publishers request frames. The material's own clip, PNG and
-      // reflection writes cannot recursively request another optical frame.
-      if (records.some(({ target }) => target instanceof HTMLElement && target.style.getPropertyValue("--jelly-press") !== "")) updateFrame();
+      // Only spring publishers request frames. The material's own clip, PNG,
+      // tint and reflection writes cannot recursively request another optical frame.
+      const hasSpringChange = records.some(({ target }) => {
+        if (!(target instanceof HTMLElement)) return false;
+        const next = target.style.getPropertyValue("--jelly-press");
+        const prev = lastJellyPress.get(target) ?? "";
+        if (next === prev) return false;
+        if (next === "") lastJellyPress.delete(target);
+        else lastJellyPress.set(target, next);
+        return next !== "";
+      });
+      if (hasSpringChange) updateFrame();
     });
     poseObserver.observe(root, { subtree: true, attributes: true, attributeFilter: ["style"] });
     return () => {
@@ -257,6 +297,7 @@ export function GlassProvider({
       root.removeEventListener("pointerleave", onPointerLeave);
       root.removeEventListener("scroll", syncPositions, true);
       themeObserver.disconnect();
+      unsubscribeAmbient();
       poseObserver.disconnect();
       renderer.dispose();
       rendererRef.current = null;
@@ -271,8 +312,20 @@ export function GlassProvider({
     if (!renderer) return;
     renderer.setQuality(effects);
     syncPause();
+    syncAllTints();
     updateFrame();
-  }, [effects, highContrast, reducedMotion, reducedTransparency, syncPause, updateFrame]);
+  }, [effects, highContrast, reducedMotion, reducedTransparency, syncAllTints, syncPause, updateFrame]);
+
+  useEffect(() => {
+    syncAllTints();
+    if (surfaceCount === 0 || mode !== "full" || effects !== "full" || reducedMotion || reducedTransparency || highContrast) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      if (!document.hidden) syncAllTints();
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [effects, highContrast, mode, reducedMotion, reducedTransparency, surfaceCount, syncAllTints]);
 
   const refractionEnabled = mode === "full" && effects === "full";
   useEffect(() => {

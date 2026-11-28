@@ -1268,3 +1268,360 @@ fn c12_the_check_offers_newer_releases_of_a_curseforge_pack() {
     assert_eq!(result.newer.iter().map(|version| version.id.as_str()).collect::<Vec<_>>(), ["2000"], "releases only");
     assert!(!result.current_missing);
 }
+
+/// A modpack installed as `versions/Pack/`, with its old loader profile and the
+/// local API fixture. This is the real update target, not a managed instance.
+struct VersionUpdateFixture {
+    holder: crate::instances::StagingDirectory,
+    root: PathBuf,
+    state: Arc<LauncherState>,
+    live: PathBuf,
+    data: PathBuf,
+    id: String,
+}
+
+impl VersionUpdateFixture {
+    fn new(loader: Option<(&str, &str)>) -> Self {
+        let holder = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/pack-update-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let root = holder.path().join("game");
+        let data = holder.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        write_test_profile(
+            &root,
+            "1.20.1",
+            json!({
+                "id": "1.20.1", "type": "release",
+                "mainClass": "net.minecraft.client.main.Main", "libraries": []
+            }),
+        );
+        let id = format!("pack-{}", uuid::Uuid::new_v4());
+        let mut instance = Instance {
+            id: id.clone(),
+            name: "Pack".into(),
+            version_id: "Pack".into(),
+            game_directory: root.join("versions/Pack").to_string_lossy().into_owned(),
+            game_folder: root.to_string_lossy().into_owned(),
+            kind: "version".into(),
+            isolated: true,
+            loader: "vanilla".into(),
+            loader_version: String::new(),
+            ..Instance::default()
+        };
+        let dependencies = if let Some((kind, version)) = loader {
+            let id = format!("{kind}-loader-{version}-1.20.1");
+            write_test_profile(
+                &root,
+                &id,
+                json!({
+                    "id": id,
+                    "inheritsFrom": "1.20.1",
+                    "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+                    "libraries": [{ "name": format!("net.fabricmc:fabric-loader:{version}") }],
+                    "launcherMetadata": { "loader": kind, "loaderVersion": version }
+                }),
+            );
+            instance.loader = kind.into();
+            instance.loader_version = version.into();
+            BTreeMap::from([
+                ("minecraft".to_owned(), "1.20.1".to_owned()),
+                (format!("{kind}-loader"), version.to_owned()),
+            ])
+        } else {
+            BTreeMap::from([("minecraft".to_owned(), "1.20.1".to_owned())])
+        };
+        let live = root.join("versions/Pack");
+        fs::create_dir_all(live.join("mods")).unwrap();
+        fs::write(live.join("mods/a.jar"), A1).unwrap();
+        write_test_profile(
+            &root,
+            "Pack",
+            json!({
+                "id": "Pack", "inheritsFrom": "1.20.1",
+                "mainClass": "net.minecraft.client.main.Main",
+                "libraries": if instance.loader == "vanilla" {
+                    json!([])
+                } else {
+                    json!([{ "name": format!("net.fabricmc:fabric-loader:{}", instance.loader_version) }])
+                }
+            }),
+        );
+        let mut old_lock = lock(&[("mods/a.jar", A1)], &[]);
+        old_lock["dependencies"] = json!(dependencies);
+        fs::write(live.join(LOCK), old_lock.to_string()).unwrap();
+        let config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            proxy_mode: "none".into(),
+            ..Default::default()
+        };
+        let state = Arc::new(LauncherState::test_fixture(
+            data.clone(),
+            crate::models::Persisted {
+                config,
+                instances: vec![instance],
+                ..Default::default()
+            },
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+        ));
+        Self { holder, root, state, live, data, id }
+    }
+
+    fn cache(&self, bytes: &[u8]) {
+        let cache = self.data.join("pack-cache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join(format!("{}.bin", hex512(bytes))), bytes).unwrap();
+    }
+
+    fn backups(&self) -> Vec<String> {
+        fs::read_dir(self.data.join("instance-backups").join(&self.id))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(self.root.join("versions"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+fn write_test_profile(root: &Path, id: &str, metadata: Value) {
+    let directory = root.join("versions").join(id);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+}
+
+fn profile_backups(folder: &Path) -> Vec<String> {
+    fs::read_dir(folder)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".json.backup-"))
+        .collect()
+}
+
+fn run_version_update(
+    fixture: &VersionUpdateFixture,
+    archive: &[u8],
+    dependencies: Value,
+) -> (PackUpdateResult, Value) {
+    fixture.cache(archive);
+    fixture.cache(A2);
+    let replies = || {
+        vec![
+            version_reply("newver", "2.0", "2026-02-01T00:00:00Z", archive),
+            version_reply("oldver", "1.0", "2026-01-01T00:00:00Z", archive),
+        ]
+    };
+    let mut script = replies();
+    script.extend(replies());
+    let api = RangeServer::new(script);
+    let _api = Api::at(&api);
+    let runtime = runtime();
+    let plan = runtime
+        .block_on(prepare(&fixture.state, &fixture.id, "newver", None))
+        .unwrap()
+        .summary();
+    assert_eq!(plan.dependency_change.as_ref().map(|change| change.to.clone()), Some(
+        serde_json::from_value::<BTreeMap<String, String>>(dependencies).unwrap()
+    ));
+    let done = runtime
+        .block_on(apply_inner(
+            None,
+            &fixture.state,
+            &fixture.id,
+            "newver",
+            plan.include_optional,
+            &plan.fingerprint,
+            &[],
+        ))
+        .unwrap();
+    let profile: Value =
+        serde_json::from_slice(&fs::read(fixture.live.join("Pack.json")).unwrap()).unwrap();
+    (done, profile)
+}
+
+#[test]
+fn n1_a_loader_change_publishes_the_rewritten_profile_with_the_mods() {
+    let fixture = VersionUpdateFixture::new(Some(("fabric", "0.15")));
+    let archive = mrpack_from(
+        "2.0",
+        vec![index_file("mods/a.jar", A2)],
+        &[],
+        json!({"minecraft": "1.20.1", "fabric-loader": "0.16"}),
+    );
+    let root = fixture.root.clone();
+    install_dependencies_hook(&fixture.id, move |_state, deps| {
+        assert_eq!(deps.get("fabric-loader").map(String::as_str), Some("0.16"));
+        let id = "fabric-loader-0.16-1.20.1";
+        write_test_profile(
+            &root,
+            id,
+            json!({
+                "id": id, "inheritsFrom": "1.20.1",
+                "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+                "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16" }],
+                "launcherMetadata": { "loader": "fabric", "loaderVersion": "0.16" }
+            }),
+        );
+        Ok((id.to_owned(), "fabric".to_owned(), "0.16".to_owned()))
+    });
+    let (done, profile) =
+        run_version_update(&fixture, &archive, json!({"minecraft": "1.20.1", "fabric-loader": "0.16"}));
+    assert_eq!(done.instance.version_id, "Pack", "the folder keeps its identity");
+    assert_eq!((done.instance.loader.as_str(), done.instance.loader_version.as_str()), ("fabric", "0.16"));
+    assert_eq!(fs::read(fixture.live.join("mods/a.jar")).unwrap(), A2, "the new mods are published");
+    assert_eq!(profile["id"], "Pack");
+    assert_eq!(profile["inheritsFrom"], "1.20.1");
+    assert_eq!(profile["libraries"][0]["name"], "net.fabricmc:fabric-loader:0.16", "the staged profile is live");
+    assert!(profile_backups(&fixture.live).is_empty(), "no stray profile backup");
+    assert!(!fixture.root.join("versions/.restore-x").exists());
+    assert!(fixture.root.join(".voxelight-staging").is_dir(), "stage area is outside versions/");
+    // L1: the published profile is the one recorded as the launcher's own,
+    // and no key for the staging copy is left in state.json.
+    let snapshot = fixture.state.snapshot().unwrap();
+    assert!(
+        crate::instances::profile_is_owned(&snapshot, &fixture.live.join("Pack.json")),
+        "the live profile's hash is recorded"
+    );
+    assert!(
+        !snapshot.owned_profiles.keys().any(|key| key.contains(".voxelight-staging")),
+        "{:?}",
+        snapshot.owned_profiles.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(fixture.backups().len(), 1, "the automatic instance backup is kept");
+    let mut names = fixture.names();
+    names.sort();
+    assert_eq!(names, ["1.20.1", "Pack", "fabric-loader-0.15-1.20.1", "fabric-loader-0.16-1.20.1"]);
+    assert!(fixture.live.join("mods/a.jar").is_file(), "the folder is intact after the update");
+    let _ = &fixture.holder;
+}
+
+#[test]
+fn n1_a_minecraft_version_change_publishes_the_rewritten_profile_with_the_mods() {
+    let fixture = VersionUpdateFixture::new(None);
+    let archive = mrpack_from(
+        "2.0",
+        vec![index_file("mods/a.jar", A2)],
+        &[],
+        json!({"minecraft": "1.21.1"}),
+    );
+    let root = fixture.root.clone();
+    install_dependencies_hook(&fixture.id, move |_state, _deps| {
+        write_test_profile(
+            &root,
+            "1.21.1",
+            json!({
+                "id": "1.21.1", "type": "release",
+                "mainClass": "net.minecraft.client.main.Main", "libraries": []
+            }),
+        );
+        fs::write(root.join("versions/1.21.1/1.21.1.jar"), b"new client").unwrap();
+        Ok(("1.21.1".to_owned(), "vanilla".to_owned(), String::new()))
+    });
+    let (done, profile) = run_version_update(&fixture, &archive, json!({"minecraft": "1.21.1"}));
+    assert_eq!(done.instance.version_id, "Pack");
+    assert_eq!(fs::read(fixture.live.join("mods/a.jar")).unwrap(), A2);
+    assert_eq!(profile["id"], "Pack");
+    assert_eq!(profile["inheritsFrom"], "1.21.1", "the instance now points at the new base");
+    assert!(profile_backups(&fixture.live).is_empty());
+    assert_eq!(fixture.backups().len(), 1);
+    let _ = &fixture.holder;
+}
+
+#[test]
+fn h2_a_version_folder_update_rewrites_its_own_profile_and_keeps_its_id() {
+    let holder = crate::instances::StagingDirectory::create(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/pack-update-tests")
+            .join(uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let root = holder.path().join("game");
+    for (id, metadata) in [
+        ("1.20.1", serde_json::json!({ "id": "1.20.1", "mainClass": "net.minecraft.client.main.Main" })),
+        ("fabric-loader-0.17-1.20.1", serde_json::json!({
+            "id": "fabric-loader-0.17-1.20.1",
+            "inheritsFrom": "1.20.1",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "libraries": [{ "name": "net.fabricmc:fabric-loader:0.17" }],
+            "launcherMetadata": { "loader": "fabric", "loaderVersion": "0.17", "officialVanillaBase": "1.20.1" }
+        })),
+    ] {
+        let directory = root.join("versions").join(id);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+    }
+    let folder = root.join("versions/Pack");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("Pack.json"), serde_json::json!({
+        "id": "Pack", "inheritsFrom": "1.20.1",
+        "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+        "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16" }],
+        "launcherMetadata": { "loader": "fabric", "loaderVersion": "0.16" }
+    }).to_string()).unwrap();
+    let current = Instance {
+        id: "pack".into(),
+        name: "Pack".into(),
+        version_id: "Pack".into(),
+        game_directory: folder.to_string_lossy().into_owned(),
+        game_folder: root.to_string_lossy().into_owned(),
+        kind: "version".into(),
+        isolated: true,
+        loader: "fabric".into(),
+        loader_version: "0.16".into(),
+        ..Instance::default()
+    };
+    let state = LauncherState::test_fixture(
+        holder.path().join("data"),
+        crate::models::Persisted {
+            config: crate::models::Config {
+                game_directory: root.to_string_lossy().into_owned(),
+                ..crate::models::Config::default()
+            },
+            instances: vec![current.clone()],
+            ..Default::default()
+        },
+        crate::storage::test_client(),
+    );
+    let stage = holder.path().join("stage");
+    fs::create_dir_all(&stage).unwrap();
+    fs::copy(folder.join("Pack.json"), stage.join("Pack.json")).unwrap();
+    let mut after = current.clone();
+    let record = record_dependency_change(
+        &state,
+        &current,
+        &mut after,
+        &stage,
+        (
+            "fabric-loader-0.17-1.20.1".into(),
+            "fabric".into(),
+            "0.17".into(),
+        ),
+    )
+    .unwrap()
+    .expect("the staged profile is part of the expected publish");
+    assert_eq!(record.relative, "Pack.json");
+    assert_eq!(after.version_id, "Pack", "the version stays the folder name");
+    assert_eq!((after.loader.as_str(), after.loader_version.as_str()), ("fabric", "0.17"));
+    let profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(stage.join("Pack.json")).unwrap()).unwrap();
+    assert_eq!(profile["id"], "Pack");
+    assert_eq!(profile["inheritsFrom"], "1.20.1");
+    assert_eq!(profile["libraries"][0]["name"], "net.fabricmc:fabric-loader:0.17");
+    let live: serde_json::Value =
+        serde_json::from_slice(&fs::read(folder.join("Pack.json")).unwrap()).unwrap();
+    assert_eq!(live["libraries"][0]["name"], "net.fabricmc:fabric-loader:0.16");
+    assert_eq!(live["id"], "Pack", "the live folder is untouched until the atomic commit");
+}

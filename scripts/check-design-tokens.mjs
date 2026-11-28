@@ -15,7 +15,9 @@ const spacingScale = new Map(Object.entries({
   "--space-1": "4px", "--space-2": "8px", "--space-3": "12px", "--space-4": "16px",
   "--space-5": "24px", "--space-6": "32px", "--space-7": "48px", "--space-8": "64px",
 }));
-const panelCurves = new Map([["--radius-sm", "6px"], ["--radius-md", "12px"], ["--radius-lg", "12px"]]);
+// R9 raised the panel curve to 16px. WP-11 replaces this map with the full
+// R1-R16 rules; until then the guard keeps validating the declared value.
+const panelCurves = new Map([["--radius-sm", "6px"], ["--radius-md", "12px"], ["--radius-lg", "16px"]]);
 // R2-05 acceptance explicitly exempts window buttons and Lens controls.
 // Keep only this existing window selector/value pair exempt, not feature buttons
 // in general.
@@ -137,7 +139,7 @@ export function inspectStylesheet(css, filename) {
     if (radiusProperty
       && selectors.some(selector => targetsComponent(selector, /\.vx-(?:panel|card)(?:--[\w-]+)?(?![\w-])/))
       && !/^var\(--radius-(?:sm|md|lg)\)$/.test(declaration.value))
-      errors.push(`${label}: panel/card radius must use the six or twelve pixel scale (${declaration.value})`);
+      errors.push(`${label}: panel/card radius must use the six, twelve or sixteen pixel scale (${declaration.value})`);
     if (radiusProperty) {
       const allowedInheritance = declaration.value === "inherit" && declaration.parent.type === "rule"
         && declaration.parent.selector.split(",").every(selector => inheritedCurves.get(filename)?.includes(selector.trim()));

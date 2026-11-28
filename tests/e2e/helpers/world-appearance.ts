@@ -95,11 +95,19 @@ export function outsideIslandMetrics(image: DecodedPng, feet: FeetBounds, backgr
   };
 }
 
+/** The historical far-field ROI and the R3-4 sky strip above it, as [left, top, right, bottom] viewport fractions. */
+export const SILHOUETTE_FAR_ROI = [.703, .326, .9375, .556] as const;
+export const SILHOUETTE_SKY_ROI = [.703, .15, .9375, .28] as const;
+
+function fractionBounds(roi: readonly [number, number, number, number], image: DecodedPng): PixelBounds {
+  return [Math.round(roi[0] * image.width), Math.round(roi[1] * image.height),
+    Math.round(roi[2] * image.width), Math.round(roi[3] * image.height)];
+}
+
 /** Normal visible frame; retain the historical maximum-channel far-field p95. */
 export function farMetrics(image: DecodedPng) {
   requirePixels(image);
-  const bounds: PixelBounds = [Math.round(.703 * image.width), Math.round(.326 * image.height),
-    Math.round(.9375 * image.width), Math.round(.556 * image.height)];
+  const bounds = fractionBounds(SILHOUETTE_FAR_ROI, image);
   const values: number[] = [];
   for (let y = bounds[1]; y < bounds[3]; y++) for (let x = bounds[0]; x < bounds[2]; x++) {
     const at = (y * image.width + x) * 4;
@@ -129,10 +137,7 @@ export function silhouetteMetrics(image: DecodedPng, background: readonly [numbe
   requirePixels(image);
   if (background.length !== 3 || !background.every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 255))
     throw new Error("Silhouette background must contain three finite RGB channels in [0,255]");
-  const farBounds: PixelBounds = [Math.round(.703 * image.width), Math.round(.326 * image.height),
-    Math.round(.9375 * image.width), Math.round(.556 * image.height)];
-  const skyBounds: PixelBounds = [Math.round(.703 * image.width), Math.round(.15 * image.height),
-    Math.round(.9375 * image.width), Math.round(.28 * image.height)];
+  const farBounds = fractionBounds(SILHOUETTE_FAR_ROI, image), skyBounds = fractionBounds(SILHOUETTE_SKY_ROI, image);
   const farWidth = farBounds[2] - farBounds[0], farHeight = farBounds[3] - farBounds[1];
   const skySamples = (skyBounds[2] - skyBounds[0]) * (skyBounds[3] - skyBounds[1]);
   if (farWidth <= 0 || farHeight <= 0 || skySamples <= 0)

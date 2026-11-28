@@ -3,6 +3,10 @@
   "subtitle": "管理帳號、線上外觀與本機預覽。",
   "listTitle": "帳號",
   "addAccount": "新增帳號",
+  "status": {
+    "profileUnavailable": "外觀暫時無法使用",
+    "sessionUnverified": "工作階段未驗證"
+  },
   "loginTitle": "新增帳號",
   "loginDescription": "選擇登入方式，或建立離線帳號。",
   "loginMethods": "登入方式",
@@ -52,7 +56,7 @@
     "start": "開始 Microsoft 登入",
     "deviceInstruction": "在 Microsoft 官方頁面輸入以下代碼：",
     "openVerification": "開啟 Microsoft 授權頁面",
-    "waiting": "等待授權 · 剩餘 {{minutes}}:{{seconds}} · 每 {{interval}} 秒檢查",
+    "waiting": "正在等待授權，剩餘 {{minutes}}:{{seconds}}，每 {{interval}} 秒檢查一次。",
     "cancel": "取消此次授權"
   },
   "offline": {
@@ -93,8 +97,8 @@
     "unavailable": "3D 預覽暫時無法使用，請重試或更換預覽來源。",
     "loading": "正在讀取帳號外觀…",
     "noAccountSkin": "尚未取得目前帳號的造型",
-    "localNotice": "僅供本機預覽 · 不會修改帳號外觀",
-    "accountNotice": "線上帳號來源 · 只有明確執行操作才會變更",
+    "localNotice": "僅供本機預覽，不會修改帳號外觀。",
+    "accountNotice": "來自線上帳號，只有明確執行操作才會變更。",
     "import": "匯入 PNG",
     "resetView": "重設視角",
     "restoreDefault": "還原預設預覽",
@@ -123,11 +127,11 @@
     "fallback": "預設角色暫時無法使用，可重試或匯入本機預覽。",
     "steve": {
       "name": "Steve",
-      "description": "經典模型 · 已驗證用戶端"
+      "description": "經典模型，已驗證用戶端"
     },
     "alex": {
       "name": "Alex",
-      "description": "纖細模型 · 已驗證用戶端"
+      "description": "纖細模型，已驗證用戶端"
     }
   },
   "notice": {

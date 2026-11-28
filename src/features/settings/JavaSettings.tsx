@@ -39,7 +39,7 @@ export function JavaSettings({ config, onChange, onError, onNotice }: SettingsSe
         {found.length ? (
           <div className="vx-settings-java-results">
             {found.map((java) => (
-              <button key={java.path} type="button" aria-label={`Java ${java.major}`} onClick={() => onChange({ ...config, javaPath: java.path })}>
+              <button key={java.path} type="button" aria-label={`Java ${java.major}`} aria-pressed={config.javaPath === java.path} onClick={() => onChange({ ...config, javaPath: java.path })}>
                 <strong>Java {java.major}</strong><small>{java.path}</small>
               </button>
             ))}

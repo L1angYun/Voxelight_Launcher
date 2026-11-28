@@ -8,12 +8,14 @@ import { command, defaults, type Bootstrap, type Instance, type ResourceProject 
 import type { LocalModMetadata, LocalResource, ModpackVersion, ResourceUpdate } from "./types";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { instanceTabRegistry } from "../../app/registry";
+import { resetViewState } from "../../app/viewState";
 import { LibraryPage } from "./LibraryPage";
 import { InstanceDetailPage } from "./InstanceDetailPage";
 import { InstanceLogs } from "./InstanceLogs";
 import { InstanceOverview } from "./InstanceOverview";
 import { InstanceContent } from "./InstanceContent";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
+import { ConfirmContext, type ConfirmFn } from "../../components/ui/ConfirmDialog";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -27,6 +29,8 @@ function giveBackupSelectBounds(button: HTMLElement) {
 }
 
 const commandMock = vi.mocked(command);
+// Stands in for the awaited dialog; an unanswered confirmation declines.
+const confirmMock = vi.fn<ConfirmFn>(async () => false);
 let mockLauncher: LauncherContextValue;
 let root: Root;
 let container: HTMLDivElement;
@@ -113,21 +117,27 @@ function fixture(): LauncherContextValue {
 async function render(node: React.ReactNode, language = "zh-CN") {
   const i18n = createLauncherI18n(language, language);
   await i18n.initPromise;
-  await act(async () => root.render(createElement(I18nextProvider, { i18n }, node)));
+  await act(async () => root.render(createElement(I18nextProvider, { i18n },
+    createElement(ConfirmContext.Provider, { value: confirmMock }, node))));
 }
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  resetViewState();
   document.documentElement.dataset.effects = "full";
   document.documentElement.dataset.reducedMotion = "false";
   mockLauncher = fixture();
   commandMock.mockReset();
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(false);
   commandMock.mockImplementation(async (name, args) => {
     if (name === "list_instance_backups") return { backups: [], warnings: [], recovery: null };
     if (name === "list_local_resources" || name === "list_worlds" || name === "list_screenshots") return [];
     if (name === "list_loader_versions") return [{ id: "0.16.9", stable: true, recommended: true }];
     if (name === "install_loader") return { versionId: "fabric-loader-0.16.9-1.21.1", loader: "fabric", loaderVersion: "0.16.9" };
     if (name === "create_instance") return { ...instance, id: "created-instance", name: args?.name as string };
+    if (name === "create_game_instance") return { ...instance, id: "created-instance", name: (args?.name as string) || "1.21.1" };
+    if (name === "suggest_instance_name") return args?.loader === "vanilla" ? args?.gameVersion : `${args?.gameVersion}-Fabric`;
     if (name === "install_version") return { versionId: "1.21.1", downloaded: 0, reused: 1 };
     return null;
   });
@@ -160,7 +170,7 @@ describe("library and instance details", () => {
     const added = () => [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("再显示"));
     expect(visible()).toHaveLength(48);
-    expect(container.querySelector("[data-create-instance]")).not.toBeNull();
+    expect(container.querySelector("[data-create-instance]")).toBeNull();
     expect(added()?.textContent).toContain("452");
     await act(async () => { added()?.click(); });
     expect(visible()).toHaveLength(96);
@@ -184,15 +194,42 @@ describe("library and instance details", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(visible()).toHaveLength(48);
+  });
 
-    const versionScope = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => (button.textContent?.trim() ?? "") === "版本目录")!;
-    await act(async () => versionScope.click());
-    expect(container.querySelectorAll("[data-version-directory]")).toHaveLength(48);
-    expect(added()?.textContent).toContain("12");
-    await act(async () => { added()?.click(); });
-    expect(container.querySelectorAll("[data-version-directory]")).toHaveLength(60);
-    expect(added()).toBeUndefined();
+  it("restores search, sort and view after leaving and returning", async () => {
+    const buttonWithText = (label: string) => {
+      const found = [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((candidate) => candidate.textContent?.trim() === label);
+      if (!found) throw new Error(`Missing button: ${label}`);
+      return found;
+    };
+    await render(createElement(LibraryPage));
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索实例"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "1.21");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const sort = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="排序"]')!;
+    giveBackupSelectBounds(sort);
+    await act(async () => sort.click());
+    const name = [...document.querySelectorAll<HTMLElement>('[role="option"][data-value="name"]')]
+      .find((option) => !option.closest('[aria-hidden="true"]'));
+    await act(async () => name!.click());
+    await act(async () => buttonWithText("列表视图").click());
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="搜索实例"]')?.value).toBe("1.21");
+    expect(container.querySelector('[role="combobox"][aria-label="排序"]')?.textContent).toContain("名称");
+    expect(buttonWithText("列表视图").getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector(".vx-library-scope")).toBeNull();
+
+    await act(async () => root.render(null));
+    await render(createElement(LibraryPage));
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="搜索实例"]')?.value).toBe("1.21");
+    expect(container.querySelector('[role="combobox"][aria-label="排序"]')?.textContent).toContain("名称");
+    expect(buttonWithText("列表视图").getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector(".vx-instance-sheet--list")).not.toBeNull();
   });
 
   it("does not give a background install the Library launch preparation controls", async () => {
@@ -234,7 +271,12 @@ describe("library and instance details", () => {
     await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
     const rows = [...container.querySelectorAll(".vx-resource-row")];
     expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual(["file-b.jar", "Visible Fixture Mod"]);
-    expect(rows[1].querySelector("small")?.textContent).toContain("3.1.0 · Alice");
+    const meta = rows[1].querySelector("small")!;
+    const metaItems = [...meta.querySelectorAll("span")].map((item) => item.textContent?.trim());
+    expect(metaItems[0]).toBe("file-a.jar");
+    expect(metaItems).toContain("3.1.0");
+    expect(metaItems).toContain("Alice");
+    expect(meta.textContent).not.toContain("·");
   });
   it("loads a visible mod icon once and falls back when the browser cannot decode it", async () => {
     let intersect: ((visible: boolean) => void) | undefined;
@@ -265,9 +307,76 @@ describe("library and instance details", () => {
       const image = row.querySelector("img")!;
       expect(image.getAttribute("src")).toBe("data:image/png;base64,broken");
       expect(image.getAttribute("alt")).toBe("");
+      expect(row.querySelector('[data-testid="local-mod-icon-placeholder"]')).toBeNull();
       await act(async () => image.dispatchEvent(new Event("error")));
       expect(row.querySelector("img")).toBeNull();
+      expect(row.querySelector('[data-testid="local-mod-icon-placeholder"]')).not.toBeNull();
       expect(row.textContent).toContain("Visible Fixture Mod");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows a muted package placeholder and asks for no icon when a local file has none", async () => {
+    const intersect: Array<(visible: boolean) => void> = [];
+    const observe = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      observe = observe;
+      disconnect = vi.fn();
+      constructor(callback: IntersectionObserverCallback) {
+        intersect.push((visible) => callback([{ isIntersecting: visible } as IntersectionObserverEntry], this as unknown as IntersectionObserver));
+      }
+    });
+    try {
+      commandMock.mockImplementation(async (name) => name === "list_local_resources" ? [{
+        name: "file-a.jar", fileName: "file-a.jar", path: "file-a.jar", enabled: true, size: 1,
+        metadata: { loader: "fabric", modId: "fixture", name: "Visible Fixture Mod", version: "3.1.0",
+          authors: ["Alice"], hasIcon: false, dependencies: [], additionalMods: 0 },
+      }] : name === "read_local_mod_icon" ? "data:image/png;base64,unexpected" : []);
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      const row = container.querySelector(".vx-resource-row")!;
+      await act(async () => { for (const show of intersect) show(true); });
+      expect(observe).not.toHaveBeenCalled();
+      expect(commandMock.mock.calls.filter(([name]) => name === "read_local_mod_icon")).toHaveLength(0);
+      expect(row.querySelector("img")).toBeNull();
+      const placeholder = row.querySelector('[data-testid="local-mod-icon-placeholder"]')!;
+      expect(placeholder.parentElement?.classList.contains("vx-resource-icon")).toBe(true);
+      const glyph = placeholder.querySelector("svg")!;
+      expect(glyph.getAttribute("width")).toBe("24");
+      expect(glyph.getAttribute("stroke-width")).toBe("1.3");
+      // The glyph draws in the muted text token inside the same 24 px box as an icon.
+      const surfacesCss = readFileSync(join(process.cwd(), "src/design/surfaces.css"), "utf8");
+      expect(surfacesCss).toMatch(/\.vx-resource-icon\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;[^}]*color:\s*var\(--text-secondary\);/);
+      expect(surfacesCss).toMatch(/\.vx-resource-icon img, \.vx-resource-icon svg\s*\{[^}]*display:\s*block;/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows a package placeholder when the icon request fails", async () => {
+    let intersect: ((visible: boolean) => void) | undefined;
+    vi.stubGlobal("IntersectionObserver", class {
+      observe = vi.fn();
+      disconnect = vi.fn();
+      constructor(callback: IntersectionObserverCallback) {
+        intersect = (visible) => callback([{ isIntersecting: visible } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      }
+    });
+    try {
+      commandMock.mockImplementation(async (name) => {
+        if (name === "list_local_resources") return [{
+          name: "file-a.jar", fileName: "file-a.jar", path: "file-a.jar", enabled: true, size: 1,
+          metadata: { loader: "fabric", modId: "fixture", name: "Visible Fixture Mod", version: "3.1.0",
+            authors: ["Alice"], hasIcon: true, dependencies: [], additionalMods: 0 },
+        }];
+        if (name === "read_local_mod_icon") throw { code: "resource.unavailable" };
+        return [];
+      });
+      await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
+      const row = container.querySelector(".vx-resource-row")!;
+      await act(async () => intersect!(true));
+      expect(row.querySelector("img")).toBeNull();
+      expect(row.querySelector('[data-testid="local-mod-icon-placeholder"]')).not.toBeNull();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -285,7 +394,7 @@ describe("library and instance details", () => {
   });
 
   it.each([
-    ["files", "list_local_resources", "重试", "此分类暂无资源"],
+    ["files", "list_local_resources", "刷新", "此分类暂无资源"],
     ["updates", "check_resource_updates", "检查更新", "没有可用更新"],
     ["history", "list_resource_update_history", "更新历史", "暂无更新历史"],
   ])("keeps %s pending and failed requests distinct from a successful empty result", async (view, commandName, action, emptyTitle) => {
@@ -300,7 +409,8 @@ describe("library and instance details", () => {
         : commandName === "check_resource_updates" ? { updates: [], curseforgeSkipped: false } : [];
     });
     await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
-    const request = () => [...container.querySelectorAll<HTMLButtonElement>(".vx-toolbar button")].find((button) => button.textContent === action)!.click();
+    // History has no toolbar button: its tab loads it, and choosing the tab again retries.
+    const request = () => [...container.querySelectorAll<HTMLElement>('.vx-toolbar button, [role="tab"]')].find((button) => button.textContent === action)!.click();
     if (view !== "files") await act(async () => request());
     expect(container.querySelector(".vx-empty")).toBeNull();
     await act(async () => reject(new Error("Fixture request failed")));
@@ -329,8 +439,8 @@ describe("library and instance details", () => {
     const find = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === label)!;
     await act(async () => find("检查更新").click());
     expect([...container.querySelectorAll(".vx-resource-row small")].map((node) => node.textContent)).toEqual([
-      "CurseForge · 1.0 → 1.1",
-      "Modrinth · 2.0 → 2.1",
+      "CurseForge 1.0 → 1.1",
+      "Modrinth 2.0 → 2.1",
     ]);
     const updateButtons = () => [...container.querySelectorAll<HTMLButtonElement>(".vx-resource-row button")];
     expect(updateButtons()).toHaveLength(2);
@@ -445,11 +555,11 @@ describe("library and instance details", () => {
   });
 
   it.each([
-    ["回滚", "rollback_resource_update", { status: "committed", canRecover: false }],
-    ["恢复中断事务", "recover_resource_update", { status: "rollingBack", canRecover: true }],
-  ])("clears the CurseForge notices when %s empties the update list", async (action, commandName, state) => {
+    ["回滚", "rollback_resource_update", { status: "committed", canRecover: false }, { tone: "danger" }],
+    ["恢复中断事务", "recover_resource_update", { status: "rollingBack", canRecover: true }, undefined],
+  ])("clears the CurseForge notices when %s empties the update list", async (action, commandName, state, details) => {
     const entry = { updateId: "fixture-entry", name: "资源更新", createdAt: "2026-11-16", projects: [], ...state };
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = confirmMock.mockResolvedValueOnce(false).mockResolvedValue(true);
     commandMock.mockImplementation(async (name) => {
       if (name === "check_resource_updates") return { updates: [], curseforgeSkipped: false, curseforgeError: "fixture" };
       if (name === "list_resource_update_history") return [entry];
@@ -464,7 +574,14 @@ describe("library and instance details", () => {
       await act(async () => find("检查更新").click());
       expect(container.textContent).toContain(failed);
       await act(async () => find("更新历史").click());
+      // Cancelling the confirmation sends nothing.
       await act(async () => find(action).click());
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(confirm.mock.calls[0]?.[0]).toContain(entry.name);
+      expect(confirm.mock.calls[0]?.[1]).toEqual(details);
+      expect(commandMock.mock.calls.some(([name]) => name === commandName)).toBe(false);
+      await act(async () => find(action).click());
+      expect(confirm).toHaveBeenCalledTimes(2);
       expect(commandMock.mock.calls.some(([name]) => name === commandName)).toBe(true);
       await act(async () => tab("更新").click());
       expect(container.textContent).not.toContain(failed);
@@ -532,7 +649,7 @@ describe("library and instance details", () => {
     const rows = [...container.querySelectorAll(".vx-resource-row")];
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("MR Fixture");
-    expect(rows[0].textContent).toContain("Modrinth · 2.0 → 2.1");
+    expect(rows[0].textContent).toContain("Modrinth 2.0 → 2.1");
   });
 
   it("clears both CurseForge notices after a failed check and a clean result", async () => {
@@ -569,7 +686,7 @@ describe("library and instance details", () => {
   it("only recovers an interrupted resource transaction after confirmation", async () => {
     const args = { versionId: "1.21.1", instanceId: instance.id, resourceType: "resourcepack" };
     const pending = { updateId: "fixture-interrupted", name: "资源更新", createdAt: "2026-11-16", status: "rollingBack", canRecover: true, projects: [] };
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+    const confirm = confirmMock.mockResolvedValueOnce(false).mockResolvedValue(true);
     let completed = false;
     commandMock.mockImplementation(async (name) => {
       if (name === "list_resource_update_history") return [completed ? { ...pending, status: "rolledBack", canRecover: false } : pending];
@@ -604,7 +721,7 @@ describe("library and instance details", () => {
 
   it("offers recovery instead of rollback for a legacy journal and keeps the action after an unsafe recovery is refused", async () => {
     const pending = { updateId: "fixture-legacy", name: "旧记录", createdAt: "2026-11-16", status: "committed", canRecover: true, projects: [] };
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = confirmMock.mockResolvedValue(true);
     commandMock.mockImplementation(async (name) => {
       if (name === "list_resource_update_history") return [pending];
       if (name === "recover_resource_update") throw { code: "resource.recoveryConflict", params: {} };
@@ -630,7 +747,7 @@ describe("library and instance details", () => {
       createdAt: "2026-10-25T08:00:00Z", path: "C:/SyntheticFixture/backup.zip", size: 8000 };
     const retained = { ...stable, id: "fixture-before-restore", createdAt: "2026-11-16T11:00:00Z" };
     const previous = "C:\\SyntheticFixture\\before-restore";
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+    const confirm = confirmMock.mockResolvedValueOnce(false).mockResolvedValue(true);
     let restored = false;
     commandMock.mockImplementation(async (name) => {
       if (name === "list_instance_backups") return {
@@ -657,6 +774,7 @@ describe("library and instance details", () => {
       expect(restore).toBeDefined();
       expect(restore.disabled).toBe(false);
       await act(async () => restore.click());
+      expect(confirm.mock.calls[0]?.[1]).toEqual({ tone: "danger" });
       expect(commandMock.mock.calls.some(([name]) => name === "restore_instance_backup")).toBe(false);
       await act(async () => restore.click());
       expect(commandMock).toHaveBeenCalledWith("restore_instance_backup", { instanceId: instance.id, backupId: stable.id });
@@ -669,7 +787,7 @@ describe("library and instance details", () => {
   });
 
   it("shows the preserved directories from a failed restore instead of losing them in a generic toast", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = confirmMock.mockResolvedValue(true);
     const old = "C:\\SyntheticFixture\\original-copy", restoredDirectory = "C:\\SyntheticFixture\\verified-new-copy";
     const stable = { id: "fixture-backup", instanceId: instance.id, versionId: instance.versionId,
       createdAt: "2026-10-25T08:00:00Z", path: "C:/SyntheticFixture/backup.zip", size: 8000 };
@@ -702,7 +820,7 @@ describe("library and instance details", () => {
     const currentDirectory = instance.gameDirectory;
     const previousDirectory = "C:\\SyntheticFixture\\original-copy";
     const preservedDirectory = "C:\\SyntheticFixture\\verified-new-copy";
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = confirmMock.mockResolvedValueOnce(false).mockResolvedValue(true);
     let recovered = false;
     commandMock.mockImplementation(async (name) => {
       if (name === "list_instance_backups") return {
@@ -722,6 +840,9 @@ describe("library and instance details", () => {
       expect(container.textContent).toContain(previousDirectory);
       const recover = find("恢复中断的备份操作");
       expect(recover).toBeDefined();
+      await act(async () => recover!.click());
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(commandMock.mock.calls.some(([name]) => name === "recover_instance_restore")).toBe(false);
       await act(async () => recover!.click());
       expect(commandMock).toHaveBeenCalledWith("recover_instance_restore", { instanceId: instance.id });
       expect(container.textContent).toContain(preservedDirectory);
@@ -800,7 +921,7 @@ describe("library and instance details", () => {
     const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === "Retry")!;
     await act(async () => retry.click());
     expect(attempts).toBe(2);
-    expect(container.querySelector('[role="combobox"][id$="-create-game-version"]')?.textContent).toContain("1.21.1");
+    expect(container.querySelector('[role="listbox"][id$="-create-game-version"] [aria-selected="true"]')?.getAttribute("data-value")).toBe("1.21.1");
     expect(container.textContent).not.toContain("Could not load Minecraft versions.");
   });
 
@@ -821,24 +942,17 @@ describe("library and instance details", () => {
       versionAt("a1.0.4", "old_alpha", "2010-07-08T22:00:00+00:00"),
     ],
   });
-  const versionBox = () => container.querySelector<HTMLButtonElement>('[role="combobox"][id$="-create-game-version"]')!;
+  // The chosen version is the selected row of the always-visible version list.
+  const versionBox = () => ({ textContent: container.querySelector<HTMLElement>('[role="listbox"][id$="-create-game-version"] [role="option"][aria-selected="true"]')?.dataset.value ?? "Select game version" });
   const versionCategory = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.startsWith(label))!;
   const installButton = () => container.querySelector<HTMLButtonElement>('.vx-dialog__footer button')!;
   const searchBox = () => container.querySelector<HTMLInputElement>('input[type="search"][id$="-create-version-search"]')!;
-  // jsdom has no layout; an open menu closes when its trigger looks off screen.
-  const listedVersions = async () => {
-    giveBackupSelectBounds(versionBox());
-    await act(async () => versionBox().click());
-    const rows = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
-      .filter(row => row.dataset.value)
-      .map(row => [row.dataset.value, row.textContent?.replace(row.dataset.value!, "").trim()]);
-    await act(async () => versionBox().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
-    return rows;
-  };
+  // Each row: the version, then its date and badges as one comma-separated detail.
+  const listedVersions = async () => [...container.querySelectorAll<HTMLElement>('[role="listbox"][id$="-create-game-version"] [role="option"]')]
+    .map(row => [row.dataset.value, [row.querySelector("time")?.textContent ?? "",
+      ...[...row.querySelectorAll(".vx-create-version-option__badge")].map(badge => badge.textContent)].filter(Boolean).join(", ")]);
   const pickVersion = async (id: string) => {
-    giveBackupSelectBounds(versionBox());
-    await act(async () => versionBox().click());
-    await act(async () => document.querySelector<HTMLElement>(`[role="option"][data-value="${id}"]`)!.click());
+    await act(async () => container.querySelector<HTMLElement>(`[role="listbox"] [role="option"][data-value="${id}"]`)!.click());
   };
   const searchVersions = async (text: string) => {
     await act(async () => {
@@ -863,7 +977,7 @@ describe("library and instance details", () => {
     // Releases first, newest first, each with its date.
     expect(versionCategory("Releases").getAttribute("aria-pressed")).toBe("true");
     expect(await listedVersions()).toEqual([
-      ["1.21.11", "Dec 9, 2025"], ["1.21.1", "Aug 8, 2024 · Installed"], ["1.19.4", "Jul 1, 2023"], ["1.20.1", "Jun 12, 2023"],
+      ["1.21.11", "Dec 9, 2025"], ["1.21.1", "Aug 8, 2024, Installed"], ["1.19.4", "Jul 1, 2023"], ["1.20.1", "Jun 12, 2023"],
     ]);
     // The closed control shows only the version, keeping the dialog compact.
     expect(versionBox().textContent).toBe("1.21.11");
@@ -888,12 +1002,17 @@ describe("library and instance details", () => {
     await act(async () => versionCategory("Snapshots").click());
     expect((await listedVersions()).map(([id]) => id)).toEqual(["24w14a"]);
     await act(async () => versionCategory("Beta & Alpha").click());
-    expect(await listedVersions()).toEqual([["b1.7.3", "Jul 7, 2011 · Beta"], ["a1.0.4", "Jul 8, 2010 · Alpha"]]);
+    expect(await listedVersions()).toEqual([["b1.7.3", "Jul 7, 2011, Beta"], ["a1.0.4", "Jul 8, 2010, Alpha"]]);
   });
 
   it("searches game versions, keeps the pick among those shown, and never submits on Enter", async () => {
     mockLauncher.manifest = versionFixture();
-    commandMock.mockImplementation(async (name) => name === "list_versions" ? mockLauncher.manifest : null);
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_versions") return mockLauncher.manifest;
+      if (name === "suggest_instance_name") return args?.gameVersion as string;
+      if (name === "create_game_instance") return { ...instance, id: "created-instance" };
+      return null;
+    });
     await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }), "en-US");
 
     // A search keeps a pick it still shows.
@@ -911,13 +1030,13 @@ describe("library and instance details", () => {
     const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     await act(async () => searchBox().dispatchEvent(enter));
     expect(enter.defaultPrevented).toBe(true);
-    expect(commandMock.mock.calls.some(([name]) => name === "install_version")).toBe(false);
+    expect(commandMock.mock.calls.some(([name]) => name === "create_game_instance")).toBe(false);
 
     // No match: counts per type, a message, and nothing to install.
     await searchVersions("14");
-    expect(versionCategory("Releases").textContent).toBe("Releases · 0");
-    expect(versionCategory("Snapshots").textContent).toBe("Snapshots · 1");
-    expect(versionCategory("April Fools").textContent).toBe("April Fools · 2");
+    expect(versionCategory("Releases").textContent).toBe("Releases (0)");
+    expect(versionCategory("Snapshots").textContent).toBe("Snapshots (1)");
+    expect(versionCategory("April Fools").textContent).toBe("April Fools (2)");
     expect(container.textContent).toContain("No versions match the search.");
     expect(installButton().disabled).toBe(true);
 
@@ -925,14 +1044,21 @@ describe("library and instance details", () => {
     expect(versionBox().textContent).toBe("1.19.4");
     expect(container.textContent).not.toContain("No versions match the search.");
     await act(async () => installButton().click());
-    expect(commandMock).toHaveBeenCalledWith("install_version", { versionId: "1.19.4" });
+    expect(commandMock).toHaveBeenCalledWith("create_game_instance", expect.objectContaining({
+      gameVersion: "1.19.4", loader: "vanilla", loaderVersion: "",
+    }));
   });
 
   it("never installs a version the type or search hides, after reopening or once the list arrives", async () => {
     const manifest = versionFixture();
     mockLauncher.manifest = null;
     let answer!: (value: typeof manifest) => void;
-    commandMock.mockImplementation(async (name) => name === "list_versions" ? new Promise(resolve => { answer = resolve; }) : null);
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_versions") return new Promise(resolve => { answer = resolve; });
+      if (name === "suggest_instance_name") return args?.gameVersion as string;
+      if (name === "create_game_instance") return { ...instance, id: "created-instance" };
+      return null;
+    });
     const props = { onOpenChange: vi.fn(), onInstalled: vi.fn() };
     await render(createElement(CreateInstanceDialog, { ...props, open: true }), "en-US");
     // The list is still loading when another type is chosen.
@@ -953,8 +1079,10 @@ describe("library and instance details", () => {
     expect(versionCategory("Snapshots").getAttribute("aria-pressed")).toBe("true");
     expect(versionBox().textContent).toBe("24w14a");
     await act(async () => installButton().click());
-    expect(commandMock).toHaveBeenCalledWith("install_version", { versionId: "24w14a" });
-    expect(commandMock.mock.calls.some(([name, args]) => name === "install_version" && (args as { versionId: string }).versionId === "1.21.11")).toBe(false);
+    expect(commandMock).toHaveBeenCalledWith("create_game_instance", expect.objectContaining({
+      gameVersion: "24w14a", loader: "vanilla", loaderVersion: "",
+    }));
+    expect(commandMock.mock.calls.some(([name, args]) => name === "create_game_instance" && (args as { gameVersion: string }).gameVersion === "1.21.11")).toBe(false);
 
     // The next list (another download source, say) no longer has the pick: it is no choice.
     await render(createElement(CreateInstanceDialog, { ...props, open: false }), "en-US");
@@ -994,6 +1122,7 @@ describe("library and instance details", () => {
       if (name === "list_loader_versions") return [{ id: "HD_U_J3", stable: true, recommended: true }];
       if (name === "choose_launcher_path") return ["C:\\SyntheticFixture\\OptiFine_1.21.11_HD_U_J3.jar"];
       if (name === "install_optifine_installer") return { versionId: "1.21.11-OptiFine_HD_U_J3", loader: "optifine", loaderVersion: "HD_U_J3" };
+      if (name === "create_instance_from_version") return { ...instance, id: "created-instance", versionId: "1.21.11-OptiFine_HD_U_J3" };
       return null;
     });
     const onInstalled = vi.fn();
@@ -1016,7 +1145,7 @@ describe("library and instance details", () => {
       expectedGameVersion: "1.21.11",
     });
     expect(commandMock.mock.calls.some(([name]) => name === "install_loader")).toBe(false);
-    expect(onInstalled).toHaveBeenCalledWith("1.21.11-OptiFine_HD_U_J3", undefined);
+    expect(onInstalled).toHaveBeenCalledWith("1.21.11-OptiFine_HD_U_J3", "created-instance");
   });
 
   it("distinguishes an empty Modrinth release list from a failed request and retries just the pack", async () => {
@@ -1128,17 +1257,40 @@ describe("library and instance details", () => {
     expect(card.querySelector("svg[data-selected-mark]")).toBeNull();
     expect(card.querySelector(".vx-instance-card__path")?.getAttribute("title")).toBe(instance.gameDirectory);
     expect(card.querySelector(".vx-instance-card__name")?.getAttribute("title")).toBe(instance.name);
-    expect(card.querySelector(".vx-instance-card__technical")?.getAttribute("title")).toContain("1.21.1");
-    expect(card.querySelector(".vx-instance-card__technical")?.textContent).toContain("原版");
+    const technical = card.querySelector(".vx-instance-card__technical")!;
+    const technicalItems = [...technical.querySelectorAll(":scope > span")].map((item) => item.textContent);
+    expect(technical.getAttribute("title")).toContain("1.21.1");
+    expect(technicalItems).toEqual(["1.21.1", "原版"]);
+    expect(technical.textContent).not.toContain("·");
     expect(card.textContent).not.toContain("可启动");
     expect(container.querySelector(".vx-library-commandbar")).not.toBeNull();
     // Ctrl+F focuses the first visible input[type="search"] in main.
     expect(container.querySelector<HTMLInputElement>(".vx-library-commandbar input")?.type).toBe("search");
     expect(container.querySelector(".vx-instance-sheet")).not.toBeNull();
-    expect(container.querySelector("[data-create-instance]")).not.toBeNull();
+    // The command bar's primary button is the one way to create once instances exist.
+    expect(container.querySelector("[data-create-instance]")).toBeNull();
+    // Opening a card stays inside the launcher: a chevron, never an external-link arrow.
+    expect(card.querySelector(".lucide-arrow-up-right")).toBeNull();
+    expect(card.querySelector(".vx-instance-card__open .lucide-chevron-right")).not.toBeNull();
     expect(container.querySelector(".vx-instance-grid")).toBeNull();
     expect(card.querySelector(".vx-lattice-frame")?.getAttribute("data-signature")).toBe("fixture-world");
     expect(card.querySelector(".vx-lattice-frame")?.getAttribute("data-state")).toBe("selected");
+  });
+
+  it("keeps only the create card and the actions in an empty game folder", async () => {
+    mockLauncher.data.instances = [];
+    await render(createElement(LibraryPage), "en-US");
+    const tile = container.querySelector("[data-create-instance]")!;
+    expect(tile).not.toBeNull();
+    expect(tile.querySelector(".lucide-arrow-up-right")).toBeNull();
+    // Nothing to search, sort or switch views over.
+    const bar = container.querySelector(".vx-library-commandbar")!;
+    expect(bar.querySelector('input[type="search"]')).toBeNull();
+    expect(bar.querySelector(".vx-library-sort-select")).toBeNull();
+    expect(bar.querySelector(".vx-library-view")).toBeNull();
+    expect(bar.querySelector(".vx-library-more")).not.toBeNull();
+    expect([...bar.querySelectorAll(".vx-library-commandbar__actions button")].map(button => button.textContent))
+      .toEqual(["Import modpack", "Create instance"]);
   });
 
   it("opens the detail view and calls content, world, and diagnostic APIs in its context", async () => {
@@ -1159,6 +1311,216 @@ describe("library and instance details", () => {
     expect(commandMock).toHaveBeenCalledWith("diagnose_instance", { versionId: "1.21.1", instanceId: "fixture-world" });
   });
 
+  it("lets launch repair a missing official base and blocks only unrecoverable profiles", async () => {
+    for (const repairable of ["baseMissing", "clientJarMissing"]) {
+      mockLauncher.data.instances = [{ ...instance, issue: repairable }];
+      mockLauncher.selectedInstance = mockLauncher.data.instances[0];
+      await render(createElement(LibraryPage));
+      const card = container.querySelector<HTMLElement>('[data-instance-id="fixture-world"]')!;
+      expect(card.querySelector<HTMLButtonElement>("[data-launch]")!.disabled, repairable).toBe(false);
+      expect(card.textContent, repairable).not.toContain("无法启动");
+    }
+    mockLauncher.data.instances = [{ ...instance, issue: "invalidMainClass" }];
+    mockLauncher.selectedInstance = mockLauncher.data.instances[0];
+    await render(createElement(LibraryPage));
+    const card = container.querySelector<HTMLElement>('[data-instance-id="fixture-world"]')!;
+    expect(card.textContent).toContain("无法启动");
+    expect(card.querySelector<HTMLButtonElement>("[data-launch]")!.disabled).toBe(true);
+    expect(card.querySelector<HTMLButtonElement>("[data-launch]")!.title).toContain("主类");
+  });
+
+  it("shows a shared instance's isolation and switches it with an explicit copy-worlds choice", async () => {
+    const onChanged = vi.fn(async () => {});
+    const shared = { ...instance, kind: "version" as const, isolated: false, gameFolder: "C:\\SyntheticFixture", folderMissingSince: null };
+    const confirm = confirmMock.mockResolvedValue(true);
+    await render(createElement(InstanceDetailPage, { instance: shared, onBack: vi.fn(), onChanged, onLaunch: vi.fn() }));
+    expect(container.textContent).toContain("与其他实例共享");
+    expect(container.textContent).toContain("备份、恢复、导出、更换加载器和整合包更新都需要独立的游戏目录");
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "独立游戏目录")!.click());
+    expect(confirm).not.toHaveBeenCalled();
+    // One dialog, three explicit choices: copy worlds, start empty, or cancel.
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "隔离并复制世界")!.click());
+    expect(confirm).not.toHaveBeenCalled();
+    expect(commandMock).toHaveBeenCalledWith("set_instance_isolation", {
+      instanceId: "fixture-world", isolated: true, copyWorlds: true,
+    });
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("cancelling the isolation dialog never isolates the instance", async () => {
+    const shared = { ...instance, kind: "version" as const, isolated: false, gameFolder: "C:\\SyntheticFixture", folderMissingSince: null };
+    await render(createElement(InstanceDetailPage, { instance: shared, onBack: vi.fn(), onChanged: vi.fn(), onLaunch: vi.fn() }));
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "独立游戏目录")!.click());
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "取消")!.click());
+    expect(commandMock).not.toHaveBeenCalledWith("set_instance_isolation", expect.anything());
+  });
+
+  it("returns an isolated instance to the shared directory only after confirmation", async () => {
+    const onChanged = vi.fn(async () => {});
+    const isolatedVersion = { ...instance, kind: "version" as const, isolated: true, gameFolder: "C:\\SyntheticFixture", folderMissingSince: null };
+    confirmMock.mockResolvedValueOnce(false).mockResolvedValue(true);
+    await render(createElement(InstanceDetailPage, { instance: isolatedVersion, onBack: vi.fn(), onChanged, onLaunch: vi.fn() }));
+    const share = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "与其他实例共享")!;
+    await act(async () => share().click());
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock.mock.calls[0]?.[0]).toContain("共享游戏目录");
+    expect(commandMock).not.toHaveBeenCalledWith("set_instance_isolation", expect.anything());
+    expect(onChanged).not.toHaveBeenCalled();
+    await act(async () => share().click());
+    expect(commandMock).toHaveBeenCalledWith("set_instance_isolation", {
+      instanceId: "fixture-world", isolated: false, copyWorlds: false,
+    });
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("deletes an instance to the recycle bin by default and lists dependants", async () => {
+    const version = { ...instance, kind: "version" as const, isolated: true, gameFolder: "C:\\SyntheticFixture" };
+    const dependants = vi.fn(async () => [] as string[]);
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_instance_dependants") return dependants();
+      return base(name, args);
+    });
+    await render(createElement(InstanceDetailPage, { instance: version, onBack: vi.fn(), onChanged: vi.fn(async () => {}), onLaunch: vi.fn() }));
+    const disclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    const summary = disclosure.querySelector<HTMLElement>("summary")!;
+    vi.spyOn(summary, "getBoundingClientRect").mockReturnValue(new DOMRect(900, 160, 38, 38));
+    await act(async () => { summary.click(); });
+    await act(async () => { disclosure.open = true; disclosure.dispatchEvent(new Event("toggle")); });
+    const menu = document.querySelector<HTMLElement>(".vx-detail-manage__menu");
+    expect(menu, document.body.innerHTML).not.toBeNull();
+    await act(async () => Array.from(menu!.querySelectorAll("button")).find((button) => button.textContent === "删除实例文件夹")!.click());
+    expect(dependants).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("移到回收站");
+    await act(async () => document.querySelector<HTMLButtonElement>("[data-delete-recycle]")!.click());
+    expect(commandMock).toHaveBeenCalledWith("delete_instance", {
+      instanceId: "fixture-world", confirmed: true, permanent: false,
+    });
+
+    // A dependant blocks the destructive choices and is named in the dialog.
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_instance_dependants") return ["1.21.1-Fabric"];
+      return base(name, args);
+    });
+    await render(createElement(InstanceDetailPage, { instance: version, onBack: vi.fn(), onChanged: vi.fn(async () => {}), onLaunch: vi.fn() }));
+    const secondDisclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    const secondSummary = secondDisclosure.querySelector<HTMLElement>("summary")!;
+    vi.spyOn(secondSummary, "getBoundingClientRect").mockReturnValue(new DOMRect(900, 160, 38, 38));
+    await act(async () => { secondSummary.click(); });
+    await act(async () => { secondDisclosure.open = true; secondDisclosure.dispatchEvent(new Event("toggle")); });
+    const secondMenu = document.querySelector<HTMLElement>(".vx-detail-manage__menu");
+    await act(async () => Array.from(secondMenu!.querySelectorAll("button")).find((button) => button.textContent === "删除实例文件夹")!.click());
+    expect(document.body.textContent).toContain("1.21.1-Fabric");
+    expect(document.querySelector("[data-delete-recycle]")).toBeNull();
+    expect(document.querySelector("[data-delete-permanent]")).toBeNull();
+  });
+
+  it("falls back to the confirmed permanent delete when no recycle bin is available", async () => {
+    const version = { ...instance, kind: "version" as const, isolated: true, gameFolder: "C:\\SyntheticFixture" };
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_instance_dependants") return [];
+      if (name === "delete_instance") {
+        throw { code: "instance.recycleUnavailable", params: { reason: "pathTooLong" } };
+      }
+      return base(name, args);
+    });
+    await render(createElement(InstanceDetailPage, {
+      instance: version, onBack: vi.fn(), onChanged: vi.fn(async () => {}), onLaunch: vi.fn(),
+    }));
+    const disclosure = container.querySelector<HTMLDetailsElement>(".vx-detail-manage")!;
+    const summary = disclosure.querySelector<HTMLElement>("summary")!;
+    vi.spyOn(summary, "getBoundingClientRect").mockReturnValue(new DOMRect(900, 160, 38, 38));
+    await act(async () => { summary.click(); });
+    await act(async () => { disclosure.open = true; disclosure.dispatchEvent(new Event("toggle")); });
+    const menu = document.querySelector<HTMLElement>(".vx-detail-manage__menu");
+    await act(async () => Array.from(menu!.querySelectorAll("button")).find((button) => button.textContent === "删除实例文件夹")!.click());
+    await act(async () => document.querySelector<HTMLButtonElement>("[data-delete-recycle]")!.click());
+
+    // The coded failure keeps the dialog open, shows the reason code
+    // translated (never the code itself), and leaves the separately confirmed
+    // permanent delete as the only choice.
+    expect(document.body.textContent).toContain("此文件夹无法移到回收站：它的路径过长，回收站无法处理。");
+    expect(document.body.textContent).not.toContain("pathTooLong");
+    expect(document.querySelector("[data-delete-recycle]")).toBeNull();
+    expect(document.querySelector("[data-delete-permanent-fallback]")).not.toBeNull();
+    expect(document.body.textContent).toContain("永久删除");
+
+    // The permanent delete asks once more; cancelling it deletes nothing.
+    const permanentCalls = () => commandMock.mock.calls.filter(([name, args]) => name === "delete_instance" && args?.permanent === true);
+    await act(async () => document.querySelector<HTMLButtonElement>("[data-delete-permanent-fallback]")!.click());
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock.mock.calls[0]?.[0]).toContain("无法撤销");
+    expect(confirmMock.mock.calls[0]?.[1]).toEqual({ tone: "danger" });
+    expect(permanentCalls()).toHaveLength(0);
+    confirmMock.mockResolvedValue(true);
+    await act(async () => document.querySelector<HTMLButtonElement>("[data-delete-permanent-fallback]")!.click());
+    expect(permanentCalls()).toEqual([["delete_instance", { instanceId: "fixture-world", confirmed: true, permanent: true }]]);
+    commandMock.mockImplementation(base);
+  });
+
+  it("shows hidden instances in the library overflow menu and restores one", async () => {
+    const hidden = { ...instance, id: "hidden-world", name: "隐藏世界", hidden: true };
+    const baseHidden = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => {
+      if (name === "list_hidden_instances") return [hidden];
+      if (name === "restore_instance") return hidden;
+      return baseHidden(name, args);
+    });
+    await render(createElement(LibraryPage));
+    await act(async () => container.querySelector<HTMLElement>(".vx-library-more summary")!.click());
+    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "显示隐藏的实例")!.click());
+    expect(document.body.textContent).toContain("隐藏世界");
+    await act(async () => Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "恢复")!.click());
+    expect(commandMock).toHaveBeenCalledWith("restore_instance", { instanceId: "hidden-world" });
+    expect(mockLauncher.reload).toHaveBeenCalled();
+  });
+
+  it("converts a launcher-managed instance from its detail page", async () => {
+    const onChanged = vi.fn(async () => {});
+    confirmMock.mockResolvedValueOnce(false).mockResolvedValue(true);
+    const managed = {
+      ...instance,
+      kind: "managed" as const,
+      isolated: true,
+      gameFolder: "",
+      gameDirectory: "C:\\SyntheticFixture\\instances\\fixture-world",
+    };
+    await render(createElement(InstanceDetailPage, { instance: managed, onBack: vi.fn(), onChanged, onLaunch: vi.fn() }));
+    const convert = () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "转换为标准实例文件夹")!;
+    await act(async () => convert().click());
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock.mock.calls[0]?.[0]).toContain("versions/<name>/");
+    expect(commandMock).not.toHaveBeenCalledWith("convert_managed_instance", expect.anything());
+    expect(onChanged).not.toHaveBeenCalled();
+    await act(async () => convert().click());
+    expect(commandMock).toHaveBeenCalledWith("convert_managed_instance", { instanceId: "fixture-world" });
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("switches the active game folder from the library selector", async () => {
+    const other = "D:\\OtherGame";
+    mockLauncher.config = {
+      ...mockLauncher.config,
+      gameFolders: [
+        { path: "C:\\SyntheticFixture", label: "", active: true },
+        { path: other, label: "PCL", active: false },
+      ],
+    };
+    mockLauncher.data.config = mockLauncher.config;
+    await render(createElement(LibraryPage));
+    const selector = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="游戏文件夹"]')!;
+    expect(selector).not.toBeNull();
+    giveBackupSelectBounds(selector);
+    await act(async () => selector.click());
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((candidate) => candidate.textContent?.includes("PCL"));
+    expect(option).not.toBeUndefined();
+    await act(async () => option!.click());
+    expect(commandMock).toHaveBeenCalledWith("set_active_game_folder", { path: other });
+    expect(mockLauncher.reload).toHaveBeenCalled();
+  });
+
   it("passes loader and instance creation arguments through the shared create flow", async () => {
     await render(createElement(CreateInstanceDialog, { open: true, onOpenChange: vi.fn(), onInstalled: vi.fn() }));
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Fabric")!.click());
@@ -1169,8 +1531,12 @@ describe("library and instance details", () => {
       name.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("安装并准备"))!.click());
-    expect(commandMock).toHaveBeenCalledWith("install_loader", { loader: "fabric", gameVersion: "1.21.1", loaderVersion: "0.16.9" });
-    expect(commandMock).toHaveBeenCalledWith("create_instance", { name: "Fabric 世界", versionId: "fabric-loader-0.16.9-1.21.1" });
+    expect(commandMock).toHaveBeenCalledWith("create_game_instance", {
+      name: "Fabric 世界",
+      gameVersion: "1.21.1",
+      loader: "fabric",
+      loaderVersion: "0.16.9",
+    });
   });
 
   it("retains the loader choice while collapsed and removes it from interaction", async () => {
@@ -1265,26 +1631,23 @@ describe("library and instance details", () => {
     expect(resourcePanel?.getAttribute("aria-labelledby")).toBe(tabs[2].id);
   });
 
-  it("opens an installed version directory without turning it into an instance", async () => {
+  it("opens an instance detail and scopes content commands to that instance", async () => {
     await render(createElement(LibraryPage));
-    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "版本目录")!.click());
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-version-id="1.21.1"]')!.click());
-    expect(container.textContent).toContain("Minecraft 1.21.1");
-    expect(container.querySelector('[data-tab="settings"]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-instance-id="fixture-world"] .vx-instance-card__select')!.click());
+    expect(container.querySelector(".vx-detail-header h1")?.textContent).toContain("合成测试世界");
+    expect(container.querySelector('[data-tab="settings"]')).not.toBeNull();
     await act(async () => container.querySelector<HTMLElement>('[data-tab="content"]')!.click());
-    expect(commandMock).toHaveBeenCalledWith("list_local_resources", { versionId: "1.21.1", instanceId: undefined, resourceType: "resourcepack" });
+    expect(commandMock).toHaveBeenCalledWith("list_local_resources", { versionId: "1.21.1", instanceId: "fixture-world", resourceType: "resourcepack" });
     await act(async () => container.querySelector<HTMLElement>('[data-tab="worlds"]')!.click());
-    expect(commandMock).toHaveBeenCalledWith("list_worlds", { versionId: "1.21.1", instanceId: undefined });
+    expect(commandMock).toHaveBeenCalledWith("list_worlds", { versionId: "1.21.1", instanceId: "fixture-world" });
     await act(async () => container.querySelector<HTMLElement>('[data-tab="logs"]')!.click());
     await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("分析最近错误"))!.click());
-    expect(commandMock).toHaveBeenCalledWith("diagnose_instance", { versionId: "1.21.1", instanceId: undefined });
+    expect(commandMock).toHaveBeenCalledWith("diagnose_instance", { versionId: "1.21.1", instanceId: "fixture-world" });
   });
 
-  it("keeps the current version directory visibly selected when its shared frame is owned", async () => {
-    mockLauncher.selectedInstance = undefined;
+  it("keeps the current instance visibly selected with the shared frame owned", async () => {
     await render(createElement(LibraryPage));
-    await act(async () => Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "版本目录")!.click());
-    const card = container.querySelector<HTMLElement>('[data-version-directory="1.21.1"]')!;
+    const card = container.querySelector<HTMLElement>('[data-instance-id="fixture-world"]')!;
     expect(card.getAttribute("aria-current")).toBeNull();
     expect(card.querySelector(".vx-instance-card__select")?.getAttribute("aria-current")).toBe("true");
     const marker = card.querySelector(':scope > .vx-lattice-frame[data-selected="true"]');
@@ -1397,7 +1760,7 @@ describe("library and instance details", () => {
       expect(rows().every((row) => row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked)).toBe(true);
 
       await act(async () => headerCheckbox().click());
-      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(selectionStatus()?.textContent).toBe("勾选文件以批量操作");
       expect(rows().every((row) => !row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked)).toBe(true);
     });
 
@@ -1455,7 +1818,7 @@ describe("library and instance details", () => {
       expect(container.querySelector(".vx-resource-files > .vx-resource-controls")).not.toBeNull();
       expect(container.querySelector(".vx-resource-files > .vx-resource-batch")).toBe(bar);
       expect(instanceDetailCss).toMatch(/\.vx-resource-files\s*\{[^}]*display:\s*grid;[^}]*gap:\s*var\(--space-3\)/);
-      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(selectionStatus()?.textContent).toBe("勾选文件以批量操作");
       expect(batchButton("启用").disabled).toBe(true);
       expect(batchButton("禁用").disabled).toBe(true);
       expect(batchButton("清除选择").disabled).toBe(true);
@@ -1467,7 +1830,7 @@ describe("library and instance details", () => {
       clear.focus();
       expect(document.activeElement).toBe(clear);
       await act(async () => clear.click());
-      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(selectionStatus()?.textContent).toBe("勾选文件以批量操作");
       expect(container.querySelector(".vx-resource-batch")).toBe(bar);
       expect(document.activeElement).toBe(headerCheckbox());
       expect(clear.disabled).toBe(true);
@@ -1532,7 +1895,7 @@ describe("library and instance details", () => {
       const kindSelect = container.querySelector<HTMLButtonElement>('.vx-resource-kind-select [role="combobox"]')!;
       expect(kindSelect.disabled).toBe(true);
       const retry = [...container.querySelectorAll<HTMLButtonElement>(".vx-toolbar button")]
-        .find((button) => button.textContent === "重试")!;
+        .find((button) => button.getAttribute("aria-label") === "刷新")!;
       expect(retry.disabled).toBe(true);
 
       const listCalls = commandMock.mock.calls.filter(([name]) => name === "list_local_resources").length;
@@ -1678,7 +2041,7 @@ describe("library and instance details", () => {
       expect(commandMock).toHaveBeenCalledWith("list_local_resources", { versionId: "1.21.1", instanceId: instance.id, resourceType: "mod" });
       expect(rowNames()).toEqual(["Delta Mod"]);
       expect(search().value).toBe("");
-      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(selectionStatus()?.textContent).toBe("勾选文件以批量操作");
       expect(batchButton("启用").disabled).toBe(true);
       expect(rowCheckbox("Delta Mod").checked).toBe(false);
       expect(filterLabels()).toEqual(["全部 (1)", "已启用 (1)", "已禁用 (0)"]);
@@ -1687,7 +2050,7 @@ describe("library and instance details", () => {
     it("enables batch delete only with a selection and cancels without deleting", async () => {
       const resources = [localFile("Alpha"), localFile("Beta")];
       commandMock.mockImplementation(async (name) => name === "list_local_resources" ? resources : []);
-      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      const confirm = confirmMock.mockResolvedValue(false);
       await render(createElement(InstanceContent, { versionId: "1.21.1", instanceId: instance.id }));
 
       expect(batchButton("删除").disabled).toBe(true);
@@ -1709,7 +2072,7 @@ describe("library and instance details", () => {
         fileName: "alpha.jar", name: "Alpha", currentVersion: "1.0", newVersion: "1.1",
         projectId: "alpha-project", newVersionId: "alpha-version", enabled: true, source: "modrinth",
       }];
-      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      const confirm = confirmMock.mockResolvedValue(true);
       commandMock.mockImplementation(async (name, args) => {
         if (name === "list_local_resources") return resources;
         if (name === "check_resource_updates") return { updates, curseforgeSkipped: false };
@@ -1738,7 +2101,7 @@ describe("library and instance details", () => {
         fileNames: ["alpha.jar", "beta.jar"],
       });
       expect(commandMock.mock.calls.filter(([name]) => name === "list_local_resources")).toHaveLength(2);
-      expect(selectionStatus()?.textContent).toBe("已选择 0 个文件");
+      expect(selectionStatus()?.textContent).toBe("勾选文件以批量操作");
       expect(rowNames()).toEqual(["Gamma"]);
       expect(container.querySelector(".vx-inline-notice")?.textContent).toBe("已从磁盘永久删除 2 个资源。");
       expect(document.activeElement).toBe(headerCheckbox());
@@ -1749,7 +2112,7 @@ describe("library and instance details", () => {
 
     it("shows a batch delete error and still refreshes the file list", async () => {
       const resources = [localFile("Alpha"), localFile("Beta")];
-      vi.spyOn(window, "confirm").mockReturnValue(true);
+      confirmMock.mockResolvedValue(true);
       commandMock.mockImplementation(async (name) => {
         if (name === "list_local_resources") return resources;
         if (name === "delete_local_resources") throw { code: "resource.unavailable", params: {} };

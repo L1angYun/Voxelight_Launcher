@@ -7,10 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import type { Config, EffectsLevel, SystemAppearance } from "../lib/launcher";
-import { buildAccentScale, type AccentScale } from "../design/accent";
+import { buildAccentScale, DEFAULT_ACCENT, type AccentScale } from "../design/accent";
 
 export const defaultSystemAppearance: SystemAppearance = {
-  accentColor: "#b4f17a",
+  accentColor: DEFAULT_ACCENT,
   animationsEnabled: true,
   advancedEffectsEnabled: true,
   locale: "en-US",
@@ -97,12 +97,13 @@ export function AppearanceProvider({
   const reducedTransparency =
     reducedTransparencyMedia || !systemAppearance.advancedEffectsEnabled;
   const highContrast = forcedColors || moreContrast;
+  // "voxelight" is a legacy source from configurations written before the
+  // brand accent was removed. It follows the system now instead of falling
+  // back to the old green.
   const accentColor =
-    config.accentSource === "system"
-      ? systemAppearance.accentColor
-      : config.accentSource === "custom"
-        ? config.accentColor
-        : "#b4f17a";
+    config.accentSource === "custom"
+      ? config.accentColor || DEFAULT_ACCENT
+      : systemAppearance.accentColor || DEFAULT_ACCENT;
   const accentScale = useMemo(
     () => buildAccentScale(accentColor, resolvedTheme),
     [accentColor, resolvedTheme],
@@ -131,8 +132,8 @@ export function AppearanceProvider({
     root.style.setProperty("--accent", accentScale.base);
     root.style.setProperty("--accent-hover", accentScale.hover);
     root.style.setProperty("--accent-active", accentScale.active);
-    root.style.setProperty("--accent-soft", accentScale.soft);
-    root.style.setProperty("--accent-border", accentScale.border);
+    // Soft/border are CSS-derived from --accent and --accent-indicator in
+    // tokens.css; writing them here would freeze the first theme's mix.
     root.style.setProperty("--accent-foreground", accentScale.foreground);
     root.style.setProperty("--accent-ink", accentScale.ink);
     root.style.setProperty("--accent-indicator", accentScale.indicator);

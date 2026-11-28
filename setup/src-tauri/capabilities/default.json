@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "setup-window",
+  "description": "Minimal capabilities for Voxelight Setup: local frameless window controls, progress events, and setup commands only",
+  "windows": [
+    "setup"
+  ],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "setup-commands"
+  ]
+}

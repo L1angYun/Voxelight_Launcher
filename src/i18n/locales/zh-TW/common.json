@@ -12,7 +12,8 @@
     "maximize": "最大化",
     "restore": "還原",
     "search": "搜尋",
-    "manage": "管理"
+    "manage": "管理",
+    "confirm": "確認"
   },
   "navigation": {
     "home": "開始",
@@ -32,7 +33,20 @@
     "missing": "無法顯示此內容。",
     "desktopRequired": "請使用桌面版執行此操作。"
   },
+  "confirm": {
+    "title": "確認操作"
+  },
   "units": {},
+  "leaveGuard": {
+    "title": "有未儲存的變更",
+    "description": "離開此頁面前儲存變更，或捨棄這些變更。",
+    "discard": "捨棄變更",
+    "stay": "留在本頁",
+    "saveFailed": "無法儲存變更，你仍留在目前頁面。",
+    "waitingForSave": "變更仍在儲存中，儲存完成後將離開此頁面。",
+    "sectionDescription": "切換到其他分組前儲存變更，或捨棄這些變更。",
+    "sectionWaitingForSave": "變更仍在儲存中，儲存完成後將切換分組。"
+  },
   "a11y": {
     "dismissNotification": "關閉通知",
     "mainNavigation": "主導覽",

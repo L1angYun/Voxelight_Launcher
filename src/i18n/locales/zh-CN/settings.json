@@ -100,6 +100,7 @@
     "clientIdBuiltinPlaceholder": "留空以使用内置应用",
     "builtinActive": "此构建包含内置 Microsoft 应用，留空即可使用。",
     "curseforgeKey": "CurseForge API Key",
+    "keySeparateHint": "此密钥单独加密保存，不受页面「保存设置」影响。",
     "keyPlaceholder": "填写自己的 API Key",
     "curseforgeBuiltinPlaceholder": "留空使用内置密钥",
     "keyConfiguredPlaceholder": "已加密保存，留空不修改",
@@ -158,8 +159,8 @@
     "system": "跟随系统"
   },
   "effects": {
-    "lite": "精简 · 保留必要动态",
-    "full": "完全 · 启用全部特效"
+    "lite": "精简（保留必要动态）",
+    "full": "完全（启用全部特效）"
   },
   "worldScene": {
     "horizon": "地平线",
@@ -172,24 +173,55 @@
     "cssFallback": "三维世界暂不可用，已使用静态点阵背景；游戏启动功能不受影响。",
     "liteUnloaded": "精简效果下已卸载 3D 世界以节省内存；切回完全效果即可恢复。"
   },
+  "worldPreview": {
+    "replayIntro": "重播入场动画"
+  },
   "accent": {
-    "voxelight": "Voxelight 绿",
-    "system": "跟随系统强调色",
-    "custom": "自定义强调色",
+    "system": "跟随系统",
+    "custom": "自定义",
     "systemCurrent": "当前系统强调色：{{color}}",
-    "presets": "预设强调色",
-    "preset": "强调色 {{color}}"
+    "names": {
+      "dianqing": "靛青",
+      "kongquelan": "孔雀蓝",
+      "biqing": "碧青",
+      "zhulv": "竹绿",
+      "luweilv": "芦苇绿",
+      "zhuhong": "朱红",
+      "haitanghong": "海棠红",
+      "meiguihong": "玫瑰红",
+      "qinglian": "青莲",
+      "hupohuang": "琥珀黄",
+      "yanyuhui": "燕羽灰"
+    }
   },
   "soundDescription": "默认关闭，仅用于少数重要过渡。",
   "background": {
-    "title": "首页背景",
-    "description": "选择本地 PNG、JPEG 或 WebP 图片，文字区域保持稳定对比度。",
-    "choose": "选择首页背景",
-    "reset": "恢复默认背景"
+    "title": "背景与环境光",
+    "description": "在所有页面底层叠加柔和环境光，也可选择本地 PNG、JPEG 或 WebP 图片作为全页背景，内容区域始终保持稳定对比度。",
+    "choose": "选择背景图片",
+    "reset": "恢复默认背景",
+    "ambientEnabled": "环境光",
+    "ambientDescription": "在所有页面底层流动低饱和柔光，让液态玻璃呈现真实折射。精简与减弱动效模式保持静态色彩。",
+    "ambientIntensity": "环境光强度",
+    "blur": "背景模糊",
+    "dim": "背景压暗",
+    "drift": "背景慢漂移",
+    "driftDescription": "仅在完全特效且未开启减弱动效时缓慢移动背景图。",
+    "percent": "{{value}}%",
+    "blurPixels": "{{value}} px"
   },
-  "gameDescription": "共享游戏文件与窗口默认值，实例覆盖仍在实例设置中。",
+  "gameDescription": "游戏文件夹、共享运行库、隔离和窗口默认值。实例级覆盖位于实例设置中。",
   "game": {
-    "browse": "浏览",
+    "foldersDescription": "添加任何包含版本的文件夹。Voxelight、PCL 和 HMCL 可以同时使用同一个 .minecraft。",
+    "active": "使用中",
+    "makeActive": "使用 {{name}}",
+    "folderLabel": "文件夹标签",
+    "openFolder": "打开 {{name}}",
+    "removeFolder": "从列表移除 {{name}}",
+    "addFolder": "添加游戏文件夹",
+    "lastFolder": "无法移除最后一个游戏文件夹",
+    "lastFolderHint": "从列表移除文件夹不会删除其文件。最后一个游戏文件夹无法移除。",
+    "sharedFilesHint": "运行库和资源在每个游戏文件夹内共享。启用隔离后，存档、模组和配置会保留在实例文件夹中。",
     "isolationDescription": "为每个游戏版本保存独立的存档、模组和设置。"
   },
   "javaDescription": "设置新实例共享的运行环境与启动默认值。",
@@ -201,8 +233,8 @@
   "downloadDescription": "管理官方下载、社区镜像与任务并发。",
   "downloadSource": {
     "official": "仅官方源",
-    "auto": "自动 · 官方优先，明显更慢时换镜像",
-    "bmclapi": "BMCLAPI 优先 · 官方兜底",
+    "auto": "自动",
+    "bmclapi": "BMCLAPI 优先",
     "officialDescription": "游戏文件、加载器文件和元数据均从官方发布方下载，文件仍会按要求校验。",
     "autoDescription": "启动器每次运行后，第一次获取版本列表或下载文件时，测一次官方源和 BMCLAPI。除非官方源没有响应或明显更慢，否则官方优先，另一个作为回退。结果只在本次运行内有效，不会写入设置或上传；本地启动器日志会记录一行摘要。",
     "bmclapiDescription": "对支持的游戏和加载器文件优先使用 BMCLAPI，失败后回退到官方地址。",
@@ -224,7 +256,7 @@
     "dataNotice": "卸载默认保留启动器数据；移除账号或实例注册不会删除游戏文件。",
     "secretNotice": "预设不包含账号、登录令牌或平台密钥，服务凭据在通用分组中配置。",
     "typeface": "字体",
-    "typefaceCredit": "MiSans · Xiaomi"
+    "typefaceCredit": "MiSans（小米）"
   },
   "proxy": {
     "title": "网络代理",
@@ -260,6 +292,8 @@
     "credentialStorage": "代理凭据单独保存在系统凭据库中。",
     "httpWarning": "使用 HTTP 代理时，代理凭据在发往代理的连接上不加密。",
     "saveEndpointFirst": "请先保存代理地址，再修改凭据。",
+    "leaveEndpointUnsaved": "代理地址尚未保存，因此代理用户名和密码没有保存。请先保存代理地址，或放弃这些凭据。",
+    "leaveUsernameRequired": "未填写用户名，因此代理密码没有保存。请填写用户名，或放弃这些凭据。",
     "username": "代理用户名",
     "password": "代理密码",
     "saveCredentials": "保存代理凭据",
@@ -278,8 +312,8 @@
     "presetExported": "配置预设已导出，不包含账号和平台密钥。",
     "presetImported": "配置预设已导入。",
     "presetImportedHeapRemoved": "配置预设已导入。其中的 -Xms/-Xmx 等 JVM 参数已忽略，请在内存设置中调整。",
-    "backgroundUpdated": "首页背景已更新。",
-    "backgroundCleared": "已恢复默认首页背景。",
+    "backgroundUpdated": "背景已更新。",
+    "backgroundCleared": "已恢复默认背景。",
     "javaDetected": "发现 {{count}} 个 Java 环境。",
     "javaNotFound": "没有找到 Java，请安装后指定路径。",
     "assistantKeySaved": "Lumen API Key 已加密保存。",
@@ -300,7 +334,7 @@
       "anthropic": "Anthropic"
     },
     "model": "模型名称",
-    "modelPlaceholder": "例如 gpt-4o-mini、claude-sonnet-4-20250514、deepseek-chat",
+    "modelPlaceholder": "例如 gpt-4o-mini",
     "baseUrl": "API 基础地址（可选）",
     "baseUrlHint": "留空使用提供商默认 HTTPS 地址。远程接口必须使用 HTTPS；本机服务（如 Ollama 或 LM Studio）允许 http://127.0.0.1 或 http://localhost。",
     "apiKey": "Lumen API Key",
@@ -324,7 +358,7 @@
     "mcpTitle": "本地 MCP 服务",
     "mcpDescription": "每次启动默认关闭。仅监听 127.0.0.1，要求每次会话随机生成的 Bearer 令牌并校验回环 Host/Origin。",
     "mcpPort": "MCP 端口（1024–65535）",
-    "mcpRunning": "运行中：127.0.0.1:{{port}}（仅限本机）。",
+    "mcpRunningShort": "运行中。",
     "mcpStopped": "已停止。",
     "mcpEndpoint": "接口地址",
     "mcpToken": "会话令牌",

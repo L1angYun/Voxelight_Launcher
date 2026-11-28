@@ -21,3 +21,19 @@
   font-style: normal;
   font-display: swap;
 }
+/* Latin/Cyrillic subset for zh-TW / ja-JP / ko-KR, so Western digits and
+   Latin metadata keep MiSans' rhythm instead of the platform CJK fallback. */
+@font-face {
+  font-family: "MiSans Latin";
+  src: url("/fonts/MiSans-Regular.woff2") format("woff2");
+  font-weight: 100 500;
+  font-display: swap;
+  unicode-range: U+0000-024F, U+0300-036F, U+0400-04FF, U+1E00-1EFF, U+2000-206F, U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2212;
+}
+@font-face {
+  font-family: "MiSans Latin";
+  src: url("/fonts/MiSans-Semibold.woff2") format("woff2");
+  font-weight: 600 900;
+  font-display: swap;
+  unicode-range: U+0000-024F, U+0300-036F, U+0400-04FF, U+1E00-1EFF, U+2000-206F, U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2212;
+}

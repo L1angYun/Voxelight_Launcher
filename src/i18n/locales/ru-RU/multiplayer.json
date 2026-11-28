@@ -8,7 +8,7 @@
     "network": "Проверка сети"
   },
   "environment": "Игровая среда",
-  "chooseEnvironment": "Выберите установленную версию",
+  "chooseEnvironment": "Выберите экземпляр",
   "environmentRequired": "Выберите игровую среду перед сохранением или подключением к серверу.",
   "refresh": "Обновить",
   "addServer": "Добавить сервер",
@@ -98,6 +98,7 @@
   "sendCommand": "Отправить",
   "playerAction": "Действие с игроком",
   "playerName": "Имя игрока",
+  "playerNamePlaceholder": "например, Steve",
   "managePlayer": "Выполнить",
   "playerActions": {
     "whitelist add": "Добавить в белый список",

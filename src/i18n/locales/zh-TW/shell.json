@@ -8,6 +8,11 @@
   "shortcuts": {
     "title": "鍵盤快速鍵",
     "description": "這些快速鍵在啟動器的任意頁面皆可使用。",
+    "or": "或",
+    "groups": {
+      "navigation": "導覽",
+      "general": "一般"
+    },
     "actions": {
       "goTo": "前往{{page}}",
       "assistant": "開啟 Lumen",
@@ -53,7 +58,7 @@
         "javaNone": "尚未偵測到本機 Java——啟動遊戲時 Voxelight 會自動準備相符的官方執行環境。",
         "redetect": "重新偵測",
         "memoryTitle": "記憶體配置",
-        "memorySummary": "系統記憶體 {{total}} GiB · 自動建議配置 {{recommended}} MB。",
+        "memorySummary": "偵測到系統記憶體 {{total}} GiB，自動建議配置 {{recommended}} MB。",
         "memoryAuto": "已啟用記憶體自動配置，會根據系統可用記憶體動態建議合適大小。",
         "proxyTitle": "本機代理",
         "proxySystem": "已自動跟隨系統代理（{{url}}）。",
@@ -69,16 +74,37 @@
           "bmclapi": "BMCLAPI"
         }
       },
+      "lumen": {
+        "title": "認識你的選用助手 Lumen",
+        "body": "Lumen 是 Voxelight 的選用 AI 助手，可以協助你了解當機、下載和執行個體問題；不設定它也完全不影響遊戲。",
+        "ownKey": "你需要自備 AI 服務商的 API Key。",
+        "readOnly": "預設以唯讀方式執行，未經你允許不會變更任何內容。",
+        "asksFirst": "每次變更前都會先詢問你。",
+        "setUp": "立即設定",
+        "later": "稍後"
+      },
       "ready": {
         "title": "一切準備就緒",
         "body": "這裡是 Voxelight 的四個核心區域；隨時可按 F1 再次開啟此引導。"
       }
     },
     "steps": {
-      "library": { "title": "遊戲庫", "body": "你的實例與版本都在這裡。" },
-      "discover": { "title": "探索", "body": "尋找模組、整合包等更多內容。" },
-      "downloads": { "title": "下載", "body": "檢視下載進度與歷史記錄。" },
-      "settings": { "title": "設定", "body": "調整 Java、記憶體與外觀。" }
+      "library": {
+        "title": "遊戲庫",
+        "body": "你的實例與版本都在這裡。"
+      },
+      "discover": {
+        "title": "探索",
+        "body": "尋找模組、整合包等更多內容。"
+      },
+      "downloads": {
+        "title": "下載",
+        "body": "檢視下載進度與歷史記錄。"
+      },
+      "settings": {
+        "title": "設定",
+        "body": "調整 Java、記憶體與外觀。"
+      }
     }
   },
   "notifications": {
@@ -121,7 +147,27 @@
     "resource.versionMissing": "請先安裝 Minecraft 或建立相容的實例。",
     "resource.installAfterCreate": "實例已建立，但資源安裝失敗。可以重試安裝資源。",
     "resource.sourceUnsupported": "此來源暫不支援自動選擇安裝位置，請先建立相容的實例。",
+    "discover.requestInvalid": "搜尋請求無效。請調整篩選條件後重試。",
+    "discover.pageLimit": "搜尋結果最多顯示前 10000 項。請縮小搜尋範圍以查看其他結果。",
+    "discover.versionPageLimit": "更早的版本請到專案頁面查看。",
+    "discover.projectNotFound": "此專案或版本已不存在。",
+    "discover.modrinthUnreachable": "無法連線 Modrinth，請檢查網路後重試。",
+    "discover.modrinthRateLimited": "Modrinth 請求過於頻繁，請稍後重試。",
+    "discover.modrinthFailed": "Modrinth 未能完成請求，請重試。",
+    "discover.curseforgeUnreachable": "無法連線 CurseForge，請檢查網路後重試。",
+    "discover.curseforgeRateLimited": "CurseForge 請求過於頻繁，請稍後重試。",
+    "discover.curseforgeRefused": "CurseForge 拒絕了請求。請檢查你自己的 API Key 及其權限。",
+    "discover.curseforgeFailed": "CurseForge 未能完成請求，請重試。",
     "resource.loaderUnavailable": "此遊戲版本沒有可安裝的載入器版本，請選擇其他遊戲版本。",
+    "resource.manualDownload": "啟動器無法下載此 CurseForge 檔案。請在其 CurseForge 頁面手動下載，然後自行放入資源資料夾。",
+    "resource.dependencyIncompatible": "實例中已啟用不相容的專案 {{project}}。請先停用它，再安裝此資源；本次未變更任何檔案。",
+    "resource.dependencyLimit": "必要前置依賴圖過大或層級過深，無法安全安裝；本次未變更任何檔案。",
+    "resource.dependencyCycle": "必要前置相依項目存在循環（涉及 {{project}}），無法繼續安裝；本次未變更任何檔案。",
+    "resource.dependencyUnavailable": "必要前置「{{name}}」沒有適用於目前遊戲版本與載入器的檔案，或無法完成驗證；本次未變更任何檔案。",
+    "resource.dependencyConflict": "必要前置相依項目存在版本或檔名衝突，無法安全安裝；本次未變更任何檔案。",
+    "resource.dependencyInvalid": "必要前置相依項目無法驗證或不適用於此用戶端實例；本次未變更任何檔案。",
+    "resource.dependencyInstallFirst": "此資源需要其他分類的「{{name}}」。請先在實例中安裝「{{name}}」，再重試；本次未變更任何檔案。",
+    "resource.dependencyManualDownload": "必要前置「{{name}}」（{{file}}）無法自動下載：作者不允許啟動器下載，或 CurseForge 未提供下載網址。請從 {{url}} 手動下載 {{file}}，放入實例的 {{folder}} 目錄後重試；本次未變更任何檔案。",
     "loader.optifineInvalid": "所選檔案不是有效的 OptiFine 安裝程式 JAR。",
     "loader.optifineVersionMismatch": "所選 OptiFine 安裝程式適用於 Minecraft {{installer}}，與目標版本 {{expected}} 不符。",
     "loader.optifineOnlineUnavailable": "無法線上安裝 OptiFine：它的下載沒有 Voxelight 可以驗證的校驗值。請從 optifine.net 下載安裝程式，再匯入 JAR。",
@@ -132,9 +178,25 @@
     "loader.switchBackupNoSpace": "無法備份此實例：存放啟動器備份的磁碟只剩 {{available}} MB，備份約需 {{needed}} MB。載入器未更換。",
     "loader.switchBackupChanged": "無法備份此實例：備份期間實例檔案發生了變化。請關閉正在使用這些檔案的程式後重試。載入器未更換。",
     "instance.baseVersionUnknown": "無法確定此實例的基礎 Minecraft 版本，請先確認對應的版本設定檔存在。",
+    "gameFolder.notFound": "該遊戲資料夾已不在清單中。請在設定中重新加入。",
+    "gameFolder.unsupported": "該資料夾既沒有 versions 目錄，也不是空資料夾，不能作為遊戲資料夾新增。",
+    "gameFolder.unavailable": "無法開啟遊戲資料夾：{{reason}}",
+    "instance.sharedRootRequired": "此實例與遊戲資料夾共用遊戲目錄。備份、還原、匯出、更換載入器與整合包更新都需要獨立遊戲目錄，請先為此實例指定一個。",
+    "instance.deleteConfirmRequired": "刪除實例資料夾需要明確確認。",
+    "instance.folderUnsafe": "此資料夾不是由啟動器管理的實例資料夾，因此未刪除。",
+    "instance.folderNameInvalid": "請使用 1 到 64 個可顯示字元。名稱不能包含路徑分隔符或 Windows 保留名稱，也不能以句點或空格結尾。",
+    "instance.folderNameTaken": "遊戲資料夾中已有同名的實例資料夾，請換一個名稱。",
+    "instance.createUnsupportedLoader": "建立實例時無法使用此載入器，請改為匯入其安裝程式。",
+    "instance.isolationUnsupported": "只有標準版本資料夾實例才能切換遊戲目錄。",
+    "instance.isolationCopyOnly": "只有切換到獨立遊戲目錄時才能複製世界。",
+    "instance.convertUnsupported": "只有由啟動器管理的實例資料夾才能轉換。",
+    "instance.convertNotNeeded": "此實例已經是標準版本資料夾。",
+    "instance.conversionNotPending": "沒有需要復原的中斷實例轉換。",
     "server.importArgsFileMismatch": "所選參數檔案不在匯入的伺服器內容中。",
     "version.loaderReinstall": "{{id}} 的版本設定已損毀。請在啟動器中重新安裝相同的遊戲版本與載入器；原有的世界與模組不會被覆蓋。",
-    "version.profileConflict": "無法確認 {{id}} 現有版本設定的來源，已保留原檔案。請先備份 versions 目錄中的對應 JSON，再將該 JSON 移開後重新安裝原版或原本的載入器。",
+    "version.loaderArtifactMissing": "載入器安裝後產生的檔案遺失或已損毀。請在啟動器中重新安裝對應的載入器（例如在實例頁面重新安裝）；原有的世界與模組不會被覆蓋。",
+    "version.profileConflict": "更新 {{id}} 的版本設定時檔案發生了變化，已保留現有檔案。請先關閉正在使用此遊戲目錄的其他啟動器，再重試。",
+    "version.offlineUnverified": "已保留 {{id}} 的現有版本設定，但首次啟動前需要連線一次以取得並校驗 Mojang 官方中繼資料，之後即可離線啟動。",
     "resource.manifestUnavailable": "無法取得 Minecraft 版本清單，請檢查網路後重試。",
     "download.cancelled": "安裝已取消。",
     "instance.running": "此實例正在執行中，請勿重複啟動。",
@@ -214,7 +276,34 @@
     "assistant.modelRequired": "請先在「設定 → Lumen 與 MCP」中填寫模型名稱。",
     "assistant.invalidBaseUrl": "Lumen API 基礎網址必須使用 HTTPS，或本機迴圈 HTTP（127.0.0.1 / localhost）。",
     "assistant.providerError": "所設定的 AI 服務回傳了錯誤。",
-    "assistant.emptyMessage": "傳送前請輸入訊息內容。"
+    "assistant.emptyMessage": "傳送前請輸入訊息內容。",
+    "instance.deleteDependants": "下列實例繼承自此版本資料夾，刪除後它們將無法啟動：{{instances}}。請先刪除這些實例，或保留此版本。",
+    "instance.officialVersionName": "此名稱是官方 Minecraft 版本。若實例資料夾使用官方版本 ID 但基礎版本不同，將無法啟動；請改用其他名稱。",
+    "instance.loaderSwitchShared": "此實例的版本資料夾是共用的：它是官方 Minecraft 版本、完整的獨立版本，或有其他實例繼承自它。原地更換載入器會一併變更它們，因此實例未變更。請改為使用所需的載入器建立新實例。",
+    "instance.loaderSwitchInstallerFolder": "此實例是載入器安裝程式建立的版本資料夾（以該載入器版本命名）。之後再次安裝同一個載入器（例如用它建立或匯入其他實例）時會覆寫它的版本設定，因此無法原地更換它的載入器。實例未變更。請使用「複製實例」，在副本上更換載入器，或使用所需的載入器建立新實例。",
+    "backup.kindMismatch": "此備份建立於實例的另一種形式（例如轉換為標準版本資料夾之前），無法原地還原。實例未變更；你可以將備份 ZIP 作為新實例匯入。",
+    "instance.recycleFailed": "無法將資料夾移至資源回收筒：{{reason}}。未刪除任何內容。",
+    "instance.recycleUnavailable": "此資料夾無法移至資源回收筒：{{reason}}。未刪除任何內容。如確認要永久刪除，請使用另行確認的永久刪除操作。",
+    "instance.launchBlocked": "此實例無法啟動。{{reason}}",
+    "gameFolder.nested": "遊戲資料夾不能位於另一個已設定的遊戲資料夾內。請選擇獨立的資料夾。",
+    "gameFolder.dataDirectory": "啟動器自身的資料目錄不能作為遊戲資料夾。請選擇其他資料夾。"
+  },
+  "errorReasons": {
+    "recycle": {
+      "networkShare": "它位於網路共用位置",
+      "noRecycleBin": "此磁碟機沒有資源回收筒",
+      "unknownDrive": "無法確認它所在的磁碟機",
+      "pathTooLong": "它的路徑過長，資源回收筒無法處理",
+      "unsupportedPath": "它的路徑無法安全地交給資源回收筒",
+      "unsupportedSystem": "此系統不支援資源回收筒",
+      "shellError": "Windows 傳回錯誤 {{code}}",
+      "aborted": "操作已取消",
+      "unknown": "發生未預期的錯誤"
+    },
+    "gameFolder": {
+      "invalidPath": "此路徑無法使用",
+      "openFailed": "系統無法開啟它"
+    }
   },
   "assistant": {
     "title": "Lumen",
@@ -222,6 +311,47 @@
     "notConfigured": "尚未設定模型",
     "configure": "前往設定",
     "toolCount": "{{count}} 項工具",
+    "tools": {
+      "list_instances": "列出實例",
+      "list_installed_versions": "列出已安裝版本",
+      "list_accounts": "列出帳號",
+      "get_launcher_config": "讀取啟動器設定",
+      "get_memory_overview": "讀取記憶體概覽",
+      "detect_java_runtimes": "偵測 Java 執行階段",
+      "list_remote_versions": "列出遠端版本",
+      "list_loader_versions": "列出載入器版本",
+      "list_download_tasks": "列出下載任務",
+      "list_running_games": "列出執行中的遊戲",
+      "list_instance_resources": "列出實例資源",
+      "list_instance_worlds": "列出實例世界",
+      "list_world_datapacks": "列出世界資料包",
+      "list_instance_backups": "列出實例備份",
+      "read_instance_log": "讀取實例日誌",
+      "diagnose_instance": "診斷實例",
+      "search_modrinth": "搜尋 Modrinth",
+      "list_multiplayer_servers": "列出伺服器",
+      "list_managed_servers": "列出託管伺服器",
+      "read_managed_server_logs": "讀取託管伺服器日誌",
+      "check_network_environment": "偵測網路環境",
+      "detect_local_proxies": "偵測本機代理",
+      "toggle_instance_resource": "切換實例資源",
+      "toggle_world_datapack": "切換世界資料包",
+      "create_instance": "建立實例",
+      "update_instance_notes": "更新實例備註",
+      "update_instance_settings": "更新實例設定",
+      "backup_instance": "備份實例",
+      "clone_instance": "複製實例",
+      "change_instance_loader": "變更實例載入器",
+      "install_minecraft_version": "安裝 Minecraft 版本",
+      "install_modrinth_resource": "安裝 Modrinth 資源",
+      "launch_instance": "啟動實例",
+      "stop_running_game": "停止遊戲",
+      "retry_failed_downloads": "重試失敗的下載",
+      "clear_unfinished_downloads": "清除未完成的下載",
+      "save_multiplayer_server": "儲存伺服器",
+      "start_managed_server": "啟動託管伺服器",
+      "stop_managed_server": "停止託管伺服器"
+    },
     "emptyReady": "向 Lumen 詢問關於目前啟動器的問題，或點選下方的常用提問。",
     "emptyUnconfigured": "請先在「設定 → Lumen 與 MCP」中設定供應商、模型與 API Key（或本機迴圈端點），再啟用 Lumen。",
     "prompts": {

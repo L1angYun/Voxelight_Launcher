@@ -97,6 +97,7 @@ export const downloadKindRegistry = createRegistry([
   { id: "server-import", labelKey: "tasks.kind.server-import" },
   { id: "server-start", labelKey: "tasks.kind.server-start" },
   { id: "default-skin", labelKey: "tasks.kind.default-skin" },
+  { id: "instance-create", labelKey: "tasks.kind.instance-create" },
   { id: "unknown", labelKey: "tasks.kind.unknown" },
 ] as const);
 

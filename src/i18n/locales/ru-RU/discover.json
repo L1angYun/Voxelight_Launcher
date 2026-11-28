@@ -12,9 +12,13 @@
     "modpack": "Сборка"
   },
   "target": "Установить в",
-  "versionDirectory": "Использовать папку версии",
+  "versionDirectory": "Выбранная версия",
   "details": "Подробнее",
   "install": "Установить",
+  "installLatest": "Установить последнюю совместимую версию",
+  "installLatestInto": "Установить последнюю совместимую версию в {{name}}",
+  "compatibleWith": "Подходит для {{version}}",
+  "noVersionFor": "Нет версии для {{version}}",
   "installVersion": "Установить версию {{version}}",
   "installVersionNotice": "Установка другой версии может заменить уже установленную. Обязательные зависимости разрешаются отдельно.",
   "noResults": "Ресурсы не найдены",
@@ -23,6 +27,30 @@
   "authorUnknown": "Неизвестный автор",
   "versions": "Совместимые версии",
   "noVersions": "Нет совместимых версий для текущего экземпляра",
+  "sortLabel": "Сортировка",
+  "sort": {
+    "relevance": "По релевантности",
+    "downloads": "По загрузкам",
+    "follows": "По подпискам",
+    "newest": "Сначала новые",
+    "updated": "Недавно обновлённые",
+    "featured": "Избранные",
+    "popularity": "По популярности",
+    "name": "По названию"
+  },
+  "results": {
+    "showing": "Показано {{shown}}",
+    "showingOf": "Показано {{shown}} из {{total}}"
+  },
+  "filtersLabel": "Активные фильтры",
+  "filter": {
+    "type": "Тип: {{value}}",
+    "gameVersion": "Версия: {{value}}",
+    "loader": "Загрузчик: {{value}}",
+    "sort": "Сортировка: {{value}}"
+  },
+  "loadMore": "Загрузить ещё",
+  "loadMoreVersions": "Загрузить больше версий",
   "fits": {
     "count_one": "Подходит для {{count}} экземпляра",
     "count_few": "Подходит для {{count}} экземпляров",
@@ -45,7 +73,7 @@
   "external": "Открыть страницу проекта",
   "installTarget": {
     "newInstance": "Новый экземпляр",
-    "title": "Куда установить · {{title}}",
+    "title": "Куда установить «{{title}}»",
     "compatible": "Совместимые цели",
     "incompatible": "Несовместимые ({{count}})",
     "installInto": "Установить в {{name}}",
@@ -61,6 +89,19 @@
     "downloads": "Открыть в «Загрузках»",
     "cancel": "Отменить установку",
     "curseforge": "Создайте совместимый экземпляр, затем выберите его для установки этого проекта с CurseForge.",
+    "manual": {
+      "title": "Требуется ручная загрузка",
+      "reason": {
+        "distributionForbidden": "Автор не разрешает другим приложениям скачивать этот файл.",
+        "noDownloadUrl": "CurseForge не предоставляет этот файл для скачивания другими приложениями.",
+        "untrustedUrl": "Адрес загрузки этого файла, указанный CurseForge, не относится к его официальным серверам загрузки, поэтому лаунчер не будет его использовать."
+      },
+      "file": "Файл: {{fileName}}",
+      "fileNamed": "Файл: {{name}} ({{fileName}})",
+      "open": "Открыть страницу файла на CurseForge",
+      "folder": "Скачайте файл вручную и поместите его в папку {{folder}} того экземпляра, в котором хотите его использовать.",
+      "folderTarget": "Скачайте файл вручную и поместите его в папку {{folder}} экземпляра «{{name}}»."
+    },
     "reason": {
       "vanilla": "Ванилла не поддерживает моды",
       "loaderMismatch": "Несовместимый загрузчик",
@@ -72,7 +113,6 @@
       "datapack": "Датапаки размещаются в папке datapacks мира и пока не поддерживаются",
       "noSupportedLoader": "У этого проекта нет версий для Fabric, NeoForge, Forge или Quilt",
       "noVersions": "Нет версий для загрузки",
-      "curseforgeRequiredDependencies": "Для этого файла CurseForge требуются другие ресурсы. Сначала установите его зависимости в совместимый экземпляр, затем установите этот файл.",
       "noPinnedCreationLoader": "Этот файл не поддерживает загрузчик, доступный для новых экземпляров.",
       "noReleaseVersions": "У этого проекта нет релизной версии игры для установки.",
       "manifestUnavailable": "Манифест версий игры временно недоступен, поэтому предложить новый экземпляр невозможно."
@@ -80,9 +120,19 @@
   },
   "notice": {
     "resourceInstalled": "Ресурс установлен.",
+    "resourceInstalledWithDependencies_one": "Ресурс установлен (проверена {{count}} обязательная зависимость, добавлено или обновлено: {{changed}}).",
+    "resourceInstalledWithDependencies_few": "Ресурс установлен (проверены {{count}} обязательные зависимости, добавлено или обновлено: {{changed}}).",
+    "resourceInstalledWithDependencies_many": "Ресурс установлен (проверено {{count}} обязательных зависимостей, добавлено или обновлено: {{changed}}).",
+    "resourceInstalledWithDependencies_other": "Ресурс установлен (проверено {{count}} обязательной зависимости, добавлено или обновлено: {{changed}}).",
+    "resourceAlreadyInstalled": "Этот ресурс и его обязательные зависимости уже установлены в выбранной версии.",
     "instanceInstalled": "Экземпляр установлен.",
-    "resourceInstalledNew": "Ресурс установлен в новый экземпляр."
+    "resourceInstalledNew": "Ресурс установлен в новый экземпляр.",
+    "resourceInstalledNewWithDependencies_one": "Ресурс установлен в новый экземпляр (проверена {{count}} обязательная зависимость, добавлено или обновлено: {{changed}}).",
+    "resourceInstalledNewWithDependencies_few": "Ресурс установлен в новый экземпляр (проверены {{count}} обязательные зависимости, добавлено или обновлено: {{changed}}).",
+    "resourceInstalledNewWithDependencies_many": "Ресурс установлен в новый экземпляр (проверено {{count}} обязательных зависимостей, добавлено или обновлено: {{changed}}).",
+    "resourceInstalledNewWithDependencies_other": "Ресурс установлен в новый экземпляр (проверено {{count}} обязательной зависимости, добавлено или обновлено: {{changed}})."
   },
   "importCurseforgeZip": "Импортировать ZIP с CurseForge",
-  "curseforgeZipRequired": "Выберите ZIP-архив сборки CurseForge."
+  "curseforgeZipRequired": "Выберите ZIP-архив сборки CurseForge.",
+  "versionDirectoryTarget": "Выбранная версия ({{version}})"
 }

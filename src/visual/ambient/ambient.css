@@ -1,0 +1,108 @@
+@layer features {
+.vx-app-body {
+  isolation: isolate;
+  background-color: var(--world-ink, #07080b);
+}
+
+.vx-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: var(--ambient-opacity, .96);
+  mix-blend-mode: screen;
+}
+
+[data-theme="light"] .vx-ambient {
+  opacity: var(--ambient-opacity, .96);
+  mix-blend-mode: multiply;
+}
+
+/* Reading surfaces stay brighter than their page (R2-06). Away from Home a
+   black veil inside the screen-blended layer (black adds nothing by screen)
+   lets the light recede below the window chrome, so the chrome and the
+   floating nav keep all of it and the page heading keeps part of it. It fades
+   in with the page enter. Light themes set no veil: multiply already darkens
+   the page under its surfaces. */
+.vx-ambient::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(to bottom, transparent var(--shell-height, 82px),
+    rgb(0 0 0 / var(--ambient-reading-veil, 0)) calc(var(--shell-height, 82px) + 2 * var(--space-8)));
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+
+.vx-app-body:not([data-current-page="home"]) > .vx-ambient::after {
+  opacity: 1;
+}
+
+.vx-ambient-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.vx-ambient__static {
+  position: absolute;
+  inset: -96px;
+  pointer-events: none;
+  filter: blur(var(--ambient-static-blur, 68px));
+  opacity: var(--ambient-intensity, .60);
+  background:
+    radial-gradient(ellipse 72% 62% at 22% 28%, color-mix(in srgb, var(--ambient-color-0) calc(var(--ambient-peak-0, .66) * 100%), transparent) 0%, color-mix(in srgb, var(--ambient-color-0) calc(var(--ambient-peak-0, .66) * 65%), transparent) 38%, transparent 76%),
+    radial-gradient(ellipse 62% 54% at var(--ambient-anchor-1, 78% 24%), color-mix(in srgb, var(--ambient-color-1) calc(var(--ambient-peak-1, .54) * 100%), transparent) 0%, color-mix(in srgb, var(--ambient-color-1) calc(var(--ambient-peak-1, .54) * 65%), transparent) 38%, transparent 76%),
+    radial-gradient(ellipse 58% 50% at 72% 76%, color-mix(in srgb, var(--ambient-color-2) calc(var(--ambient-peak-2, .46) * 100%), transparent) 0%, color-mix(in srgb, var(--ambient-color-2) calc(var(--ambient-peak-2, .46) * 65%), transparent) 38%, transparent 76%);
+}
+
+@media (min-width: 1200px) {
+  .vx-ambient__static {
+    background:
+      radial-gradient(ellipse 72% 62% at 22% 28%, color-mix(in srgb, var(--ambient-color-0) calc(var(--ambient-peak-0, .66) * 100%), transparent) 0%, color-mix(in srgb, var(--ambient-color-0) calc(var(--ambient-peak-0, .66) * 65%), transparent) 38%, transparent 76%),
+      radial-gradient(ellipse 62% 54% at var(--ambient-anchor-1, 78% 24%), color-mix(in srgb, var(--ambient-color-1) calc(var(--ambient-peak-1, .54) * 100%), transparent) 0%, color-mix(in srgb, var(--ambient-color-1) calc(var(--ambient-peak-1, .54) * 65%), transparent) 38%, transparent 76%),
+      radial-gradient(ellipse 58% 50% at 72% 76%, color-mix(in srgb, var(--ambient-color-2) calc(var(--ambient-peak-2, .46) * 100%), transparent) 0%, color-mix(in srgb, var(--ambient-color-2) calc(var(--ambient-peak-2, .46) * 65%), transparent) 38%, transparent 76%),
+      radial-gradient(ellipse 52% 46% at 28% 78%, color-mix(in srgb, var(--ambient-color-3) calc(var(--ambient-peak-3, .40) * 100%), transparent) 0%, color-mix(in srgb, var(--ambient-color-3) calc(var(--ambient-peak-3, .40) * 65%), transparent) 38%, transparent 76%);
+  }
+}
+
+.vx-ambient-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: calc(var(--ambient-overlay-opacity, .68) * var(--ambient-intensity, .60));
+  background:
+    radial-gradient(ellipse 66% 58% at 24% 26%, color-mix(in srgb, var(--ambient-color-0) 44%, transparent), transparent 74%),
+    radial-gradient(ellipse 56% 50% at 76% 72%, color-mix(in srgb, var(--ambient-color-1) 34%, transparent), transparent 74%);
+}
+
+[data-theme="light"] .vx-ambient-overlay {
+  mix-blend-mode: soft-light;
+  background:
+    radial-gradient(ellipse 66% 58% at 24% 26%, color-mix(in srgb, var(--ambient-color-0) 32%, transparent), transparent 74%),
+    radial-gradient(ellipse 56% 50% at 76% 72%, color-mix(in srgb, var(--ambient-color-1) 24%, transparent), transparent 74%);
+}
+}
+
+@layer overrides {
+[data-high-contrast="true"] .vx-ambient,
+[data-high-contrast="true"] .vx-ambient-overlay {
+  display: none;
+}
+
+@media (forced-colors: active) {
+  .vx-ambient,
+  .vx-ambient-overlay {
+    display: none;
+  }
+
+  .vx-app-body {
+    background-color: Canvas;
+  }
+}
+}

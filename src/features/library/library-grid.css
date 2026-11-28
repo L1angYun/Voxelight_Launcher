@@ -1,14 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 @layer features {
-  .vx-library-page .vx-search:focus-within,
   .vx-instance-card.is-running .vx-instance-card__state {
-    color: var(--accent-ink, var(--accent));
+    color: var(--accent-ink);
   }
-  .vx-library-page .vx-search:has(input:focus-visible) {
-    outline: 2px solid var(--accent-indicator);
-    outline-offset: 2px;
-  }
-  .vx-library-page .vx-search input:focus-visible,
   .vx-instance-card__select:focus-visible {
     outline: none;
   }
@@ -33,8 +27,7 @@
   .vx-instance-card__playtime svg {
     flex: none;
   }
-  .vx-instance-card__separator {
-    flex: none;
+  .vx-instance-card__runtime {
     color: var(--text-tertiary);
   }
   .vx-instance-card__path > span {
@@ -56,41 +49,17 @@
     position: relative;
     z-index: 3;
   }
-  .vx-library-empty h2 {
-    grid-column: 2;
-    align-self: end;
-  }
-  .vx-library-empty p {
-    grid-column: 2;
-    max-width: 50ch;
-  }
-  .vx-library-empty .vx-empty__action {
-    grid-column: 2;
-    margin-top: var(--space-1);
-  }
   .vx-inline-notice {
     margin: 0;
     color: var(--text-primary);
-    font-size: var(--text-sm);
+    font: var(--type-body);
   }
-  [data-effects="full"] .vx-instance-card { transition: background-color var(--duration-fast) ease; }
-  [data-effects="full"] .vx-instance-card__open { transition: color var(--duration-fast) ease; }
-  .vx-library-scope {
-    width: fit-content;
-    gap: var(--space-1);
-    padding: var(--space-1);
-    border-radius: var(--radius-sm);
-  }
-  .vx-library-page .vx-library-scope button {
-    font: var(--weight-strong) var(--text-sm)/normal var(--font-ui);
-    min-height: 32px;
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-  }
-  .vx-library-scope button[aria-pressed="true"] {
-    background: var(--surface-solid);
-    color: var(--text-primary);
+  [data-effects="full"] .vx-instance-card { transition: background-color var(--duration-fast) var(--ease-out); }
+  [data-effects="full"] .vx-instance-card__open { transition: opacity var(--duration-fast) var(--ease-out); }
+  .vx-library-commandbar > .vx-library-folder-select {
+    grid-column: 1 / -1;
+    width: min(360px, 100%);
+    justify-self: start;
   }
   .vx-library-commandbar {
     display: grid;
@@ -101,73 +70,60 @@
     margin: 0 0 var(--space-4);
     padding: var(--space-2);
   }
+  /* One focus ring around the whole field, matching Discover's search; the input draws none of its own. */
   .vx-library-page .vx-search {
     display: flex;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
+    block-size: var(--control-md);
+    padding: 0 var(--inset-control);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface-control);
     color: var(--text-tertiary);
-    min-height: 38px;
-    padding: 0 var(--space-3);
-    border-radius: var(--radius-sm);
-    background: var(--bg-raised);
+  }
+  .vx-library-page .vx-search:has(input:focus-visible) {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+    color: var(--accent-ink);
   }
   .vx-library-page .vx-search input {
     width: 100%;
-    padding: var(--space-1) 0;
+    min-height: 0;
+    block-size: 100%;
+    padding: 0;
     border: 0;
     border-radius: 0;
     background: transparent;
     color: var(--text-primary);
-    font-size: var(--text-sm);
-    min-height: 36px;
+    font: var(--type-control);
+  }
+  .vx-library-page .vx-search input:focus {
+    box-shadow: none;
+    outline: none;
   }
   .vx-library-commandbar__tools {
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--space-2);
   }
+  /* An empty folder hides search, sort and view; the actions keep the right edge. */
   .vx-library-commandbar__actions {
     display: flex;
+    grid-column: -2;
     min-width: 0;
     align-items: center;
     gap: var(--space-2);
   }
+  .vx-library-commandbar[data-empty] > .vx-library-commandbar__tools { justify-self: end; }
+  /* The sort menu matches the 38px search field: its edge is drawn inside, not added. */
+  .vx-library-commandbar .vx-select--flat .vx-select__surface { border: 0; box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .vx-library-commandbar .vx-select--flat:has(.vx-select__button:focus-visible) .vx-select__surface { box-shadow: inset 0 0 0 1px var(--accent-indicator), var(--field-focus); }
   .vx-library-commandbar__tools > .vx-library-sort-select {
-    width: 142px;
-    flex: 0 0 142px;
-  }
-  .vx-library-view {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    margin: 0;
-    padding: var(--space-1);
-    border-radius: var(--radius-sm);
-  }
-  .vx-library-page .vx-library-commandbar :is(.vx-search, .vx-field, .vx-select__surface, .vx-select__button) {
-    block-size: 38px;
-    min-block-size: 38px;
-    border-radius: var(--radius-md);
-  }
-  .vx-library-page .vx-library-commandbar .vx-select__surface {
-    border: 0;
-    box-shadow: inset 0 0 0 1px var(--hairline);
-  }
-  .vx-library-page .vx-library-commandbar .vx-library-view {
-    block-size: 38px;
-    min-block-size: 38px;
-    /* 38px shell = 32px control + two 1px borders and two 2px insets. */
-    padding: 2px;
-    flex-wrap: nowrap;
-    border-radius: var(--radius-md);
-  }
-  .vx-library-page .vx-library-commandbar .vx-library-view > button {
-    block-size: 32px;
-    min-block-size: 32px;
-    padding: 0 var(--space-3);
-    border-radius: var(--radius-md);
+    width: var(--field-width-sm);
+    flex: 0 0 var(--field-width-sm);
   }
   .vx-instance-sheet {
     display: grid;
@@ -183,7 +139,7 @@
     width: 100%;
     color: var(--text-primary);
     text-align: left;
-    grid-template-columns: 60px minmax(0, 1fr) 18px;
+    grid-template-columns: 60px minmax(0, 1fr) var(--icon-md);
     gap: var(--space-3);
     min-height: 132px;
     padding: var(--space-4) var(--space-4) var(--space-3);
@@ -196,7 +152,7 @@
     gap: var(--space-1);
   }
   .vx-instance-card__name {
-    font: var(--weight-strong) var(--text-instance-title)/1.32 var(--font-ui);
+    font: var(--type-section);
     overflow: hidden;
     color: var(--text-primary);
     letter-spacing: 0;
@@ -207,7 +163,7 @@
     -webkit-line-clamp: 2;
   }
   .vx-instance-card__technical {
-    font: var(--weight-regular) var(--text-xs)/1.4 var(--font-ui);
+    font: var(--weight-regular) var(--text-caption)/var(--leading-snug) var(--font-ui);
     display: flex;
     align-items: center;
     min-width: 0;
@@ -216,22 +172,25 @@
     gap: var(--space-2);
   }
   .vx-instance-card__path {
-    font: var(--weight-regular) var(--text-xs)/1.4 var(--font-ui);
+    font: var(--weight-regular) var(--text-caption)/var(--leading-snug) var(--font-ui);
     display: flex;
     align-items: center;
     min-width: 0;
     color: var(--text-tertiary);
     gap: var(--space-1);
   }
+  /* Opens the detail in place; it shows only where the pointer or keyboard focus is. */
   .vx-instance-card__open {
     align-self: start;
     display: grid;
     place-items: center;
-    width: 20px;
-    height: 20px;
-    margin-top: 0;
+    width: var(--icon-md);
+    height: var(--icon-md);
     color: var(--text-tertiary);
+    opacity: 0;
   }
+  .vx-instance-card:hover .vx-instance-card__open,
+  .vx-instance-card__select:focus-visible .vx-instance-card__open { opacity: 1; }
   .vx-instance-card__footer {
     position: relative;
     z-index: 3;
@@ -240,26 +199,28 @@
     justify-content: space-between;
     gap: var(--space-4);
     min-width: 0;
-    min-height: 45px;
+    min-height: var(--row-md);
     padding: 0 var(--space-4) var(--space-3) calc(var(--space-8) + var(--space-5));
   }
   .vx-instance-card__state {
-    font: var(--weight-regular) var(--text-xs)/1.4 var(--font-ui);
+    font: var(--weight-regular) var(--text-caption)/var(--leading-snug) var(--font-ui);
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
     color: var(--text-secondary);
   }
+  .vx-instance-card__issue { font: var(--type-caption-strong); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--danger); }
   .vx-instance-card__footer .vx-instance-card__launch {
     flex: none;
     margin-left: auto;
     color: var(--text-primary);
     border-color: transparent;
-    background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+    background: var(--fill-hover);
+    box-shadow: none;
   }
   .vx-instance-card__footer .vx-instance-card__launch:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--text-primary) 11%, transparent);
+    background: var(--fill-selected);
   }
   .vx-instance-identity {
     position: relative;
@@ -281,7 +242,7 @@
     width: 6px;
     height: 6px;
     border-width: 0 1px 1px 0;
-    opacity: 0.48;
+    opacity: var(--opacity-decor);
   }
   .vx-instance-identity__plane::before {
     position: absolute;
@@ -299,7 +260,7 @@
   .vx-instance-identity img {
     display: block;
     object-fit: contain;
-    filter: drop-shadow( 0 5px 12px color-mix(in srgb, var(--bg-base) 55%, transparent) );
+    filter: drop-shadow( 0 5px 12px color-mix(in srgb, var(--world-ink) 55%, transparent) );
     width: 43px;
     height: 43px;
     border-radius: var(--radius-sm);
@@ -314,7 +275,7 @@
     grid-template-rows: 1fr;
   }
   .vx-instance-sheet--list .vx-instance-card__select {
-    grid-template-columns: 52px minmax(0, 1fr) 18px;
+    grid-template-columns: 52px minmax(0, 1fr) var(--icon-md);
     gap: var(--space-3);
     min-height: 96px;
     padding: var(--space-3) var(--space-4);
@@ -324,7 +285,6 @@
     gap: var(--space-1);
   }
   .vx-instance-sheet--list .vx-instance-card__name {
-    font-size: var(--text-instance-title-compact);
     display: block;
     white-space: nowrap;
   }
@@ -337,7 +297,7 @@
     width: 21px;
     height: 21px;
   }
-  .vx-instance-sheet--list .vx-instance-identity__letter { font-size: var(--text-identity-letter-compact); }
+  .vx-instance-sheet--list .vx-instance-identity__letter { font-size: var(--text-subhead); }
   .vx-instance-sheet--list .vx-instance-identity img {
     width: 36px;
     height: 36px;
@@ -346,36 +306,8 @@
     min-width: 190px;
     padding: var(--space-3) var(--space-4);
   }
-  .vx-library-page > .vx-library-empty {
-    position: relative;
-    display: grid;
-    grid-template-columns: 48px minmax(0, 1fr);
-    align-content: center;
-    justify-items: start;
-    column-gap: var(--space-4);
-    overflow: hidden;
-    min-height: 274px;
-    padding: var(--space-6) var(--space-7);
-    border-radius: var(--radius-sm);
-    background: var(--surface-panel);
-    border: 1px solid var(--hairline);
-  }
-  .vx-library-empty .vx-empty__icon {
-    display: grid;
-    width: 40px;
-    height: 40px;
-    place-items: center;
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--text-primary) 6%, transparent);
-    color: var(--text-secondary);
-  }
   @media (hover: hover) and (pointer: fine) {
-    .vx-instance-card:hover .vx-instance-card__open { color: var(--text-tertiary); }
-    .vx-instance-card:hover,
-    .vx-instance-card.is-selected:hover {
-      background: color-mix( in srgb, var(--bg-raised) 76%, var(--surface-solid) );
-    }
-    .vx-instance-card--create:hover { background: color-mix( in srgb, var(--bg-raised) 74%, var(--surface-solid) ); }
+    .vx-instance-card:hover { background: var(--surface-card-hover); }
   }
   .vx-instance-card {
     position: relative;
@@ -386,10 +318,10 @@
     grid-template-rows: minmax(0, 1fr) auto;
     min-height: 178px;
     background: var(--surface-card);
-    border: 1px solid var(--hairline);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
   }
-  .vx-instance-card.is-selected { background: var(--surface-card); }
+  [data-theme="light"] .vx-instance-card { box-shadow: var(--shadow-1); }
   .vx-instance-card__secondary-line {
     display: flex;
     align-items: center;
@@ -398,7 +330,7 @@
   }
   .vx-instance-card__secondary-line .vx-instance-card__path { flex: 1; }
   .vx-instance-card__playtime {
-    font: var(--weight-regular) var(--text-xs)/1.4 var(--font-ui);
+    font: var(--weight-regular) var(--text-caption)/var(--leading-snug) var(--font-ui);
     display: inline-flex;
     flex: none;
     align-items: center;
@@ -418,7 +350,7 @@
     height: 64px;
     place-items: center;
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+    background: var(--fill-hover);
     color: var(--text-secondary);
   }
   .vx-instance-create__mark i {
@@ -426,7 +358,7 @@
     width: 3px;
     height: 3px;
     background: currentColor;
-    opacity: 0.55;
+    opacity: var(--opacity-decor);
   }
   .vx-instance-create__mark i:nth-of-type(1) {
     top: 7px;
@@ -445,16 +377,13 @@
     left: 8px;
   }
   .vx-instance-create__description {
-    font: var(--weight-regular) var(--text-xs)/1.48 var(--font-ui);
+    font: var(--type-meta);
     color: var(--text-tertiary);
   }
   .vx-instance-sheet--create .vx-instance-card--create { max-width: 560px; }
-  .vx-instance-sheet--list .vx-instance-card--create,
-  .vx-instance-sheet--list .vx-instance-create__select {
-    min-height: 96px;
-  }
+  /* The hover-only chevron stays out: a reveal without a fill would flash it in and drop it again. */
   .vx-library-page[data-drill-return] :is(.vx-page-header, .vx-library-commandbar > .vx-search, .vx-library-commandbar__actions,
-  .vx-library-view, .vx-instance-card__information, .vx-instance-card__open, .vx-instance-card__footer, .vx-library-empty) {
+  .vx-library-view, .vx-instance-card__information, .vx-instance-card__footer, .vx-library-empty) {
     animation: vx-library-content-reveal var(--vx-drill-content-duration) var(--ease-out);
   }
   .vx-instance-identity::before {
@@ -463,7 +392,7 @@
     content: "";
     inset: 4px;
     border-radius: var(--radius-sm);
-    background: radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 38%, transparent) .8px, transparent 1px) 0 0/5px 5px;
+    background: radial-gradient(circle, var(--lattice-dot-color) .8px, transparent 1px) 0 0/5px 5px;
   }
   .vx-instance-identity__plane {
     position: absolute;
@@ -471,36 +400,28 @@
     transform: rotate(45deg);
     width: 24px;
     height: 24px;
-    opacity: .35;
+    opacity: var(--opacity-decor-faint);
   }
   .vx-instance-identity__letter {
-    font: var(--weight-strong) var(--text-identity-letter)/1 var(--font-ui);
+    font: var(--weight-strong) var(--text-title)/var(--leading-none) var(--font-ui);
     position: relative;
-    text-shadow: 0 2px 10px var(--bg-raised);
+    text-shadow: 0 2px 10px var(--world-ink);
     color: var(--text-primary);
   }
-  .vx-instance-glyph { /* Pixel glyph colors for instanceGlyphs.tsx. */
-    --vx-glyph-ink: var(--text-primary); --vx-glyph-base: color-mix(in srgb, var(--text-secondary) 72%, var(--surface-card));
-    --vx-glyph-shade: color-mix(in srgb, var(--text-primary) 30%, var(--surface-card)); --vx-glyph-light: color-mix(in srgb, var(--text-primary) 82%, var(--surface-card));
-    --vx-glyph-accent: var(--accent-ink, var(--accent, var(--optical-warm))); --vx-glyph-cold: var(--optical-cold); --vx-glyph-green: var(--success); --vx-glyph-warm: var(--optical-warm);
-    --vx-glyph-mark: var(--accent-ink, var(--accent, var(--optical-warm))); --vx-glyph-mark-old: var(--optical-warm);
-    display: block; width: 48px; height: 48px;
-    filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--bg-base) 45%, transparent));
+  /* Voxel glyphs drop the dotted tile and corner bracket; both add stray dots. */
+  .vx-instance-identity[data-identity-face="glyph"]::before,
+  .vx-instance-identity[data-identity-face="glyph"]::after { content: none; }
+  .vx-instance-glyph { /* Voxel cube tokens for instanceGlyphs.tsx. */
+    --vx-glyph-vanilla: #a7d295; --vx-glyph-fabric: #e0caa8; --vx-glyph-quilt: #c3b0e8; --vx-glyph-forge: #a9b9d0; --vx-glyph-neoforge: #e8c887; --vx-glyph-optifine: #dca0a0; --vx-glyph-unknown: #c2c2bd; --vx-glyph-old: #c9bda9;
+    --vx-glyph-base: var(--vx-glyph-unknown); --vx-glyph-face-top: color-mix(in srgb, var(--vx-glyph-base) 55%, white); --vx-glyph-face-left: color-mix(in srgb, var(--vx-glyph-base) 85%, white); --vx-glyph-face-right: color-mix(in srgb, var(--vx-glyph-base) 70%, black); --vx-glyph-highlight-top: color-mix(in srgb, var(--vx-glyph-face-top) 55%, white); --vx-glyph-highlight-left: color-mix(in srgb, var(--vx-glyph-face-left) 55%, white); --vx-glyph-dot: var(--vx-glyph-face-right); --vx-glyph-notch: color-mix(in srgb, var(--vx-glyph-face-right) 62%, black);
+    display: block; width: 48px; height: 48px; filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--world-ink) 45%, transparent));
   }
-  [data-theme="light"] .vx-instance-glyph {
-    --vx-glyph-base: color-mix(in srgb, var(--text-secondary) 58%, var(--surface-card)); --vx-glyph-shade: color-mix(in srgb, var(--text-primary) 72%, var(--surface-card));
-    --vx-glyph-light: color-mix(in srgb, var(--text-primary) 14%, var(--surface-card)); --vx-glyph-warm: color-mix(in srgb, var(--optical-warm) 82%, var(--text-primary));
-    --vx-glyph-mark-old: color-mix(in srgb, var(--optical-warm) 88%, var(--text-primary));
-  }
-  [data-high-contrast="true"] .vx-instance-glyph { --vx-glyph-base: var(--text-primary); --vx-glyph-shade: var(--text-primary); --vx-glyph-accent: var(--text-primary); --vx-glyph-mark: var(--accent-ink, var(--accent, var(--optical-cold))); --vx-glyph-mark-old: var(--warning); }
+  .vx-instance-glyph[data-glyph-loader="vanilla"] { --vx-glyph-base: var(--vx-glyph-vanilla); } .vx-instance-glyph[data-glyph-loader="fabric"] { --vx-glyph-base: var(--vx-glyph-fabric); } .vx-instance-glyph[data-glyph-loader="quilt"] { --vx-glyph-base: var(--vx-glyph-quilt); }
+  .vx-instance-glyph[data-glyph-loader="forge"] { --vx-glyph-base: var(--vx-glyph-forge); } .vx-instance-glyph[data-glyph-loader="neoforge"] { --vx-glyph-base: var(--vx-glyph-neoforge); } .vx-instance-glyph[data-glyph-loader="optifine"] { --vx-glyph-base: var(--vx-glyph-optifine); }
+  .vx-instance-glyph[data-glyph-loader="unknown"] { --vx-glyph-base: var(--vx-glyph-unknown); } .vx-instance-glyph[data-glyph-version="old"] { --vx-glyph-base: var(--vx-glyph-old); }
+  [data-theme="light"] .vx-instance-glyph { --vx-glyph-vanilla: #3f6b37; --vx-glyph-fabric: #8a6a3f; --vx-glyph-quilt: #66518f; --vx-glyph-forge: #4d5f76; --vx-glyph-neoforge: #99691f; --vx-glyph-optifine: #8c4750; --vx-glyph-unknown: #62635e; --vx-glyph-old: #796b5b; }
+  [data-high-contrast="true"] .vx-instance-glyph { --vx-glyph-base: var(--text-primary); }
   .vx-instance-sheet--list .vx-instance-glyph { width: 32px; height: 32px; }
-  .vx-library-view.vx-selection {
-    gap: var(--space-1);
-    padding: var(--space-1);
-    margin-left: 0;
-    border: 1px solid var(--hairline);
-  }
-  .vx-library-view.vx-selection > button { padding: var(--space-2) var(--space-3); }
   .vx-instance-card__path-value {
     display: flex;
     min-width: 0;
@@ -521,6 +442,22 @@
     from { opacity: 0; }
     to { opacity: 1; }
   }
+  /* Library overflow menu: hidden instances live here, not in the folder list. */
+  .vx-library-more { position: relative; }
+  .vx-library-more > summary { display: grid; place-items: center; inline-size: var(--control-sm); block-size: var(--control-sm); border-radius: var(--radius-sm); color: var(--text-secondary); cursor: pointer; list-style: none; }
+  .vx-library-more > summary::-webkit-details-marker { display: none; }
+  .vx-library-more > summary:hover { background: var(--fill-hover); color: var(--text-primary); }
+  .vx-library-more__menu { position: absolute; inset-block-start: calc(100% + var(--space-2)); inset-inline-end: 0; z-index: var(--z-popover); min-inline-size: 14rem; padding: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-overlay); box-shadow: var(--shadow-4); }
+  .vx-library-more__menu button { inline-size: 100%; min-block-size: var(--row-sm); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-primary); font: var(--type-control); text-align: start; cursor: pointer; }
+  .vx-library-more__menu button:hover { background: var(--fill-hover); }
+  /* Hidden instances read as one list: dotted rules between rows, no nested boxes. */
+  .vx-hidden-instances { display: grid; margin: 0; padding: 0; list-style: none; }
+  .vx-hidden-instances li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-block-size: var(--row-lg); border-bottom: var(--rule-dotted); }
+  .vx-hidden-instances li:last-child { border-bottom: 0; }
+  .vx-hidden-instances span { display: grid; min-inline-size: 0; }
+  .vx-hidden-instances strong { font: var(--type-body-strong); }
+  .vx-hidden-instances small { color: var(--text-tertiary); font: var(--type-meta); }
+  .vx-instance-isolation { justify-self: start; }
 }
 @layer overrides {
   @media (forced-colors: active) {
@@ -540,8 +477,7 @@
   }
   @media (prefers-contrast: more), (forced-colors: active) {
     .vx-instance-identity__letter { text-shadow: none; }
-    .vx-library-commandbar,
-    .vx-library-page > .vx-library-empty {
+    .vx-library-commandbar {
       background: Canvas;
     }
     .vx-instance-card {
@@ -553,13 +489,10 @@
       outline-offset: -2px;
     }
     .vx-instance-card__select:focus-visible { outline: none; }
+    .vx-instance-card__open { opacity: 1; }
   }
-  [data-reduced-transparency="true"] .vx-library-scope,
   [data-reduced-transparency="true"] .vx-instance-card,
-  [data-reduced-transparency="true"] .vx-library-page > .vx-library-empty,
-  [data-high-contrast="true"] .vx-library-scope,
-  [data-high-contrast="true"] .vx-instance-card,
-  [data-high-contrast="true"] .vx-library-page > .vx-library-empty {
-    background: var(--surface-solid);
+  [data-high-contrast="true"] .vx-instance-card {
+    background: var(--surface-overlay);
   }
 }

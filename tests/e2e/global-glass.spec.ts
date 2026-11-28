@@ -89,7 +89,7 @@ for (const theme of ["dark", "light"] as const) {
   for (const [width, height] of [[1440, 930], [1050, 720]]) {
     test(`picker ${theme} ${width}: themed instance menu opens above the dock and selects a real context`, async ({ page }) => {
       await page.setViewportSize({ width, height });
-      await installLauncherFixture(page, { theme });
+      await installLauncherFixture(page, { theme, instanceCount: 2 });
       await page.goto("/");
       const trigger = page.getByRole("combobox", { name: "当前实例", exact: true });
       await trigger.click();
@@ -114,9 +114,12 @@ for (const theme of ["dark", "light"] as const) {
       await expect(menu.locator('[data-instance-id="fixture-world"] [data-selected-mark]')).toBeVisible();
       await expect(page.locator(".vx-launch-console select")).toHaveCount(0);
       await page.screenshot({ path: resolve(evidence, `picker-${theme}-${width}.png`) });
-      await menu.locator("[data-version-directory]").click();
-      await expect(trigger).toContainText("使用版本目录");
-      await expect(page.locator(".vx-home__console-name")).toHaveText("1.21.1");
+      // The picker lists instances only; selecting one switches the real context.
+      await expect(menu.getByRole("option")).toHaveCount(2);
+      await expect(menu.locator('[role="option"]:not([data-instance-id])')).toHaveCount(0);
+      await menu.locator('[data-instance-id="fixture-world-002"]').click();
+      await expect(trigger).toContainText("合成测试世界 002");
+      await expect(page.locator(".vx-home__console-name")).toHaveText("合成测试世界 002");
       await trigger.press("ArrowUp");
       await trigger.press("Home");
       await trigger.press("Enter");
@@ -139,9 +142,15 @@ test("picker keyboard exploration, cancellation, Tab and outside click keep focu
   await trigger.press("j");
   await trigger.press("Enter");
   await expect(page.locator(".vx-home__console-name")).toHaveText("Jo");
+  // Return to the first instance so the End/Tab commit below is observable.
+  await trigger.press("Home");
+  await trigger.press("Enter");
+  await expect(trigger).toContainText("Christopher");
   await trigger.press("End");
+  await expect(page.locator('[role="option"][data-instance-id="short-instance"]')).toHaveAttribute("data-active", "true");
   await trigger.press("Tab");
-  await expect(trigger).toContainText("Use version directory");
+  await expect(trigger).toContainText("Jo");
+  await expect(page.locator(".vx-home__console-name")).toHaveText("Jo");
   await expect(page.getByRole("button", { name: "Open folder", exact: true })).toBeFocused();
   await trigger.click();
   const settings = page.locator('button[data-page="settings"]');
@@ -170,11 +179,15 @@ test("picker long instance collections scroll within the menu and expose the las
   await trigger.press("ArrowDown");
   const menu = page.getByRole("listbox", { name: "当前实例", exact: true });
   expect(await menu.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await expect(menu.getByRole("option")).toHaveCount(60);
+  await expect(menu.locator('[role="option"]:not([data-instance-id])')).toHaveCount(0);
   await trigger.press("End");
-  await expect(menu.locator("[data-version-directory]")).toBeInViewport({ ratio: 1 });
+  const last = menu.locator('[role="option"]').last();
+  await expect(last).toHaveAttribute("data-instance-id", "menu-world-59");
+  await expect(last).toBeInViewport({ ratio: 1 });
   await page.screenshot({ path: resolve(evidence, "picker-long-collection-1050.png") });
   await trigger.press("Enter");
-  await expect(trigger).toContainText("使用版本目录");
+  await expect(trigger).toContainText("世界 59");
 });
 
 test("one world canvas serves full and lite modes while real data points remain independent", async ({ page }) => {
@@ -247,7 +260,7 @@ for (const mode of ["lite", "reduced-motion", "reduced-transparency", "high-cont
       const api = (window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
       const original = api.invoke;
       api.invoke = async (name, args) => name === "get_system_appearance"
-        ? { accentColor: "#b4f17a", animationsEnabled: true, advancedEffectsEnabled: false, locale: "zh-CN" }
+        ? { accentColor: "#0078d4", animationsEnabled: true, advancedEffectsEnabled: false, locale: "zh-CN" }
         : original(name, args);
     });
     await page.goto("/");

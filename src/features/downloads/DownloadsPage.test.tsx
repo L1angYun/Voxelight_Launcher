@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import { command, events } from "../../lib/launcher";
 import { LauncherError } from "../../lib/errors";
+import { resetViewState } from "../../app/viewState";
 import { createLauncherI18n } from "../../i18n";
+import { ConfirmContext, type ConfirmFn } from "../../components/ui/ConfirmDialog";
 import { DownloadsPage } from "./DownloadsPage";
 import { TaskList } from "./TaskList";
 import {
@@ -24,6 +26,7 @@ let currentTasks: DownloadTask[];
 let revision: number;
 const snapshot = () => ({ revision, tasks: currentTasks });
 let latestModel: DownloadTasksModel;
+const confirmMock = vi.fn<ConfirmFn>(async () => true);
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/launcher")>()),
@@ -53,17 +56,20 @@ function task(overrides: Partial<DownloadTask> = {}): DownloadTask {
   };
 }
 
+const navigateSpy = vi.fn();
+
 function DownloadHarness() {
   const model = useDownloadTasks();
   latestModel = model;
-  return createElement(DownloadsPage, { model });
+  return createElement(DownloadsPage, { model, onNavigate: navigateSpy });
 }
 
 async function render() {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
   await act(async () => {
-    root.render(createElement(I18nextProvider, { i18n }, createElement(DownloadHarness)));
+    root.render(createElement(I18nextProvider, { i18n },
+      createElement(ConfirmContext.Provider, { value: confirmMock }, createElement(DownloadHarness))));
   });
 }
 
@@ -86,9 +92,12 @@ function button(scope: ParentNode, label: string): HTMLButtonElement {
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  resetViewState();
   currentTasks = [];
   revision = 0;
   listeners.clear();
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(true);
   commandMock.mockReset();
   commandMock.mockImplementation(async (name, args) => {
     if (name === "list_download_tasks") return snapshot();
@@ -178,15 +187,44 @@ describe("download task center", () => {
     expect(article("missed-event").dataset.status).toBe("completed");
   });
 
-  it("renders native managed-server and historical skin tasks with their known names", async () => {
+  it("hides empty character-preview rows while keeping real history rows", async () => {
     currentTasks = [
       task({ id: "server-01", kind: "server-install", target: "1.21.1", stage: "server-jar", label: "安装服务端 绿洲" }),
-      task({ id: "skin-01", kind: "default-skin", target: "alex", stage: "queued", status: "completed", label: "读取 Alex 角色纹理" }),
+      task({ id: "skin-empty", kind: "default-skin", target: "alex", stage: "queued", status: "completed", label: "读取 Alex 角色纹理" }),
+      task({
+        id: "skin-recorded", kind: "default-skin", target: "steve", completed: 1, total: 1,
+        bytesCompleted: 0, bytesTotal: 0, stage: "complete", status: "completed", label: "读取 Steve 角色纹理",
+      }),
     ];
     await render();
-    expect(article("server-01").querySelector("h3")?.textContent).toBe("Server installation · 1.21.1");
+    expect(article("server-01").querySelector("h3")?.textContent).toBe("Server installation: 1.21.1");
     expect(article("server-01").querySelector(".vx-task-row__stage")?.textContent).toBe("Verifying the server JAR");
-    expect(article("skin-01").querySelector("h3")?.textContent).toBe("Character preview · Alex");
+    expect(container.querySelector('[data-task-id="skin-empty"]')).toBeNull();
+    expect(container.querySelector('[data-task-id="skin-recorded"] h3')?.textContent).toBe("Character preview: Steve");
+    expect(container.querySelector('[aria-label="1 in history"]')).not.toBeNull();
+  });
+
+  it("does not render an empty character-preview row from a raw model snapshot", async () => {
+    const skin = task({
+      id: "skin-empty", kind: "default-skin", target: "alex", stage: "queued",
+      status: "completed", completed: 0, total: 0, label: "读取 Alex 角色纹理",
+    });
+    const model: DownloadTasksModel = {
+      tasks: [skin], active: [], history: [skin], rates: {}, activeCount: 0, busyTaskId: null,
+      bulkBusy: false, loading: false, error: null,
+      act: vi.fn(async () => {}),
+      retryFailed: vi.fn(async () => null),
+      clearUnfinished: vi.fn(async () => null),
+      refresh: vi.fn(async () => {}),
+    };
+    const i18n = createLauncherI18n("en-US", "en-US");
+    await i18n.initPromise;
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n },
+        createElement(ConfirmContext.Provider, { value: confirmMock }, createElement(DownloadsPage, { model }))));
+    });
+    expect(container.querySelector('[data-task-id="skin-empty"]')).toBeNull();
+    expect(container.textContent).toContain("No download tasks yet");
   });
 
   it("uses a filename for local imports and does not display an opaque instance ID", async () => {
@@ -195,7 +233,7 @@ describe("download task center", () => {
       task({ id: "sample-copy", kind: "backup", target: "55349e6e-2571-4a12-bcfc-e337ee5ab6c6", label: "Sky town", status: "completed" }),
     ];
     await render();
-    expect(article("local-source").querySelector("h3")?.textContent).toBe("Modpack installation · Coast pack.mrpack");
+    expect(article("local-source").querySelector("h3")?.textContent).toBe("Modpack installation: Coast pack.mrpack");
     expect(article("local-source").textContent).not.toContain("SyntheticFixture");
     expect(article("sample-copy").querySelector("h3")?.textContent).toBe("Instance backup");
     expect(article("sample-copy").textContent).not.toContain("55349e6e");
@@ -228,6 +266,30 @@ describe("download task center", () => {
     expect(rows().every(row => row.dataset.status === "completed")).toBe(true);
     expect(article("active").querySelector(".vx-lattice-progress")).not.toBeNull();
     expect(container.querySelector('.vx-task-section--active')?.classList.contains("vx-panel")).toBe(true);
+  });
+  it("restores history filters and expansion after leaving and returning", async () => {
+    currentTasks = Array.from({ length: 80 }, (_, index) => task({
+      id: `history-${index}`,
+      status: index < 40 ? "completed" : "failed",
+      stage: index < 40 ? "complete" : "failed",
+      updatedAt: `2026-01-01T00:${String(80 - index).padStart(2, "0")}:00Z`,
+    }));
+    await render();
+    const history = () => container.querySelector<HTMLElement>('.vx-task-section--history')!;
+    const rows = () => [...history().querySelectorAll<HTMLElement>('[data-task-id]')];
+    expect(rows()).toHaveLength(30);
+
+    await act(async () => button(history(), "Failed").click());
+    expect(rows()).toHaveLength(30);
+    await act(async () => button(history(), "Show more").click());
+    expect(rows()).toHaveLength(40);
+    expect(button(history(), "Failed").getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => root.render(null));
+    await render();
+
+    expect(button(history(), "Failed").getAttribute("aria-pressed")).toBe("true");
+    expect(rows()).toHaveLength(40);
   });
   it("shows a filter-specific empty state without losing history counts", async () => {
     currentTasks = [task({ id: "done", status: "completed", stage: "complete" })];
@@ -299,7 +361,7 @@ describe("download task center", () => {
     expect(aggregateProgress?.getAttribute("aria-valuenow")).toBe("1024");
     expect(aggregateProgress?.getAttribute("aria-valuemax")).toBe("2048");
     const unknown = article("unknown");
-    expect(unknown.textContent).toContain("12 files · total unknown");
+    expect(unknown.textContent).toContain("12 files, total unknown");
     expect(unknown.textContent).not.toContain("%");
     expect(unknown.textContent).toContain("Size pending");
     const unknownProgress = unknown.querySelector("canvas.vx-lattice-progress");
@@ -372,6 +434,37 @@ describe("download task center", () => {
     await render();
     expect(container.textContent).toContain("No download tasks yet");
     expect(container.querySelectorAll(".vx-empty")).toHaveLength(1);
+  });
+
+  it("leads an empty task center to Discover or to installing a game version", async () => {
+    navigateSpy.mockReset();
+    await render();
+    const empty = container.querySelector<HTMLElement>(".vx-downloads-empty.vx-empty--panel");
+    expect(empty).not.toBeNull();
+    expect(empty!.querySelector(".vx-empty__icon.vx-icon-tile svg")).not.toBeNull();
+    const browse = button(empty!, "Browse content");
+    const install = button(empty!, "Install a game version");
+    expect(browse.dataset.variant).toBe("primary");
+    expect(install.dataset.variant).toBe("ghost");
+    await act(async () => browse.click());
+    await act(async () => install.click());
+    expect(navigateSpy.mock.calls).toEqual([["discover"], ["library"]]);
+  });
+
+  it("refreshes from a labelled icon button in the page header", async () => {
+    await render();
+    const refresh = container.querySelector<HTMLButtonElement>(".vx-page-header__actions button");
+    expect(refresh?.classList.contains("vx-button--icon")).toBe(true);
+    expect(refresh?.getAttribute("aria-label")).toBe("Refresh");
+    expect(refresh?.getAttribute("title")).toBe("Refresh");
+  });
+
+  it("uses the shared inline empty state for an idle active section", async () => {
+    currentTasks = [task({ id: "done", status: "completed", stage: "complete" })];
+    await render();
+    const active = container.querySelector(".vx-task-section--active")!;
+    expect(active.querySelector(".vx-empty--inline")?.textContent).toContain("No active tasks");
+    expect(container.querySelector(".vx-task-section__empty")).toBeNull();
   });
 
   it("offers Retry for any kind the backend marks retryable, and explains a second retry", async () => {
@@ -478,7 +571,7 @@ describe("download task center", () => {
     ];
     await render();
     const history = () => container.querySelector<HTMLElement>(".vx-task-section--history")!;
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    confirmMock.mockResolvedValueOnce(false);
     const normal = commandMock.getMockImplementation()!;
     commandMock.mockImplementation(async (name, args) => {
       if (name === "clear_unfinished_downloads") {
@@ -489,11 +582,12 @@ describe("download task center", () => {
       return normal(name, args);
     });
     await act(async () => button(history(), "Clear failed and cancelled").click());
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(String(confirm.mock.calls[0][0])).toContain("2");
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(String(confirmMock.mock.calls[0][0])).toContain("2");
+    expect(confirmMock.mock.calls[0][1]).toMatchObject({ tone: "danger" });
     expect(commandMock).not.toHaveBeenCalledWith("clear_unfinished_downloads");
 
-    confirm.mockReturnValue(true);
+    confirmMock.mockResolvedValue(true);
     await act(async () => button(history(), "Clear failed and cancelled").click());
     expect(commandMock).toHaveBeenCalledWith("clear_unfinished_downloads");
     expect(container.textContent).toContain("Removed 2 tasks");
@@ -504,7 +598,6 @@ describe("download task center", () => {
   it("shows a bulk clear refusal through the existing error display", async () => {
     currentTasks = [task({ id: "failed-busy", status: "failed", stage: "failed" })];
     await render();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     commandMock.mockImplementation(async (name) => {
       if (name === "list_download_tasks") return snapshot();
       if (name === "clear_unfinished_downloads") throw new LauncherError("download.busy");

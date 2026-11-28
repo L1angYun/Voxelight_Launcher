@@ -3,7 +3,9 @@ import { useTranslation } from "react-i18next";
 import { RotateCcw, Save, SlidersHorizontal, Palette, Gamepad2, Coffee, Download, Bot, Info } from "lucide-react";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { settingsSectionRegistry } from "../../app/registry";
-import { appearanceFields, configChanges, type Config } from "../../lib/launcher";
+import { LeaveGuardScope, useLeaveGuard, useLeaveGuardScope, useSharedSave, type LeaveGuardSaveResult } from "../../app/leaveGuard";
+import { useViewState } from "../../app/viewState";
+import { appearanceFields, configChanges, sameConfigValue, type Config } from "../../lib/launcher";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
@@ -17,6 +19,7 @@ import { DownloadSettings } from "./DownloadSettings";
 import { AssistantSettings } from "./AssistantSettings";
 import { AboutSettings } from "./AboutSettings";
 import { searchSettings, type SettingsEntry, type SettingsSectionId } from "./settingsIndex";
+import { localizedErrorParams } from "../../lib/errorReasons";
 import "./settings.css";
 
 type Section = SettingsSectionId;
@@ -42,9 +45,38 @@ export function SettingsPage({
     saveConfig,
     reload,
   } = useLauncher();
-  const [section, setSection] = useState<Section>(
-    reviewUpdates ? "about" : focusAssistant ? "assistant" : "general",
+  // Plain navigation reopens the remembered section. "View update" and
+  // "Configure Lumen" pick their section for that visit only, from the first
+  // render, and never overwrite what the user chose.
+  const [rememberedSection, rememberSection] = useViewState<Section>("settings.section", "general");
+  const [section, setShownSection] = useState<Section>(
+    reviewUpdates ? "about" : focusAssistant ? "assistant" : rememberedSection,
   );
+  const shownSection = useRef(section);
+  shownSection.current = section;
+  // A section unmounts when another one is shown, and with it any API key or
+  // credential typed there (they live outside the settings draft). So every
+  // switch asks that section's own leave guards first, as leaving Settings does.
+  const sectionGuard = useLeaveGuardScope();
+  const switchPending = useRef(false);
+  const switchSection = useCallback((next: Section, options: { remember?: boolean; then?: () => void } = {}) => {
+    const show = () => {
+      setShownSection(next);
+      if (options.remember) rememberSection(next);
+      options.then?.();
+    };
+    if (next === shownSection.current || !sectionGuard.blocked()) {
+      show();
+      return;
+    }
+    if (switchPending.current) return;
+    switchPending.current = true;
+    void sectionGuard.requestLeave().then((allowed) => {
+      switchPending.current = false;
+      if (allowed && mounted.current) show();
+    });
+  }, [rememberSection, sectionGuard]);
+  const setSection = useCallback((next: Section) => switchSection(next, { remember: true }), [switchSection]);
   // The review request focuses the update action once, not on every return to About.
   // Parent effects run after the child's, so the handled tick is remembered here.
   const [focusUpdates, setFocusUpdates] = useState(0);
@@ -54,14 +86,13 @@ export function SettingsPage({
   useEffect(() => {
     if (!reviewUpdates || reviewUpdates === handledReview.current) return;
     handledReview.current = reviewUpdates;
-    setSection("about");
-    setFocusUpdates(reviewUpdates);
-  }, [reviewUpdates]);
+    switchSection("about", { then: () => setFocusUpdates(reviewUpdates) });
+  }, [reviewUpdates, switchSection]);
   useEffect(() => {
     if (!focusAssistant || focusAssistant === handledAssistant.current) return;
     handledAssistant.current = focusAssistant;
-    setSection("assistant");
-  }, [focusAssistant]);
+    switchSection("assistant");
+  }, [focusAssistant, switchSection]);
   const [query, setQuery] = useState("");
   const [pendingTarget, setPendingTarget] = useState<SettingsEntry | null>(null);
   const layout = useRef<HTMLDivElement>(null);
@@ -80,7 +111,7 @@ export function SettingsPage({
   const [actionNotice, setActionNotice] = useState<{ code: string; params?: Record<string, unknown> } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveResults, setSaveResults] = useState<{ appearance?: SaveResult; other?: SaveResult }>({});
-  const saveInProgress = useRef(false);
+  const runningSave = useSharedSave<LeaveGuardSaveResult>();
   const mounted = useRef(true);
   const savedConfig = useRef(launcherData.config);
   const draftRef = useRef(draft);
@@ -253,17 +284,21 @@ export function SettingsPage({
     setActionNotice({ code, params });
   }, []);
 
-  async function save() {
-    if (saveInProgress.current) return;
+  /** A save that is already running is shared, so the leave prompt gets its real outcome. */
+  function save(): Promise<LeaveGuardSaveResult> {
+    return runningSave.run(persistDraft);
+  }
+
+  async function persistDraft(): Promise<LeaveGuardSaveResult> {
     const changes = Object.entries(configChanges(savedConfig.current, draftRef.current));
     const appearance = Object.fromEntries(changes.filter(([key]) => appearanceKeys.has(key as keyof Config)));
     const other = Object.fromEntries(changes.filter(([key]) => !appearanceKeys.has(key as keyof Config)));
-    if (!changes.length) return;
-    saveInProgress.current = true;
+    if (!changes.length) return { ok: true };
     setSaving(true);
     setActionError(null);
     setActionNotice(null);
     setSaveResults({});
+    const failures: LauncherError[] = [];
     async function persist(scope: "appearance" | "other", patch: Partial<Config>) {
       const fields = Object.keys(patch) as (keyof Config)[];
       if (!fields.length) return false;
@@ -274,7 +309,7 @@ export function SettingsPage({
         const latest = draftRef.current;
         const remaining = configChanges(savedConfig.current, latest);
         for (const key of fields) {
-          if (Object.is(latest[key], candidate[key])) delete remaining[key];
+          if (sameConfigValue(key, latest[key], candidate[key])) delete remaining[key];
           else Object.assign(remaining, { [key]: latest[key] });
         }
         savedConfig.current = saved;
@@ -284,19 +319,28 @@ export function SettingsPage({
         setSaveResults((results) => ({ ...results, [scope]: { ok: true } }));
         return true;
       } catch (error) {
-        if (mounted.current) setSaveResults((results) => ({ ...results, [scope]: { ok: false, error: normalizeError(error) } }));
+        const failure = normalizeError(error);
+        failures.push(failure);
+        if (mounted.current) setSaveResults((results) => ({ ...results, [scope]: { ok: false, error: failure } }));
         return false;
       }
     }
     try {
       await persist("appearance", appearance);
       if (await persist("other", other)) {
-        try { await reload(); } catch (error) { if (mounted.current) onError(error); }
+        try {
+          await reload();
+        } catch (error) {
+          failures.push(normalizeError(error));
+          if (mounted.current) onError(error);
+        }
       }
     } finally {
-      saveInProgress.current = false;
       if (mounted.current) setSaving(false);
     }
+    return failures.length
+      ? { ok: false, message: failures.map((failure) => errorText(failure)).join(" ") }
+      : { ok: true };
   }
 
   function reset() {
@@ -307,10 +351,17 @@ export function SettingsPage({
     setSaveResults({});
   }
 
+  useLeaveGuard(dirty, { save, discard: reset, running: runningSave.current });
+
   function chooseSearchResult(entry: SettingsEntry) {
-    setSection(entry.section);
-    setQuery("");
-    setPendingTarget(entry);
+    // Staying in the current section keeps the query and its results.
+    switchSection(entry.section, {
+      remember: true,
+      then: () => {
+        setQuery("");
+        setPendingTarget(entry);
+      },
+    });
   }
 
   function onSearchKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
@@ -335,7 +386,7 @@ export function SettingsPage({
 
   function errorText(error: LauncherError) {
     const key = [`settings:errors.${error.code}`, `shell:errors.${error.code}`].find((key) => i18n.exists(key));
-    return key ? t(key, error.params) : t("common:errors.internalUnexpected");
+    return key ? t(key, localizedErrorParams(error.code, error.params, t)) : t("common:errors.internalUnexpected");
   }
   function showSaveResult(result: SaveResult | undefined, saved: string, failed: string) {
     if (!result) return null;
@@ -404,13 +455,15 @@ export function SettingsPage({
             })} />
         </div>
         <SectionPanel selectionKey={section} className="vx-settings-content vx-panel">
-          {section === "general" ? <GeneralSettings {...sectionProps} /> : null}
-          {section === "appearance" ? <AppearanceSettings {...sectionProps} /> : null}
-          {section === "game" ? <GameSettings {...sectionProps} /> : null}
-          {section === "java" ? <JavaSettings {...sectionProps} /> : null}
-          {section === "downloads" ? <DownloadSettings {...sectionProps} savedConfig={savedConfig.current} /> : null}
-          {section === "assistant" ? <AssistantSettings {...sectionProps} savedConfig={savedConfig.current} onOpenAssistant={onOpenAssistant} /> : null}
-          {section === "about" ? <AboutSettings {...sectionProps} focusUpdates={focusUpdates} onFocusHandled={focusHandled} /> : null}
+          <LeaveGuardScope scope={sectionGuard}>
+            {section === "general" ? <GeneralSettings {...sectionProps} /> : null}
+            {section === "appearance" ? <AppearanceSettings {...sectionProps} /> : null}
+            {section === "game" ? <GameSettings {...sectionProps} /> : null}
+            {section === "java" ? <JavaSettings {...sectionProps} /> : null}
+            {section === "downloads" ? <DownloadSettings {...sectionProps} savedConfig={savedConfig.current} /> : null}
+            {section === "assistant" ? <AssistantSettings {...sectionProps} savedConfig={savedConfig.current} onOpenAssistant={onOpenAssistant} /> : null}
+            {section === "about" ? <AboutSettings {...sectionProps} focusUpdates={focusUpdates} onFocusHandled={focusHandled} /> : null}
+          </LeaveGuardScope>
         </SectionPanel>
       </div>
     </PageShell>

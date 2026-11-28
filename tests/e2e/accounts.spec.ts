@@ -167,7 +167,7 @@ test("local URL preview renders without calling an online-account mutation", asy
   await page.getByRole("textbox", { name: "在线皮肤 URL", exact: true }).fill("https://example.invalid/skin.png");
   await page.getByRole("button", { name: "加载网址", exact: true }).click();
   await expect(page.locator(".vx-character-canvas")).toHaveAttribute("data-character-state", "ready");
-  await expect(page.getByText("仅用于本地预览 · 不会修改账号外观", { exact: true })).toBeVisible();
+  await expect(page.getByText("仅用于本地预览，不会修改账号外观。", { exact: true })).toBeVisible();
   const calls = await internals(page);
   expect(calls.some((call) => call.name === "upload_account_skin")).toBe(false);
 });

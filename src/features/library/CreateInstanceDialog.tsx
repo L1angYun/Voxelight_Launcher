@@ -1,5 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { Check } from "lucide-react";
+import { ICON } from "../../design/icons";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { command, type Instance, type RemoteVersion, type ResourceProject, type ResourceSource, type VersionManifest } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
@@ -36,7 +38,7 @@ export function CreateInstanceDialog({
 }) {
   const { t, i18n } = useTranslation();
   const modeId = useId();
-  const { data, manifest: initialManifest, run, reload, selectInstance, selectVersion, busy } = useLauncher();
+  const { data, manifest: initialManifest, run, reload, selectInstance, busy } = useLauncher();
   const [creationMode, setMode] = useState<"version" | "import">(initialMode);
   const [droppedPackPath, setDroppedPackPath] = useState<string | null>(initialPackPath);
   const packSource = source ?? "modrinth";
@@ -55,6 +57,7 @@ export function CreateInstanceDialog({
   const [loaderResponseKey, setLoaderResponseKey] = useState("");
   const [loaderLoading, setLoaderLoading] = useState(false);
   const [instanceName, setInstanceName] = useState(projectName ?? "");
+  const [nameEdited, setNameEdited] = useState(false);
   const [curseforgeKey, setCurseforgeKey] = useState("");
   const [packChoice, setPackChoice] = useState<{ key: string; versions: ModpackVersion[]; selected: string }>({ key: "", versions: [], selected: "" });
   const [includeOptional, setIncludeOptional] = useState(false);
@@ -65,6 +68,10 @@ export function CreateInstanceDialog({
   const [manifestAttempt, retryManifest] = useState(0);
   const [loaderAttempt, retryLoader] = useState(0);
   const [packAttempt, retryPack] = useState(0);
+  // A dialog that was never opened keeps no version rows: Home, Library and Discover
+  // each mount one, and a closed dialog then lists nothing.
+  const [listed, setListed] = useState(isOpen);
+  if (isOpen && !listed) setListed(true);
   const loaderGeneration = useRef(0);
   const packGeneration = useRef(0);
   const manifestGeneration = useRef(0);
@@ -104,6 +111,9 @@ export function CreateInstanceDialog({
   const noManifestVersions = manifestState === "ready" && !manifestChoices;
   const noPackVersions = packState === "ready" && packVersions.length === 0;
   const retry = (handler: () => void) => <Button type="button" size="sm" variant="ghost" onClick={handler}>{t("common:actions.retry")}</Button>;
+  const manifestFailure = manifestState === "failed" || noManifestVersions ? <div className="vx-action-row">
+    <span role={manifestState === "failed" ? "alert" : "status"}>{t(manifestState === "failed" ? "library:createMetadata.failedGame" : "library:createMetadata.emptyGame")}</span>
+    {retry(() => retryManifest(value => value + 1))}</div> : null;
   // The chosen version is always one of those shown, so a search never installs a hidden one.
   const chooseCategory = (next: VersionCategory) => {
     if (next === category) return;
@@ -118,23 +128,54 @@ export function CreateInstanceDialog({
     if (exact) setGameVersion(exact.id);
     else if (!shown.some(version => version.id === gameVersion)) setGameVersion(shown[0]?.id ?? "");
   };
-  const versionDetails = (id: string, type: string, releaseTime: string) => [
-    releaseTime ? formatDate(releaseTime, i18n.language) : "",
-    type === "old_beta" ? t("library:oldBeta") : type === "old_alpha" ? t("library:oldAlpha") : "",
-    installedIds.has(id) ? t("library:versionInstalled") : "",
-  ].filter(Boolean).join(" · ");
+  // Built once per list change: the launcher re-renders this dialog for every log
+  // line and progress event, and those renders must not rebuild hundreds of rows.
+  const versionRows = useMemo<VersionListOption[]>(() => !listed ? [] : shownVersions.map((version) => ({
+    id: version.id,
+    date: version.releaseTime ? formatDate(version.releaseTime, i18n.language) : "",
+    dateTime: version.releaseTime,
+    // The type filter already names releases, snapshots and April Fools; only
+    // Beta and Alpha share a filter, so only they carry a type badge.
+    badges: [
+      ...(version.type === "old_beta" ? [{ label: t("library:oldBeta") }] : version.type === "old_alpha" ? [{ label: t("library:oldAlpha") }] : []),
+      ...(installedIds.has(version.id) ? [{ label: t("library:versionInstalled"), tone: "success" as const }] : []),
+    ],
+  })), [i18n.language, installedIds, listed, shownVersions, t]);
+  const categoryLabel = (value: VersionCategory) => {
+    const label = t(`library:versionCategory.${value}`);
+    return searching
+      ? /^(?:zh|ja)/i.test(i18n.language) ? `${label}（${versionCounts[value]}）` : `${label} (${versionCounts[value]})`
+      : label;
+  };
 
   useEffect(() => {
     if (!isOpen) return;
     setMode(initialPackPath ? "import" : initialMode);
     setDroppedPackPath(initialPackPath ?? null);
     setInstanceName(projectName ?? "");
+    setNameEdited(false);
     setError("");
     // A reopened dialog starts without the last search; the type and order stay.
     setVersionQuery("");
     filters.current = { ...filters.current, query: "" };
     setGameVersion(current => current || firstShown(catalogVersions(manifest ?? initialManifest ?? undefined)));
   }, [initialMode, initialPackPath, isOpen, projectName]);
+
+  // The default folder name follows the version and loader until the user edits it.
+  useEffect(() => {
+    if (!isOpen || mode !== "version" || nameEdited || !chosenVersion) return;
+    let current = true;
+    void command<string>("suggest_instance_name", { gameVersion: chosenVersion, loader })
+      .then((name) => {
+        if (current && typeof name === "string" && name.trim()) setInstanceName(name);
+      })
+      .catch(() => {
+        if (!current) return;
+        const label = loader === "vanilla" ? "" : names[loader];
+        setInstanceName((value) => (nameEdited ? value : label ? `${chosenVersion}-${label}` : chosenVersion));
+      });
+    return () => { current = false; };
+  }, [chosenVersion, isOpen, loader, mode, nameEdited]);
 
   useFileDrop((dropped) => {
     const candidate = dropped.modpacks[0] ?? (dropped.zips.length === 1 ? dropped.zips[0] : undefined);
@@ -205,15 +246,15 @@ export function CreateInstanceDialog({
     event.preventDefault();
     if (busy || !validSelection) return;
     await run("instance.install", async () => {
-      let versionId = chosenVersion;
-      if (loader === "vanilla") await command("install_version", { versionId: chosenVersion });
-      else versionId = (await command<LoaderResult>("install_loader", { loader, gameVersion: chosenVersion, loaderVersion })).versionId;
-      let instance: Instance | undefined;
-      if (instanceName.trim()) instance = await command<Instance>("create_instance", { name: instanceName.trim(), versionId });
+      const instance = await command<Instance>("create_game_instance", {
+        name: instanceName.trim() || undefined,
+        gameVersion: chosenVersion,
+        loader,
+        loaderVersion,
+      });
       await reload();
-      if (instance) selectInstance(instance.id);
-      else selectVersion(versionId);
-      await onInstalled(versionId, instance?.id);
+      selectInstance(instance.id);
+      await onInstalled(instance.versionId, instance.id);
       onOpenChange(false);
     });
   }
@@ -228,17 +269,15 @@ export function CreateInstanceDialog({
         path,
         expectedGameVersion: chosenVersion || undefined,
       });
-      let instance: Instance | undefined;
-      if (instanceName.trim()) {
-        instance = await command<Instance>("create_instance", {
-          name: instanceName.trim(),
-          versionId: installed.versionId,
-        });
-      }
+      // The installer writes a shared loader profile. Promote it into the
+      // standard named instance folder so it behaves like every other instance.
+      const instance = await command<Instance>("create_instance_from_version", {
+        name: instanceName.trim() || undefined,
+        versionId: installed.versionId,
+      });
       await reload();
-      if (instance) selectInstance(instance.id);
-      else selectVersion(installed.versionId);
-      await onInstalled(installed.versionId, instance?.id);
+      selectInstance(instance.id);
+      await onInstalled(installed.versionId, instance.id);
       onOpenChange(false);
     });
   }
@@ -319,11 +358,15 @@ export function CreateInstanceDialog({
         id={`${modeId}-panel`} aria-labelledby={!projectName ? `${modeId}-mode-${mode}` : undefined}>
       {mode === "version" ? (
         <form id={`${modeId}-create-instance-form`} className="vx-form-stack" onSubmit={install}>
-          <Field label={t("library:version")} htmlFor={`${modeId}-create-game-version`}>
+          {/* A label's for cannot point at a list: the list names itself by this label's id,
+              and a click on the label focuses the list as it would a control. */}
+          <div className="vx-field">
+            <label id={`${modeId}-create-game-version-label`}
+              onClick={() => document.getElementById(`${modeId}-create-game-version`)?.focus()}>{t("library:version")}</label>
             <div className="vx-create-version-picker">
               {/* Type, search and sort narrow the list below; they share the field's label. */}
               <Segmented semantic="toggle" label={t("library:channel")} value={category} onChange={chooseCategory}
-                options={VERSION_CATEGORIES.map((value) => ({ value, label: `${t(`library:versionCategory.${value}`)}${searching ? ` · ${versionCounts[value]}` : ""}` }))} />
+                options={VERSION_CATEGORIES.map((value) => ({ value, label: categoryLabel(value) }))} />
               <div className="vx-create-version-tools">
                 <input id={`${modeId}-create-version-search`} type="search" value={versionQuery} autoComplete="off" spellCheck={false}
                   aria-label={t("library:versionSearch")} placeholder={t("library:versionSearchPlaceholder")}
@@ -334,19 +377,15 @@ export function CreateInstanceDialog({
                   onChange={(value) => setVersionSort(value as VersionSort)}
                   options={VERSION_SORTS.map((value) => ({ value, label: t(`library:versionSorts.${value}`) }))} />
               </div>
-              <Select id={`${modeId}-create-game-version`} aria-label={t("library:version")} value={chosenVersion} onChange={setGameVersion} required
-                showSelectedMetadata={false} options={[
-                  { value: "", label: t("library:selectVersion") },
-                  ...shownVersions.map((version) => ({ value: version.id, label: version.id, metadata: versionDetails(version.id, version.type, version.releaseTime) || undefined })),
-                ]} />
+              <VersionList id={`${modeId}-create-game-version`} labelledBy={`${modeId}-create-game-version-label`} open={isOpen}
+                value={chosenVersion} onChange={setGameVersion} options={versionRows}
+                status={!listed ? null : manifestFailure && !manifestChoices ? manifestFailure
+                  : manifestState === "pending" && !manifestChoices ? <LoadingStatus active>{t("library:createMetadata.loadingGame")}</LoadingStatus>
+                  : searching && manifestChoices ? <p className="vx-muted" role="status">{t("library:versionNoMatch")}</p> : null} />
             </div>
-          </Field>
-          {searching && manifestChoices && !shownVersions.length ? <p className="vx-muted" role="status">{t("library:versionNoMatch")}</p> : null}
-          {manifestState === "pending" && !manifestChoices
-            ? <LoadingStatus active>{t("library:createMetadata.loadingGame")}</LoadingStatus> : null}
-          {manifestState === "failed" || noManifestVersions ? <div className="vx-action-row">
-            <span role={manifestState === "failed" ? "alert" : "status"}>{t(manifestState === "failed" ? "library:createMetadata.failedGame" : "library:createMetadata.emptyGame")}</span>
-            {retry(() => retryManifest(value => value + 1))}</div> : null}
+          </div>
+          {/* A failed refresh keeps the launcher's own list usable and says so below it. */}
+          {manifestFailure && manifestChoices ? manifestFailure : null}
           <div className="vx-create-loader-group">
           <Field label={t("library:loader")}>
             <Segmented semantic="toggle" label={t("library:loader")} value={loader} onChange={setLoader}
@@ -373,7 +412,7 @@ export function CreateInstanceDialog({
           </div>
           </div>
           </div>
-          <Field label={t("library:instanceNameOptional")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} maxLength={80} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
+          <Field label={t("library:instanceNameOptional")} htmlFor={`${modeId}-create-instance-name`}><input id={`${modeId}-create-instance-name`} maxLength={64} value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={t("library:instanceNamePlaceholder")} /></Field>
         </form>
       ) : null}
       {mode === "import" ? (
@@ -403,5 +442,99 @@ export function CreateInstanceDialog({
       ) : null}
       </SectionPanel>
     </Dialog>
+  );
+}
+
+export interface VersionListOption {
+  id: string;
+  /** Localized release date; empty when the source has none. */
+  date: string;
+  dateTime: string;
+  badges: { label: string; tone?: "success" }[];
+}
+
+/** Rows a Page Up or Page Down moves through. */
+const VERSION_PAGE = 5;
+
+/** Scrolls the list just far enough to show its picked row. */
+function revealPick(list: HTMLUListElement | null) {
+  const row = list?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
+  if (!list || !row) return;
+  if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop;
+  else if (row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = row.offsetTop + row.offsetHeight - list.clientHeight;
+}
+
+/**
+ * Every version the filters show, as one scrollable single-choice list: the
+ * pick is visible without opening a menu, and the arrow keys move it.
+ */
+export function VersionList({ id, labelledBy, open, value, onChange, options, status }: {
+  id: string;
+  /** The id of the visible label that names the list. */
+  labelledBy: string;
+  /** Whether the surrounding dialog is open. */
+  open: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly VersionListOption[];
+  /** Shown in place of the rows while there are none: loading, failure or no match. */
+  status?: ReactNode;
+}) {
+  const listRef = useRef<HTMLUListElement>(null);
+  const selectedIndex = options.findIndex((option) => option.id === value);
+  const optionIds = useMemo(() => options.map((option) => option.id).join("\n"), [options]);
+
+  // Keep the pick in view when the keyboard, a filter or the sort moves it. Only
+  // a new pick or other rows move the list: any other render (a log line, a
+  // download's progress) leaves it where the user scrolled.
+  useLayoutEffect(() => revealPick(listRef.current), [optionIds, value]);
+
+  // A closed dialog lays the list out at no height, and the dialog only opens in
+  // its own effect, after this one: reveal the pick in the first opened frame.
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => revealPick(listRef.current));
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+
+  function move(event: KeyboardEvent<HTMLUListElement>) {
+    const last = options.length - 1;
+    const from = Math.max(0, selectedIndex);
+    const next = event.key === "ArrowDown" ? (selectedIndex < 0 ? 0 : Math.min(last, from + 1))
+      : event.key === "ArrowUp" ? Math.max(0, from - 1)
+      : event.key === "Home" ? 0
+      : event.key === "End" ? last
+      : event.key === "PageDown" ? Math.min(last, from + VERSION_PAGE)
+      : event.key === "PageUp" ? Math.max(0, from - VERSION_PAGE)
+      : undefined;
+    if (next === undefined || last < 0) return;
+    event.preventDefault();
+    onChange(options[next].id);
+  }
+
+  return (
+    <div className="vx-create-version-well" data-empty={options.length ? undefined : "true"}>
+      {options.length ? (
+        <ul ref={listRef} id={id} role="listbox" aria-labelledby={labelledBy} tabIndex={0} className="vx-create-version-list"
+          aria-activedescendant={selectedIndex >= 0 ? `${id}-option-${selectedIndex}` : undefined} onKeyDown={move}>
+          {options.map((option, index) => {
+            const selected = index === selectedIndex;
+            return (
+              <li key={option.id} id={`${id}-option-${index}`} role="option" aria-selected={selected} data-value={option.id}
+                className="vx-create-version-option" onClick={() => onChange(option.id)}>
+                <span className="vx-create-version-option__name">
+                  <span className="vx-create-version-option__id" title={option.id}>{option.id}</span>
+                  {option.badges.map((badge) => (
+                    <span key={badge.label} className="vx-create-version-option__badge" data-tone={badge.tone}>{badge.label}</span>
+                  ))}
+                </span>
+                {option.date ? <time className="vx-create-version-option__date" dateTime={option.dateTime}>{option.date}</time> : <span />}
+                {selected ? <Check size={ICON.md} data-selected-mark aria-hidden="true" /> : <span aria-hidden="true" />}
+              </li>
+            );
+          })}
+        </ul>
+      ) : <div className="vx-create-version-status">{status}</div>}
+    </div>
   );
 }

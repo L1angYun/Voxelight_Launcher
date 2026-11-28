@@ -32,10 +32,7 @@ const project = { project_id: "design-fixture", slug: "design-fixture", title: "
   author: "Fixture", project_type: "mod", versions: ["1.21.1"] };
 
 async function prepare(page: Page, theme: "dark" | "light", stress = true) {
-  await installLauncherFixture(page, { theme, stress, instanceCount: 2 });
-  await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ hits: [project] }),
-  }));
+  await installLauncherFixture(page, { theme, stress, instanceCount: 2, modrinthSearch: { hits: [project], totalHits: 1 } });
   await page.addInitScript(project => {
     type Api = { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> };
     const host = window as unknown as { __TAURI_INTERNALS__?: Api };
@@ -97,12 +94,15 @@ function checkDesign(row: Awaited<ReturnType<typeof readDesign>>) {
     const label = `${row.page}: ${button.classes} '${button.text}'`;
     expect.soft(button.height, label).toBe({ sm: 32, md: 38, lg: 56 }[button.size]);
     expect.soft(button.radius, label).toBe("999px");
+    // R9 icon scale (ui-language-spec §2.6/§3.1): sm ICON.sm 14, md ICON.md 16, lg ICON.lg 20.
     if (button.icon) expect.soft(button.icon, label).toEqual({
-      width: { sm: 14, md: 16, lg: 18 }[button.size], height: { sm: 14, md: 16, lg: 18 }[button.size],
+      width: { sm: 14, md: 16, lg: 20 }[button.size], height: { sm: 14, md: 16, lg: 20 }[button.size],
     });
   }
   for (const surface of row.surfaces) {
-    expect.soft(["6px", "12px"], `${row.page}: ${surface.classes}`).toContain(surface.radius);
+    // R9 radius scale (ui-language-spec §2.7): .vx-panel uses --radius-lg (16px), cards --radius-md (12px).
+    const panel = surface.classes.split(/\s+/).includes("vx-panel");
+    expect.soft(surface.radius, `${row.page}: ${surface.classes}`).toBe(panel ? "16px" : "12px");
     expect.soft(surface.border, `${row.page}: ${surface.classes} hairline`).toBe("1px");
     expect.soft(surface.borderStyle, `${row.page}: ${surface.classes} hairline`).toBe("solid");
   }
@@ -224,7 +224,7 @@ nativeTest("R2-07 discovery details keeps its 720px width at 1440", async ({ pag
 });
 
 for (const theme of ["dark", "light"] as const) {
-  nativeTest(`R2-06 ${theme}: composited reading surfaces include both library detail pages`, async ({ page }, info) => {
+  nativeTest(`R2-06 ${theme}: composited reading surfaces include both instance detail pages`, async ({ page }, info) => {
     nativeTest.setTimeout(90000);
     await page.setViewportSize({ width: 1440, height: 930 });
     await prepare(page, theme, false);
@@ -258,13 +258,12 @@ for (const theme of ["dark", "light"] as const) {
     await capture("instance-detail", ".vx-detail-workspace");
     await page.locator(".vx-detail-header > button").first().click();
     await expect(page.locator(".vx-library-page")).toBeVisible();
-    await page.getByRole("button", { name: "版本目录", exact: true }).click();
-    await page.locator('.vx-version-card[data-version-directory="1.21.1"] [data-version-id="1.21.1"], .vx-instance-card[data-version-directory="1.21.1"] [data-version-id="1.21.1"]').click();
-    await expect(page.locator("#version-detail-panel")).toHaveCSS("opacity", "1");
-    await capture("version-directory-detail", "#version-detail-panel");
+    await page.locator('.vx-instance-card[data-instance-id="fixture-world-002"] .vx-instance-card__select').click();
+    await expect(page.locator(".vx-detail-workspace")).toHaveCSS("opacity", "1");
+    await capture("second-instance-detail", ".vx-detail-workspace");
     await writeFile(info.outputPath("reading-surfaces.json"), JSON.stringify({ theme, rows,
       method: "Fixed 6x6 geometric patches; reject text/control/media overlap and DOM occlusion before reading pixels. No brightness-based candidate selection, recoloring or hidden content.",
-      scope: "Visible explicit reading surfaces across the matrix and default InstanceDetailPage/VersionDirectoryDetailPage; controls, icons, badges and unopened detail tabs are not large reading surfaces in this check." }, null, 2));
+      scope: "Visible explicit reading surfaces across the matrix and both default InstanceDetailPage drills; controls, icons, badges and unopened detail tabs are not large reading surfaces in this check." }, null, 2));
   });
 }
 

@@ -88,7 +88,7 @@ Var StartMenuShortcutCheckboxHandle
 {{/if}}
 
 Name "${PRODUCTNAME}"
-BrandingText "${COPYRIGHT}"
+BrandingText "Voxelight Launcher"
 OutFile "${OUTFILE}"
 
 ; We don't actually use this value as default install path,
@@ -315,6 +315,7 @@ Function PageReinstall
       SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
     ${EndIf}
 
+    Call VoxelightApplyDialogFonts
     ${NSD_SetFocus} $R2
     nsDialogs::Show
   ${EndIf}
@@ -372,7 +373,13 @@ Function PageLeaveReinstall
       ReadRegStr $R1 HKLM "$R6" "UninstallString"
       ExecWait '$R1' $0
     ${Else}
+      ; Uninstall the previous copy where it is really installed, which can
+      ; differ from a new /D= target. A stale remembered folder without the
+      ; launcher falls back to the chosen install folder.
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+      ${IfNot} ${FileExists} "$4\${MAINBINARYNAME}.exe"
+        StrCpy $4 "$INSTDIR"
+      ${EndIf}
       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
       ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
@@ -504,6 +511,12 @@ LangString choowHowToInstall 0 ""
 {{#each language_files}}
   !include "{{this}}"
 {{/each}}
+
+; The NLF language files set SimpChinese to SimSun and leave English on the
+; legacy shell font. Apply a Windows UI font to the built-in MUI pages in both
+; languages. The custom Voxelight pages set their own embedded fonts.
+SetFont /LANG=${LANG_ENGLISH} "Segoe UI" 9
+SetFont /LANG=${LANG_SIMPCHINESE} "Microsoft YaHei UI" 9
 
 Function .onInit
   StrCpy $DesktopShortcutChecked 1
@@ -944,8 +957,13 @@ SectionEnd
 
 Function RestorePreviousInstallLocation
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-  StrCmp $4 "" +2 0
+  ; A remembered folder is only usable while the launcher is still there. A
+  ; silent uninstall leaves the remembered default behind, and reusing a deleted
+  ; temporary folder would make the next installation default to nowhere.
+  ${If} $4 != ""
+  ${AndIf} ${FileExists} "$4\${MAINBINARYNAME}.exe"
     StrCpy $INSTDIR $4
+  ${EndIf}
 FunctionEnd
 
 Function Skip

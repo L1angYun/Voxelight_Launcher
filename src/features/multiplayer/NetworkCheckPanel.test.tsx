@@ -254,4 +254,23 @@ describe("NetworkCheckPanel", () => {
     expect(container.textContent).not.toContain("Proxy / VPN tunnel");
     expect(container.querySelector(".vx-network-addresses")).toBeNull();
   });
+
+  it("offers the first check from the empty panel and describes the check once", async () => {
+    const description = "Check IPv4, IPv6, NAT mapping behavior";
+    await renderPage();
+    await act(async () => findButton("Network check").click());
+    const empty = container.querySelector(".vx-network-empty .vx-empty--panel");
+    expect(empty?.querySelector(".vx-empty__icon.vx-icon-tile svg")).not.toBeNull();
+    const run = [...(empty?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .find((candidate) => candidate.textContent?.trim() === "Run network check");
+    expect(run?.dataset.variant).toBe("primary");
+    expect(container.querySelector(".vx-network-check > .vx-multiplayer-toolbar")).toBeNull();
+    expect(container.textContent).not.toContain(description);
+
+    await act(async () => run!.click());
+    const toolbar = container.querySelector(".vx-network-check > .vx-multiplayer-toolbar");
+    expect(toolbar?.textContent).toContain(description);
+    expect(toolbar?.textContent).toContain("Run again");
+    expect(container.querySelector(".vx-network-empty")).toBeNull();
+  });
 });

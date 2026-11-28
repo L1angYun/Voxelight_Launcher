@@ -22,7 +22,7 @@ if (mode === 'tour') {
 }
 if (mode === 'lite' || mode === 'full') {
   await nav('设置');
-  const label = mode === 'lite' ? '精简 · 保留必要动态' : '完全 · 启用全部特效';
+  const label = mode === 'lite' ? '精简（保留必要动态）' : '完全（启用全部特效）';
   await page.getByRole('button', { name: '外观', exact: true }).click(); await page.waitForTimeout(1000);
   await page.getByRole('combobox', { name: '特效级别' }).click(); await page.waitForTimeout(500);
   await page.getByRole('option', { name: label }).click({ timeout: 5000 });

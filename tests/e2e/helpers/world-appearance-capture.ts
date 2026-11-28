@@ -127,6 +127,29 @@ async function twoFrames(page: Page, timeoutMs?: number) {
   }), timeoutMs);
 }
 
+/**
+ * R9 (ui-language-spec 2.11.1) composites a continuously drifting ambient light
+ * layer under the now transparent world sky. The world budgets measure the world
+ * against --world-ink, the background their references were taken on, so their
+ * captures exclude that separately specified layer and its overlay, as
+ * withWorldView excludes the foreground. Only the default Full canvas layer may
+ * be excluded, so the world still renders in its default composition.
+ */
+export async function excludeAmbientLight(page: Page) {
+  const ambient = await page.evaluate(() => {
+    const layer = document.querySelector<HTMLElement>(".vx-app-body > .vx-ambient");
+    return layer ? { mode: layer.dataset.ambientMode ?? null, theme: layer.dataset.ambientTheme ?? null,
+      canvases: layer.querySelectorAll("canvas.vx-ambient-canvas").length, visibility: getComputedStyle(layer).visibility } : null;
+  });
+  assert(ambient, "The default ambient light layer must be mounted before the world is measured without it");
+  assert.equal(ambient.mode, "canvas");
+  assert.equal(ambient.canvases, 1);
+  assert.equal(ambient.visibility, "visible");
+  const style = await page.addStyleTag({ content: ".vx-ambient, .vx-ambient-overlay { visibility: hidden !important; }" });
+  await twoFrames(page);
+  return { ambient, restore: async () => { await style.evaluate(element => { element.parentNode?.removeChild(element); }); } };
+}
+
 /** M2/S1: normal compositor image plus a canvas-only hidden image, with unchanged layout. */
 export async function captureAppearanceSeries(page: Page, directory: string, options: {
   background: readonly [number, number, number]; anchorSelector?: string; stability?: AppearanceStability;
@@ -142,7 +165,17 @@ export async function captureAppearanceSeries(page: Page, directory: string, opt
   assert.equal(runtime.dpr, 1);
   assert.equal(runtime.world.worldGrid, "160");
   assert.equal(runtime.world.worldParticles, "65536");
+  const exclusion = await excludeAmbientLight(page);
+  try {
+    return await captureWorldSeries(page, directory, options, anchorSelector, { ...runtime, ambient: exclusion.ambient });
+  } finally {
+    await exclusion.restore();
+  }
+}
 
+async function captureWorldSeries(page: Page, directory: string, options: {
+  background: readonly [number, number, number]; stability?: AppearanceStability;
+}, anchorSelector: string, runtime: Awaited<ReturnType<typeof geometry>> & { ambient: unknown }) {
   const now = () => page.evaluate(() => performance.now());
   let settlingIndex = 0;
   const waiting = await waitForAppearanceStability({

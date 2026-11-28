@@ -276,17 +276,166 @@ if ($code -ne 0) {
     exit $code
 }
 
+$tauriConfig = Get-Content -Raw -LiteralPath (Join-Path $root 'src-tauri\tauri.conf.json') | ConvertFrom-Json
+$productName = [string]$tauriConfig.productName
+$version = [string]$tauriConfig.version
+$releaseSetupName = "VoxelightLauncher-$version-x64-setup.exe"
+$rawNsisName = "{0}_{1}_x64-nsis.exe" -f $productName, $version
+$tauriNsisName = "{0}_{1}_x64-setup.exe" -f $productName, $version
+
+function Get-ExpectedInstallBytes([string]$LauncherExe) {
+    [long]$sum = (Get-Item -LiteralPath $LauncherExe).Length + 1MB
+    foreach ($relative in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')) {
+        $file = Join-Path $root $relative
+        if (Test-Path -LiteralPath $file -PathType Leaf) {
+            $sum += (Get-Item -LiteralPath $file).Length
+        }
+    }
+    $licensesDir = Join-Path $root 'licenses'
+    if (Test-Path -LiteralPath $licensesDir -PathType Container) {
+        foreach ($item in @(Get-ChildItem -LiteralPath $licensesDir -Recurse -File)) {
+            $sum += $item.Length
+        }
+    }
+    return $sum
+}
+
+# One child process per artifact. Under -File, a comma list after -Path reaches
+# the child as separate arguments: only the first binds, and the child stops
+# with "A positional parameter cannot be found" (exit 1).
+function Repair-SetupArtifactIntegrity([string]$RepairScript, [string[]]$Targets, [string]$LogPath) {
+    foreach ($repairTarget in $Targets) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $RepairScript -Path $repairTarget | Tee-Object -FilePath $LogPath -Append | Out-Host
+        $repairCode = $LASTEXITCODE
+        if ($repairCode -ne 0) {
+            Write-Fail "Could not restore Medium integrity on $repairTarget (exit $repairCode)"
+            return $repairCode
+        }
+    }
+    return 0
+}
+
+if (-not $NoBundle) {
+    Write-Step 'Building Voxelight Setup'
+    $artifactDirectories = @(Get-ArtifactDirectories)
+    $setupBuiltCount = 0
+
+    $setupUiLauncher = Join-Path $env:TEMP ('voxelight-setup-ui-{0}.cmd' -f $PID)
+    @(
+        '@echo off',
+        "`"$npmCmd`" run setup:build 2>&1"
+    ) | Set-Content -LiteralPath $setupUiLauncher -Encoding ASCII
+    & cmd.exe /c $setupUiLauncher | Tee-Object -FilePath $logPath -Append
+    $setupUiCode = $LASTEXITCODE
+    Remove-Item -LiteralPath $setupUiLauncher -Force -ErrorAction SilentlyContinue
+    if ($setupUiCode -ne 0) {
+        Write-Fail "Voxelight Setup frontend build exited with $setupUiCode"
+        Write-Host "  full log: $logPath" -ForegroundColor DarkGray
+        exit $setupUiCode
+    }
+
+    $setupManifest = Join-Path $root 'setup\src-tauri\Cargo.toml'
+    $repairScript = Join-Path $root 'scripts\repair-build-integrity.ps1'
+    $previousPayload = $env:VOXELIGHT_SETUP_PAYLOAD
+    $previousExpected = $env:VOXELIGHT_SETUP_EXPECTED_INSTALL_BYTES
+    $previousSetupTarget = $env:CARGO_TARGET_DIR
+    try {
+        $env:CARGO_TARGET_DIR = $targetDir
+        foreach ($directory in $artifactDirectories) {
+            $bundleDir = Join-Path $directory 'bundle\nsis'
+            if (-not (Test-Path -LiteralPath $bundleDir -PathType Container)) {
+                continue
+            }
+
+            # Only embed an NSIS installer written by this run. An older build,
+            # possibly under another target triple, can leave a stale file in
+            # bundle\nsis; wrapping that would ship the wrong payload.
+            $freshArtifactJson = & $nodeCmd (Join-Path $root 'scripts\build-runtime.mjs') --fresh-nsis $bundleDir $tauriNsisName $rawNsisName $started.ToString('o')
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail 'Could not determine whether the NSIS installer was written by this build.'
+                exit 1
+            }
+            $freshArtifact = if ($freshArtifactJson) { $freshArtifactJson | ConvertFrom-Json } else { $null }
+            if (-not $freshArtifact) {
+                Write-Detail "skipped NSIS installer not written by this build in $bundleDir"
+                continue
+            }
+            $rawNsisPath = [string]$freshArtifact.path
+            if ($freshArtifact.renameTo) {
+                Move-Item -LiteralPath $rawNsisPath -Destination ([string]$freshArtifact.renameTo) -Force
+                $rawNsisPath = [string]$freshArtifact.renameTo
+            }
+            if (-not (Test-Path -LiteralPath $rawNsisPath -PathType Leaf)) {
+                continue
+            }
+
+            $expectedBytes = Get-ExpectedInstallBytes (Join-Path $directory 'voxelight-launcher.exe')
+            $env:VOXELIGHT_SETUP_PAYLOAD = $rawNsisPath
+            $env:VOXELIGHT_SETUP_EXPECTED_INSTALL_BYTES = [string]$expectedBytes
+
+            $profileParent = [IO.Path]::GetFullPath((Split-Path -Parent $directory)).TrimEnd('\')
+            $resolvedTargetDir = [IO.Path]::GetFullPath($targetDir).TrimEnd('\')
+            $targetTriple = $null
+            if ($profileParent -ine $resolvedTargetDir) {
+                $targetTriple = Split-Path -Leaf $profileParent
+            }
+
+            # custom-protocol embeds dist\setup; without it the window loads the devUrl.
+            $cargoArgs = @('build', '--release', '--offline', '--locked', '--features', 'custom-protocol', '--manifest-path', $setupManifest)
+            if ($targetTriple) {
+                $cargoArgs += @('--target', $targetTriple)
+            }
+            $cargoCmdLine = "`"$($cargo.Source)`" " + (($cargoArgs | ForEach-Object {
+                if ($_ -match '\s') { "`"$_`"" } else { $_ }
+            }) -join ' ') + ' 2>&1'
+            $setupCargoLauncher = Join-Path $env:TEMP ('voxelight-setup-cargo-{0}.cmd' -f $PID)
+            @('@echo off', $cargoCmdLine) | Set-Content -LiteralPath $setupCargoLauncher -Encoding ASCII
+            & cmd.exe /c $setupCargoLauncher | Tee-Object -FilePath $logPath -Append
+            $setupCargoCode = $LASTEXITCODE
+            Remove-Item -LiteralPath $setupCargoLauncher -Force -ErrorAction SilentlyContinue
+            if ($setupCargoCode -ne 0) {
+                Write-Fail "Voxelight Setup Cargo build exited with $setupCargoCode"
+                Write-Host "  full log: $logPath" -ForegroundColor DarkGray
+                exit $setupCargoCode
+            }
+
+            $setupExe = Join-Path $directory 'voxelight-setup.exe'
+            if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) {
+                throw "Voxelight Setup executable was not produced at $setupExe"
+            }
+            $releaseAssetPath = Join-Path $bundleDir $releaseSetupName
+            Copy-Item -LiteralPath $setupExe -Destination $releaseAssetPath -Force
+            $repairCode = Repair-SetupArtifactIntegrity -RepairScript $repairScript -Targets @($releaseAssetPath, $rawNsisPath) -LogPath $logPath
+            if ($repairCode -ne 0) {
+                exit $repairCode
+            }
+            $setupBuiltCount += 1
+        }
+    } finally {
+        $env:VOXELIGHT_SETUP_PAYLOAD = $previousPayload
+        $env:VOXELIGHT_SETUP_EXPECTED_INSTALL_BYTES = $previousExpected
+        $env:CARGO_TARGET_DIR = $previousSetupTarget
+    }
+    if ($setupBuiltCount -eq 0) {
+        Write-Fail "No NSIS installer written by this build was found to embed in Voxelight Setup. Refusing to wrap a stale payload."
+        exit 1
+    }
+}
+
+$elapsed = (Get-Date) - $started
 Write-Step 'Done'
 Write-Host ("    time:    {0:mm\:ss}" -f $elapsed) -ForegroundColor DarkGray
 Write-Host ''
 
 $artifacts = @()
+$rawNsisArtifacts = @()
 $artifactDirectories = @(Get-ArtifactDirectories)
 foreach ($directory in $artifactDirectories) {
     $artifacts += Get-Item -LiteralPath (Join-Path $directory 'voxelight-launcher.exe')
     $bundleDir = Join-Path $directory 'bundle\nsis'
     if (-not $NoBundle -and (Test-Path -LiteralPath $bundleDir)) {
         $artifacts += Get-ChildItem -LiteralPath $bundleDir -Filter '*-setup.exe' -File
+        $rawNsisArtifacts += Get-ChildItem -LiteralPath $bundleDir -Filter '*-nsis.exe' -File
     }
 }
 if ($artifacts.Count -eq 0) { throw 'No ordinary launcher build artifacts were found.' }
@@ -299,6 +448,12 @@ if ($PrepareSigning) {
 foreach ($item in $artifacts) {
     $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
     Write-Host ("  {0}" -f $item.Name) -ForegroundColor Green
+    Write-Host ("    {0}  {1}  sha256 {2}" -f (Format-Size $item.Length), $item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'), $hash.Substring(0, 16)) -ForegroundColor DarkGray
+    Write-Host ("    {0}" -f $item.FullName) -ForegroundColor DarkGray
+}
+foreach ($item in $rawNsisArtifacts) {
+    $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+    Write-Host ("  {0} (raw NSIS payload for smoke tests)" -f $item.Name) -ForegroundColor Yellow
     Write-Host ("    {0}  {1}  sha256 {2}" -f (Format-Size $item.Length), $item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'), $hash.Substring(0, 16)) -ForegroundColor DarkGray
     Write-Host ("    {0}" -f $item.FullName) -ForegroundColor DarkGray
 }

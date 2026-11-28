@@ -1,8 +1,9 @@
 import type { Page } from "@playwright/test";
 import type { WorldMaterial, WorldSceneId } from "../../src/components/world/types";
-import { appearanceFields, type Instance } from "../../src/lib/launcher";
+import { appearanceFields, type Instance, type ResourceProject } from "../../src/lib/launcher";
 import type { DownloadTask } from "../../src/features/downloads/useDownloadTasks";
 import type { LocalResource } from "../../src/features/library/types";
+import type { ResourceProjectDetails, ResourceVersionPage } from "../../src/features/discover/types";
 import packageJson from "../../package.json" with { type: "json" };
 
 export async function installLauncherFixture(
@@ -15,6 +16,8 @@ export async function installLauncherFixture(
     noInstances?: boolean;
     instanceCount?: number;
     instances?: Partial<Instance>[];
+    /** Extra/alternate game folders; the first active entry becomes `gameDirectory`. */
+    gameFolders?: { path: string; label?: string; active?: boolean }[];
     instanceLoader?: "fabric";
     resourceCreateDelay?: number;
     queuedResourceBehindSameProject?: boolean;
@@ -22,6 +25,7 @@ export async function installLauncherFixture(
     resourceGameVersions?: string[];
     firstInstanceName?: string;
     language?: "en-US" | "zh-CN";
+    /** Installed versions exposed through bootstrap for Home's Java label, multiplayer and discover; the library lists instances only. */
     versionDirectoryCount?: number;
     defaultModel?: "classic" | "slim";
     theme?: "dark" | "light" | "system";
@@ -40,6 +44,16 @@ export async function installLauncherFixture(
     localResources?: Partial<LocalResource>[];
     /** A newer stable release the update check finds (none: this build is the newest). */
     launcherUpdate?: { latestVersion: string };
+    /** Discover search pages answered through the Tauri command. */
+    modrinthSearch?: { hits: ResourceProject[]; totalHits?: number; nextOffset?: number };
+    curseforgeSearch?: { hits: ResourceProject[]; totalHits?: number; nextOffset?: number };
+    /** Fail Discover searches from one source with a mapped network code. */
+    searchFailure?: "modrinth" | "curseforge";
+    /** Drawer details and appended version pages for the Discover commands. */
+    modrinthDetails?: ResourceProjectDetails;
+    curseforgeDetails?: ResourceProjectDetails;
+    modrinthVersionPages?: ResourceVersionPage[];
+    curseforgeVersionPages?: ResourceVersionPage[];
   } = {},
 ) {
   await page.addInitScript(({ options, appearanceKeys, appVersion }) => {
@@ -100,8 +114,26 @@ export async function installLauncherFixture(
       accounts[1].username = "Jox";
       accounts[1].skinUrl = "data:image/png;base64,YnJva2Vu";
     }
+    const fixtureGameDirectory = "C:\\SyntheticFixture";
+    const loaderLabels: Record<string, string> = {
+      fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge", optifine: "OptiFine",
+    };
+    const gameFolders = (options.gameFolders?.length
+      ? options.gameFolders
+      : [{ path: fixtureGameDirectory, label: "SyntheticFixture", active: true }]
+    ).map((folder) => ({
+      path: folder.path,
+      label: folder.label ?? folder.path,
+      active: folder.active === true,
+    }));
+    const activeGameFolder =
+      gameFolders.find((folder) => folder.active)?.path ??
+      gameFolders[0]?.path ??
+      fixtureGameDirectory;
+    for (const folder of gameFolders) folder.active = folder.path === activeGameFolder;
     const config = {
-      gameDirectory: "C:\\SyntheticFixture",
+      gameDirectory: activeGameFolder,
+      gameFolders,
       javaPath: "",
       maxMemoryMb: 4096,
       jvmArguments: "",
@@ -116,13 +148,18 @@ export async function installLauncherFixture(
       screenWidth: 1280,
       screenHeight: 720,
       language: options.language ?? (options.stress ? "en-US" : "zh-CN"),
-      accentColor: "#b4f17a",
+      accentColor: "#0078d4",
       effects: options.effects ?? "full",
       worldScene: options.worldScene ?? "horizon",
       worldMaterial: options.worldMaterial ?? "lattice",
       accentSource: "system",
       soundEnabled: false,
       customBackground: options.customBackground ?? null,
+      ambientLightEnabled: true,
+      ambientLightIntensity: 60,
+      backgroundBlur: 8,
+      backgroundDim: 35,
+      backgroundDrift: false,
       javaAutoDownload: true,
       defaultSkin: options.defaultModel === "slim" ? "alex" : "steve",
       checkForUpdates: true,
@@ -188,12 +225,14 @@ export async function installLauncherFixture(
         totalPlayTime: 0,
       }),
     );
-    const instances: Instance[] = (options.instances ?? originalInstances).map((instance, index) => ({
+    const instances: Instance[] = (options.noInstances ? [] : options.instances ?? originalInstances).map((instance, index) => ({
       id: index === 0 ? "fixture-world" : `fixture-world-${index + 1}`,
       name: index === 0 ? "合成测试世界" : `合成测试世界 ${index + 1}`,
       versionId: "1.21.1", gameDirectory: `C:\\SyntheticFixture\\world-${index + 1}`,
       createdAt: "2026-01-01T00:00:00Z", category: "", notes: "", totalPlayTime: 0,
-      loader: "", loaderVersion: "", ...instance,
+      loader: "", loaderVersion: "",
+      kind: "version" as const, gameFolder: activeGameFolder, isolated: true, hidden: false,
+      ...instance,
       ...(options.instanceLoader ? { loader: "fabric", loaderVersion: "0.16.9", versionId: "fabric-loader-0.16.9-1.21.1" } : {}),
     }));
     for (const instance of instances) {
@@ -277,6 +316,8 @@ export async function installLauncherFixture(
     ] : [];
     const calls: { name: string; args?: Record<string, unknown> }[] = [];
     let settingsOperationLocked = options.settingsOperationLocked ?? false;
+    let modrinthVersionPage = 0;
+    let curseforgeVersionPage = 0;
     const callbacks = new Map<number, (value: unknown) => void>();
     const listeners = new Map<string, Map<number, number>>();
     const cancelledTasks = new Set<string>();
@@ -455,6 +496,58 @@ export async function installLauncherFixture(
               instances: structuredClone(instances),
               capabilities: {},
             };
+          if (name === "search_modrinth" || name === "search_curseforge") {
+            const source = name === "search_modrinth" ? "modrinth" : "curseforge";
+            if (options.searchFailure === source) {
+              throw { code: source === "modrinth" ? "discover.modrinthUnreachable" : "discover.curseforgeUnreachable" };
+            }
+            const page = source === "modrinth" ? options.modrinthSearch : options.curseforgeSearch;
+            const hits = page?.hits ?? [];
+            const offset = Number(args?.offset ?? 0);
+            // The configured hits are the first page; a later request gets the
+            // source's end instead of replaying the same rows forever.
+            if (offset > 0 && page?.nextOffset === undefined) {
+              return {
+                hits: [],
+                ...(page?.totalHits === undefined ? {} : { totalHits: page.totalHits }),
+                nextOffset: page?.totalHits ?? offset,
+              };
+            }
+            return {
+              hits: structuredClone(hits),
+              ...(page?.totalHits === undefined ? {} : { totalHits: page.totalHits }),
+              nextOffset: page?.nextOffset ?? hits.length,
+            };
+          }
+          const projectFallback = (resourceType: unknown, projectId: unknown): ResourceProject => ({
+            project_id: String(projectId ?? ""),
+            slug: String(projectId ?? ""),
+            title: String(projectId ?? ""),
+            description: "",
+            icon_url: null,
+            downloads: 0,
+            author: "",
+            project_type: String(resourceType ?? "mod"),
+            versions: [],
+          });
+          if (name === "get_modrinth_project_details" || name === "get_curseforge_project_details") {
+            const source = name === "get_modrinth_project_details" ? "modrinth" : "curseforge";
+            const configured = source === "modrinth" ? options.modrinthDetails : options.curseforgeDetails;
+            if (configured) return structuredClone(configured);
+            const hits = (source === "modrinth" ? options.modrinthSearch : options.curseforgeSearch)?.hits ?? [];
+            const project = hits.find(hit => hit.project_id === args?.projectId) ?? hits[0]
+              ?? projectFallback(args?.resourceType, args?.projectId);
+            return { project: structuredClone(project), versions: [], dependencies: [] };
+          }
+          if (name === "get_modrinth_project_versions" || name === "get_curseforge_project_versions") {
+            const source = name === "get_modrinth_project_versions" ? "modrinth" : "curseforge";
+            const pages = source === "modrinth" ? options.modrinthVersionPages : options.curseforgeVersionPages;
+            if (!pages?.length) return { versions: [], hasMore: false };
+            const index = source === "modrinth"
+              ? Math.min(modrinthVersionPage++, pages.length - 1)
+              : Math.min(curseforgeVersionPage++, pages.length - 1);
+            return structuredClone(pages[index]);
+          }
           if (name === "get_default_skin") {
             const id = args?.skin === "alex" ? "alex" : "steve";
             return {
@@ -517,6 +610,105 @@ export async function installLauncherFixture(
           // The real launcher exits here and the helper runs the installer.
           if (name === "install_launcher_update_and_exit") return new Promise(() => {});
           if (name === "cancel_launcher_update") return null;
+          if (name === "set_active_game_folder") {
+            const path = String(args?.path ?? "");
+            const folder = config.gameFolders.find((item) =>
+              item.path.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase() ===
+              path.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase());
+            if (!folder) throw { code: "game.folderNotFound", params: {} };
+            config.gameDirectory = folder.path;
+            for (const item of config.gameFolders) item.active = item === folder;
+            return structuredClone(config);
+          }
+          if (name === "suggest_instance_name") {
+            const gameVersion = String(args?.gameVersion ?? "1.21.1");
+            const loader = String(args?.loader ?? "vanilla");
+            return loader === "vanilla" ? gameVersion : `${gameVersion}-${loaderLabels[loader] ?? loader}`;
+          }
+          if (name === "create_game_instance") {
+            const gameVersion = String(args?.gameVersion ?? "1.21.1");
+            const loader = String(args?.loader ?? "vanilla");
+            const loaderVersion = loader === "vanilla" ? "" : String(args?.loaderVersion ?? "0.16.9");
+            const versionId = loader === "vanilla" ? gameVersion : `${loader}-loader-${loaderVersion}-${gameVersion}`;
+            const defaultName = loader === "vanilla" ? gameVersion : `${gameVersion}-${loaderLabels[loader] ?? loader}`;
+            const name = String(args?.name ?? "").trim() || defaultName;
+            const created: Instance = {
+              id: `fixture-created-${instances.length + 1}`, name, versionId,
+              gameDirectory: `C:\\SyntheticFixture\\instances\\fixture-created-${instances.length + 1}`,
+              createdAt: new Date().toISOString(), category: "normal", notes: "", totalPlayTime: 0,
+              loader, loaderVersion, kind: "version", gameFolder: config.gameDirectory, isolated: true, hidden: false,
+            };
+            instances.push(created);
+            if (!installedVersions.some((item) => item.id === versionId)) {
+              installedVersions.push({ id: versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
+            }
+            return structuredClone(created);
+          }
+          if (name === "create_instance_from_version") {
+            const versionId = String(args?.versionId ?? "1.21.1");
+            const name = String(args?.name ?? "").trim() || versionId;
+            const created: Instance = {
+              id: `fixture-created-${instances.length + 1}`, name, versionId,
+              gameDirectory: `C:\\SyntheticFixture\\versions\\${name.replace(/[\\\\/:*?"<>|]/g, "-")}`,
+              createdAt: new Date().toISOString(), category: "normal", notes: "", totalPlayTime: 0,
+              loader: "optifine", loaderVersion: "HD_U_J1", kind: "version",
+              gameFolder: config.gameDirectory, isolated: true, hidden: false,
+            };
+            instances.push(created);
+            if (!installedVersions.some((item) => item.id === versionId)) {
+              installedVersions.push({ id: versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
+            }
+            return structuredClone(created);
+          }
+          if (name === "copy_instance") {
+            const source = instances.find((item) => item.id === args?.instanceId);
+            if (!source) throw { code: "instance.notFound", params: {} };
+            const copy: Instance = {
+              ...structuredClone(source),
+              id: `fixture-copy-${instances.length + 1}`,
+              name: String(args?.name ?? `${source.name} Copy`),
+              gameDirectory: `${source.gameDirectory}-copy`,
+              createdAt: new Date().toISOString(),
+            };
+            instances.push(copy);
+            return structuredClone(copy);
+          }
+          if (name === "list_instance_dependants") {
+            return [] as string[];
+          }
+          if (name === "list_hidden_instances") {
+            return structuredClone(instances.filter((item) => item.hidden));
+          }
+          if (name === "restore_instance") {
+            const target = instances.find((item) => item.id === args?.instanceId);
+            if (!target) throw { code: "instance.notFound", params: {} };
+            target.hidden = false;
+            target.folderMissingSince = null;
+            return structuredClone(target);
+          }
+          if (name === "delete_instance") {
+            const id = String(args?.instanceId ?? "");
+            if (args?.confirmed !== true) throw { code: "instance.deleteConfirmRequired", params: {} };
+            const index = instances.findIndex((item) => item.id === id);
+            if (index < 0) throw { code: "instance.folderUnsafe", params: {} };
+            instances.splice(index, 1);
+            return structuredClone(instances);
+          }
+          if (name === "set_instance_isolation") {
+            const target = instances.find((item) => item.id === args?.instanceId);
+            if (!target) throw { code: "instance.notFound", params: {} };
+            target.isolated = args?.isolated === true;
+            return structuredClone(target);
+          }
+          if (name === "convert_managed_instance") {
+            const target = instances.find((item) => item.id === args?.instanceId);
+            if (!target) throw { code: "instance.notFound", params: {} };
+            target.kind = "version";
+            target.gameFolder = config.gameDirectory;
+            target.isolated = true;
+            target.hidden = false;
+            return structuredClone(target);
+          }
           if (name === "save_config") {
             if (settingsOperationLocked) throw { code: "config.busy", params: {} };
             const appearance = args?.preserveAppearance === true
@@ -551,13 +743,18 @@ export async function installLauncherFixture(
               screenWidth: 1280,
               screenHeight: 720,
               language: "system",
-              accentColor: "#b4f17a",
+              accentColor: "#0078d4",
               effects: "full",
               worldScene: "horizon",
               worldMaterial: "lattice",
               accentSource: "system",
               soundEnabled: false,
               customBackground: null,
+              ambientLightEnabled: true,
+              ambientLightIntensity: 60,
+              backgroundBlur: 8,
+              backgroundDim: 35,
+              backgroundDrift: false,
               javaAutoDownload: true,
               defaultSkin: "steve",
               checkForUpdates: true,
@@ -724,7 +921,8 @@ export async function installLauncherFixture(
             const versionId = loader === "vanilla" ? game : `${loader}-loader-${String(args?.loaderVersion ?? "0.16.9")}-${game}`;
             const instance: Instance = { id: "fixture-created-for-resource", name: String(args?.name), versionId, loader,
               loaderVersion: loader === "vanilla" ? "" : String(args?.loaderVersion ?? "0.16.9"), gameDirectory: "C:\\SyntheticFixture\\instances\\fixture-created-for-resource",
-              createdAt: "2026-01-01T00:00:00Z", category: "normal", notes: "", totalPlayTime: 0 };
+              createdAt: "2026-01-01T00:00:00Z", category: "normal", notes: "", totalPlayTime: 0,
+              kind: "version", gameFolder: config.gameDirectory, isolated: true, hidden: false };
             instances.push(instance);
             if (!installedVersions.some(item => item.id === versionId)) installedVersions.push({ id: versionId, type: "release", installed: true, launchable: true, javaMajor: 21 });
             task.stage = "resource"; task.completed = 2; task.message = "合成模组安装";
@@ -869,7 +1067,7 @@ export async function installLauncherFixture(
           if (name === "diagnose_instance") return { kind: "empty", logPath: null, excerpt: "" };
           if (name === "read_game_log") return { path: null, lines: [], truncated: false };
           if (name === "get_system_appearance") return {
-            accentColor: "#b4f17a", animationsEnabled: true, advancedEffectsEnabled: true, locale: options.language ?? "zh-CN",
+            accentColor: "#0078d4", animationsEnabled: true, advancedEffectsEnabled: true, locale: options.language ?? "zh-CN",
           };
           if (name === "cancel_auth_login") return null;
           if (name === "list_running_games") return structuredClone([...runningGames.values()]);
@@ -977,6 +1175,10 @@ export async function installLauncherFixture(
               versionId: "1.21.1",
               loader: "fabric",
               loaderVersion: "0.16.10",
+              kind: "version" as const,
+              gameFolder: config.gameDirectory,
+              isolated: true,
+              hidden: false,
             };
             instances.push(imported);
             return { instance: structuredClone(imported), warnings: [] };

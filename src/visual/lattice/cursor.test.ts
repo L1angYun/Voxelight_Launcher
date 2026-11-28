@@ -165,6 +165,10 @@ beforeEach(() => {
       circles = [];
     }),
     setTransform: vi.fn(),
+    save: vi.fn(),
+    rect: vi.fn(),
+    clip: vi.fn(),
+    restore: vi.fn(),
     beginPath: vi.fn(),
     fill: vi.fn(),
     globalAlpha: 1,
@@ -206,7 +210,7 @@ afterEach(() => {
 
 describe("Lattice cursor halo", () => {
   it("uses the contrast-safe indicator for pointer dots and refreshes it after a palette change", async () => {
-    document.documentElement.style.setProperty("--accent", "#b4f17a");
+    document.documentElement.style.setProperty("--accent", "#0078d4");
     document.documentElement.style.setProperty("--accent-indicator", "#527b2f");
     halo = mountCursorHalo(document.body);
     pointer(document.body, 400, 300); settle();
@@ -446,6 +450,63 @@ describe("Lattice cursor halo", () => {
     frame(1000);
     expect(callbacks.size).toBe(0);
     expect(vi.mocked(context.clearRect).mock.calls.length).toBe(draws);
+  });
+
+  it("fades the pointer pool over an unavailable control instead of orbiting over its label", () => {
+    const button = document.createElement("button");
+    button.innerHTML = "<span>Cancel</span>";
+    button.setAttribute("aria-disabled", "true");
+    box(button, 10, 10, 200, 50);
+    document.body.append(button);
+    halo = mountCursorHalo(document.body);
+    pointer(document.body, 100, 100);
+    frame(0);
+    pointer(button.firstElementChild!, 100, 30);
+    frame(60);
+    frame(200);
+    expect(circles.filter(point => point.alpha > 0)).toHaveLength(0);
+  });
+
+  it("fades the pool when the control under a resting pointer becomes unavailable", () => {
+    const button = document.createElement("button");
+    button.textContent = "Launch";
+    box(button, 10, 10, 200, 50);
+    document.body.append(button);
+    halo = mountCursorHalo(document.body);
+    pointer(button, 100, 30);
+    settle(0, 30);
+    expect(circles.some(point => point.alpha > 0)).toBe(true);
+    button.setAttribute("aria-disabled", "true");
+    return Promise.resolve().then(() => {
+      settle(1000, 30);
+      expect(circles.filter(point => point.alpha > 0)).toHaveLength(0);
+    });
+  });
+
+  it("outlines a control that replaces the target under a resting pointer instead of orbiting over it", async () => {
+    const launch = document.createElement("button");
+    launch.textContent = "Launch";
+    box(launch, 100, 100, 200, 50);
+    document.body.append(launch);
+    halo = mountCursorHalo(document.body);
+    pointer(launch, 200, 125);
+    settle();
+    const cancel = document.createElement("button");
+    cancel.innerHTML = "<span>Cancel</span>";
+    box(cancel, 100, 100, 200, 50);
+    const hit = vi.fn(() => cancel.firstElementChild);
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: hit });
+    try {
+      launch.replaceWith(cancel);
+      await Promise.resolve();
+      settle(2000);
+      expect(hit).toHaveBeenCalledWith(200, 125);
+      expect(circles).toHaveLength(30);
+      expect(Math.min(...circles.map((point) => point.x))).toBeLessThan(110);
+      expect(Math.max(...circles.map((point) => point.x))).toBeGreaterThan(290);
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint;
+    }
   });
 
   it("fades back after leaving a Lens and reverses an interrupted fade without jumping", () => {
@@ -793,5 +854,95 @@ describe("Lattice cursor halo", () => {
     pointer(button, 530, 300);
     window.dispatchEvent(new Event("resize"));
     expect(callbacks.size).toBe(0);
+  });
+
+  it("uses accent-indicator for keyboard focus contours while pointer hover keeps primary ink", () => {
+    document.documentElement.style.setProperty("--accent-indicator", "#2a7de1");
+    document.documentElement.style.setProperty("--text-primary", "#eee8dc");
+    const { button } = card();
+    halo = mountCursorHalo(document.body);
+    pointer(button, 530, 300);
+    settle();
+    expect(context.fillStyle).toBe("#eee8dc");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    button.focus();
+    settle(2000);
+    expect(context.fillStyle).toBe("#2a7de1");
+    document.documentElement.style.removeProperty("--text-primary");
+  });
+
+  it("blocks pointer hover halos on [data-selected] and [aria-current='page'] while keeping keyboard focus contours", () => {
+    document.documentElement.style.setProperty("--accent-indicator", "#2a7de1");
+    const selectedTab = document.createElement("button");
+    selectedTab.setAttribute("data-selected", "");
+    box(selectedTab, 100, 120, 120, 38);
+    const navPage = document.createElement("button");
+    navPage.setAttribute("aria-current", "page");
+    box(navPage, 100, 200, 180, 44);
+    document.body.append(selectedTab, navPage);
+    halo = mountCursorHalo(document.body);
+
+    pointer(selectedTab, 150, 138);
+    settle();
+    expect(circles).toHaveLength(31);
+    expect(document.querySelector("canvas")!.getAttribute("data-halo-state")).toBe("pointer");
+
+    pointer(navPage, 150, 220);
+    settle(2000);
+    expect(circles).toHaveLength(31);
+    expect(document.querySelector("canvas")!.getAttribute("data-halo-state")).toBe("pointer");
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    selectedTab.focus();
+    settle(4000);
+    expect(circles).toHaveLength(30);
+    expect(document.querySelector("canvas")!.getAttribute("data-halo-state")).toBe("focus");
+    expect(context.fillStyle).toBe("#2a7de1");
+  });
+
+  it("re-resolves the pointer target via elementFromPoint on scroll", () => {
+    const button = document.createElement("button");
+    box(button, 200, 200, 120, 40);
+    document.body.append(button);
+    const elementFromPoint = vi.fn(() => document.body);
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: elementFromPoint });
+    try {
+      halo = mountCursorHalo(document.body);
+      pointer(button, 240, 220);
+      settle();
+      expect(circles).toHaveLength(30);
+      document.dispatchEvent(new Event("scroll"));
+      expect(elementFromPoint).toHaveBeenCalledWith(240, 220);
+      settle(2000);
+      expect(circles).toHaveLength(31);
+      expect(document.querySelector("canvas")!.getAttribute("data-halo-state")).toBe("pointer");
+    } finally {
+      Reflect.deleteProperty(document, "elementFromPoint");
+    }
+  });
+
+  it("clips .vx-app-main halos to the scroll container and releases targets scrolled above it", () => {
+    const main = document.createElement("main");
+    main.className = "vx-app-main";
+    box(main, 0, 82, 1050, 638);
+    const button = document.createElement("button");
+    box(button, 120, 74, 140, 38);
+    main.append(button);
+    document.body.append(main);
+    halo = mountCursorHalo(document.body);
+
+    pointer(button, 180, 96);
+    settle();
+    expect(context.save).toHaveBeenCalled();
+    expect(context.rect).toHaveBeenCalledWith(0, 82, 1050, 638);
+    expect(context.clip).toHaveBeenCalled();
+    expect(context.restore).toHaveBeenCalled();
+    expect(circles).toHaveLength(30);
+
+    box(button, 120, 10, 140, 38);
+    document.dispatchEvent(new Event("scroll"));
+    settle(2000);
+    expect(circles).toHaveLength(31);
+    expect(document.querySelector("canvas")!.getAttribute("data-halo-state")).toBe("pointer");
   });
 });

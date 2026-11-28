@@ -4,7 +4,7 @@
   "history": "기록",
   "activeCount": "진행 중 {{count}}개",
   "historyCount": "기록 {{count}}개",
-  "taskTitle": "{{kind}} · {{target}}",
+  "taskTitle": "{{kind}}: {{target}}",
   "interruptedDescription": "이 작업이 끝나기 전에 런처가 종료되었습니다. 다시 시도하면 이미 검증된 파일을 재사용합니다.",
   "interruptedNoRetry": "이 작업이 끝나기 전에 런처가 종료되었습니다.",
   "tasks": {
@@ -31,7 +31,8 @@
       "server-install": "서버 설치",
       "server-import": "서버 가져오기",
       "server-start": "서버 준비",
-      "default-skin": "캐릭터 미리보기"
+      "default-skin": "캐릭터 미리보기",
+      "instance-create": "인스턴스 생성"
     },
     "stage": {
       "queued": "대기열에서 기다리는 중",
@@ -70,9 +71,9 @@
   },
   "progress": {
     "files": "{{completed}} / {{total}}개 파일",
-    "completedUnknown": "{{completed}}개 파일 · 전체 미확인",
+    "completedUnknown": "{{completed}}개 파일, 전체 미확인",
     "byteLabel": "{{completed}} / {{total}}",
-    "byteLabelUnknown": "{{completed}} 다운로드됨 · 전체 크기 미확인",
+    "byteLabelUnknown": "{{completed}} 다운로드됨, 전체 크기 미확인",
     "bytesCompleted": "{{completed}} 다운로드됨",
     "sizePending": "크기 확인 중",
     "percent": "{{percent}}%",
@@ -87,7 +88,9 @@
     "historyTitle": "작업 기록 없음",
     "historyDescription": "완료되었거나 복구 가능한 작업이 여기에 유지됩니다.",
     "filteredTitle": "일치하는 작업 없음",
-    "filteredDescription": "다른 필터를 선택해 다운로드 기록을 확인하세요."
+    "filteredDescription": "다른 필터를 선택해 다운로드 기록을 확인하세요.",
+    "discover": "콘텐츠 둘러보기",
+    "installGame": "게임 버전 설치"
   },
   "errors": {
     "taskFailed": "작업을 완료하지 못했습니다. 가능할 때 다시 시도하거나 원래 출처로 돌아가세요.",

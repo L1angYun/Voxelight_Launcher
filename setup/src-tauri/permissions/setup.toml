@@ -1,0 +1,14 @@
+# App-specific IPC commands for the offline Voxelight Setup window.
+
+[[permission]]
+identifier = "setup-commands"
+description = "Allow only the local Voxelight Setup commands in the setup window."
+commands.allow = [
+  "get_setup_state",
+  "get_license_text",
+  "validate_install_path",
+  "pick_install_directory",
+  "start_install",
+  "open_classic_installer",
+  "launch_installed",
+]

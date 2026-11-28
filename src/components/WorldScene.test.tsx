@@ -4,6 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WorldScene } from "./WorldScene";
+import { useWorldPaused } from "./world/worldAvailability";
 import type { WorldDrawMetrics } from "./world/renderer";
 
 const bridge = vi.hoisted(() => ({ create: vi.fn() }));
@@ -112,6 +113,16 @@ it("a paused scene requests no frames and resumes the same renderer", async () =
   await render({ paused: true }); expect(frames.size).toBe(0); expect(fake.draw).not.toHaveBeenCalled();
   await render({ paused: false }); expect(frames.size).toBeGreaterThan(0);
   await advance(100); expect(fake.draw).toHaveBeenCalled(); expect(bridge.create).toHaveBeenCalledTimes(1);
+});
+it("publishes its paused state so the replay controls can hide, and clears it on unmount", async () => {
+  let paused: boolean | undefined;
+  function Probe() { paused = useWorldPaused(); return null; }
+  const show = (props: Partial<Parameters<typeof WorldScene>[0]>) =>
+    act(async () => root.render(createElement("div", null, createElement(WorldScene, { ...inputs, ...props }), createElement(Probe))));
+  await show({ paused: true }); expect(paused).toBe(true);
+  await show({ paused: false }); expect(paused).toBe(false);
+  await show({ paused: true }); expect(paused).toBe(true);
+  await act(async () => root.render(createElement(Probe))); expect(paused).toBe(false);
 });
 it("disposes its renderer and cancels all pending frames on unmount", async () => {
   await render(); await act(async () => root.render(null));
@@ -419,4 +430,65 @@ it("does not create a launch shock for initial preparation or a static scene", a
   await render({ reducedMotion: true });
   await render({ reducedMotion: true, phase: "preparing", fraction: 0 });
   expect(fake.shock).not.toHaveBeenCalled();
+});
+
+it("keeps camera continuity and never jumps scalars or restarts intro on preview option changes", async () => {
+  await render({ scene: "horizon", material: "lattice" });
+  await advance(100);
+  const beforeEye = [...fake.draw.mock.calls.at(-1)![0].eye];
+  const beforeAt = [...fake.draw.mock.calls.at(-1)![0].at];
+
+  // Simulate an elapsed idle gap before toggling material in the preview.
+  now += 800;
+  await render({ scene: "horizon", material: "solid" });
+  const materialSwitch = fake.draw.mock.calls.at(-1)![0];
+  expect(materialSwitch.eye).toEqual(beforeEye);
+  expect(materialSwitch.at).toEqual(beforeAt);
+  expect(materialSwitch.lat).toBe(1);
+  expect(materialSwitch.morph.transit).toBe(0);
+  expect(materialSwitch.introActive).toBe(false);
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+  expect(bridge.create).toHaveBeenCalledTimes(1);
+
+  await advance(100);
+  const midMaterial = fake.draw.mock.calls.at(-1)![0];
+  expect(midMaterial.eye).toEqual(beforeEye);
+  expect(midMaterial.lat).toBeLessThan(1);
+  expect(midMaterial.lat).toBeGreaterThan(0);
+
+  // Switching scene after another idle gap starts from the current camera without a jump.
+  now += 800;
+  await render({ scene: "massif", material: "solid" });
+  const sceneSwitch = fake.draw.mock.calls.at(-1)![0];
+  expect(sceneSwitch.eye).toEqual(beforeEye);
+  expect(sceneSwitch.at).toEqual(beforeAt);
+  expect(sceneSwitch.profile).toBe(0);
+  expect(sceneSwitch.morph.transit).toBe(0);
+  expect(sceneSwitch.introActive).toBe(false);
+  expect(bridge.create).toHaveBeenCalledTimes(1);
+});
+
+it("disables pointer picking and hover highlight on non-home pages and restores it on home", async () => {
+  await render({ page: "home" });
+  const blank = target();
+  await pointer("pointermove", blank, { clientX: 400, clientY: 300 });
+  expect(fake.setPointer).toHaveBeenLastCalledWith(expect.any(Array));
+
+  // Leaving home immediately clears the pointer and ignores further moves.
+  fake.setPointer.mockClear();
+  await render({ page: "content" });
+  expect(fake.setPointer).toHaveBeenCalledWith(null);
+  fake.setPointer.mockClear();
+  await pointer("pointermove", blank, { clientX: 520, clientY: 360 });
+  expect(fake.setPointer).not.toHaveBeenCalled();
+
+  // Paused / hidden scenes also keep pointer picking disabled.
+  await render({ page: "home", paused: true });
+  await pointer("pointermove", blank, { clientX: 520, clientY: 360 });
+  expect(fake.setPointer).not.toHaveBeenCalled();
+
+  // Returning to visible home restores hover picking immediately.
+  await render({ page: "home", paused: false });
+  await pointer("pointermove", blank, { clientX: 520, clientY: 360 });
+  expect(fake.setPointer).toHaveBeenLastCalledWith(expect.any(Array));
 });

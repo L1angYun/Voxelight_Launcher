@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_ACCENT } from "../../design/accent";
 import { backdropPalette, mixHex, parseHex, ridgeProfile, withAlpha } from "./backdrop";
 
 const luma = (hex: string) => {
@@ -13,9 +14,9 @@ describe("backdrop colour helpers", () => {
     expect(mixHex("#102030", "#ffffff", 4)).toBe("#ffffff");
   });
 
-  it("falls back to the default accent for anything that is not a six digit hex colour", () => {
-    expect(parseHex("oklch(0.8 0.2 120)")).toEqual(parseHex("#b4f17a"));
-    expect(parseHex("#12")).toEqual(parseHex("#b4f17a"));
+  it("falls back to Windows' default accent for anything that is not a six digit hex colour", () => {
+    expect(parseHex("oklch(0.8 0.2 120)")).toEqual(parseHex(DEFAULT_ACCENT));
+    expect(parseHex("#12")).toEqual(parseHex("#0078d4"));
     expect(parseHex(" #FF8000 ")).toEqual([255, 128, 0]);
   });
 
@@ -55,7 +56,7 @@ describe("ridge profile", () => {
 describe("backdrop palette", () => {
   it("darkens the ridges towards the viewer in both themes", () => {
     for (const light of [true, false]) {
-      for (const accent of ["#b4f17a", "#ff7fb5", "not a colour"]) {
+      for (const accent of ["#0078d4", "#ff7fb5", "not a colour"]) {
         const { ridges } = backdropPalette(light, accent);
         expect(ridges).toHaveLength(4);
         for (let index = 1; index < ridges.length; index += 1) {
@@ -66,9 +67,9 @@ describe("backdrop palette", () => {
   });
 
   it("lets the accent tint the horizon but not the top of the sky", () => {
-    const green = backdropPalette(false, "#b4f17a");
+    const blue = backdropPalette(false, "#0078d4");
     const pink = backdropPalette(false, "#ff7fb5");
-    expect(green.skyHorizon).not.toBe(pink.skyHorizon);
-    expect(green.skyTop).toBe(pink.skyTop);
+    expect(blue.skyHorizon).not.toBe(pink.skyHorizon);
+    expect(blue.skyTop).toBe(pink.skyTop);
   });
 });

@@ -400,4 +400,55 @@ describe("glass provider surfaces", () => {
     });
     expect(renderer.update).not.toHaveBeenCalled();
   });
+
+  it("writes monotonic --vx-glass-tint values without triggering poseObserver frames", async () => {
+    const ambient = await import("../ambient/ambientController");
+    const ctrl = ambient.createAmbientController({
+      enabled: true,
+      theme: "dark",
+      palette: ["#149ac2", "#6969be", "#90502b", "#8c5895"],
+      intensity: 0.6,
+      highContrast: false,
+      reducedMotion: false,
+      customBackgroundActive: false,
+      viewportWidth: 1440,
+      viewportHeight: 930,
+    });
+    ambient.setActiveAmbientController(ctrl);
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            GlassProvider,
+            null,
+            createElement(GlassSurface, { variant: "control", id: "tint-control" }, "Control"),
+            createElement(GlassSurface, { variant: "nav", id: "tint-nav" }, "Nav"),
+            createElement(GlassSurface, { variant: "toast", id: "tint-toast" }, "Toast"),
+            createElement(GlassSurface, { variant: "dialog", id: "tint-dialog" }, "Dialog"),
+          ),
+        );
+      });
+      const controlTint = Number(container.querySelector<HTMLElement>(".vx-glass-surface--control")!.style.getPropertyValue("--vx-glass-tint"));
+      const navTint = Number(container.querySelector<HTMLElement>(".vx-glass-surface--nav")!.style.getPropertyValue("--vx-glass-tint"));
+      const toastTint = Number(container.querySelector<HTMLElement>(".vx-glass-surface--toast")!.style.getPropertyValue("--vx-glass-tint"));
+      const dialogTint = Number(container.querySelector<HTMLElement>(".vx-glass-surface--dialog")!.style.getPropertyValue("--vx-glass-tint"));
+      expect(controlTint).toBeGreaterThanOrEqual(0.18);
+      expect(navTint).toBeGreaterThan(controlTint);
+      expect(toastTint).toBeGreaterThan(navTint);
+      expect(dialogTint).toBeGreaterThan(toastTint);
+
+      renderer.update.mockClear();
+      await act(async () => {
+        ctrl.updateConfig({ customBackgroundActive: true });
+        ambient.notifyAmbientStateChanged();
+        await Promise.resolve();
+      });
+      const boostedDialogTint = Number(container.querySelector<HTMLElement>(".vx-glass-surface--dialog")!.style.getPropertyValue("--vx-glass-tint"));
+      expect(boostedDialogTint).toBeGreaterThan(dialogTint);
+      expect(renderer.update).not.toHaveBeenCalled();
+    } finally {
+      ambient.setActiveAmbientController(null);
+      ctrl.dispose();
+    }
+  });
 });

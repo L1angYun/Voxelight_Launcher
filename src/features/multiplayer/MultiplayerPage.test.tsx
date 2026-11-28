@@ -4,9 +4,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import { GlassProvider } from "../../visual/glass/GlassSystem";
-import { command, defaults, events, type Account, type Bootstrap } from "../../lib/launcher";
+import { command, defaults, events, type Account, type Bootstrap, type Instance } from "../../lib/launcher";
 import type { LauncherContextValue } from "../../app/controller/types";
 import { createLauncherI18n } from "../../i18n";
+import { ConfirmContext, type ConfirmFn } from "../../components/ui/ConfirmDialog";
 import { MultiplayerPage } from "./MultiplayerPage";
 import type { ManagedServer, ServerEntry, ServerImportInspection } from "./useMultiplayer";
 
@@ -21,6 +22,7 @@ let servers: ServerEntry[];
 let managed: ManagedServer;
 let pickedPath: string | null;
 let inspection: ServerImportInspection;
+const confirmMock = vi.fn<ConfirmFn>(async () => true);
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/launcher")>()),
@@ -43,6 +45,25 @@ const account: Account = {
   type: "microsoft",
   isSelected: true,
 };
+
+/** A version-folder instance, the record the backend resolves for a bare version. */
+function versionInstance(versionId: string, overrides: Partial<Instance> = {}): Instance {
+  return {
+    id: "version-" + versionId,
+    name: versionId,
+    versionId,
+    gameDirectory: "C:\\SyntheticFixture\\versions\\" + versionId,
+    createdAt: "2026-01-01T00:00:00Z",
+    category: "",
+    notes: "",
+    totalPlayTime: 0,
+    loader: "vanilla",
+    loaderVersion: "",
+    kind: "version",
+    gameFolder: "C:\\SyntheticFixture",
+    ...overrides,
+  };
+}
 
 function managedFixture(): ManagedServer {
   return {
@@ -81,7 +102,7 @@ function fixture(): LauncherContextValue {
   const data: Bootstrap = {
     config: { ...defaults },
     accounts: [account],
-    instances: [],
+    instances: ["1.21.1", "A", "B", "C"].map((id) => versionInstance(id)),
     installedVersions: [{ id: "1.21.1", type: "release", installed: true, launchable: true, javaMajor: 21 }],
     capabilities: {},
   };
@@ -121,7 +142,8 @@ async function render() {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
   await act(async () => root.render(createElement(I18nextProvider, { i18n },
-    createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(MultiplayerPage)))));
+    createElement(ConfirmContext.Provider, { value: confirmMock },
+      createElement(GlassProvider, { effects: "lite", reducedMotion: true }, createElement(MultiplayerPage))))));
 }
 
 function button(scope: ParentNode, label: string): HTMLButtonElement {
@@ -266,7 +288,8 @@ beforeEach(() => {
     return Promise.resolve(() => listeners.delete(name));
   });
   mocks.openUrl.mockReset();
-  vi.spyOn(window, "confirm").mockReturnValue(true);
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(true);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -403,7 +426,7 @@ describe("multiplayer", () => {
     expect(row.textContent).toContain("Online");
     expect(row.textContent).toContain("42 ms");
     await click("Join", row);
-    expect(mockLauncher.launchMultiplayer).toHaveBeenCalledWith("1.21.1", "play.example.invalid:25565");
+    expect(mockLauncher.launchMultiplayer).toHaveBeenCalledWith("version-1.21.1", "play.example.invalid:25565");
   });
 
   it("adds and removes servers with a confirmation and the existing backup flow", async () => {
@@ -414,15 +437,70 @@ describe("multiplayer", () => {
     await click("Save server");
     expect(commandMock).toHaveBeenCalledWith("save_server", {
       versionId: "1.21.1",
+      instanceId: "version-1.21.1",
       entry: { name: "Added server", address: "added.example.invalid", hideAddress: false },
     });
+    // Cancelling the confirmation keeps the server.
+    confirmMock.mockResolvedValueOnce(false);
     await click("Remove server");
-    expect(window.confirm).toHaveBeenCalled();
+    expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining("Fixture server"), { tone: "danger" });
+    expect(commandMock).not.toHaveBeenCalledWith("remove_server", expect.anything());
+    await click("Remove server");
+    expect(confirmMock).toHaveBeenCalledTimes(2);
     expect(commandMock).toHaveBeenCalledWith("remove_server", {
       versionId: "1.21.1",
+      instanceId: "version-1.21.1",
       index: 0,
       expected: { index: 0, snapshot: "saved-0" },
     });
+  });
+
+  it("lists, saves and joins with the selected instance even when another record shares its version", async () => {
+    const modded = versionInstance("fabric-loader-0.16.9-1.21.1", { id: "managed-modded", name: "My Modded", kind: "managed", gameFolder: undefined });
+    const folder = versionInstance("fabric-loader-0.16.9-1.21.1");
+    mockLauncher.data.instances = [modded, folder];
+    mockLauncher.selectedInstance = folder;
+    mockLauncher.selectedVersionId = folder.versionId;
+    await render();
+    expect(commandMock).toHaveBeenCalledWith("list_servers", { versionId: folder.versionId, instanceId: folder.id });
+    await click("Join", container.querySelector('[data-server-address="play.example.invalid:25565"]')!);
+    expect(mockLauncher.launchMultiplayer).toHaveBeenCalledWith(folder.id, "play.example.invalid:25565");
+
+    mockLauncher.selectedInstance = modded;
+    await render();
+    expect(commandMock).toHaveBeenCalledWith("list_servers", { versionId: modded.versionId, instanceId: modded.id });
+    await click("Add server");
+    await fill("Server name", "Added server");
+    await fill("Server address", "added.example.invalid");
+    await click("Save server");
+    expect(commandMock).toHaveBeenCalledWith("save_server", {
+      versionId: modded.versionId,
+      instanceId: modded.id,
+      entry: { name: "Added server", address: "added.example.invalid", hideAddress: false },
+    });
+  });
+
+  it("offers visible instances as environments and never a hidden loader parent", async () => {
+    mockLauncher.data.installedVersions = [
+      { id: "1.21.1", type: "release", installed: true, launchable: true, javaMajor: 21 },
+      { id: "hidden-parent", type: "release", installed: true, launchable: true, javaMajor: 21 },
+    ];
+    mockLauncher.data.instances = [versionInstance("1.21.1", { name: "Survival world" })];
+    mockLauncher.selectedVersionId = "hidden-parent";
+    await render();
+    // A version-only choice without a visible record has no servers.dat to show.
+    expect(commandMock).not.toHaveBeenCalledWith("list_servers", expect.anything());
+    expect(container.textContent).toContain("Choose a game environment before saving or joining a server.");
+
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Game environment"]')!;
+    await act(async () => trigger.click());
+    const options = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Game environment"] [role="option"]')]
+      .map((option) => option.textContent ?? "");
+    expect(options.some((text) => text.includes("Survival world"))).toBe(true);
+    expect(options.some((text) => text.includes("hidden-parent"))).toBe(false);
+    await act(async () => trigger.click());
+    await chooseSelect("Game environment", "Survival world");
+    expect(mockLauncher.selectInstance).toHaveBeenCalledWith("version-1.21.1");
   });
 
   it("shows an honest empty result after LAN discovery", async () => {
@@ -544,7 +622,7 @@ describe("multiplayer", () => {
     expect(container.querySelector("dialog.vx-import-dialog[open]")).toBeNull();
     const selected = container.querySelector<HTMLButtonElement>(".vx-managed-list [aria-current='true']");
     expect(selected?.textContent).toContain("Paper 1.21.4");
-    expect(selected?.textContent).toContain("Paper · 1.21.4");
+    expect(selected?.textContent).toContain("Paper 1.21.4");
     expect(container.querySelector(".vx-multiplayer-notice")?.textContent).toBe("Server imported. Review and accept the EULA before starting.");
     expect(commandMock.mock.calls.filter(([name]) => name === "inspect_server_import"), "a fresh choice is not looked at twice").toHaveLength(1);
   });
@@ -686,11 +764,17 @@ describe("multiplayer", () => {
     await click("Managed servers");
     const rows = [...container.querySelectorAll<HTMLButtonElement>(".vx-managed-list button")];
     expect(rows).toHaveLength(2);
-    expect(rows[0].textContent).toContain("1.21.1 · :25565");
+    expect(rows[0].textContent).toContain("1.21.1:25565");
     expect(rows[0].textContent).not.toContain("Paper");
-    expect(rows[1].textContent).toContain("Paper · 1.21.4");
+    expect(rows[1].textContent).toContain("Paper 1.21.4");
+    const listMeta = rows[1].querySelector(".vx-managed-list__meta")!;
+    expect([...listMeta.querySelectorAll(":scope > span")].map((item) => item.textContent)).toEqual(["Paper", "1.21.4", ":25565"]);
+    expect(listMeta.textContent).not.toContain("·");
     await act(async () => rows[1].click());
-    expect(container.querySelector(".vx-managed-overview header p")?.textContent).toContain("Paper · 1.21.4");
+    const overview = container.querySelector(".vx-managed-overview header p")!;
+    expect(overview.textContent).toContain("Paper 1.21.4");
+    expect([...overview.querySelectorAll(":scope > span")].map((item) => item.textContent)).toEqual(["Paper", "1.21.4", "Java 21"]);
+    expect(overview.textContent).not.toContain("·");
   });
 
   it("an imported server whose JAR is gone cannot start and says to import it again", async () => {
@@ -757,8 +841,8 @@ describe("multiplayer", () => {
     commandMock.mockImplementation(async (name, args) => name === "list_managed_servers" ? [unknown] : normal(name, args));
     await render();
     await click("Managed servers");
-    expect(container.querySelector(".vx-managed-list button")?.textContent).toContain("Imported server · 1.21.1");
-    expect(container.querySelector(".vx-managed-overview header p")?.textContent).toContain("Imported server · 1.21.1");
+    expect(container.querySelector(".vx-managed-list button")?.textContent).toContain("Imported server 1.21.1");
+    expect(container.querySelector(".vx-managed-overview header p")?.textContent).toContain("Imported server 1.21.1");
     expect(container.querySelector(".vx-managed-overview header p")?.textContent).not.toContain("Vanilla");
   });
 
@@ -882,5 +966,143 @@ describe("multiplayer", () => {
     const list = document.querySelector<HTMLElement>('[role="listbox"][aria-label="Minecraft version"]')!;
     const offered = [...list.querySelectorAll<HTMLElement>('[role="option"]')].map((option) => option.textContent ?? "");
     expect(offered.slice(1).map((text) => text.trim())).toEqual(["1.21.4", "1.20.1", "25w14a"]);
+  });
+
+  describe("page layout and action hierarchy", () => {
+    // The page's own primary actions; a closed dialog keeps its own footer.
+    const primaries = () => [...container.querySelectorAll<HTMLButtonElement>(".vx-button--primary")]
+      .filter((candidate) => !candidate.closest("dialog"))
+      .map((candidate) => candidate.textContent?.trim());
+
+    it("places the three views in the page header instead of a strip of their own", async () => {
+      await render();
+      const actions = container.querySelector(".vx-page-header__actions");
+      expect(actions?.querySelector('[role="tablist"]')).not.toBeNull();
+      expect(actions?.querySelectorAll('[role="tab"]')).toHaveLength(3);
+      expect(container.querySelector(".vx-page-shell > .vx-multiplayer-tabs")).toBeNull();
+    });
+
+    it("keeps a listed address on one clipped line and its full text in the title", async () => {
+      servers[0].address = "ops@sub.department.region.example.co.uk:25565";
+      await render();
+      const listed = container.querySelector(".vx-server-addresses small")!;
+      expect(listed.textContent).toBe(servers[0].address);
+      expect(listed.querySelectorAll("wbr")).toHaveLength(0);
+      expect(listed.getAttribute("title")).toBe(servers[0].address);
+      expect(container.querySelector(".vx-server-row__copy p")!.querySelectorAll("wbr").length).toBeGreaterThan(1);
+    });
+
+    it("marks the saved-server count for the small tabular figure style", async () => {
+      await render();
+      expect(container.querySelector(".vx-server-inventory > h2 > .vx-server-inventory__count")?.textContent).toBe("1");
+    });
+
+    it("keeps Join as the one primary action once a server is saved and Add while the list is empty", async () => {
+      await render();
+      expect(primaries()).toEqual(["Join"]);
+      expect(button(container.querySelector(".vx-multiplayer-toolbar")!, "Add server").dataset.variant).toBe("secondary");
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      servers = [];
+      await render();
+      expect(primaries()).toEqual(["Add server"]);
+    });
+
+    it("hands the one primary action to Save server while the add form is open", async () => {
+      await render();
+      await click("Add server");
+      expect(container.querySelector(".vx-server-form")).not.toBeNull();
+      expect(primaries()).toEqual(["Save server"]);
+      expect(button(container.querySelector(".vx-server-row__actions")!, "Join").dataset.variant).toBe("secondary");
+      await click("Cancel", container.querySelector(".vx-server-form")!);
+      expect(primaries()).toEqual(["Join"]);
+    });
+
+    it("hands the one primary action to Save server when the empty list opens the add form", async () => {
+      servers = [];
+      await render();
+      await click("Add server");
+      expect(container.querySelector(".vx-server-form")).not.toBeNull();
+      expect(primaries()).toEqual(["Save server"]);
+      expect(button(container.querySelector(".vx-multiplayer-toolbar")!, "Add server").dataset.variant).toBe("secondary");
+    });
+
+    it("keeps one primary action in the managed workbench, open settings included", async () => {
+      managed = { ...managedFixture(), eulaAccepted: true };
+      await render();
+      await click("Managed servers");
+      expect(primaries()).toEqual(["Start server"]);
+      await click("Server settings");
+      expect(primaries()).toEqual(["Start server"]);
+      expect(button(container, "Save settings").dataset.variant).toBe("secondary");
+    });
+
+    it("frames the managed toolbar as a panel", async () => {
+      await render();
+      await click("Managed servers");
+      expect(container.querySelector(".vx-managed-servers > .vx-multiplayer-toolbar")?.classList.contains("vx-panel")).toBe(true);
+    });
+
+    it("marks stop with a stop icon instead of an empty square", async () => {
+      managed = { ...managedFixture(), status: "running", pid: 12345, eulaAccepted: true };
+      await render();
+      await click("Managed servers");
+      const stop = button(container, "Save and stop");
+      expect(stop.querySelector("svg.lucide-circle-stop")).not.toBeNull();
+      expect(stop.querySelector("svg.lucide-square")).toBeNull();
+    });
+
+    it("folds server settings behind a title row whose chevron follows the fold", async () => {
+      await render();
+      await click("Managed servers");
+      const toggle = button(container, "Server settings");
+      const chevron = () => toggle.querySelector(".vx-managed-section__chevron");
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(chevron()).not.toBeNull();
+      expect(chevron()?.hasAttribute("data-open")).toBe(false);
+      await act(async () => toggle.click());
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(chevron()?.getAttribute("data-open")).toBe("true");
+      const body = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+      expect(body?.querySelector('input[aria-label="Port"]')).not.toBeNull();
+    });
+
+    it("hints the expected player name format", async () => {
+      managed = { ...managedFixture(), status: "running", pid: 12345, eulaAccepted: true };
+      await render();
+      await click("Managed servers");
+      expect(container.querySelector('input[aria-label="Player name"]')?.getAttribute("placeholder")).toBe("e.g. Steve");
+    });
+
+    it("pairs each managed status text with a pixel marker of its state", async () => {
+      managed = { ...managedFixture(), status: "running", pid: 12345, eulaAccepted: true };
+      await render();
+      await click("Managed servers");
+      const listed = container.querySelector('.vx-managed-list [aria-current="true"] .vx-managed-list__status');
+      expect(listed?.getAttribute("data-state")).toBe("running");
+      expect(listed?.querySelector('i[aria-hidden="true"]')).not.toBeNull();
+      expect(listed?.textContent).toContain("Running");
+      const header = container.querySelector(".vx-managed-overview .vx-managed-state");
+      expect(header?.getAttribute("data-state")).toBe("running");
+      expect(header?.querySelector('i[aria-hidden="true"]')).not.toBeNull();
+    });
+
+    it("gives the empty managed workbench an icon tile and its next steps", async () => {
+      const normal = commandMock.getMockImplementation()!;
+      commandMock.mockImplementation(async (name, args) => name === "list_managed_servers" ? [] : normal(name, args));
+      await render();
+      await click("Managed servers");
+      const empty = container.querySelector(".vx-managed-layout > .vx-empty--panel");
+      expect(empty?.querySelector(".vx-empty__icon.vx-icon-tile svg")).not.toBeNull();
+      expect(button(empty!, "Create server").dataset.variant).toBe("primary");
+    });
+
+    it("draws the empty saved-server icon on the icon scale inside its tile", async () => {
+      servers = [];
+      await render();
+      const icon = container.querySelector(".vx-server-row--empty .vx-empty--panel .vx-empty__icon.vx-icon-tile svg");
+      expect(icon?.getAttribute("width")).toBe("24");
+      expect(icon?.getAttribute("stroke-width")).not.toBe("1.2");
+    });
   });
 });

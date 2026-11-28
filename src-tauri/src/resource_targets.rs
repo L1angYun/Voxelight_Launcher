@@ -73,6 +73,47 @@ pub(crate) struct ResourceTargetPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unsupported_reason: Option<String>,
     pub manifest_unavailable: bool,
+    /// The selected CurseForge file must be downloaded by hand.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub manual_only: bool,
+    /// Why, where and which file, whenever `manual_only` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manual_download: Option<ManualDownload>,
+}
+
+/// Why the launcher will not download a CurseForge file itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ManualReason {
+    /// The author does not allow other apps to download the project's files.
+    DistributionForbidden,
+    /// CurseForge offered no download address for the file.
+    NoDownloadUrl,
+    /// CurseForge's address is not on one of its official download servers.
+    UntrustedUrl,
+}
+
+/// A file the user downloads from CurseForge and puts in place by hand.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManualDownload {
+    pub reason: ManualReason,
+    /// The file's own CurseForge page, or the project page when CurseForge's
+    /// project link cannot be used to build one.
+    pub url: String,
+    /// The name CurseForge lists the file under.
+    pub display_name: String,
+    /// The name of the file that goes into the resource folder.
+    pub file_name: String,
+}
+
+impl ResourceTargetPlan {
+    /// Marks a plan whose file cannot be installed by the launcher. The
+    /// details always travel with the flag so the UI can explain both together.
+    pub(crate) fn mark_manual_download(&mut self, download: Option<ManualDownload>) {
+        self.manual_only = download.is_some();
+        self.manual_download = download;
+    }
 }
 
 pub(crate) fn build_plan(
@@ -138,6 +179,8 @@ fn assemble_plan(
         suggestion,
         unsupported_reason: unsupported_reason.map(str::to_string),
         manifest_unavailable,
+        manual_only: false,
+        manual_download: None,
     }
 }
 
@@ -791,5 +834,47 @@ mod tests {
         );
         assert!(value.get("unsupportedReason").is_none());
         assert!(value["targets"][0].get("reason").is_none());
+        assert!(value.get("manualOnly").is_none());
+        assert!(value.get("manualDownload").is_none());
+    }
+
+    #[test]
+    fn plan_carries_a_manual_download_flag_with_its_reason_page_and_file() {
+        let versions = vec![version("111", &["fabric"], &["1.21.1"])];
+        let mut plan = build_pinned_plan(
+            "111",
+            "Mod",
+            "mod",
+            ResourceKind::Mod,
+            &[candidate("Fabric", Some("1.21.1"), Some("fabric"))],
+            &versions[0],
+            &manifest(),
+        );
+        for (reason, text) in [
+            (ManualReason::DistributionForbidden, "distributionForbidden"),
+            (ManualReason::NoDownloadUrl, "noDownloadUrl"),
+            (ManualReason::UntrustedUrl, "untrustedUrl"),
+        ] {
+            plan.mark_manual_download(Some(ManualDownload {
+                reason,
+                url: "https://www.curseforge.com/minecraft/mc-mods/fixture/files/111".into(),
+                display_name: "Fixture 1.0".into(),
+                file_name: "fixture-1.0.jar".into(),
+            }));
+            let value = serde_json::to_value(&plan).unwrap();
+            assert_eq!(value["manualOnly"], true);
+            assert_eq!(value["manualDownload"]["reason"], text);
+            assert_eq!(
+                value["manualDownload"]["url"],
+                "https://www.curseforge.com/minecraft/mc-mods/fixture/files/111"
+            );
+            assert_eq!(value["manualDownload"]["displayName"], "Fixture 1.0");
+            assert_eq!(value["manualDownload"]["fileName"], "fixture-1.0.jar");
+        }
+        plan.mark_manual_download(None);
+        let value = serde_json::to_value(&plan).unwrap();
+        assert!(value.get("manualOnly").is_none());
+        assert!(value.get("manualDownload").is_none());
+        assert_eq!(plan.targets[0].resource_version_id.as_deref(), Some("111"));
     }
 }

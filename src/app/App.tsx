@@ -12,11 +12,14 @@ import { AccountsPage } from "../features/accounts/AccountsPage";
 import { MultiplayerPage } from "../features/multiplayer/MultiplayerPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { WorldScene } from "../components/WorldScene";
-import { HomeBackground } from "./HomeBackground";
+import { AppBackground } from "./HomeBackground";
+import { AmbientLayer, AmbientOverlay } from "../visual/ambient/AmbientLayer";
+import { resolveAmbientPalette } from "../design/ambient";
 import { deriveWorldState } from "../components/world/deriveWorldState";
 import { useLauncher } from "./controller/LauncherProvider";
 import { useAppearance } from "./AppearanceProvider";
 import { ToastProvider, useToast } from "../components/ui/ToastProvider";
+import { ConfirmProvider } from "../components/ui/ConfirmDialog";
 import { LauncherUpdateProvider, UpdateNoticeBridge } from "../features/updates/LauncherUpdates";
 import { LoadingStatus } from "../components/ui/LoadingStatus";
 import { Button } from "../components/ui/Button";
@@ -29,9 +32,11 @@ import { useShortcuts } from "./useShortcuts";
 import { ShortcutHelp } from "./ShortcutHelp";
 import { FirstRunTour } from "./FirstRunTour";
 import { FileDropProvider, useFileDrop, type DroppedFiles } from "./FileDropContext";
+import { LeaveGuardProvider, useLeaveGuardController } from "./leaveGuard";
 import { CreateInstanceDialog } from "../features/library/CreateInstanceDialog";
 import { AssistantDialog } from "../features/assistant/AssistantDialog";
 import { LumenProvider, useLumen } from "../features/assistant/LumenContext";
+import { localizedErrorParams } from "../lib/errorReasons";
 import "./shell.css";
 
 const implementedPages = new Set<NavigationPage>(["home", "library", "discover", "multiplayer", "downloads", "accounts", "settings"]);
@@ -43,7 +48,7 @@ function LauncherNoticeBridge() {
   useEffect(() => {
     if (!notice) { dismiss("launcher"); return; }
     const key = [`shell:notifications.${notice.code}`, `shell:errors.${notice.code}`, `settings:errors.${notice.code}`].find(key => i18n.exists(key));
-    notify({ id: "launcher", message: key ? t(key, notice.params) : t("common:errors.internalUnexpected"), kind: notice.kind, onDismiss: dismissNotice });
+    notify({ id: "launcher", message: key ? t(key, localizedErrorParams(notice.code, notice.params, t)) : t("common:errors.internalUnexpected"), kind: notice.kind, onDismiss: dismissNotice });
   }, [notice, dismissNotice, t, i18n, notify, dismiss]);
   return null;
 }
@@ -59,6 +64,14 @@ function PageStage({ page, direction, firstHome = false, children }: { page: Nav
 }
 
 export function AppShell() {
+  return (
+    <LeaveGuardProvider>
+      <AppShellContent />
+    </LeaveGuardProvider>
+  );
+}
+
+function AppShellContent() {
   const { t } = useTranslation();
   const [{ page, direction, visit }, setNavigation] = useState<{
     page: NavigationPage; direction: number; visit: number;
@@ -68,7 +81,7 @@ export function AppShell() {
   const [updateReview, setUpdateReview] = useState<{ tick: number; visit: number } | null>(null);
   const [assistantSettingsFocus, setAssistantSettingsFocus] = useState<{ tick: number; visit: number } | null>(null);
   const [tourRequested, setTourRequested] = useState(false);
-  const [homeImageShown, setHomeImageShown] = useState(false);
+  const [customBackgroundShown, setCustomBackgroundShown] = useState(false);
   const [droppedPackPath, setDroppedPackPath] = useState<string | null>(null);
   const hasLeftHome = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
@@ -76,15 +89,19 @@ export function AppShell() {
   const { bootstrapped, bootstrapFailed, data, reload, run, selectInstance, selectVersion, activeAccount, accountAppearance, config, preparing, progress, running, gamePid } = useLauncher();
   const lumen = useLumen();
   const world = useMemo(() => deriveWorldState({ preparing, progress, running, gamePid }), [preparing, progress, running, gamePid]);
-  const { effects, reducedMotion, highContrast } = useAppearance();
+  const { resolvedTheme, accentColor, effects, reducedMotion, highContrast } = useAppearance();
+  const ambientTheme = resolvedTheme === "light" ? "light" : "dark";
+  const ambientPalette = useMemo(
+    () => resolveAmbientPalette({ accentSource: config.accentSource, accentColor: accentColor ?? config.accentColor, theme: ambientTheme }),
+    [config.accentSource, config.accentColor, accentColor, ambientTheme],
+  );
+  const ambientEnabled = config.ambientLightEnabled ?? true;
+  const ambientIntensity = (config.ambientLightIntensity ?? 60) / 100;
   const { notify } = useToast();
+  const leaveGuard = useLeaveGuardController();
+  const navigationPending = useRef(false);
 
-  function navigate(nextPage: NavigationPage, fixedDirection?: number) {
-    if (nextPage === page) {
-      setNavResetTick(tick => tick + 1);
-      mainRef.current?.scrollTo({ top: 0, behavior: "auto" });
-      return;
-    }
+  function commitNavigation(nextPage: NavigationPage, fixedDirection?: number) {
     if (nextPage !== "home") hasLeftHome.current = true;
     const order = navigationRegistry.ids();
     // Key each visit, not just each route: in wait mode an outgoing stage
@@ -93,6 +110,20 @@ export function AppShell() {
       page: nextPage,
       direction: fixedDirection ?? (order.indexOf(nextPage) >= order.indexOf(current.page) ? 1 : -1),
       visit: current.visit + 1,
+    });
+  }
+
+  function navigate(nextPage: NavigationPage, fixedDirection?: number) {
+    if (nextPage === page) {
+      setNavResetTick(tick => tick + 1);
+      mainRef.current?.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+    if (navigationPending.current) return;
+    navigationPending.current = true;
+    void leaveGuard.requestLeave().then((allowed) => {
+      navigationPending.current = false;
+      if (allowed) commitNavigation(nextPage, fixedDirection);
     });
   }
 
@@ -124,6 +155,25 @@ export function AppShell() {
       }} />
       <a className="vx-skip-link" href="#main-content">{t("shell:a11y.skipToContent")}</a>
       <div className="vx-app-body" data-current-page={page}>
+        <AmbientLayer
+          palette={ambientPalette}
+          theme={ambientTheme}
+          enabled={ambientEnabled}
+          intensity={ambientIntensity}
+          effects={effects}
+          reducedMotion={reducedMotion}
+          highContrast={highContrast}
+          customBackgroundActive={customBackgroundShown}
+          gameRunning={world.phase === "running"}
+        />
+        <AppBackground onImageShownChange={setCustomBackgroundShown} />
+        <AmbientOverlay
+          palette={ambientPalette}
+          theme={ambientTheme}
+          visible={customBackgroundShown && ambientEnabled}
+          intensity={ambientIntensity}
+          highContrast={highContrast}
+        />
         {/* Global WorldScene background — runs on all pages for glass refraction */}
         {bootstrapped ? <WorldScene
           className="vx-global-scene"
@@ -134,11 +184,10 @@ export function AppShell() {
           material={config.worldMaterial}
           effects={effects}
           reducedMotion={reducedMotion || highContrast}
-          paused={page === "home" && homeImageShown}
+          paused={customBackgroundShown}
         /> : <div className="world-scene vx-global-scene" aria-hidden="true" data-world-tier="css"
           data-world-bootstrap="pending" data-world-frames="0" data-world-material="solid" data-world-phase={world.phase}
           data-world-front="0" data-motion="reduced" data-paused="true" />}
-        <HomeBackground page={page} onImageShownChange={setHomeImageShown} />
         <FloatingNav
           page={page}
           onNavigate={navigate}
@@ -166,7 +215,7 @@ export function AppShell() {
             {page === "library" ? <LibraryPage navResetTick={navResetTick} /> : null}
             {page === "discover" ? <DiscoverPage onDownloads={() => navigate("downloads", 1)} /> : null}
             {page === "multiplayer" ? <MultiplayerPage /> : null}
-            {page === "downloads" ? <DownloadsPage model={downloadTasks} /> : null}
+            {page === "downloads" ? <DownloadsPage model={downloadTasks} onNavigate={navigate} /> : null}
             {page === "accounts" ? <AccountsPage /> : null}
             {page === "settings" ? (
               <SettingsPage
@@ -188,7 +237,17 @@ export function AppShell() {
         canShowTour={bootstrapped}
         showAssistant={lumen.configured}
       />
-      <FirstRunTour reopen={tourRequested} onDismissed={() => setTourRequested(false)} />
+      <FirstRunTour
+        reopen={tourRequested}
+        onDismissed={() => setTourRequested(false)}
+        onSetUpLumen={() => {
+          setAssistantSettingsFocus(current => ({
+            tick: (current?.tick ?? 0) + 1,
+            visit: page === "settings" ? visit : visit + 1,
+          }));
+          navigate("settings");
+        }}
+      />
       {lumen.configured ? (
         <AssistantDialog
           open={lumen.open}
@@ -252,11 +311,13 @@ export function App() {
   return (
     <AppProviders>
       <ToastProvider>
-        <LauncherUpdateProvider>
-          <LumenProvider>
-            <AppShell />
-          </LumenProvider>
-        </LauncherUpdateProvider>
+        <ConfirmProvider>
+          <LauncherUpdateProvider>
+            <LumenProvider>
+              <AppShell />
+            </LumenProvider>
+          </LauncherUpdateProvider>
+        </ConfirmProvider>
       </ToastProvider>
     </AppProviders>
   );

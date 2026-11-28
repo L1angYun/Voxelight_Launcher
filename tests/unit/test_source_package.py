@@ -14,6 +14,29 @@ NATIVE_INPUTS = {
     "src-tauri/app.manifest",
     "src-tauri/tests/build_config.rs",
 }
+# Voxelight Setup is the published installer, so its source ships too.
+SETUP_INPUTS = {
+    "setup/index.html",
+    "setup/vitest.config.ts",
+    "setup/src/main.tsx",
+    "setup/src/App.tsx",
+    "setup/src-tauri/Cargo.toml",
+    "setup/src-tauri/Cargo.lock",
+    "setup/src-tauri/build.rs",
+    "setup/src-tauri/tauri.conf.json",
+    "setup/src-tauri/app.manifest",
+    "setup/src-tauri/capabilities/default.json",
+    "setup/src-tauri/permissions/setup.toml",
+    "setup/src-tauri/src/main.rs",
+    "setup/src-tauri/src/lib.rs",
+}
+# Build outputs and dependencies that can sit inside the Setup tree.
+SETUP_OUTPUTS = (
+    "setup/src-tauri/gen/schemas/desktop-schema.json",
+    "setup/src-tauri/target/release/voxelight-setup.exe",
+    "setup/node_modules/fixture-package/index.js",
+    "dist/setup/index.html",
+)
 
 
 class SourcePackageTest(unittest.TestCase):
@@ -46,8 +69,38 @@ class SourcePackageTest(unittest.TestCase):
         self.assertEqual(NATIVE_INPUTS - self.members, set())
         self.assertEqual(NATIVE_INPUTS - self.manifest_paths, set())
 
+    def test_source_zip_contains_voxelight_setup_sources(self):
+        self.assertEqual(SETUP_INPUTS - self.members, set())
+        self.assertEqual(SETUP_INPUTS - self.manifest_paths, set())
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z", "--", "setup"], cwd=ROOT, capture_output=True
+        )
+        if tracked.returncode != 0:
+            self.skipTest("not a git checkout")
+        setup_files = {name for name in tracked.stdout.decode("utf-8").split("\0") if name}
+        self.assertTrue(setup_files)
+        self.assertEqual(setup_files - self.members, set())
+        self.assertEqual(setup_files - self.manifest_paths, set())
+
+    def test_packager_leaves_setup_build_outputs_out(self):
+        created = []
+        try:
+            for relative in SETUP_OUTPUTS:
+                path = self.extracted / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic build output")
+                created.append(path)
+            selected = {path.as_posix() for path in self.package.source_files()}
+            for relative in SETUP_OUTPUTS:
+                with self.subTest(path=relative):
+                    self.assertNotIn(relative, selected)
+            self.assertIn("setup/src-tauri/src/lib.rs", selected)
+        finally:
+            for path in created:
+                path.unlink(missing_ok=True)
+
     def test_packager_rejects_extracted_tree_missing_a_build_input(self):
-        inputs = NATIVE_INPUTS | {"src-tauri/build.rs", "src-tauri/tauri.conf.json"}
+        inputs = NATIVE_INPUTS | {"src-tauri/build.rs", "src-tauri/tauri.conf.json"} | SETUP_INPUTS
         for relative in sorted(inputs):
             with self.subTest(path=relative):
                 path = self.extracted / relative

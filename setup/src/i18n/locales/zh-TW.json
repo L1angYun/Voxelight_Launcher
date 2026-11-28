@@ -1,0 +1,146 @@
+{
+  "app": {
+    "productName": "Voxelight Launcher",
+    "setupName": "Voxelight 安裝程式",
+    "wordmark": "VOXELIGHT",
+    "stepCount": "第 {{current}} 步，共 {{total}} 步",
+    "stepAnnouncement": "第 {{current}} 步，共 {{total}} 步：{{title}}"
+  },
+  "chrome": {
+    "windowControls": "視窗控制",
+    "minimize": "最小化",
+    "close": "關閉",
+    "closeBlocked": "安裝進行中，請等待完成後再關閉"
+  },
+  "actions": {
+    "back": "上一步",
+    "next": "繼續",
+    "install": "開始安裝",
+    "update": "開始更新",
+    "reinstall": "重新安裝",
+    "browse": "瀏覽",
+    "classicInstaller": "開啟傳統安裝程式",
+    "launch": "啟動 Voxelight",
+    "close": "關閉",
+    "retry": "重試",
+    "copyDetails": "複製詳細資訊",
+    "copied": "詳細資訊已複製到剪貼簿。",
+    "copyFailed": "無法存取剪貼簿，請手動選取下方詳細資訊並複製。",
+    "viewLicense": "檢視 GPL-3.0 授權條款"
+  },
+  "welcome": {
+    "title": "安裝 Voxelight Launcher",
+    "version": "版本 {{version}}",
+    "summary": "專為 Windows 打造的開源 Minecraft: Java 版啟動器，在沉靜俐落的介面中管理獨立執行個體、模組載入器、世界存檔與下載任務。",
+    "perUserNote": "僅為目前 Windows 使用者安裝，無需系統管理員權限，你的 Minecraft 遊戲檔案將保持獨立。",
+    "licenseLead": "本軟體採用 GNU GPL-3.0-only 授權，安裝無需勾選同意任何附加條款。",
+    "updateNotice": "偵測到已安裝版本 {{installed}}，本次將更新至 {{target}}。",
+    "reinstallNotice": "此電腦已安裝版本 {{version}}。",
+    "downgradeNotice": "偵測到已安裝較新版本 {{installed}}，此安裝程式不允許降級。"
+  },
+  "location": {
+    "title": "安裝位置",
+    "description": "為 Voxelight Launcher 選擇目前使用者可寫入的資料夾，遊戲目錄與世界存檔不會受到變更。",
+    "fieldLabel": "目標資料夾",
+    "placeholder": "選擇本機磁碟上的資料夾",
+    "spaceSummary": "需要約 {{required}}，此磁碟可用 {{available}}",
+    "spaceRequiredOnly": "需要約 {{required}} 可用空間",
+    "checking": "正在檢查路徑…",
+    "modeUpdateTitle": "從 {{from}} 更新至 {{to}}",
+    "modeUpdateHint": "將沿用現有安裝資料夾，讓捷徑與系統應用程式登錄保持一致。",
+    "modeReinstallTitle": "重新安裝 {{version}}",
+    "modeReinstallHint": "將沿用現有安裝資料夾，已儲存的帳號、執行個體與設定都會保留。",
+    "modeFolderMissingHint": "登錄的安裝資料夾中已找不到 Voxelight Launcher，可以重新選擇安裝位置。",
+    "keptFolderUnusableHint": "安裝程式會保留現有安裝所在的資料夾，但該資料夾已無法使用。傳統安裝程式可以先移除舊版本，再安裝到其他資料夾。也可以先在 Windows 設定中解除安裝 Voxelight Launcher，再重新執行安裝程式。",
+    "classicInstallerFailed": "無法開啟傳統安裝程式。請關閉安裝程式後重新執行。",
+    "modeDowngradeTitle": "已安裝較新的版本 {{installed}}",
+    "modeDowngradeHint": "不允許降級至 {{target}}。若確實需要舊版本，請先解除安裝 {{installed}}。"
+  },
+  "pathErrors": {
+    "empty": "請輸入目標資料夾路徑。",
+    "invalidChars": "路徑包含 Windows 不允許的字元或保留名稱。",
+    "notAbsolute": "請輸入完整的本機磁碟路徑，例如 C:\\Users\\User\\AppData\\Local\\Voxelight Launcher。",
+    "driveRoot": "請選擇子資料夾，勿直接安裝於磁碟根目錄。",
+    "protectedLocation": "請選擇位於 Windows 與 Program Files 之外的使用者資料夾。",
+    "sharedLocation": "請選擇僅屬於目前帳戶的資料夾。不可使用 ProgramData、公用資料夾或磁碟根目錄等共用位置。",
+    "reparsePoint": "所選路徑包含符號連結或目錄聯結，安裝程式不允許此類路徑。",
+    "isFile": "該路徑已有同名檔案，請改選資料夾。",
+    "driveMissing": "所選磁碟或上層資料夾不存在。",
+    "notWritable": "目前帳戶沒有寫入此資料夾的權限。",
+    "insufficientSpace": "此磁碟剩餘空間不足，需要 {{required}}，目前僅剩 {{available}}。"
+  },
+  "options": {
+    "title": "安裝選項",
+    "description": "開始安裝前先確認捷徑設定與完成後的啟動方式。",
+    "shortcutsTitle": "桌面與開始功能表捷徑",
+    "shortcutsHint": "在桌面與開始功能表建立捷徑。關閉此項後將略過這兩處捷徑。",
+    "shortcutsUpdateHint": "更新時會保留你現有的捷徑設定。",
+    "launchTitle": "安裝完成後啟動 Voxelight",
+    "launchHint": "設定完成後自動開啟 Voxelight Launcher。",
+    "launchElevatedHint": "安裝程式正以系統管理員身分執行，無法以你的一般使用者權限啟動 Voxelight。安裝完成後，請從 [開始] 功能表開啟 Voxelight。",
+    "summaryLabel": "安裝摘要",
+    "summaryTarget": "資料夾：{{path}}",
+    "summaryActionInstall": "操作：全新安裝 {{version}}",
+    "summaryActionUpdate": "操作：從 {{from}} 更新至 {{to}}",
+    "summaryActionReinstall": "操作：重新安裝 {{version}}"
+  },
+  "installing": {
+    "title": "正在安裝 Voxelight",
+    "subtitle": "安裝完成前請保持此視窗開啟。",
+    "progressLabel": "安裝進度",
+    "phases": {
+      "extract": "解壓驗證",
+      "install": "寫入檔案",
+      "verify": "確認完成"
+    },
+    "status": {
+      "extract": "正在驗證並擷取安裝元件…",
+      "install": "正在安裝 Voxelight Launcher 檔案…",
+      "installOverwrite": "正在更新現有安裝檔案…",
+      "verify": "正在核對已安裝檔案並清理暫存目錄…"
+    },
+    "bytesWritten": "已寫入 {{written}}，預計 {{expected}}"
+  },
+  "done": {
+    "title": "Voxelight 已就緒",
+    "description": "Voxelight Launcher {{version}} 已安裝至所選資料夾。",
+    "installedAt": "安裝於 {{path}}",
+    "launchingNote": "正在啟動 Voxelight Launcher。",
+    "launchFailed": "無法自動啟動 Voxelight Launcher，請點擊下方按鈕或從開始功能表開啟。",
+    "launchBlockedElevated": "安裝程式正以系統管理員身分執行。若要使用一般使用者權限啟動 Voxelight，請關閉安裝程式，然後從 [開始] 功能表開啟 Voxelight Launcher。"
+  },
+  "error": {
+    "title": "安裝未能完成",
+    "summary": "未變更任何全系統設定。你可以檢視下方原因、複製詳細資訊或再試一次。",
+    "detailsLabel": "技術詳細資訊",
+    "detailVersion": "版本：{{value}}",
+    "detailTarget": "資料夾：{{value}}",
+    "detailPhase": "階段：{{value}}",
+    "detailExitCode": "結束代碼：{{value}}",
+    "detailCode": "錯誤代碼：{{value}}",
+    "detailNone": "無",
+    "reasons": {
+      "nsisExit1": "安裝尚未完成即被取消或中止（結束代碼 1）。請關閉執行中的 Voxelight Launcher 後再試。",
+      "nsisExit2": "安裝腳本提前中止（結束代碼 2）。請確認啟動器已關閉、目標資料夾可寫入且未安裝較新版本。",
+      "nsisExit5": "Windows 拒絕寫入所選資料夾（結束代碼 5）。請改選可寫入的使用者資料夾後重試。",
+      "nsisExit112": "安裝期間目標磁碟空間不足（結束代碼 112）。請釋放空間或選擇其他磁碟。",
+      "nsisExit1223": "安裝在完成前已被取消（結束代碼 1223）。",
+      "nsisExit1602": "移除舊版程式的操作已被取消（結束代碼 1602）。",
+      "nsisExit1618": "另一個 Windows 安裝程式正在執行（結束代碼 1618）。請等待其結束後再試。",
+      "nsisExitOther": "安裝程式意外結束，結束代碼為 {{code}}。",
+      "hashMismatch": "內嵌安裝套件未通過 SHA-256 完整性驗證。請重新從官方發行頁面下載 Voxelight 安裝程式。",
+      "extractFailed": "無法將安裝元件擷取至暫存資料夾，請檢查磁碟空間與安全軟體設定。",
+      "spawnFailed": "無法啟動 Windows 安裝引擎，請檢查安全軟體設定後再試。",
+      "verifyFailed": "安裝引擎已結束，但目標資料夾中找不到 voxelight-launcher.exe。",
+      "downgradeBlocked": "已安裝較新版本的 Voxelight Launcher，已拒絕降級。",
+      "alreadyInstalling": "目前已有安裝作業正在進行。",
+      "launcherRunning": "Voxelight Launcher 仍在執行。請關閉 Voxelight，然後按一下 [重試]。"
+    }
+  },
+  "license": {
+    "title": "GNU 通用公共授權條款第 3 版",
+    "description": "Voxelight Launcher 是依據 GPL-3.0-only 釋出的自由軟體，以下條文僅供查閱。",
+    "close": "關閉對話方塊",
+    "loading": "正在載入授權條文…"
+  }
+}

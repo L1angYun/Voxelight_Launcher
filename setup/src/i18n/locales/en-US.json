@@ -1,0 +1,146 @@
+{
+  "app": {
+    "productName": "Voxelight Launcher",
+    "setupName": "Voxelight Setup",
+    "wordmark": "VOXELIGHT",
+    "stepCount": "Step {{current}} of {{total}}",
+    "stepAnnouncement": "Step {{current}} of {{total}}: {{title}}"
+  },
+  "chrome": {
+    "windowControls": "Window controls",
+    "minimize": "Minimize",
+    "close": "Close",
+    "closeBlocked": "Wait for installation to finish before closing"
+  },
+  "actions": {
+    "back": "Back",
+    "next": "Continue",
+    "install": "Install",
+    "update": "Update",
+    "reinstall": "Reinstall",
+    "browse": "Browse",
+    "classicInstaller": "Open classic installer",
+    "launch": "Launch Voxelight",
+    "close": "Close",
+    "retry": "Retry",
+    "copyDetails": "Copy details",
+    "copied": "Details copied to clipboard.",
+    "copyFailed": "Could not access the clipboard. Select the details below to copy them manually.",
+    "viewLicense": "View GPL-3.0 license"
+  },
+  "welcome": {
+    "title": "Install Voxelight Launcher",
+    "version": "Version {{version}}",
+    "summary": "An open-source Minecraft Java Edition launcher for Windows. Manage isolated instances, mod loaders, worlds, and downloads in one calm space.",
+    "perUserNote": "Installs for your Windows account only. No administrator rights are required, and your Minecraft game files stay separate.",
+    "licenseLead": "Licensed under GNU GPL-3.0-only. You do not need to accept a license agreement to install.",
+    "updateNotice": "An existing installation ({{installed}}) was found and will be updated to {{target}}.",
+    "reinstallNotice": "Version {{version}} is already installed on this computer.",
+    "downgradeNotice": "A newer version ({{installed}}) is already installed. This installer will not downgrade it."
+  },
+  "location": {
+    "title": "Install location",
+    "description": "Choose a per-user folder for Voxelight Launcher. Your game directory and saved worlds are never modified.",
+    "fieldLabel": "Destination folder",
+    "placeholder": "Select a folder on a local drive",
+    "spaceSummary": "Needs {{required}}, {{available}} free on this drive",
+    "spaceRequiredOnly": "Needs about {{required}} of free space",
+    "checking": "Checking folder…",
+    "modeUpdateTitle": "Update from {{from}} to {{to}}",
+    "modeUpdateHint": "Your existing installation folder will be kept so shortcuts and app registration stay in sync.",
+    "modeReinstallTitle": "Reinstall {{version}}",
+    "modeReinstallHint": "Your existing installation folder will be kept. Saved accounts, instances, and settings remain intact.",
+    "modeFolderMissingHint": "Voxelight Launcher is no longer in its registered folder, so you can choose where to install it.",
+    "keptFolderUnusableHint": "Setup keeps an existing installation in its folder, and this folder can no longer be used. The classic installer can remove the old copy and install to another folder. You can also uninstall Voxelight Launcher in Windows Settings, then run Setup again.",
+    "classicInstallerFailed": "The classic installer could not be opened. Close Setup and run it again.",
+    "modeDowngradeTitle": "Newer version {{installed}} is already installed",
+    "modeDowngradeHint": "Downgrading to {{target}} is not allowed. Uninstall version {{installed}} first if you need to install an older release."
+  },
+  "pathErrors": {
+    "empty": "Enter a destination folder.",
+    "invalidChars": "The folder path contains characters or names Windows does not allow.",
+    "notAbsolute": "Enter a full local drive path such as C:\\Users\\User\\AppData\\Local\\Voxelight Launcher.",
+    "driveRoot": "Choose a subfolder instead of the root of a drive.",
+    "protectedLocation": "Choose a per-user folder outside Windows and Program Files.",
+    "sharedLocation": "Choose a folder for your account only. Shared locations such as ProgramData, the Public folder, and drive roots are not allowed.",
+    "reparsePoint": "The selected path crosses a symbolic link or junction, which Setup does not allow.",
+    "isFile": "A file already exists at that path. Choose a folder instead.",
+    "driveMissing": "The selected drive or parent folder does not exist.",
+    "notWritable": "Your account does not have permission to write to this folder.",
+    "insufficientSpace": "Not enough free disk space on this drive. Needs {{required}}, only {{available}} available."
+  },
+  "options": {
+    "title": "Installation options",
+    "description": "Review shortcuts and startup behavior before installation begins.",
+    "shortcutsTitle": "Desktop and Start menu shortcuts",
+    "shortcutsHint": "Create shortcuts on your desktop and in the Start menu. Turn this off to skip both.",
+    "shortcutsUpdateHint": "Existing shortcuts are kept as they are when updating.",
+    "launchTitle": "Launch Voxelight after installation",
+    "launchHint": "Start Voxelight Launcher automatically as soon as setup finishes.",
+    "launchElevatedHint": "Setup is running as administrator, so it cannot start Voxelight with your normal user rights. After installation, open Voxelight from the Start menu.",
+    "summaryLabel": "Summary",
+    "summaryTarget": "Folder: {{path}}",
+    "summaryActionInstall": "Action: Fresh installation of {{version}}",
+    "summaryActionUpdate": "Action: Update from {{from}} to {{to}}",
+    "summaryActionReinstall": "Action: Reinstall {{version}}"
+  },
+  "installing": {
+    "title": "Installing Voxelight",
+    "subtitle": "Please keep this window open until installation completes.",
+    "progressLabel": "Installation progress",
+    "phases": {
+      "extract": "Extract",
+      "install": "Install",
+      "verify": "Verify"
+    },
+    "status": {
+      "extract": "Verifying and extracting installer files…",
+      "install": "Installing Voxelight Launcher files…",
+      "installOverwrite": "Updating existing installation files…",
+      "verify": "Verifying installed files and cleaning up…"
+    },
+    "bytesWritten": "{{written}} of {{expected}} written"
+  },
+  "done": {
+    "title": "Voxelight is ready",
+    "description": "Voxelight Launcher {{version}} has been installed to your chosen folder.",
+    "installedAt": "Installed in {{path}}",
+    "launchingNote": "Voxelight Launcher is starting now.",
+    "launchFailed": "Could not start Voxelight Launcher automatically. You can try the Launch button or open it from the Start menu.",
+    "launchBlockedElevated": "Setup is running as administrator. To start Voxelight with your normal user rights, close Setup and open Voxelight Launcher from the Start menu."
+  },
+  "error": {
+    "title": "Installation did not finish",
+    "summary": "No system-wide changes were made. Review the reason below, copy the details if needed, or try again.",
+    "detailsLabel": "Technical details",
+    "detailVersion": "Version: {{value}}",
+    "detailTarget": "Folder: {{value}}",
+    "detailPhase": "Phase: {{value}}",
+    "detailExitCode": "Exit code: {{value}}",
+    "detailCode": "Code: {{value}}",
+    "detailNone": "none",
+    "reasons": {
+      "nsisExit1": "Installation was cancelled or stopped before completing (exit code 1). Close any running copy of Voxelight Launcher and try again.",
+      "nsisExit2": "The installer stopped early (exit code 2). Make sure Voxelight Launcher is closed, the folder is writable, and no newer version is installed.",
+      "nsisExit5": "Windows denied write access to the chosen folder (exit code 5). Choose a writable per-user folder and try again.",
+      "nsisExit112": "The target drive ran out of free space during installation (exit code 112). Free up space or pick another drive.",
+      "nsisExit1223": "The installation was cancelled before it finished (exit code 1223).",
+      "nsisExit1602": "Removing the previous installation was cancelled (exit code 1602).",
+      "nsisExit1618": "Another Windows installer is already running (exit code 1618). Wait for it to finish and retry.",
+      "nsisExitOther": "The installer exited unexpectedly with code {{code}}.",
+      "hashMismatch": "The embedded installer package failed its SHA-256 integrity check. Download Voxelight Setup again from the official release page.",
+      "extractFailed": "Setup could not extract the installer into your temporary folder. Check free disk space and antivirus exclusions.",
+      "spawnFailed": "Setup could not start the Windows installer engine. Check security software or try again.",
+      "verifyFailed": "The installer finished, but voxelight-launcher.exe was not found in the destination folder.",
+      "downgradeBlocked": "A newer version of Voxelight Launcher is already installed, so Setup refused to downgrade it.",
+      "alreadyInstalling": "An installation is already in progress.",
+      "launcherRunning": "Voxelight Launcher is still running. Close Voxelight, then choose Retry."
+    }
+  },
+  "license": {
+    "title": "GNU General Public License v3.0",
+    "description": "Voxelight Launcher is free software distributed under GPL-3.0-only. Shown for your information.",
+    "close": "Close dialog",
+    "loading": "Loading license text…"
+  }
+}

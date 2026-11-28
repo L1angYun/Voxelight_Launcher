@@ -1,3 +1,4 @@
+import { DEFAULT_ACCENT } from "../../design/accent";
 import { clampRadius, normalizeRect } from "./geometry";
 import type {
   GlassFrame,
@@ -284,7 +285,7 @@ function createResources(gl: WebGL2RenderingContext): GLResources {
 }
 
 function accentChannels(hex: string): [number, number, number] {
-  const normalized = /^#[0-9a-f]{6}$/i.test(hex) ? hex.slice(1) : "b4f17a";
+  const normalized = /^#[0-9a-f]{6}$/i.test(hex) ? hex.slice(1) : DEFAULT_ACCENT.slice(1);
   return [0, 2, 4].map((start) => Number.parseInt(normalized.slice(start, start + 2), 16) / 255) as [number, number, number];
 }
 
@@ -297,7 +298,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, options: GlassRen
   let quality: GlassQuality = options.initialQuality ?? "full";
   let mode: GlassMode = quality;
   let dpr = 1;
-  let frame: GlassFrame = { time: 0, accent: "#b4f17a", motion: true };
+  let frame: GlassFrame = { time: 0, accent: DEFAULT_ACCENT, motion: true };
   let disposed = false;
   let drawing = false;
   let paused = false;

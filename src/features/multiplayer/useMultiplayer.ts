@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { command, events } from "../../lib/launcher";
+import { command, events, type Instance } from "../../lib/launcher";
 import { normalizeError, type LauncherError } from "../../lib/errors";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 
@@ -12,10 +12,30 @@ export interface ServerEntry {
   snapshot: string;
 }
 
+/**
+ * The game environment is one instance: its servers.dat is listed and edited,
+ * and Join launches exactly that instance.
+ */
 interface ServerEnvironment {
+  instanceId: string;
   versionId: string;
   gameDirectory: string;
   versionIsolation: boolean;
+}
+
+/**
+ * The selected instance, or for a version-only choice the version-folder
+ * instance the backend itself resolves for that version (visible and in the
+ * active game folder). Hidden loader parents have no such record.
+ */
+export function multiplayerInstance(
+  instances: Instance[],
+  selectedInstance: Instance | undefined,
+  selectedVersionId: string,
+): Instance | undefined {
+  if (selectedInstance) return selectedInstance;
+  if (!selectedVersionId) return undefined;
+  return instances.find((instance) => instance.kind === "version" && instance.versionId === selectedVersionId);
 }
 
 interface ServerView {
@@ -194,18 +214,27 @@ export function useMultiplayer() {
   const {
     data,
     manifest,
+    selectedInstance,
     selectedVersionId,
-    selectVersion,
+    selectInstance,
     launchMultiplayer,
     notice: launchNotice,
     dismissNotice,
   } = useLauncher();
   const [tab, setTab] = useState<"servers" | "managed" | "network">("servers");
+  const environmentInstance = multiplayerInstance(data.instances, selectedInstance, selectedVersionId);
+  const environmentInstanceId = environmentInstance?.id ?? "";
+  const environmentVersionId = environmentInstance?.versionId ?? "";
   const environment = useMemo<ServerEnvironment>(() => ({
-    versionId: selectedVersionId,
+    instanceId: environmentInstanceId,
+    versionId: environmentVersionId,
     gameDirectory: data.config.gameDirectory,
     versionIsolation: data.config.versionIsolation,
-  }), [selectedVersionId, data.config.gameDirectory, data.config.versionIsolation]);
+  }), [environmentInstanceId, environmentVersionId, data.config.gameDirectory, data.config.versionIsolation]);
+  const target = useMemo(
+    () => ({ versionId: environment.versionId, instanceId: environment.instanceId }),
+    [environment],
+  );
   const environmentRef = useRef(environment);
   const serverGeneration = useRef(0);
   const currentView = useRef<ServerView | null>(null);
@@ -269,13 +298,13 @@ export function useMultiplayer() {
   }, []);
 
   const refreshServers = useCallback(async (preserveFeedback = false) => {
-    if (!environment.versionId || !acceptsEnvironment()) return;
+    if (!environment.instanceId || !acceptsEnvironment()) return;
     const generation = ++serverGeneration.current;
     const accepts = () => acceptsEnvironment() && serverGeneration.current === generation;
     publishView({ environment, rows: null, loading: true });
     if (!preserveFeedback) setServerFeedback(null);
     try {
-      const rows = await command<ServerEntry[]>("list_servers", { versionId: environment.versionId });
+      const rows = await command<ServerEntry[]>("list_servers", target);
       if (accepts()) publishView({ environment, rows, loading: false });
     } catch (cause) {
       if (accepts()) {
@@ -283,7 +312,7 @@ export function useMultiplayer() {
         if (!preserveFeedback) setServerFeedback({ environment, error: normalizeError(cause), notice: "" });
       }
     }
-  }, [acceptsEnvironment, environment, publishView]);
+  }, [acceptsEnvironment, environment, publishView, target]);
 
   const refreshManaged = useCallback(async () => {
     try {
@@ -389,7 +418,7 @@ export function useMultiplayer() {
   const saveServer = (name: string, address: string) => currentRows() !== null ? runServerAction(
     "save-server",
     () => command<ServerEntry[]>("save_server", {
-      versionId: environment.versionId,
+      ...target,
       entry: { name, address, hideAddress: false },
     }),
     publishUpdatedList,
@@ -399,7 +428,7 @@ export function useMultiplayer() {
   const removeServer = (bookmark: ServerEntry) => hasBookmark(bookmark) ? runServerAction(
     "remove-server",
     () => command<ServerEntry[]>("remove_server", {
-      versionId: environment.versionId,
+      ...target,
       index: bookmark.index,
       expected: { index: bookmark.index, snapshot: bookmark.snapshot },
     }),
@@ -497,7 +526,7 @@ export function useMultiplayer() {
     setTab,
     servers: visibleView?.rows ?? [],
     serverEnvironment: environment,
-    serverLoading: Boolean(environment.versionId) && (visibleView === null || visibleView.loading),
+    serverLoading: Boolean(environment.instanceId) && (visibleView === null || visibleView.loading),
     serverReady: visibleView?.rows != null,
     status: relevantStatus,
     lan: relevantLan ?? [],
@@ -517,19 +546,21 @@ export function useMultiplayer() {
     dismissNotice,
     report,
     manifest,
-    installedVersions: data.installedVersions,
-    selectedVersionId,
-    selectVersion,
+    // Visible instances of the active game folder; hidden loader parents and
+    // missing folders are not environments.
+    environments: data.instances,
+    environmentId: environment.instanceId,
+    selectEnvironment: (instanceId: string) => selectInstance(instanceId || undefined),
     refreshServers: () => currentActivity.current?.environment === environment ? undefined : refreshServers(),
     refreshManaged,
     saveServer,
     removeServer,
     pingServer,
     discoverLan,
-    join: (address: string) => acceptsEnvironment() && environment.versionId
-      ? launchMultiplayer(environment.versionId, address) : undefined,
-    joinBookmark: (bookmark: ServerEntry) => hasBookmark(bookmark) && acceptsEnvironment()
-      ? launchMultiplayer(environment.versionId, bookmark.address) : undefined,
+    join: (address: string) => acceptsEnvironment() && environment.instanceId
+      ? launchMultiplayer(environment.instanceId, address) : undefined,
+    joinBookmark: (bookmark: ServerEntry) => hasBookmark(bookmark) && acceptsEnvironment() && environment.instanceId
+      ? launchMultiplayer(environment.instanceId, bookmark.address) : undefined,
     createManaged,
     inspectImport,
     importManaged,

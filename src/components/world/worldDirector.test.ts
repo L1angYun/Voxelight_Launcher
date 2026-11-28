@@ -327,6 +327,69 @@ describe("crystal world director", () => {
     }
   });
 
+  it("keeps the camera and avoids replaying intro or assemble bursts during in-place appearance preview changes", () => {
+    const time = timeline();
+    const initialEye = [...time.frame.eye];
+    const initialAt = [...time.frame.at];
+    const initialFov = time.frame.fov;
+
+    // Switching material keeps the camera framing fixed and morphs smoothly without scatter.
+    time.director.setInputs({ ...initial, material: "solid" });
+    const atSwitch = time.director.step(0, time.now);
+    expect(atSwitch.eye).toEqual(initialEye);
+    expect(atSwitch.at).toEqual(initialAt);
+    expect(atSwitch.fov).toBe(initialFov);
+    expect(atSwitch.morph).toMatchObject({ transit: 0, toWord: false, fromWord: false });
+    expect(atSwitch.simTime - atSwitch.morph.start).toBeGreaterThanOrEqual(2);
+    expect(atSwitch.introActive).toBe(false);
+
+    const midMaterial = time.advance(.25);
+    expect(midMaterial.eye).toEqual(initialEye);
+    expect(midMaterial.at).toEqual(initialAt);
+    expect(midMaterial.lat).toBeGreaterThan(0);
+    expect(midMaterial.lat).toBeLessThan(1);
+
+    // Switching back to lattice never restarts the intro and keeps camera continuous.
+    time.director.setInputs({ ...initial, material: "lattice" });
+    time.director.beginIntro();
+    const backToLattice = time.advance(.1);
+    expect(backToLattice.introActive).toBe(false);
+    expect(backToLattice.morph.transit).toBe(0);
+    expect(backToLattice.eye).toEqual(initialEye);
+
+    // Switching scene on the same page keeps the current camera at t=0, ends/prevents intro,
+    // and morphs smoothly without the assemble transit burst.
+    time.director.setInputs({ ...initial, scene: "massif" });
+    const sceneStart = time.director.step(0, time.now);
+    expect(sceneStart.eye).toEqual(initialEye);
+    expect(sceneStart.at).toEqual(initialAt);
+    expect(sceneStart.morph.transit).toBe(0);
+    expect(sceneStart.introActive).toBe(false);
+    const midScene = time.advance(.2);
+    expect(midScene.profile).toBeGreaterThan(0);
+    expect(midScene.profile).toBeLessThan(1);
+    expect(midScene.eye[0]).toBeLessThan(initialEye[0]);
+    expect(midScene.eye[0]).toBeGreaterThan(-22);
+
+    // Reversing mid-transition never flashes or resets to an endpoint.
+    time.director.setInputs({ ...initial, scene: "horizon" });
+    const reversed = time.director.step(0, time.now);
+    expect(reversed.profile).toBeCloseTo(midScene.profile, 6);
+    expect(reversed.eye).toEqual(midScene.eye);
+    expect(reversed.morph.transit).toBe(0);
+  });
+
+  it("ends an active intro immediately when a scene preview option changes", () => {
+    const time = timeline();
+    time.director.beginIntro();
+    expect(time.advance(.3).introActive).toBe(true);
+    time.director.setInputs({ ...initial, scene: "massif" });
+    expect(time.advance(.016)).toMatchObject({ introActive: false, morph: { transit: 0, toWord: false, fromWord: false } });
+    time.director.setInputs({ ...initial, scene: "horizon" });
+    time.director.beginIntro();
+    expect(time.advance(.05).introActive).toBe(false);
+  });
+
   it("caps simulation steps and prevents negative or nonfinite time from poisoning the frame", () => {
     const time = timeline();
     expect(time.wake(30, 30000).simTime).toBeLessThanOrEqual(.05);
@@ -334,5 +397,81 @@ describe("crystal world director", () => {
     expect(time.wake(-1, 1).simTime).toBe(before);
     expect(time.wake(NaN, 1).simTime).toBe(before);
     expect(time.wake(1 / 60, 1).simTime).toBeGreaterThan(before);
+  });
+
+  it("replays the standard intro on demand from the current camera without resetting it and returns to the settled state", () => {
+    // Home (massif + lattice): finish initial settled state, replay from current camera,
+    // verify clean restart mid-replay and exact return to settled state.
+    const home = timeline({ ...initial, scene: "massif" });
+    home.director.beginIntro();
+    home.advance(10);
+    const settledHome = home.frame;
+    expect(settledHome.introActive).toBe(false);
+    const cameraBefore = { eye: [...settledHome.eye], at: [...settledHome.at], fov: settledHome.fov };
+
+    home.director.replayIntro();
+    const start = home.director.step(0, home.now);
+    expect(start.introActive).toBe(true);
+    expect(start.introTime).toBe(0);
+    expect(start.morph).toMatchObject({ dur: .9, toWord: true, fromWord: false, transit: 10 });
+    expect(start.eye).toEqual(cameraBefore.eye);
+    expect(start.at).toEqual(cameraBefore.at);
+    expect(start.fov).toBe(cameraBefore.fov);
+
+    // Restart cleanly mid-replay (in stage 2) without resetting camera.
+    const stage2 = home.advance(1.6);
+    expect(stage2.introActive).toBe(true);
+    expect(stage2.morph.fromWord).toBe(true);
+    home.director.replayIntro();
+    const restarted = home.director.step(0, home.now);
+    expect(restarted.introActive).toBe(true);
+    expect(restarted.introTime).toBe(0);
+    expect(restarted.morph).toMatchObject({ dur: .9, toWord: true, fromWord: false, transit: 10 });
+    expect(restarted.eye).toEqual(cameraBefore.eye);
+    expect(restarted.at).toEqual(cameraBefore.at);
+
+    // Finishes by 2.5 s and eases back cleanly to the exact settled state.
+    expect(home.advance(2.4).introActive).toBe(true);
+    const ended = home.advance(.11);
+    expect(ended.introActive).toBe(false);
+    expect(ended.introTime).toBe(0);
+    expect(ended.morph).toMatchObject({ toWord: false, fromWord: false, transit: 0 });
+    const resettled = home.advance(8);
+    expect(resettled.eye).toEqual(cameraBefore.eye);
+    expect(resettled.at).toEqual(cameraBefore.at);
+    expect(resettled.fov).toBe(cameraBefore.fov);
+    expect(resettled.island).toBeCloseTo(settledHome.island, 4);
+    expect(resettled.exposure).toBeCloseTo(settledHome.exposure, 6);
+    expect(resettled.bloom).toBeCloseTo(settledHome.bloom, 6);
+    expect(resettled.profile).toBeCloseTo(settledHome.profile, 6);
+    expect(resettled.lat).toBeCloseTo(settledHome.lat, 6);
+
+    // Content page (Settings > Appearance): replays from the elevated content camera
+    // without raising a home island, and returns immediately to the exact settled state.
+    const content = timeline({ ...initial, page: "content", scene: "massif" });
+    const settledContent = content.frame;
+    content.director.replayIntro();
+    const midContent = content.advance(1.0);
+    expect(midContent.introActive).toBe(true);
+    expect(midContent.eye).toEqual(settledContent.eye);
+    expect(midContent.at).toEqual(settledContent.at);
+    expect(midContent.island).toBe(settledContent.island);
+    const doneContent = content.advance(1.51);
+    expect(doneContent.introActive).toBe(false);
+    expect(doneContent.eye).toEqual(settledContent.eye);
+    expect(doneContent.at).toEqual(settledContent.at);
+    expect(doneContent.island).toBe(settledContent.island);
+    expect(doneContent.paperInk).toBe(settledContent.paperInk);
+    expect(doneContent.exposure).toBe(settledContent.exposure);
+    expect(doneContent.bloom).toBe(settledContent.bloom);
+    expect(doneContent.morph).toMatchObject({ toWord: false, fromWord: false, transit: 0 });
+  });
+
+  it("ignores replay requests when material is solid or launch is active", () => {
+    for (const override of [{ material: "solid" }, { phase: "preparing" }, { phase: "running" }] as Array<Partial<WorldInputs>>) {
+      const time = timeline({ ...initial, ...override });
+      time.director.replayIntro();
+      expect(time.advance(.1).introActive).toBe(false);
+    }
   });
 });

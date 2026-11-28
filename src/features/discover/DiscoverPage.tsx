@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, Box, Layers3, Package, Search, Sparkles } from "lucide-react";
+import { Box, Download, Layers3, Package, Search, Sparkles } from "lucide-react";
 import { command, type Instance } from "../../lib/launcher";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { useOverture } from "../../visual/overture/OvertureProvider";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { EmptyState } from "../../components/ui/Feedback";
+import { ICON } from "../../design/icons";
 import { ProjectCard } from "./ProjectCard";
 import { ProjectDetailsDrawer } from "./ProjectDetailsDrawer";
 import { CreateInstanceDialog } from "../library/CreateInstanceDialog";
-import { useDiscover } from "./useDiscover";
+import { DISCOVER_RESULT_LIMIT, DISCOVER_SORTS, useDiscover, type DiscoverSort } from "./useDiscover";
 import { InstallTargetDialog } from "./InstallTargetDialog";
 import { PageHeader, PageShell } from "../../components/ui/PageShell";
 import { Segmented } from "../../components/ui/Segmented";
@@ -75,24 +76,49 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
   const { notify } = useToast();
   const [creating, setCreating] = useState(false);
   const discover = useDiscover({
-    onNotice: code => {
-      notify({ message: t("discover:notice." + code), kind: "success" });
-      if (code === "resourceInstalledNew") play({ id: "discover-resource-instance-" + Date.now(), kind: "instance-installed" });
+    onNotice: (code, params) => {
+      notify({ message: t("discover:notice." + code, params), kind: "success" });
+      if (code === "resourceInstalledNew" || code === "resourceInstalledNewWithDependencies") {
+        play({ id: "discover-resource-instance-" + Date.now(), kind: "instance-installed" });
+      }
     },
-    onFeedback: next => notify({ message: errorText(next.error.code, t), kind: next.kind,
+    onFeedback: next => notify({ message: errorText(next.error.code, t, next.error.params), kind: next.kind,
       action: next.retry ? { label: t("common:actions.retry"), onClick: next.retry } : undefined }),
   });
   const {
     source, setSource, resourceType, setResourceType, query, setQuery, setSearch,
-    resources, loading, stale, resultKey, error, selectedProject, details, detailsLoading, detailsError,
+    sort, setSort, resources, loading, loadingMore, loadMore, loadMoreError, hasMore, total, focusId, clearFocus,
+    stale, resultKey, error, selectedProject, details, detailsLoading, detailsError,
+    versionsHasMore, versionsLoading, versionsError, loadMoreVersions,
     modpack, closeModpack, loadProject, closeProject, installProject, installed,
     targetFlow, closeTarget, installInto, createAndInstall, cancelInstall, context,
   } = discover;
+  const resultsRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!focusId) return;
+    const card = [...(resultsRef.current?.querySelectorAll<HTMLElement>(".vx-project-card") ?? [])]
+      .find(node => node.dataset.projectId === focusId);
+    clearFocus();
+    card?.focus({ preventScroll: true });
+  }, [clearFocus, focusId, resources]);
   const createOpen = Boolean(modpack || creating);
   const lastModpack = useRef<typeof modpack>(undefined);
   if (createOpen) lastModpack.current = modpack;
   const displayedModpack = createOpen ? modpack : lastModpack.current;
-  const targetName = selectedInstance?.name || (selectedVersionId ? t("library:versionDirectory") + " · " + selectedVersionId : t("discover:versionDirectory"));
+  const targetName = selectedInstance?.name || (selectedVersionId ? t("discover:versionDirectoryTarget", { version: selectedVersionId }) : t("discover:versionDirectory"));
+  const sortOptions = DISCOVER_SORTS[source].map(value => ({ value, label: t("discover:sort." + value) }));
+  const reachableTotal = total !== undefined ? Math.min(total, DISCOVER_RESULT_LIMIT) : undefined;
+  const countText = !loading && !error
+    ? reachableTotal !== undefined
+      ? t("discover:results.showingOf", { shown: formatNumber(resources.length, i18n.language), total: formatNumber(reachableTotal, i18n.language) })
+      : t("discover:results.showing", { shown: formatNumber(resources.length, i18n.language) })
+    : "";
+  const activeFilters = [
+    t("discover:filter.type", { value: t("discover:type." + resourceType) }),
+    context?.gameVersion ? t("discover:filter.gameVersion", { value: context.gameVersion }) : "",
+    resourceType === "mod" && context?.loader ? t("discover:filter.loader", { value: loaderDisplayName(context.loader, t) }) : "",
+    t("discover:filter.sort", { value: t("discover:sort." + sort) }),
+  ].filter(Boolean);
 
   async function installedWithOverture(versionId: string, instanceId?: string) {
     await installed(versionId, instanceId);
@@ -108,7 +134,7 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
         <aside className="vx-discover-catalog" aria-label={t("discover:typeLabel")}>
           <div className="vx-discover-destination vx-panel">
             <label className="vx-discover-target">
-              <span><ArrowDownToLine size={15} aria-hidden="true" />{t("discover:target")}</span>
+              <span><Download size={ICON.md} aria-hidden="true" />{t("discover:target")}</span>
               <Select aria-label={t("discover:target")} value={selectedInstance?.id ?? ""} onChange={(id) => {
                 if (id) selectInstance(id);
                 else selectVersion(selectedVersionId);
@@ -140,27 +166,51 @@ export function DiscoverPage({ onDownloads }: { onDownloads?: () => void }) {
             idPrefix="discover-type" panelId="discover-results"
             options={resourceTypes.map((value) => {
               const Icon = resourceIcons[value];
-              return { value, icon: <Icon size={17} aria-hidden="true" />, label: t("discover:type." + value) };
+              return { value, icon: <Icon size={ICON.md} aria-hidden="true" />, label: t("discover:type." + value) };
             })} />
         </aside>
-        <section className="vx-discover-results vx-panel" id="discover-results" role="tabpanel" aria-labelledby={"discover-type-" + resourceType}>
+        <section ref={resultsRef} className="vx-discover-results vx-panel" id="discover-results" role="tabpanel" aria-labelledby={"discover-type-" + resourceType}>
           <div className="vx-discover-search-lens">
             <form className="vx-discover-search" onSubmit={(event) => { event.preventDefault(); setSearch(query.trim()); }} role="search">
-              <Search size={20} aria-hidden="true" />
+              <Search size={ICON.lg} aria-hidden="true" />
               <input type="search" aria-label={t("discover:search")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("discover:searchPlaceholder")} />
               <Button variant="primary" type="submit">{t("common:actions.search")}</Button>
             </form>
           </div>
-          <div className="vx-discover-results-heading"><h2>{t("discover:type." + resourceType)}</h2><span>{source === "modrinth" ? "Modrinth" : "CurseForge"}{!loading && !error ? " · " + formatNumber(resources.length, i18n.language) : ""}</span></div>
+          <div className="vx-discover-toolbar">
+            <label className="vx-discover-sort">
+              <span>{t("discover:sortLabel")}</span>
+              <Select aria-label={t("discover:sortLabel")} value={sort} onChange={(value) => setSort(value as DiscoverSort)} options={sortOptions} />
+            </label>
+          </div>
+          <div className="vx-discover-results-heading">
+            <h2>{t("discover:type." + resourceType)}</h2>
+            {countText ? (
+              <div className="vx-discover-results-summary">
+                <span className="vx-discover-count" aria-live="polite">{countText}</span>
+                <ul className="vx-discover-active-filters" aria-label={t("discover:filtersLabel")}>
+                  {activeFilters.map(filter => <li key={filter}>{filter}</li>)}
+                </ul>
+              </div>
+            ) : null}
+          </div>
           <LoadingStatus active={loading} className="vx-discover-feedback">{t("common:status.loading")}</LoadingStatus>
           {error ? <p className="vx-discover-feedback vx-discover-feedback--error" role="alert">{errorText(error, t)}</p> : null}
           {!loading && !error && resources.length === 0 ? <EmptyState title={t("discover:noResults")} description={t("discover:noResultsDescription")} /> : null}
           <SectionPanel selectionKey={resultKey} className="vx-project-grid" aria-busy={loading} inert={loading || stale}>
-            {resources.map((project) => <ProjectCard key={source + "-" + project.project_id} project={project} targetName={targetName} selected={selectedProject?.project_id === project.project_id} onOpen={() => void loadProject(project)} onInstall={() => void installProject(project)} />)}
+            {resources.map((project) => <ProjectCard key={source + "-" + project.project_id} project={project} targetName={targetName} gameVersion={context?.gameVersion} targetLoader={context ? context.loader : undefined} selected={selectedProject?.project_id === project.project_id} onOpen={() => void loadProject(project)} onInstall={() => void installProject(project)} />)}
           </SectionPanel>
+          {!loading && !error && resources.length && (hasMore || loadMoreError) ? (
+            <div className="vx-discover-load-more">
+              {hasMore ? <Button variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore ? t("common:status.loading") : t("discover:loadMore")}
+              </Button> : null}
+              {loadMoreError ? <p className="vx-discover-feedback vx-discover-feedback--error" role="alert">{errorText(loadMoreError, t)}</p> : null}
+            </div>
+          ) : null}
         </section>
       </div>
-      <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} hasTarget={Boolean(selectedVersionId)} instances={fittableInstances} onInstall={() => selectedProject && installProject(selectedProject)} onInstallVersion={versionId => { if (selectedProject) void installProject(selectedProject, versionId); }} onClose={closeProject} />
+      <ProjectDetailsDrawer source={source} project={selectedProject} details={details} loading={detailsLoading} error={detailsError ? errorText(detailsError, t) : ""} targetName={targetName} hasTarget={Boolean(selectedVersionId)} instances={fittableInstances} versionsHasMore={versionsHasMore} versionsLoading={versionsLoading} versionsError={versionsError} onLoadMoreVersions={() => void loadMoreVersions()} onInstall={() => selectedProject && installProject(selectedProject)} onInstallVersion={versionId => { if (selectedProject) void installProject(selectedProject, versionId); }} onClose={closeProject} />
       <InstallTargetDialog flow={targetFlow} onClose={closeTarget} onInstall={installInto} onCreate={createAndInstall} onCancel={cancelInstall}
         onCreateInstance={() => setCreating(true)} onDownloads={onDownloads} />
       <CreateInstanceDialog

@@ -12,7 +12,8 @@
     "maximize": "Maximize",
     "restore": "Restore",
     "search": "Search",
-    "manage": "Manage"
+    "manage": "Manage",
+    "confirm": "Confirm"
   },
   "navigation": {
     "home": "Play",
@@ -32,7 +33,20 @@
     "missing": "This content cannot be displayed.",
     "desktopRequired": "Use the desktop app for this action."
   },
+  "confirm": {
+    "title": "Confirm action"
+  },
   "units": {},
+  "leaveGuard": {
+    "title": "Unsaved changes",
+    "description": "Save your changes before leaving this page, or discard them.",
+    "discard": "Discard",
+    "stay": "Stay",
+    "saveFailed": "Your changes could not be saved. You are still on this page.",
+    "waitingForSave": "Your changes are still being saved. You will leave this page when the save finishes.",
+    "sectionDescription": "Save your changes before switching to another section, or discard them.",
+    "sectionWaitingForSave": "Your changes are still being saved. The section will switch when the save finishes."
+  },
   "a11y": {
     "dismissNotification": "Dismiss notification",
     "mainNavigation": "Main navigation",

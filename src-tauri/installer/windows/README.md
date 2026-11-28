@@ -25,6 +25,18 @@ The corresponding license texts are distributed with the application in
 - Preserved Tauri's template substitutions, WebView2 bootstrap, current-user
   registration, `/S`, `/D=...`, `/NS`, `/P`, `/UPDATE`, upgrade/reinstall and
   explicit-opt-in data deletion paths.
+- Only restores the remembered install folder when it still contains
+  `${MAINBINARYNAME}.exe`; a stale remembered path (for example from a silent
+  smoke-test uninstall) no longer replaces the default install directory.
+  Reinstall/update uninstall flows use the validated `$INSTDIR`.
+- Built-in MUI pages use Segoe UI for English and Microsoft YaHei UI for
+  Simplified Chinese instead of the language-file defaults (SimSun for
+  SimpChinese). The branding line reads "Voxelight Launcher" in the small UI
+  font on both installer and uninstaller pages.
+- `scripts/smoke-install.mjs` and `scripts/verify-installer-ui.ps1` snapshot the
+  remembered install-location registry key before installing, restore its exact
+  previous state after uninstalling, remove their temporary target folder, and
+  report that the remembered location no longer points at that target.
 
 `VoxelightPages.nsh`, both files under `languages/`, and the assets under
 `assets/` are Voxelight additions. `installer.nsi`, `utils.nsh`, and

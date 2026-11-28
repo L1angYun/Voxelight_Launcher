@@ -42,9 +42,6 @@ nativeTest.afterEach(async ({ page }, info) => {
 
 async function prepare(page: Page, theme: Theme, effects: Effects) {
   await installLauncherFixture(page, { theme, effects, instanceCount: 2 });
-  await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ hits: [] }),
-  }));
   // Exercise the real LauncherNoticeBridge and ToastProvider through a failed
   // command. The fixture changes only the backend result of this user action.
   await page.addInitScript(() => {
@@ -85,6 +82,16 @@ async function materialMatrix(page: Page) {
     const glassSurfaces: { selector: string; owner: string | null; background: string; rgba: number[];
       opacity: number; effectiveOpacity: number; backdrop: string; refraction: string | null }[] = [];
     const violations: { kind: string; selector: string; value?: string | number[] }[] = [];
+    const resolveToken = (token: string) => {
+      const probe = document.createElement("span"); probe.style.color = `var(${token})`; probe.style.display = "none";
+      document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove();
+      return { token, color, rgba: rgba(color) };
+    };
+    // ui-language-spec §2.1 defines the E2 control fill and the state fills as
+    // translucent, and §5.3.2 requires the material guard to accept them. Every
+    // other translucent content fill must still sit on an opaque surface.
+    const translucentControlTokens = ["--surface-control", "--surface-control-hover", "--fill-hover", "--fill-selected", "--fill-pressed"].map(resolveToken);
+    const isTranslucentControlFill = (color: number[]) => translucentControlTokens.some(token => token.rgba.every((channel, index) => channel === color[index]));
     for (const element of document.querySelectorAll<HTMLElement>("*")) {
       const bounds = element.getBoundingClientRect();
       if (!element.checkVisibility({ opacityProperty: true, visibilityProperty: true }) || element.closest("[inert]")
@@ -118,19 +125,18 @@ async function materialMatrix(page: Page) {
         if (rgba(style.backgroundColor)[3] === 255 && Number(style.opacity) === 1) { opaqueAncestor = ancestor; break; }
         if (ancestor === root) break;
       }
-      if (root && color[3] / 255 > .12 && color[3] < 255 && !opaqueAncestor)
+      if (root && color[3] / 255 > .12 && color[3] < 255 && !opaqueAncestor && !isTranslucentControlFill(color))
         violations.push({ kind: "unbacked-translucent-fill", selector: label, value: color });
       if (root || glass || backdrop !== "none") rows.push({ selector: label, root: root ? selector(root) : null,
         background, rgba: color, opacity: Number(css.opacity), effectiveOpacity, backdrop, webkitBackdrop, glass, owner: owner ?? null,
         opaqueAncestor: opaqueAncestor ? selector(opaqueAncestor) : null });
     }
-    const tokens = ["--surface-panel", "--surface-card", "--surface-solid", "--selection-fill", "--bg-raised"].map(token => {
-      const probe = document.createElement("span"); probe.style.color = `var(${token})`; probe.style.display = "none";
-      document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove();
-      return { token, color, rgba: rgba(color) };
-    });
+    // The opaque content surfaces of ui-language-spec §2.1/§5.3.2. The pre-R9
+    // --selection-fill and --bg-raised are now aliases of the translucent
+    // --fill-selected and --surface-control (§5.2), so they are not content surfaces.
+    const tokens = ["--surface-panel", "--surface-card", "--surface-overlay", "--surface-sunken", "--surface-solid"].map(resolveToken);
     return { theme: document.documentElement.dataset.theme, effects: document.documentElement.dataset.effects,
-      rows, glassSurfaces, tokens, violations };
+      rows, glassSurfaces, tokens, translucentControlTokens, violations };
   }, glassOwners);
 }
 

@@ -64,7 +64,6 @@ type FixtureOptions = NonNullable<Parameters<typeof installLauncherFixture>[1]>;
 async function prepare(page: Page, options: FixtureOptions & { locale?: "zh-CN" | "en-US"; login?: boolean; emptyServers?: boolean; libraryDirectory?: string } = {}) {
   const { locale = "en-US", login = false, emptyServers = false, libraryDirectory, ...fixture } = options;
   await installLauncherFixture(page, { theme: "light", instanceCount: 2, ...fixture });
-  await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
   await page.addInitScript(({ locale, login, emptyServers, libraryDirectory }) => {
     type Api = { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> };
     const host = window as unknown as { __TAURI_INTERNALS__?: Api; __appearanceFixtures?: { calls: { name: string; args?: Record<string, unknown> }[] } };
@@ -174,7 +173,9 @@ nativeTest("R2-14 English 1050 server details use a two-line title and the share
   expect(result.title.title).toBe(result.title.text); expect(result.addressBreaks).toBeGreaterThan(1);
 });
 
-const sections = { library: ".vx-library-commandbar", discover: ".vx-discover-workspace", multiplayer: ".vx-multiplayer-tabs",
+// R9 moved the multiplayer view tabs into the page header actions (ui-language-spec
+// §4.6.3), so the multiplayer content now begins with its tab panel.
+const sections = { library: ".vx-library-commandbar", discover: ".vx-discover-workspace", multiplayer: '.vx-multiplayer-page [role="tabpanel"]',
   downloads: ".vx-task-center", accounts: ".vx-accounts-layout", settings: ".vx-settings-layout" } as const;
 for (const locale of ["zh-CN", "en-US"] as const) for (const width of [1050, 1440]) nativeTest(`R2-15 ${locale} ${width} six content pages begin together`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: width === 1050 ? 720 : 930 }); await prepare(page, { locale, stress: true });
@@ -298,17 +299,26 @@ nativeTest("R2-27 create-dialog segmented tracks fit their actual option content
   for (const track of tracks) { expect(track.fill).toBe("false"); expect(Math.abs(track.width - track.contentWidth - track.insets)).toBeLessThanOrEqual(1); }
 });
 
-nativeTest("R2-16/21 Doto counts use display typography and resource titles inherit line spacing", async ({ page }, info) => {
+nativeTest("R2-16/21 small counts use meta typography and resource titles inherit line spacing", async ({ page }, info) => {
   await page.setViewportSize({ width: 1440, height: 930 });
   await prepare(page, { stress: true });
   await navigate(page, "multiplayer");
   const count = await page.locator(".vx-server-inventory > h2 > span").evaluate(element => {
     const style = getComputedStyle(element);
-    return { size: style.fontSize, weight: style.fontWeight, family: style.fontFamily, text: element.textContent };
+    const probe = document.createElement("span"); probe.style.display = "none";
+    probe.style.color = "var(--text-tertiary)"; probe.style.fontFamily = "var(--font-ui)"; document.body.append(probe);
+    const tokens = getComputedStyle(probe), tertiary = tokens.color, uiFamily = tokens.fontFamily; probe.remove();
+    return { size: style.fontSize, weight: style.fontWeight, family: style.fontFamily, numeric: style.fontVariantNumeric,
+      color: style.color, tertiary, uiFamily, text: element.textContent };
   });
-  expect.soft(count.size).toBe("15px");
-  expect.soft(count.weight).toBe("900");
-  expect.soft(count.family).toContain("Doto");
+  // ui-language-spec §2.4 limits Doto (--font-matrix) to ASCII figures of 20px or
+  // more, and §4.6.1 moves the server count to --type-meta + tabular-nums + --text-tertiary.
+  expect.soft(count.size).toBe("12px");
+  expect.soft(count.weight).toBe("400");
+  expect.soft(count.family).not.toContain("Doto");
+  expect.soft(count.family).toBe(count.uiFamily);
+  expect.soft(count.numeric).toBe("tabular-nums");
+  expect.soft(count.color).toBe(count.tertiary);
   await page.evaluate(() => {
     const host = window as unknown as { __TAURI_INTERNALS__: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> } };
     const invoke = host.__TAURI_INTERNALS__.invoke;

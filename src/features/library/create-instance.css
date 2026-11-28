@@ -1,32 +1,75 @@
 @layer features {
-.vx-create-dialog .vx-dialog__body { display: grid; gap: 18px; padding: 0 6px 6px; margin-inline: -6px; margin-bottom: -6px; }
+/* The install action stays in view at the smallest window; the fields scroll above it,
+   and the body keeps room for focus rings that its scroll box would otherwise clip. */
+.vx-create-dialog[open] { display: flex; flex-direction: column; }
+.vx-create-dialog .vx-dialog__body { display: grid; flex: 1 1 auto; min-block-size: 0; gap: var(--space-4); padding: 0 var(--space-2) var(--space-2); margin-inline: calc(var(--space-2) * -1); margin-block-end: calc(var(--space-2) * -1); }
 .vx-create-dialog .vx-dialog__body > .vx-selection { justify-self: start; }
-.vx-create-panel { min-block-size: 197px; }
 /* M4 keeps the approved single-field gap while composing the shared spacing scale. */
 .vx-create-panel > .vx-form-stack { gap: calc(var(--space-4) + var(--space-1)); }
-.vx-create-project { margin: 0; color: var(--text-primary); font-weight: var(--weight-strong); }
+.vx-create-project { margin: 0; color: var(--text-primary); font: var(--type-body-strong); }
 .vx-create-loader-group { min-width: 0; }
-/* Search and sort for the game version list, side by side above it. */
+/* Type chips, then search and sort, then the list they narrow. */
 .vx-create-version-picker { display: grid; gap: var(--space-2); min-width: 0; }
 .vx-create-version-picker > .vx-segmented, .vx-create-version-picker > .vx-selection { justify-self: start; }
-.vx-create-version-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 12rem); gap: var(--space-2); }
+.vx-create-version-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, var(--field-width-md)); gap: var(--space-2); }
+/* A sunken well sized to the window, so the dialog rarely has to scroll around it;
+   at the smallest window half a row shows that the list scrolls. */
+.vx-create-version-well {
+  --vx-version-list-height: clamp(calc(var(--row-sm) * 3.5), min(760px, 100vh - var(--space-7)) - 544px, 320px);
+  display: grid;
+  min-width: 0;
+  block-size: var(--vx-version-list-height);
+  max-block-size: min(320px, 40vh);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  box-shadow: var(--edge-shade);
+}
+.vx-create-version-list { position: relative; min-height: 0; margin: 0; padding: var(--space-1); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; list-style: none; }
+.vx-create-version-list:focus { outline: none; }
+/* R9 spec §3.2 single field ring; the transparent outline is the forced-colors fallback. */
+.vx-create-version-well:has(.vx-create-version-list:focus-visible) { border-color: var(--accent-indicator); box-shadow: var(--field-focus); outline: 2px solid transparent; outline-offset: var(--focus-ring-offset-inset); }
+.vx-create-version-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto var(--icon-md);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-sm);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.vx-create-version-option[aria-selected="true"] { background: var(--fill-selected); }
+.vx-create-version-option[aria-selected="true"] .vx-create-version-option__id { font-weight: var(--weight-strong); }
+.vx-create-version-option > [data-selected-mark] { color: var(--accent-ink); }
+.vx-create-version-option__name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.vx-create-version-option__id { overflow: hidden; font: var(--type-control); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.vx-create-version-option__badge { flex: none; padding: 0 var(--space-2); border-radius: var(--radius-sm); background: var(--fill-selected); color: var(--text-secondary); font: var(--type-caption-strong); }
+.vx-create-version-option__badge[data-tone="success"] { background: var(--success-soft); color: var(--success); }
+.vx-create-version-option__date { color: var(--text-tertiary); font: var(--type-meta); font-variant-numeric: tabular-nums; text-align: end; white-space: nowrap; }
+.vx-create-version-status { display: grid; place-items: center; padding: var(--space-4); text-align: center; }
+.vx-create-version-status > * { margin: 0; }
 .vx-create-loader-slot { display: grid; grid-template-rows: 0fr; margin-block-start: 0; transition: grid-template-rows var(--duration-normal) var(--ease-out), margin-block-start var(--duration-normal) var(--ease-out); }
-.vx-create-loader-slot[data-expanded="true"] { grid-template-rows: 1fr; margin-block-start: 20px; }
-.vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 6px; margin: 0 -6px; }
+.vx-create-loader-slot[data-expanded="true"] { grid-template-rows: 1fr; margin-block-start: calc(var(--space-4) + var(--space-1)); }
+.vx-create-loader-slot__content { position: relative; min-block-size: 0; overflow: hidden; padding: 0 var(--space-2); margin: 0 calc(var(--space-2) * -1); }
 /* Give the focus outline room only while the slot is open; bottom padding
    otherwise paints a strip of the label even when the grid track is 0fr. */
-.vx-create-loader-slot[data-expanded="true"] > .vx-create-loader-slot__content { padding-block-end: 6px; margin-block-end: -6px; }
-.vx-create-loader-status { position: absolute; inset-inline-start: 18px; inset-block-end: 18px; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); pointer-events: none; }
+.vx-create-loader-slot[data-expanded="true"] > .vx-create-loader-slot__content { padding-block-end: var(--space-2); margin-block-end: calc(var(--space-2) * -1); }
+.vx-create-loader-status { position: absolute; inset-inline-start: calc(var(--space-2) + var(--space-3)); inset-block-end: calc(var(--space-2) + var(--space-3)); margin: 0; color: var(--text-secondary); font: var(--type-body); pointer-events: none; }
 .vx-create-panel:not([data-section-motion="full"]) .vx-create-loader-slot { transition: none; }
-.vx-check-row {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-2);
-  }
+.vx-check-row { display: flex; align-items: flex-start; gap: var(--space-2); }
 .vx-check-row input { margin-top: var(--space-1); }
 .vx-muted { color: var(--text-secondary); }
 }
 @layer overrides {
+@media (hover: hover) and (pointer: fine) {
+.vx-create-version-option:not([aria-selected="true"]):hover { background: var(--fill-hover); }
+}
+@media (forced-colors: active) {
+.vx-create-version-option[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: var(--focus-ring-offset-inset); }
+.vx-create-version-well:has(.vx-create-version-list:focus-visible) { outline: 2px solid Highlight; }
+}
 @media (prefers-reduced-motion: reduce) {
 .vx-create-loader-slot { transition: none; }
 }

@@ -6,6 +6,7 @@ import { normalizeError, type LauncherError } from "../../lib/errors";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { useLumen, type LumenWakeRequest } from "./LumenContext";
+import { localizedErrorParams } from "../../lib/errorReasons";
 import type {
   ApprovalDetailField,
   AssistantStatus,
@@ -128,7 +129,7 @@ export function AssistantDialog({
       `settings:errors.${cause.code}`,
     ].find((candidate) => i18n.exists(candidate));
     if (key) {
-      const translated = t(key, cause.params);
+      const translated = t(key, localizedErrorParams(cause.code, cause.params, t));
       if (cause.code === "assistant.providerError" && cause.detail) {
         return `${translated} (${cause.detail})`;
       }
@@ -265,6 +266,11 @@ export function AssistantDialog({
     return i18n.exists(key) ? t(key) : field;
   }
 
+  function toolLabel(name: string): string {
+    const key = `shell:assistant.tools.${name}`;
+    return i18n.exists(key) ? t(key) : name;
+  }
+
   function reasonNote(call: PendingToolCall): string | null {
     if (call.reason === "alwaysAsk") return t("shell:assistant.approvalReason.alwaysAsk");
     if (call.reason === "limit") return t("shell:assistant.approvalReason.limit");
@@ -309,22 +315,20 @@ export function AssistantDialog({
       <div className="vx-assistant-shell" data-testid="assistant-dialog-body">
         <div className="vx-assistant-bar">
           <div className="vx-assistant-meta">
-            <span className="vx-assistant-pill">
-              {status
-                ? t(`settings:assistant.providers.${status.provider}`)
-                : t("settings:assistant.providers.openai")}
-            </span>
-            {status?.model ? (
-              <span className="vx-assistant-pill vx-assistant-pill--mono">{status.model}</span>
-            ) : (
-              <span className="vx-assistant-pill vx-assistant-pill--warn">
-                {t("shell:assistant.notConfigured")}
+            <span className="vx-assistant-summary">
+              <span>
+                {status
+                  ? t(`settings:assistant.providers.${status.provider}`)
+                  : t("settings:assistant.providers.openai")}
               </span>
-            )}
-            <span className="vx-assistant-pill">{permissionLabel}</span>
-            {activeToolCount > 0 ? (
-              <span className="vx-assistant-pill vx-assistant-pill--mono">
-                {t("shell:assistant.toolCount", { count: activeToolCount })}
+              {status?.model ? <span>{status.model}</span> : null}
+              <span>{permissionLabel}</span>
+              {activeToolCount > 0 ? <span>{t("shell:assistant.toolCount", { count: activeToolCount })}</span> : null}
+            </span>
+            {!status?.model ? (
+              <span className="vx-assistant-warning">
+                <AlertTriangle size={12} aria-hidden="true" />
+                <span>{t("shell:assistant.notConfigured")}</span>
               </span>
             ) : null}
           </div>
@@ -390,7 +394,7 @@ export function AssistantDialog({
                         <span className="vx-assistant-trace__node" aria-hidden="true" />
                         <div className="vx-assistant-trace__content">
                           <div className="vx-assistant-trace__head">
-                            <span className="vx-assistant-trace__name">{trace.name}</span>
+                            <span className="vx-assistant-trace__name" title={trace.name}>{toolLabel(trace.name)}</span>
                             <span className="vx-assistant-trace__status" data-status={trace.status}>
                               {t(`shell:assistant.traceStatus.${trace.status}`)}
                             </span>
@@ -443,7 +447,7 @@ export function AssistantDialog({
                   return (
                     <li className="vx-assistant-approval__item" key={call.id} data-call-id={call.id}>
                       <div className="vx-assistant-approval__head">
-                        <span className="vx-assistant-trace__name" id={`${itemId}-name`}>{call.name}</span>
+                        <span className="vx-assistant-trace__name" id={`${itemId}-name`} title={call.name}>{toolLabel(call.name)}</span>
                         {pendingApprovals.length > 1 ? (
                           <label className="vx-assistant-approval__allow">
                             <input
@@ -484,6 +488,7 @@ export function AssistantDialog({
                       ) : null}
                       <details className="vx-assistant-approval__technical">
                         <summary>{t("shell:assistant.approvalTechnical")}</summary>
+                        <p className="vx-assistant-approval__tool-id"><code>{call.name}</code></p>
                         {argEntries.length > 0 ? (
                           <dl className="vx-assistant-approval__args">
                             {argEntries.map(([key, value]) => (

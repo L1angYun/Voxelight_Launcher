@@ -12,9 +12,13 @@
     "modpack": "Modpack"
   },
   "target": "Instalar en",
-  "versionDirectory": "Usar directorio de versión",
+  "versionDirectory": "Versión seleccionada",
   "details": "Ver detalles",
   "install": "Instalar",
+  "installLatest": "Instalar la última versión compatible",
+  "installLatestInto": "Instalar la última versión compatible en {{name}}",
+  "compatibleWith": "Compatible con {{version}}",
+  "noVersionFor": "Sin versión para {{version}}",
   "installVersion": "Instalar versión {{version}}",
   "installVersionNotice": "Instalar otra versión puede reemplazar la instalada. Las dependencias obligatorias se resuelven por separado.",
   "noResults": "No se encontraron recursos",
@@ -23,6 +27,30 @@
   "authorUnknown": "Autor desconocido",
   "versions": "Versiones compatibles",
   "noVersions": "No hay versiones compatibles para la instancia actual",
+  "sortLabel": "Ordenar por",
+  "sort": {
+    "relevance": "Relevancia",
+    "downloads": "Descargas",
+    "follows": "Seguidores",
+    "newest": "Más recientes",
+    "updated": "Actualizados recientemente",
+    "featured": "Destacados",
+    "popularity": "Popularidad",
+    "name": "Nombre"
+  },
+  "results": {
+    "showing": "Mostrando {{shown}}",
+    "showingOf": "Mostrando {{shown}} de {{total}}"
+  },
+  "filtersLabel": "Filtros activos",
+  "filter": {
+    "type": "Tipo: {{value}}",
+    "gameVersion": "Versión: {{value}}",
+    "loader": "Cargador: {{value}}",
+    "sort": "Orden: {{value}}"
+  },
+  "loadMore": "Cargar más",
+  "loadMoreVersions": "Cargar más versiones",
   "fits": {
     "count_one": "Compatible con {{count}} instancia",
     "count_other": "Compatible con {{count}} instancias",
@@ -43,7 +71,7 @@
   "external": "Abrir página del proyecto",
   "installTarget": {
     "newInstance": "Nueva instancia",
-    "title": "Elegir destino de instalación · {{title}}",
+    "title": "Elegir destino de instalación para {{title}}",
     "compatible": "Destinos compatibles",
     "incompatible": "Incompatibles ({{count}})",
     "installInto": "Instalar en {{name}}",
@@ -59,6 +87,19 @@
     "downloads": "Ver en Descargas",
     "cancel": "Cancelar instalación",
     "curseforge": "Crea una instancia compatible y selecciónala para instalar este proyecto de CurseForge.",
+    "manual": {
+      "title": "Se requiere descarga manual",
+      "reason": {
+        "distributionForbidden": "El autor no permite que otras aplicaciones descarguen este archivo.",
+        "noDownloadUrl": "CurseForge no ofrece la descarga de este archivo a otras aplicaciones.",
+        "untrustedUrl": "La dirección de descarga que indica CurseForge para este archivo no pertenece a sus servidores de descarga oficiales, así que el iniciador no la usará."
+      },
+      "file": "Archivo: {{fileName}}",
+      "fileNamed": "Archivo: {{name}} ({{fileName}})",
+      "open": "Abrir la página del archivo en CurseForge",
+      "folder": "Descárgalo manualmente y colócalo en la carpeta {{folder}} de la instancia en la que quieras usarlo.",
+      "folderTarget": "Descárgalo manualmente y colócalo en la carpeta {{folder}} de «{{name}}»."
+    },
     "reason": {
       "vanilla": "Vanilla no puede cargar mods",
       "loaderMismatch": "Cargador incompatible",
@@ -70,7 +111,6 @@
       "datapack": "Los paquetes de datos van en la carpeta datapacks de un mundo y aún no son compatibles aquí",
       "noSupportedLoader": "Este proyecto no tiene versiones para Fabric, NeoForge, Forge ni Quilt",
       "noVersions": "No hay versiones descargables",
-      "curseforgeRequiredDependencies": "Este archivo de CurseForge requiere otros recursos. Instala primero sus dependencias en una instancia compatible y luego instala este archivo.",
       "noPinnedCreationLoader": "Este archivo no es compatible con ningún cargador disponible para nuevas instancias.",
       "noReleaseVersions": "Este proyecto no tiene ninguna versión de lanzamiento instalable.",
       "manifestUnavailable": "El manifiesto de versiones del juego no está disponible temporalmente, así que no se puede sugerir una nueva instancia."
@@ -78,9 +118,15 @@
   },
   "notice": {
     "resourceInstalled": "Recurso instalado.",
+    "resourceInstalledWithDependencies_one": "Recurso instalado ({{count}} dependencia obligatoria verificada; recursos añadidos o actualizados: {{changed}}).",
+    "resourceInstalledWithDependencies_other": "Recurso instalado ({{count}} dependencias obligatorias verificadas; recursos añadidos o actualizados: {{changed}}).",
+    "resourceAlreadyInstalled": "Este recurso y sus dependencias obligatorias ya están en la versión seleccionada.",
     "instanceInstalled": "Instancia instalada.",
-    "resourceInstalledNew": "Recurso instalado en la nueva instancia."
+    "resourceInstalledNew": "Recurso instalado en la nueva instancia.",
+    "resourceInstalledNewWithDependencies_one": "Recurso instalado en la nueva instancia ({{count}} dependencia obligatoria verificada; recursos añadidos o actualizados: {{changed}}).",
+    "resourceInstalledNewWithDependencies_other": "Recurso instalado en la nueva instancia ({{count}} dependencias obligatorias verificadas; recursos añadidos o actualizados: {{changed}})."
   },
   "importCurseforgeZip": "Importar un ZIP de CurseForge en su lugar",
-  "curseforgeZipRequired": "Elige un archivo ZIP de modpack de CurseForge."
+  "curseforgeZipRequired": "Elige un archivo ZIP de modpack de CurseForge.",
+  "versionDirectoryTarget": "Versión seleccionada ({{version}})"
 }

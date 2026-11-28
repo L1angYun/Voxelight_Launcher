@@ -4,7 +4,7 @@
   "history": "История",
   "activeCount": "Активных: {{count}}",
   "historyCount": "В истории: {{count}}",
-  "taskTitle": "{{kind}} · {{target}}",
+  "taskTitle": "{{kind}}: {{target}}",
   "interruptedDescription": "Лаунчер был закрыт до завершения этой задачи. Повторите попытку, чтобы повторно использовать проверенные файлы.",
   "interruptedNoRetry": "Лаунчер был закрыт до завершения этой задачи.",
   "tasks": {
@@ -31,7 +31,8 @@
       "server-install": "Установка сервера",
       "server-import": "Импорт сервера",
       "server-start": "Подготовка сервера",
-      "default-skin": "Предпросмотр персонажа"
+      "default-skin": "Предпросмотр персонажа",
+      "instance-create": "Создание экземпляра"
     },
     "stage": {
       "queued": "В очереди",
@@ -70,7 +71,7 @@
   },
   "progress": {
     "files": "Файлы: {{completed}} / {{total}}",
-    "completedUnknown": "Файлов: {{completed}} · всего неизвестно",
+    "completedUnknown": "Файлов: {{completed}}, всего неизвестно",
     "byteLabel": "{{completed}} из {{total}}",
     "byteLabelUnknown": "Загружено {{completed}}, общий размер неизвестен",
     "bytesCompleted": "Загружено {{completed}}",
@@ -87,7 +88,9 @@
     "historyTitle": "История задач пуста",
     "historyDescription": "Завершённые и восстановимые задачи сохраняются здесь.",
     "filteredTitle": "Нет подходящих задач",
-    "filteredDescription": "Выберите другой фильтр, чтобы посмотреть историю загрузок."
+    "filteredDescription": "Выберите другой фильтр, чтобы посмотреть историю загрузок.",
+    "discover": "Найти контент",
+    "installGame": "Установить версию игры"
   },
   "errors": {
     "taskFailed": "Задача не завершилась. Повторите попытку, если это возможно, или вернитесь к её источнику.",

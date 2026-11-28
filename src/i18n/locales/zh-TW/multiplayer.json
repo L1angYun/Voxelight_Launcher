@@ -8,7 +8,7 @@
     "network": "網路偵測"
   },
   "environment": "遊戲環境",
-  "chooseEnvironment": "選擇已安裝版本",
+  "chooseEnvironment": "選擇實例",
   "environmentRequired": "儲存或加入伺服器前，先選擇遊戲環境。",
   "refresh": "重新整理",
   "addServer": "新增伺服器",
@@ -95,6 +95,7 @@
   "sendCommand": "傳送指令",
   "playerAction": "玩家管理操作",
   "playerName": "玩家名稱",
+  "playerNamePlaceholder": "例如 Steve",
   "managePlayer": "執行玩家管理",
   "playerActions": {
     "whitelist add": "加入白名單",

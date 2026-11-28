@@ -3,6 +3,10 @@
   "subtitle": "Cuentas, apariencia en línea y vistas previas locales.",
   "listTitle": "Cuentas",
   "addAccount": "Añadir cuenta",
+  "status": {
+    "profileUnavailable": "Apariencia no disponible",
+    "sessionUnverified": "Sesión no verificada"
+  },
   "loginTitle": "Añadir cuenta",
   "loginDescription": "Elige cómo quieres iniciar sesión o jugar sin conexión.",
   "loginMethods": "Método de inicio de sesión",
@@ -52,7 +56,7 @@
     "start": "Iniciar sesión con Microsoft",
     "deviceInstruction": "Introduce este código en la página oficial de Microsoft:",
     "openVerification": "Abrir autorización de Microsoft",
-    "waiting": "Esperando autorización · quedan {{minutes}}:{{seconds}} · consultando cada {{interval}} s",
+    "waiting": "Esperando autorización. Quedan {{minutes}}:{{seconds}}; se consulta cada {{interval}} s.",
     "cancel": "Cancelar autorización"
   },
   "offline": {
@@ -93,8 +97,8 @@
     "unavailable": "La vista previa 3D no está disponible. Reintenta o usa otra fuente de vista previa.",
     "loading": "Cargando apariencia de la cuenta…",
     "noAccountSkin": "No hay ninguna skin de cuenta disponible",
-    "localNotice": "Solo vista previa local · no modifica tu cuenta",
-    "accountNotice": "Fuente de cuenta en línea · los cambios de abajo requieren una acción explícita",
+    "localNotice": "Solo es una vista previa local; no modifica tu cuenta.",
+    "accountNotice": "Se muestra desde tu cuenta en línea. Los cambios de abajo requieren una acción explícita.",
     "import": "Importar PNG",
     "resetView": "Restablecer vista",
     "restoreDefault": "Restaurar vista predeterminada",
@@ -107,8 +111,8 @@
   },
   "model": {
     "auto": "Automático",
-    "classic": "Clásico · brazos anchos",
-    "slim": "Delgado · brazos estrechos"
+    "classic": "Clásico (brazos anchos)",
+    "slim": "Delgado (brazos estrechos)"
   },
   "animation": {
     "idle": "Reposo",
@@ -123,11 +127,11 @@
     "fallback": "El personaje predeterminado seleccionado no está disponible. Reintenta o importa una vista previa local.",
     "steve": {
       "name": "Steve",
-      "description": "Clásico · cliente verificado"
+      "description": "Modelo clásico, cliente verificado"
     },
     "alex": {
       "name": "Alex",
-      "description": "Delgado · cliente verificado"
+      "description": "Modelo delgado, cliente verificado"
     }
   },
   "notice": {

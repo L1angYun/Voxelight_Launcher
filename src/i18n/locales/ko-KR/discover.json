@@ -12,9 +12,13 @@
     "modpack": "모드팩"
   },
   "target": "설치 대상",
-  "versionDirectory": "버전 디렉터리 사용",
+  "versionDirectory": "선택한 버전",
   "details": "자세히 보기",
   "install": "설치",
+  "installLatest": "최신 호환 버전 설치",
+  "installLatestInto": "{{name}}에 최신 호환 버전 설치",
+  "compatibleWith": "{{version}} 지원",
+  "noVersionFor": "{{version}} 버전 없음",
   "installVersion": "{{version}} 버전 설치",
   "installVersionNotice": "다른 버전을 설치하면 기존에 설치된 버전이 교체될 수 있습니다. 필수 종속성은 별도로 처리됩니다.",
   "noResults": "리소스를 찾을 수 없습니다",
@@ -23,6 +27,30 @@
   "authorUnknown": "알 수 없는 제작자",
   "versions": "호환 버전",
   "noVersions": "현재 인스턴스와 호환되는 버전이 없습니다",
+  "sortLabel": "정렬 기준",
+  "sort": {
+    "relevance": "관련도순",
+    "downloads": "다운로드순",
+    "follows": "팔로우순",
+    "newest": "최신순",
+    "updated": "최근 업데이트순",
+    "featured": "추천순",
+    "popularity": "인기순",
+    "name": "이름순"
+  },
+  "results": {
+    "showing": "{{shown}}개 표시",
+    "showingOf": "{{total}}개 중 {{shown}}개 표시"
+  },
+  "filtersLabel": "활성 필터",
+  "filter": {
+    "type": "유형: {{value}}",
+    "gameVersion": "버전: {{value}}",
+    "loader": "로더: {{value}}",
+    "sort": "정렬: {{value}}"
+  },
+  "loadMore": "더 보기",
+  "loadMoreVersions": "버전 더 보기",
   "fits": {
     "count": "인스턴스 {{count}}개와 호환",
     "none": "호환되는 인스턴스 없음",
@@ -42,7 +70,7 @@
   "external": "프로젝트 페이지 열기",
   "installTarget": {
     "newInstance": "새 인스턴스",
-    "title": "설치 위치 선택 · {{title}}",
+    "title": "{{title}}의 설치 위치 선택",
     "compatible": "호환되는 위치",
     "incompatible": "호환되지 않음({{count}})",
     "installInto": "{{name}}에 설치",
@@ -58,6 +86,19 @@
     "downloads": "다운로드에서 보기",
     "cancel": "설치 취소",
     "curseforge": "먼저 호환되는 인스턴스를 만든 뒤 해당 인스턴스를 선택해 이 CurseForge 프로젝트를 설치하세요.",
+    "manual": {
+      "title": "수동 다운로드 필요",
+      "reason": {
+        "distributionForbidden": "제작자가 다른 앱의 이 파일 다운로드를 허용하지 않습니다.",
+        "noDownloadUrl": "CurseForge가 다른 앱에 이 파일의 다운로드를 제공하지 않습니다.",
+        "untrustedUrl": "CurseForge가 알려 준 이 파일의 다운로드 주소가 공식 다운로드 서버가 아니므로 런처에서 사용하지 않습니다."
+      },
+      "file": "파일: {{fileName}}",
+      "fileNamed": "파일: {{name}} ({{fileName}})",
+      "open": "CurseForge에서 파일 페이지 열기",
+      "folder": "직접 다운로드한 뒤 사용할 인스턴스의 {{folder}} 폴더에 넣으세요.",
+      "folderTarget": "직접 다운로드한 뒤 '{{name}}'의 {{folder}} 폴더에 넣으세요."
+    },
     "reason": {
       "vanilla": "바닐라는 모드를 불러올 수 없음",
       "loaderMismatch": "호환되지 않는 로더",
@@ -69,7 +110,6 @@
       "datapack": "데이터 팩은 월드의 datapacks 폴더에 설치해야 하며 아직 지원되지 않습니다",
       "noSupportedLoader": "이 프로젝트에는 Fabric, NeoForge, Forge 또는 Quilt 버전이 없습니다",
       "noVersions": "다운로드 가능한 버전이 없습니다",
-      "curseforgeRequiredDependencies": "이 CurseForge 파일에는 다른 리소스가 필요합니다. 호환되는 인스턴스에 종속성을 먼저 설치한 뒤 이 파일을 설치하세요.",
       "noPinnedCreationLoader": "이 파일은 새 인스턴스에서 사용할 수 있는 로더를 지원하지 않습니다.",
       "noReleaseVersions": "이 프로젝트에는 설치 가능한 정식 게임 버전이 없습니다.",
       "manifestUnavailable": "게임 버전 목록을 일시적으로 불러올 수 없어 새 인스턴스를 제안할 수 없습니다."
@@ -77,9 +117,13 @@
   },
   "notice": {
     "resourceInstalled": "리소스가 설치되었습니다.",
+    "resourceInstalledWithDependencies": "리소스가 설치되었습니다(필수 종속성 {{count}}개 확인, {{changed}}개 추가 또는 업데이트).",
+    "resourceAlreadyInstalled": "이 리소스와 필수 종속성은 이미 선택한 버전입니다.",
     "instanceInstalled": "인스턴스 설치가 완료되었습니다.",
-    "resourceInstalledNew": "새 인스턴스에 리소스가 설치되었습니다."
+    "resourceInstalledNew": "새 인스턴스에 리소스가 설치되었습니다.",
+    "resourceInstalledNewWithDependencies": "새 인스턴스에 리소스가 설치되었습니다(필수 종속성 {{count}}개 확인, {{changed}}개 추가 또는 업데이트)."
   },
   "importCurseforgeZip": "대신 CurseForge ZIP 가져오기",
-  "curseforgeZipRequired": "CurseForge 모드팩 ZIP 파일을 선택하세요."
+  "curseforgeZipRequired": "CurseForge 모드팩 ZIP 파일을 선택하세요.",
+  "versionDirectoryTarget": "선택한 버전({{version}})"
 }

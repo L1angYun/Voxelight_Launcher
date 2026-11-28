@@ -18,8 +18,8 @@ const config: Config = {
   ...defaults,
   gameDirectory: "C:\\ToastReview", javaPath: "", maxMemoryMb: 4096, memoryMode: "manual", jvmArguments: "", versionIsolation: true,
   theme, downloadConcurrency: 6, microsoftClientId: "", downloadLimitKib: 0, downloadSource: "official",
-  screenWidth: 1280, screenHeight: 720, language: "en-US", accentColor: "#b4f17a", effects,
-  worldScene: "horizon", worldMaterial: "lattice", accentSource: "voxelight", soundEnabled: false,
+  screenWidth: 1280, screenHeight: 720, language: "en-US", accentColor: "#0078d4", effects,
+  worldScene: "horizon", worldMaterial: "lattice", accentSource: "system", soundEnabled: false,
   javaAutoDownload: false, defaultSkin: "steve",
 };
 
@@ -38,7 +38,7 @@ function Harness() {
     <button id="open-dialog" onClick={() => setOpen(true)}>Open dialog</button>
     <output id="dismissed-count">{dismissed}</output>
     <Dialog open={open} onOpenChange={setOpen} title="Notification host" description="A real modal dialog hosts the active notification.">
-      <button id="dialog-first">First dialog control</button>
+      <button id="dialog-first" data-dialog-autofocus="true">First dialog control</button>
       <button id="close-dialog" onClick={() => setOpen(false)}>Close dialog</button>
     </Dialog>
   </main>;

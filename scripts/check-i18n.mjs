@@ -14,6 +14,11 @@ const discoveredLocales = fs.readdirSync(localeRoot, { withFileTypes: true })
   .sort();
 const locales = rootArgument >= 0 ? discoveredLocales : requiredLocales;
 const errors = [];
+// U+00B7 and U+2022 read as machine-made separators in translated UI copy.
+// Keys use "<locale>/<namespace>.<key>". Keep this empty unless a proper name
+// or real data genuinely needs one.
+const separatorAllowlist = new Set();
+const separatorCharacters = /[·•]/u;
 if (rootArgument < 0) {
   for (const locale of requiredLocales) {
     if (!discoveredLocales.includes(locale)) errors.push(`Missing locale directory: ${locale}`);
@@ -46,6 +51,9 @@ for (const locale of locales) {
     for (const [key, value] of values) {
       const full = `${namespace.slice(0, -5)}.${key}`;
       if (!value.trim()) errors.push(`Empty translation: ${locale}/${full}`);
+      if (separatorCharacters.test(value) && !separatorAllowlist.has(`${locale}/${full}`)) {
+        errors.push(`Separator in translation: ${locale}/${full}`);
+      }
       keys.add(full);
       translationKeys.add(full);
     }
@@ -254,7 +262,6 @@ const allowedLiterals = new Set([
   "Español",
   "/s",
   "example.org:25565",
-  "· Java",
 ]);
 
 function allowedLiteral(text) {
@@ -262,7 +269,7 @@ function allowedLiteral(text) {
   if (normalized.length < 2 || !/[A-Za-z\u4e00-\u9fff]/.test(normalized)) return true;
   if (allowedLiterals.has(normalized)) return true;
   if (/^(?:https?:|blob:|data:|#|xxxxxxxx|127\.)/.test(normalized)) return true;
-  if (/^[·\s]*PID$/.test(normalized)) return true;
+  if (/^\s*PID$/.test(normalized)) return true;
   return false;
 }
 
@@ -304,8 +311,18 @@ for (const file of files) {
     const position = source.getLineAndCharacterOfPosition(node.getStart(source));
     errors.push(`Hardcoded ${kind}: ${relative}:${position.line + 1} (${value.trim().replace(/\s+/g, " ").slice(0, 100)})`);
   }
+  function reportSeparator(node, value) {
+    if (!separatorCharacters.test(value)) return;
+    const position = source.getLineAndCharacterOfPosition(node.getStart(source));
+    errors.push(`Separator character in source: ${relative}:${position.line + 1} (${value.trim().replace(/\s+/g, " ").slice(0, 100)})`);
+  }
   function visit(node) {
-    if (ts.isJsxText(node)) report(node, node.getText(source), "JSX text");
+    if (ts.isJsxText(node)) {
+      report(node, node.getText(source), "JSX text");
+      reportSeparator(node, node.getText(source));
+    }
+    if (ts.isStringLiteralLike(node)) reportSeparator(node, node.text);
+    if (ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) reportSeparator(node, node.text);
     if (ts.isJsxAttribute(node)) {
       const name = node.name.getText(source);
       if (["aria-label", "title", "placeholder", "alt", "label", "retryLabel", "closeLabel"].includes(name)) {

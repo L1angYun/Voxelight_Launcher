@@ -2,7 +2,7 @@ import { FolderOpen, LoaderCircle, Play, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useTranslation } from "react-i18next";
-import type { Instance, InstalledVersion, Progress } from "../../lib/launcher";
+import type { Instance, Progress } from "../../lib/launcher";
 import { Button, IconButton } from "../../components/ui/Button";
 import { GlassSurface } from "../../visual/glass/GlassSystem";
 import { LatticeProgress } from "../../visual/lattice/LatticeProgress";
@@ -11,6 +11,7 @@ import { useJellyControl } from "./useJellyControl";
 import { InstancePicker } from "./InstancePicker";
 import { MOTION, motionDuration, type MotionTier } from "../../design/motion";
 import { useMotionTier } from "../../design/useMotionTier";
+import { instanceIssueBlocksLaunch } from "../../lib/gameFolders";
 
 function ConsoleContent({ children, tier }: { children: ReactNode; tier: MotionTier }) {
   const present = useIsPresent();
@@ -22,11 +23,10 @@ function ConsoleContent({ children, tier }: { children: ReactNode; tier: MotionT
 }
 
 export function LaunchConsole({
-  instance, instances, version, onSelectInstance, pickerOpen, onPickerOpenChange, onLaunch, onStop, onCancel, onOpenFolder, busy, preparing, running, progress,
+  instance, instances, onSelectInstance, pickerOpen, onPickerOpenChange, onLaunch, onStop, onCancel, onOpenFolder, busy, preparing, running, progress,
 }: {
   instance?: Instance;
   instances: Instance[];
-  version?: InstalledVersion;
   onSelectInstance: (id?: string) => void;
   pickerOpen: boolean;
   onPickerOpenChange: (open: boolean) => void;
@@ -46,6 +46,8 @@ export function LaunchConsole({
   const selectorJelly = useJellyControl<HTMLDivElement>(staticMotion);
   const launchJelly = useJellyControl<HTMLDivElement>(staticMotion);
   const state = preparing ? "preparing" : running ? "running" : "idle";
+  const blockedReason = instanceIssueBlocksLaunch(instance?.issue) ? instance!.issue! : null;
+  const blockedText = blockedReason ? t(`library:instanceIssue.${blockedReason}`) : "";
   const actionsRef = useRef<HTMLDivElement>(null);
   const ownsFocus = useRef(false);
   const cancelAvailableAt = useRef(Infinity);
@@ -93,6 +95,11 @@ export function LaunchConsole({
   const total = (useBytes ? progress?.bytesTotal : progress?.total) ?? 0;
   const percent = total > 0 ? Math.max(0, Math.min(1, completed / total)) : null;
   const number = new Intl.NumberFormat(i18n.resolvedLanguage);
+  const progressText = percent !== null
+    ? new Intl.NumberFormat(i18n.resolvedLanguage, { style: "percent", maximumFractionDigits: 0 }).format(percent)
+    : t("home:totalUnknown");
+  // Doto only draws ASCII figures; a word such as "total unknown" uses the UI face.
+  const matrixProgress = percent !== null && /^[\x20-\x7e\u00a0\u202f]+$/.test(progressText);
   const stageKey = progress?.stage ?? "queued";
   const stage = i18n.exists(`home:stages.${stageKey}`) ? t(`home:stages.${stageKey}`) : t("home:preparing");
   const [announcement, setAnnouncement] = useState("");
@@ -114,7 +121,7 @@ export function LaunchConsole({
         <div className="vx-launch-console__instance">
           <div ref={selectorJelly.ref} className="vx-jelly-control vx-launch-console__selector-wrap" {...selectorJelly.handlers}>
             <GlassSurface variant="control" className="vx-launch-console__selector">
-              <InstancePicker instance={instance} instances={instances} versionId={version?.id}
+              <InstancePicker instance={instance} instances={instances}
                 onSelectInstance={onSelectInstance} onOpenChange={onPickerOpenChange} />
             </GlassSurface>
           </div>
@@ -127,9 +134,7 @@ export function LaunchConsole({
           transition={{ duration: motionDuration(tier, "content"), ease: MOTION.ease }}>
           <div className="vx-launch-console__progress-heading">
             <span><LoaderCircle className="spin" size={14} aria-hidden="true" />{stage}</span>
-            <strong className="vx-launch-console__progress-text">{percent !== null
-              ? new Intl.NumberFormat(i18n.resolvedLanguage, { style: "percent", maximumFractionDigits: 0 }).format(percent)
-              : t("home:totalUnknown")}</strong>
+            <strong className="vx-launch-console__progress-text" data-matrix={matrixProgress}>{progressText}</strong>
           </div>
           <LatticeProgress completed={completed} total={total} status={percent === null ? "unknown" : percent >= 1 ? "done" : "active"}
             label={t("home:progress")} unit={useBytes ? "bytes" : "items"} />
@@ -143,7 +148,8 @@ export function LaunchConsole({
         onBlurCapture={event => {
           if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) ownsFocus.current = false;
         }}>
-        <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" data-no-world-interaction {...launchJelly.handlers}>
+        <div ref={launchJelly.ref} className="vx-jelly-control vx-launch-console__launch-wrap" data-no-world-interaction
+          data-blocked={state === "idle" && Boolean(busy) ? "true" : undefined} {...launchJelly.handlers}>
           <div className="vx-launch-console__launch" aria-hidden="true" />
             <AnimatePresence initial={false}>
               <ConsoleContent key={state} tier={tier}>
@@ -154,14 +160,16 @@ export function LaunchConsole({
                   <span>{t("home:running")}</span>
                   <Button variant="ghost" size="sm" icon={<Square size={15} />} aria-disabled={busy === "game.stop" || stopping} data-launch-action="running"
                     onClick={event => activate(event, busy === "game.stop" || stopping, requestStop)}>{t("home:stop")}</Button>
-                </div> : <Button variant="primary" size="lg" aria-disabled={Boolean(busy)} data-launch-primary data-launch-action="idle"
-                  icon={<Play size={19} fill="currentColor" />} onClick={event => activate(event, Boolean(busy), onLaunch)}>
+                </div> : <Button variant="primary" size="lg" aria-disabled={Boolean(busy) || Boolean(blockedReason)} data-launch-primary data-launch-action="idle"
+                  title={blockedText || undefined}
+                  icon={<Play size={19} fill="currentColor" />} onClick={event => activate(event, Boolean(busy) || Boolean(blockedReason), onLaunch)}>
                   {t("common:actions.launch")}
                 </Button>}
               </ConsoleContent>
             </AnimatePresence>
         </div>
       </div>
+      {blockedReason && !preparing && !running ? <p className="vx-launch-console__busy" role="alert">{blockedText}</p> : null}
       {busy && !preparing && !running ? <p className="vx-launch-console__busy" role="status">{t(`shell:operations.${busy}`, { defaultValue: t("common:status.loading") })}</p> : null}
     </div>
   );

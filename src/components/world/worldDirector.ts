@@ -25,6 +25,7 @@ export interface WorldDirector {
   /** Resolve a static policy immediately, without advancing simulation time. */
   snap(): WorldFrame;
   beginIntro(): void;
+  replayIntro(): void;
   endIntro(): void;
   /** All clock values use monotonic milliseconds, like performance.now(). */
   noteInteraction(now: number): void;
@@ -66,13 +67,15 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
   let introAt: number | null = null;
   let introStage = 0;
   let introPlayed = false;
+  let introOnPage: WorldPage | null = null;
 
   function endIntro() {
     if (!frame.introActive) return;
     frame.introActive = false; frame.introTime = 0;
     introAt = null;
     introStage = 0;
-    frame.morph = { start: frame.simTime, dur: .001, toWord: false, fromWord: false, transit: 0 };
+    introOnPage = null;
+    frame.morph = { start: frame.simTime - 2, dur: .001, toWord: false, fromWord: false, transit: 0 };
   }
 
   function snapshot(): WorldFrame { return { ...frame, eye: [...frame.eye], at: [...frame.at], morph: { ...frame.morph } }; }
@@ -100,11 +103,13 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
       frame.charge = inputs.phase === "preparing" ? 1 : 0;
       frame.timeScale = inputs.phase === "running" ? .12 : 1;
       frame.active = false; frame.settled = inputs.phase === "running";
-      frame.morph = { start: frame.simTime, dur: .001, toWord: false, fromWord: false, transit: 0 };
+      frame.morph = { start: frame.simTime - 2, dur: .001, toWord: false, fromWord: false, transit: 0 };
       return snapshot();
     },
     setInputs(next) {
-      const compositionChanged = inputs.scene !== next.scene || inputs.material !== next.material || inputs.page !== next.page;
+      const pageChanged = inputs.page !== next.page;
+      const appearanceChanged = inputs.scene !== next.scene || inputs.material !== next.material;
+      const compositionChanged = pageChanged || appearanceChanged;
       if (next.phase === "idle" && inputs.phase !== "idle") { retreatAt = null; retreatFrom = frame.cry; }
       else if (next.phase !== "idle") { retreatAt = null; retreatFrom = 0; }
       if (next.phase === "preparing" && inputs.phase !== "preparing") {
@@ -121,9 +126,16 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
         }
       } else if (next.phase !== "running") runningAt = null;
       if (next.phase !== "running" || next.page !== "home") { flashAt = null; flashPending = false; frame.flash = 0; }
-      if (next.phase !== "idle" || next.page !== "home" || next.material !== "lattice") endIntro();
+      if (next.phase !== "idle" || (introOnPage !== null && next.page !== introOnPage) || next.material !== "lattice" || next.scene !== inputs.scene) {
+        endIntro();
+        if (appearanceChanged) introPlayed = true;
+      }
       if (compositionChanged) {
-        frame.morph = { start: frame.simTime, dur: 1.2, toWord: false, fromWord: false, transit: 26 };
+        // Page transitions release the field with a sweep; in-place appearance
+        // changes morph parameters smoothly without replaying an assemble burst.
+        frame.morph = pageChanged
+          ? { start: frame.simTime, dur: 1.2, toWord: false, fromWord: false, transit: 26 }
+          : { start: frame.simTime - 2, dur: .001, toWord: false, fromWord: false, transit: 0 };
         compositionAt = clock ?? -Infinity;
         pendingComposition = clock === null;
       }
@@ -133,6 +145,16 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
     beginIntro() {
       if (introPlayed || inputs.phase !== "idle" || inputs.page !== "home" || inputs.material !== "lattice") return;
       introPlayed = true;
+      introOnPage = inputs.page;
+      introAt = clock;
+      introStage = 1;
+      frame.introActive = true; frame.introTime = 0;
+      frame.morph = { start: frame.simTime, dur: .9, toWord: true, fromWord: false, transit: 10 };
+    },
+    replayIntro() {
+      if (inputs.phase !== "idle" || inputs.material !== "lattice") return;
+      introPlayed = true;
+      introOnPage = inputs.page;
       introAt = clock;
       introStage = 1;
       frame.introActive = true; frame.introTime = 0;
@@ -163,7 +185,7 @@ export function createWorldDirector(initial: WorldInputs): WorldDirector {
         if (frame.introActive) frame.introTime = Math.max(0, (elapsed - (introStage === 2 ? 1400 : 0)) / 1000);
       }
       const target = sceneValues(inputs);
-      if (frame.introActive) target.island = 0;
+      if (frame.introActive && inputs.page === "home") target.island = 0;
       if (inputs.phase === "running") { target.exposure = .3; target.bloom = .1; target.runDim = .3; }
       // Material and exposure follow wall time; only particle physics and the
       // camera integrator retain the stall cap below.

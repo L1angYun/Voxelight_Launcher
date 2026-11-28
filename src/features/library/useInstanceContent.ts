@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useConfirm } from "../../components/ui/ConfirmDialog";
 import { pickLauncherPaths, pickLauncherPath } from "../../lib/nativePaths";
 import { command, desktop } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
@@ -19,6 +20,7 @@ import type {
 
 export function useResourceManager(versionId: string, instanceId?: string) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const [kind, setKindState] = useState<ResourceKind>("resourcepack");
   const [view, setView] = useState<ResourceView>("files");
   const [files, setFiles] = useState<LocalResource[]>([]);
@@ -246,7 +248,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   }, [busy, report, selectionArgs]);
 
   const deleteMany = useCallback(async (targets: LocalResource[], confirmation: string) => {
-    if (!desktop || busy || !targets.length || !window.confirm(confirmation)) return false;
+    if (!desktop || busy || !targets.length || !await confirm(confirmation, { tone: "danger" })) return false;
     const request = ++generation.current;
     const target = selectionArgs();
     setBusy("delete:batch");
@@ -304,7 +306,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     } finally {
       if (request === generation.current) setBusy("");
     }
-  }, [busy, report, selectionArgs]);
+  }, [busy, confirm, report, selectionArgs]);
 
   const applyUpdate = useCallback(async (update: ResourceUpdate) => {
     if (!desktop || busy || update.manualOnly) return;
@@ -350,7 +352,8 @@ export function useResourceManager(versionId: string, instanceId?: string) {
   }, [busy, report, selectionArgs]);
 
   const rollback = useCallback(async (entry: ResourceHistory, confirmation = entry.name) => {
-    if (!desktop || busy || entry.canRecover || entry.status !== "committed" || !window.confirm(confirmation)) return;
+    if (!desktop || busy || entry.canRecover || entry.status !== "committed"
+      || !await confirm(confirmation, { tone: "danger" })) return;
     const request = ++generation.current;
     setBusy(`rollback:${entry.updateId}`);
     setError("");
@@ -369,10 +372,10 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     } finally {
       if (request === generation.current) setBusy("");
     }
-  }, [busy, refresh, report, selectionArgs]);
+  }, [busy, confirm, refresh, report, selectionArgs]);
 
   const recover = useCallback(async (entry: ResourceHistory, confirmation: string) => {
-    if (!desktop || busy || !entry.canRecover || !window.confirm(confirmation)) return;
+    if (!desktop || busy || !entry.canRecover || !await confirm(confirmation)) return;
     const request = ++generation.current;
     const target = selectionArgs();
     setBusy(`recover:${entry.updateId}`);
@@ -399,7 +402,7 @@ export function useResourceManager(versionId: string, instanceId?: string) {
     } finally {
       if (request === generation.current) setBusy("");
     }
-  }, [busy, report, selectionArgs]);
+  }, [busy, confirm, report, selectionArgs]);
 
   const importPaths = useCallback(async (paths: string[], targetKind?: ResourceKind) => {
     if (!desktop || busy || !paths.length) return;

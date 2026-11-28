@@ -4,7 +4,7 @@
   "history": "Historial",
   "activeCount": "{{count}} activas",
   "historyCount": "{{count}} en historial",
-  "taskTitle": "{{kind}} · {{target}}",
+  "taskTitle": "{{kind}}: {{target}}",
   "interruptedDescription": "El iniciador se cerró antes de completar esta tarea. Reintenta para reutilizar los archivos verificados.",
   "interruptedNoRetry": "El iniciador se cerró antes de completar esta tarea.",
   "tasks": {
@@ -31,7 +31,8 @@
       "server-install": "Instalación de servidor",
       "server-import": "Importación de servidor",
       "server-start": "Preparación de servidor",
-      "default-skin": "Vista previa de personaje"
+      "default-skin": "Vista previa de personaje",
+      "instance-create": "Creación de instancia"
     },
     "stage": {
       "queued": "En cola",
@@ -70,7 +71,7 @@
   },
   "progress": {
     "files": "{{completed}} / {{total}} archivos",
-    "completedUnknown": "{{completed}} archivos · total desconocido",
+    "completedUnknown": "{{completed}} archivos, total desconocido",
     "byteLabel": "{{completed}} de {{total}}",
     "byteLabelUnknown": "{{completed}} descargados, tamaño total desconocido",
     "bytesCompleted": "{{completed}} descargados",
@@ -87,7 +88,9 @@
     "historyTitle": "Sin historial de tareas",
     "historyDescription": "Las tareas completadas y recuperables se quedarán aquí.",
     "filteredTitle": "No hay tareas coincidentes",
-    "filteredDescription": "Elige otro filtro para ver el historial de descargas."
+    "filteredDescription": "Elige otro filtro para ver el historial de descargas.",
+    "discover": "Explorar contenido",
+    "installGame": "Instalar una versión del juego"
   },
   "errors": {
     "taskFailed": "La tarea no se completó. Reintenta cuando esté disponible o vuelve a su origen.",

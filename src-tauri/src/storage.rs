@@ -46,6 +46,94 @@ fn fallback_data_directory() -> Result<PathBuf, String> {
     select_fallback_data_directory(dirs::data_local_dir())
 }
 
+/// `<root>/instances/<id>` → `<root>`. Only a launcher-managed layout yields a
+/// root; an arbitrary directory must not turn its parent into a game folder.
+fn legacy_managed_root(directory: &str) -> Option<String> {
+    let directory = Path::new(directory);
+    let instances = directory.parent()?;
+    if !instances
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("instances"))
+    {
+        return None;
+    }
+    instances.parent().map(|root| root.to_string_lossy().into_owned())
+}
+
+/// Ids of managed records that the migration assigns a game folder to: they
+/// were written by a single-folder launcher and carry no folder of their own.
+fn unassigned_managed_records(raw: &Value) -> Vec<String> {
+    raw.get("instances")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|instance| {
+            instance.get("kind").and_then(Value::as_str) != Some("version")
+                && instance
+                    .get("gameFolder")
+                    .and_then(Value::as_str)
+                    .is_none_or(|folder| folder.trim().is_empty())
+        })
+        .filter_map(|instance| instance.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+/// The second half of the managed-record migration, which needs the file
+/// system. The old launcher stored managed directories under the canonical
+/// root, while the library compares a record's folder with the configured
+/// spelling. A record whose root is the same directory as a configured folder
+/// (a junction, symlink or alternate spelling) takes that folder's spelling;
+/// a record in a folder that is no longer configured (the user changed the
+/// game directory) brings that folder back into the list, inactive. Either
+/// way no migrated instance disappears from the library.
+fn adopt_migrated_managed_folders(data: &mut Persisted, ids: &[String]) -> bool {
+    let identity = |folder: &str| {
+        crate::processes::configured_game_root(Path::new(folder))
+            .ok()
+            .map(|root| normalized_game_folder_path(&root.to_string_lossy()))
+    };
+    let mut changed = false;
+    for instance in data
+        .instances
+        .iter_mut()
+        .filter(|instance| !instance.is_version_folder() && ids.contains(&instance.id))
+    {
+        let folder = instance.game_folder.trim().to_owned();
+        if folder.is_empty() {
+            continue;
+        }
+        let roots = data.config.game_folder_roots();
+        let configured = roots
+            .iter()
+            .find(|root| same_game_folder_path(root, &folder))
+            .or_else(|| {
+                let own = identity(&folder)?;
+                roots.iter().find(|root| identity(root).as_deref() == Some(own.as_str()))
+            })
+            .cloned();
+        match configured {
+            Some(configured) => {
+                if instance.game_folder != configured {
+                    instance.game_folder = configured;
+                    changed = true;
+                }
+            }
+            None => {
+                data.config.game_folders.push(GameFolder {
+                    path: folder,
+                    label: String::new(),
+                    active: false,
+                });
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        data.config.normalize_game_folders();
+    }
+    changed
+}
+
 pub(crate) fn migrate_state_json(mut value: Value) -> Result<Value, String> {
     let version = value
         .get("schemaVersion")
@@ -57,7 +145,7 @@ pub(crate) fn migrate_state_json(mut value: Value) -> Result<Value, String> {
     let root = value
         .as_object_mut()
         .ok_or_else(|| "配置根节点必须是对象".to_string())?;
-    {
+    let legacy_folder = {
         let config = root
             .entry("config")
             .or_insert_with(|| Value::Object(Default::default()))
@@ -90,6 +178,62 @@ pub(crate) fn migrate_state_json(mut value: Value) -> Result<Value, String> {
             .or_insert_with(|| Value::Bool(false));
         if config.get("defaultSkin").and_then(Value::as_str) == Some("lumen") {
             config.insert("defaultSkin".into(), Value::String("steve".into()));
+        }
+        // The single game directory becomes the first entry of the folder
+        // list. Its spelling and every other preference stay untouched.
+        let legacy_folder = config
+            .get("gameDirectory")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned);
+        let folder_list_missing = !matches!(
+            config.get("gameFolders"),
+            Some(Value::Array(folders)) if !folders.is_empty()
+        );
+        if folder_list_missing {
+            if let Some(path) = &legacy_folder {
+                config.insert(
+                    "gameFolders".into(),
+                    serde_json::json!([{ "path": path, "label": "", "active": true }]),
+                );
+            }
+        }
+        legacy_folder
+    };
+    if let Some(instances) = root.get_mut("instances").and_then(Value::as_array_mut) {
+        for instance in instances {
+            let Some(instance) = instance.as_object_mut() else {
+                continue;
+            };
+            let kind = instance
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            if kind.is_empty() {
+                instance.insert("kind".into(), Value::String("managed".into()));
+            }
+            // A managed instance belongs to the game folder that held its
+            // record, never to whichever folder is active at the next start.
+            // Version records always carry their own folder.
+            if kind != "version"
+                && instance
+                    .get("gameFolder")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+            {
+                // A managed record belongs to the folder that contains its own
+                // gameDirectory's `instances/` directory. The active folder is
+                // only a fallback for records that no longer name a directory.
+                let own_root = instance
+                    .get("gameDirectory")
+                    .and_then(Value::as_str)
+                    .and_then(legacy_managed_root);
+                if let Some(folder) = own_root.or_else(|| legacy_folder.clone()) {
+                    instance.insert("gameFolder".into(), Value::String(folder));
+                }
+            }
         }
     }
     root.insert(
@@ -375,6 +519,10 @@ pub struct LauncherState {
     /// Per-session reachability verdict for the "auto" download source. A leaf
     /// lock: never taken while holding `active`, never persisted.
     pub(crate) source_verdict: tokio::sync::Mutex<Option<crate::source_select::Verdict>>,
+    /// The startup only sweep runs once per launcher process and only while it
+    /// holds the operation lock. Bootstrap is called by every reload, so a
+    /// later reload must never delete a stage an import is still writing.
+    pub(crate) startup_sweep_attempted: std::sync::atomic::AtomicBool,
     recovery: Option<StorageRecovery>,
     _profile_lock: fs::File,
 }
@@ -467,8 +615,10 @@ impl LauncherState {
         let data_dir = to_process_path(&identity).map_err(unavailable)?;
         let profile_lock = open_profile_lock(&identity)?;
         let stored = state_contents(&data_dir)?;
+        let mut migrated_managed = Vec::new();
         let (mut data, revision, retained_fields, mut needs_write) = match stored {
             Some((raw, stamp)) => {
+                migrated_managed = unassigned_managed_records(&raw);
                 let version = raw
                     .get("schemaVersion")
                     .and_then(Value::as_u64)
@@ -491,9 +641,17 @@ impl LauncherState {
             std::env::var("VOXELIGHT_LAUNCHER_GAME_DIR").ok(),
             std::env::var("MINECRAFT_LAUNCHER_GAME_DIR").ok(),
         ) {
-            needs_write |= data.config.game_directory != directory;
-            data.config.game_directory = directory;
+            let directory = directory.trim().to_owned();
+            if data.config.game_directory != directory {
+                data.config.game_directory = directory;
+                needs_write = true;
+            }
+            // The explicit directory joins the list and becomes the active
+            // folder, keeping the user's other folders.
+            needs_write |= data.config.normalize_game_folders();
         }
+        needs_write |= data.config.normalize_game_folders();
+        needs_write |= adopt_migrated_managed_folders(&mut data, &migrated_managed);
         // A hand-edited or copied profile can carry user:password@ in the proxy
         // host. Drop that before any config snapshot reaches the webview.
         needs_write |= crate::network::strip_host_userinfo(&mut data.config);
@@ -557,6 +715,7 @@ impl LauncherState {
             control,
             games: Default::default(),
             source_verdict: tokio::sync::Mutex::new(None),
+            startup_sweep_attempted: std::sync::atomic::AtomicBool::new(false),
             recovery: None,
             _profile_lock: profile_lock,
         }
@@ -624,8 +783,15 @@ impl LauncherState {
         self.check_current(state.revision.as_ref())?;
         let mut next = state.data.clone();
         let result = action(&mut next)?;
-        state.revision =
-            Some(self.write(&next, state.revision.as_ref(), &state.retained_fields)?);
+        // Scans and bootstrap call update on every start. Writing the same
+        // profile again would bump writeGeneration and wake other launchers that
+        // watch state.json, so only a real change reaches the disk.
+        let changed = serde_json::to_value(&next).map_err(|error| error.to_string())?
+            != serde_json::to_value(&state.data).map_err(|error| error.to_string())?;
+        if changed {
+            state.revision =
+                Some(self.write(&next, state.revision.as_ref(), &state.retained_fields)?);
+        }
         state.data = next;
         Ok(result)
     }
@@ -1514,7 +1680,7 @@ mod tests {
         assert_eq!(migrated["config"]["worldScene"], "horizon");
         assert_eq!(migrated["config"]["worldMaterial"], "lattice");
         let decoded: Persisted = serde_json::from_value(migrated).unwrap();
-        assert_eq!(decoded.schema_version, 1);
+        assert_eq!(decoded.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(decoded.config.effects, "full");
         assert_eq!(decoded.config.accent_source, "custom");
         assert_eq!(decoded.config.language, "system");
@@ -1523,14 +1689,18 @@ mod tests {
         assert_eq!(decoded.instances[0].id, "instance");
 
         let mut branded = serde_json::to_value(Persisted::default()).unwrap();
-        branded
+        let branded_config = branded
             .get_mut("config")
             .and_then(Value::as_object_mut)
-            .unwrap()
-            .remove("accentSource");
+            .unwrap();
+        // An old profile that still carries the retired brand colour and had
+        // no accent source. The migration must treat it as system-following.
+        branded_config.insert("accentColor".into(), Value::String("#b4f17a".into()));
+        branded_config.remove("accentSource");
         let branded: Persisted =
             serde_json::from_value(migrate_state_json(branded).unwrap()).unwrap();
         assert_eq!(branded.config.accent_source, "system");
+        assert_eq!(branded.config.accent_color, DEFAULT_ACCENT_COLOR);
     }
 
     #[test]
@@ -1566,5 +1736,213 @@ mod tests {
         assert_eq!(decoded.config.default_skin, "steve");
         assert_eq!(decoded.accounts[0].id, "account");
         assert_eq!(decoded.instances[0].id, "instance");
+    }
+
+    #[test]
+    fn existing_state_json_migrates_to_a_game_folder_list_and_managed_kinds() {
+        let old = serde_json::json!({
+            "schemaVersion": 1,
+            "config": { "gameDirectory": "D:/Old/.minecraft", "maxMemoryMb": 3072 },
+            "accounts": [{ "id": "account" }],
+            "instances": [{
+                "id": "managed-1", "name": "Old", "versionId": "1.21.1",
+                "gameDirectory": "D:/Old/.minecraft/instances/managed-1"
+            }]
+        });
+        let migrated = migrate_state_json(old).unwrap();
+        assert_eq!(migrated["schemaVersion"], CURRENT_SCHEMA_VERSION);
+        assert_eq!(migrated["config"]["gameFolders"][0]["path"], "D:/Old/.minecraft");
+        assert_eq!(migrated["config"]["gameFolders"][0]["active"], true);
+        assert_eq!(migrated["instances"][0]["kind"], "managed");
+        let decoded: Persisted = serde_json::from_value(migrated).unwrap();
+        assert_eq!(decoded.config.max_memory_mb, 3072);
+        assert_eq!(decoded.config.game_folders.len(), 1);
+        assert_eq!(decoded.config.game_directory, "D:/Old/.minecraft");
+        assert_eq!(decoded.accounts[0].id, "account");
+        assert_eq!(decoded.instances[0].kind, "managed");
+        assert_eq!(
+            decoded.instances[0].game_folder, "D:/Old/.minecraft",
+            "a legacy managed instance belongs to the folder that held its record"
+        );
+    }
+
+    #[test]
+    fn migration_uses_each_managed_record_own_game_directory_root() {
+        let old = serde_json::json!({
+            "schemaVersion": 1,
+            "config": { "gameDirectory": "D:/Active/.minecraft" },
+            "instances": [
+                {
+                    "id": "active", "name": "Active", "versionId": "1.21.1",
+                    "gameDirectory": "D:/Active/.minecraft/instances/active"
+                },
+                {
+                    "id": "other", "name": "Other", "versionId": "1.20.1",
+                    "gameDirectory": "E:/Other/.minecraft/instances/other"
+                }
+            ]
+        });
+        let decoded: Persisted = serde_json::from_value(migrate_state_json(old).unwrap()).unwrap();
+        assert_eq!(decoded.instances[0].game_folder, "D:/Active/.minecraft");
+        assert_eq!(
+            decoded.instances[1].game_folder, "E:/Other/.minecraft",
+            "the record's own root wins over the active folder"
+        );
+    }
+
+    #[test]
+    fn a_schema_two_managed_record_without_a_game_folder_is_adopted_by_the_legacy_folder() {
+        let mut state = serde_json::to_value(Persisted::default()).unwrap();
+        state["config"]["gameDirectory"] = Value::String("E:/Games/legacy".into());
+        state["config"]["gameFolders"] = serde_json::json!([
+            { "path": "E:/Games/legacy", "label": "", "active": true }
+        ]);
+        state["instances"] = serde_json::json!([{
+            "id": "managed-2", "name": "Kept", "versionId": "1.20.1",
+            "gameDirectory": "E:/Games/legacy/instances/managed-2",
+            "kind": "managed"
+        }]);
+        let migrated = migrate_state_json(state).unwrap();
+        let decoded: Persisted = serde_json::from_value(migrated).unwrap();
+        assert_eq!(decoded.instances[0].game_folder, "E:/Games/legacy");
+        // Version records keep their own folder even when the field is absent.
+        let mut version = serde_json::to_value(decoded).unwrap();
+        version["instances"][0]["kind"] = Value::String("version".into());
+        version["instances"][0].as_object_mut().unwrap().remove("gameFolder");
+        let decoded: Persisted =
+            serde_json::from_value(migrate_state_json(version).unwrap()).unwrap();
+        assert!(decoded.instances[0].game_folder.is_empty());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn m2_upgraded_managed_records_stay_in_a_listed_folder_spelling() {
+        let holder = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/core-tests")
+                .join(format!("managed-folders-{}", uuid::Uuid::new_v4())),
+        )
+        .unwrap();
+        let text = |path: &Path| path.to_string_lossy().replace('/', "\\");
+        // The common setup: the configured %APPDATA%\.minecraft is a junction
+        // to another drive, and beta.2 stored managed directories under the
+        // canonical root it resolved to.
+        let real = holder.path().join("real-mc");
+        fs::create_dir_all(real.join("instances/linked")).unwrap();
+        let link = holder.path().join("appdata-minecraft");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", &text(&link), &text(&real)])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+        // A folder the user played in before changing the game directory.
+        let old = holder.path().join("old-mc");
+        fs::create_dir_all(old.join("instances/moved")).unwrap();
+        let canonical = display_profile_path(&real.canonicalize().unwrap());
+        let link_text = text(&link);
+        let old_text = text(&old);
+        let data_dir = holder.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let beta2 = serde_json::json!({
+            "schemaVersion": 1,
+            "config": { "gameDirectory": link_text },
+            "instances": [
+                { "id": "linked", "name": "Linked", "versionId": "1.21.1",
+                  "gameDirectory": format!("{canonical}\\instances\\linked") },
+                { "id": "moved", "name": "Moved", "versionId": "1.20.1",
+                  "gameDirectory": format!("{old_text}\\instances\\moved") },
+                { "id": "plain", "name": "Plain", "versionId": "1.20.1",
+                  "gameDirectory": format!("{link_text}\\instances\\plain") }
+            ]
+        });
+        fs::write(data_dir.join(STATE_FILE), beta2.to_string()).unwrap();
+
+        let state = LauncherState::load_from(data_dir.clone()).unwrap();
+        let data = state.snapshot().unwrap();
+        let folder = |id: &str| {
+            data.instances
+                .iter()
+                .find(|instance| instance.id == id)
+                .unwrap()
+                .game_folder
+                .clone()
+        };
+        assert_eq!(folder("linked"), link_text, "the canonical root takes the configured spelling");
+        assert_eq!(folder("plain"), link_text);
+        assert_eq!(folder("moved"), old_text);
+        let roots = data.config.game_folder_roots();
+        for instance in &data.instances {
+            assert!(
+                roots.iter().any(|root| same_game_folder_path(root, &instance.game_folder)),
+                "{} lives in a listed folder: {roots:?}",
+                instance.id
+            );
+        }
+        let restored = data
+            .config
+            .game_folders
+            .iter()
+            .find(|entry| same_game_folder_path(&entry.path, &old_text))
+            .unwrap();
+        assert!(!restored.active, "a restored folder does not take over the active one");
+        // The migration was written once: the stored state already has it.
+        let stored: Value = serde_json::from_slice(&fs::read(data_dir.join(STATE_FILE)).unwrap()).unwrap();
+        assert_eq!(stored["instances"][0]["gameFolder"], link_text.as_str());
+
+        // Each record shows up in the library of its own folder.
+        let visible = |state: &LauncherState| -> Vec<String> {
+            crate::commands::active_folder_instances(&state.snapshot().unwrap())
+                .into_iter()
+                .map(|instance| instance.id)
+                .collect()
+        };
+        crate::commands::set_active_game_folder_inner(&state, &link_text).unwrap();
+        let linked = visible(&state);
+        assert!(linked.contains(&"linked".to_owned()) && linked.contains(&"plain".to_owned()), "{linked:?}");
+        crate::commands::set_active_game_folder_inner(&state, &old_text).unwrap();
+        assert_eq!(visible(&state), ["moved"]);
+
+        // Only records the migration itself assigned are adopted, once: a
+        // folder the user removes later stays removed.
+        state
+            .update(|data| {
+                data.config.game_directory = link_text.clone();
+                data.config
+                    .game_folders
+                    .retain(|entry| !same_game_folder_path(&entry.path, &old_text));
+                data.config.normalize_game_folders();
+                Ok(())
+            })
+            .unwrap();
+        drop(state);
+        let reloaded = LauncherState::load_from(data_dir).unwrap();
+        assert!(!reloaded
+            .snapshot()
+            .unwrap()
+            .config
+            .game_folder_roots()
+            .iter()
+            .any(|root| same_game_folder_path(root, &old_text)));
+    }
+
+    #[test]
+    fn an_update_that_changes_nothing_leaves_state_json_and_its_generation_alone() {
+        let (root, _, _) = bom_state_fixture();
+        let primary = root.path().join("primary");
+        let state = LauncherState::load_from(primary.clone()).unwrap();
+        let file = primary.join(STATE_FILE);
+        let before = fs::read(&file).unwrap();
+        state.update(|_| Ok(())).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), before, "an unchanged update must not write");
+        state
+            .update(|data| {
+                data.config.theme = "dark".into();
+                Ok(())
+            })
+            .unwrap();
+        let after: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(after["config"]["theme"], "dark");
+        assert!(after["writeGeneration"].as_u64().unwrap() > 0);
     }
 }

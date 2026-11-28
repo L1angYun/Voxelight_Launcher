@@ -5,11 +5,13 @@ import {
   configChanges,
   defaults,
   events,
+  withConfigDefaults,
   type Bootstrap,
   type Config,
   type LogEntry,
   type LaunchResult,
   type GameStopResult,
+  type Instance,
   type Progress,
   type RunningGame,
   type VersionManifest,
@@ -34,6 +36,33 @@ interface LaunchTarget {
   serverAddress?: string;
 }
 
+/**
+ * The instance and version the launcher targets. A selected instance always
+ * names its own version; `versionOnly` marks an explicit "this version, no
+ * instance" choice (made through `selectVersion`) that a reload keeps.
+ */
+interface Selection {
+  versionId: string;
+  instanceId?: string;
+  versionOnly: boolean;
+}
+
+/** Reconcile the selection with a fresh Bootstrap so both halves stay one pair. */
+function reconcileSelection(previous: Selection, result: Bootstrap): Selection {
+  const kept = previous.instanceId === undefined
+    ? undefined
+    : result.instances.find((instance) => instance.id === previous.instanceId);
+  if (kept) return { instanceId: kept.id, versionId: kept.versionId, versionOnly: false };
+  const installed = (id: string) => Boolean(id) && result.installedVersions.some((version) => version.id === id);
+  if (previous.versionOnly && installed(previous.versionId)) return previous;
+  const first = result.instances[0];
+  if (first) return { instanceId: first.id, versionId: first.versionId, versionOnly: false };
+  return {
+    versionId: installed(previous.versionId) ? previous.versionId : (result.installedVersions[0]?.id ?? ""),
+    versionOnly: false,
+  };
+}
+
 export function useLauncherController(): LauncherContextValue {
   const [bootstrapped, setBootstrapped] = useState(false);
   const [bootstrapFailed, setBootstrapFailed] = useState(false);
@@ -48,8 +77,10 @@ export function useLauncherController(): LauncherContextValue {
   const canonicalConfig = useRef<Config>(defaults);
   const bootstrapGeneration = useRef(0);
   const [manifest, setManifest] = useState<VersionManifest | null>(null);
-  const [selectedVersionId, setSelectedVersionId] = useState("");
-  const [selectedInstanceId, setSelectedInstanceId] = useState<string>();
+  const [selection, setSelection] = useState<Selection>({ versionId: "", versionOnly: false });
+  // The latest instance list, so a selection made right after `await reload()`
+  // (from a callback created before it) still resolves the new instance.
+  const instancesRef = useRef<Instance[]>([]);
   const [running, setRunningGames] = useState<RunningGame[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -66,14 +97,19 @@ export function useLauncherController(): LauncherContextValue {
   const operationCount = useRef(0);
 
   const activeAccount = data.accounts.find((account) => account.isSelected);
-  const selectedInstance = data.instances.find((instance) => instance.id === selectedInstanceId);
+  const selectedInstanceId = selection.instanceId;
+  const selectedInstance = selectedInstanceId === undefined
+    ? undefined
+    : data.instances.find((instance) => instance.id === selectedInstanceId);
+  // A selected instance implies its version, whatever order the two were set in.
+  const selectedVersionId = selectedInstance?.versionId ?? selection.versionId;
   const selectedVersion = data.installedVersions.find((version) => version.id === selectedVersionId);
   const selectedRunningGame = running.find((game) =>
-    selectedInstanceId
-      ? game.instanceId === selectedInstanceId
+    selectedInstance
+      ? game.instanceId === selectedInstance.id
+        || (!game.instanceId && game.versionId === selectedInstance.versionId)
       : game.versionId === selectedVersionId && !game.instanceId,
-  );
-  const accountAppearance = useAccountSkin(activeAccount);
+  );  const accountAppearance = useAccountSkin(activeAccount);
 
   const showNotice = useCallback(
     (
@@ -122,20 +158,13 @@ export function useLauncherController(): LauncherContextValue {
       return;
     }
     if (request !== bootstrapGeneration.current) return;
-    setData(result);
-    publishConfig(result.config);
+    const normalizedConfig = withConfigDefaults(result.config);
+    instancesRef.current = result.instances;
+    setData({ ...result, config: normalizedConfig });
+    publishConfig(normalizedConfig);
     setBootstrapped(true);
     setBootstrapFailed(false);
-    setSelectedVersionId((previous) =>
-      result.installedVersions.some((version) => version.id === previous)
-        ? previous
-        : (result.installedVersions[0]?.id ?? ""),
-    );
-    setSelectedInstanceId((previous) =>
-      previous && result.instances.some((instance) => instance.id === previous)
-        ? previous
-        : undefined,
-    );
+    setSelection((previous) => reconcileSelection(previous, result));
   }, [publishConfig]);
 
   const trackOperation = useCallback(
@@ -194,18 +223,17 @@ export function useLauncherController(): LauncherContextValue {
     return value;
   }, []);
 
-  const selectInstance = useCallback(
-    (id?: string) => {
-      setSelectedInstanceId(id);
-      const instance = data.instances.find((candidate) => candidate.id === id);
-      if (instance) setSelectedVersionId(instance.versionId);
-    },
-    [data.instances],
-  );
+  const selectInstance = useCallback((id?: string) => {
+    setSelection((previous) => {
+      // No instance is an explicit version-only choice for the current version.
+      if (id === undefined) return { versionId: previous.versionId, versionOnly: true };
+      const instance = instancesRef.current.find((candidate) => candidate.id === id);
+      return { instanceId: id, versionId: instance?.versionId ?? previous.versionId, versionOnly: false };
+    });
+  }, []);
 
   const selectVersion = useCallback((id: string) => {
-    setSelectedVersionId(id);
-    setSelectedInstanceId(undefined);
+    setSelection({ versionId: id, versionOnly: true });
   }, []);
 
   const startLaunch = useCallback(async (target: LaunchTarget) => {
@@ -253,21 +281,23 @@ export function useLauncherController(): LauncherContextValue {
     }
   }, [reload, run, showNotice]);
 
-  const launch = useCallback(async (instanceId?: string, versionId?: string) => {
-    const launchInstanceId = versionId ? undefined : instanceId ?? selectedInstanceId;
-    const launchVersionId = versionId ?? (instanceId
-      ? data.instances.find((instance) => instance.id === instanceId)?.versionId ?? selectedVersionId
-      : selectedVersionId);
+  const launch = useCallback(async (instanceId?: string) => {
+    const targetId = instanceId ?? selectedInstanceId;
+    const target = data.instances.find((instance) => instance.id === targetId);
+    if (!target) {
+      showNotice("instance.required", "error");
+      return;
+    }
     if (!activeAccount) {
       showNotice("auth.required", "error");
       return;
     }
-    if (!launchVersionId) {
+    if (!target.versionId) {
       showNotice("instance.required", "error");
       return;
     }
-    await startLaunch({ versionId: launchVersionId, instanceId: launchInstanceId, accountId: activeAccount.id });
-  }, [activeAccount, data.instances, selectedInstanceId, selectedVersionId, showNotice, startLaunch]);
+    await startLaunch({ versionId: target.versionId, instanceId: target.id, accountId: activeAccount.id });
+  }, [activeAccount, data.instances, selectedInstanceId, showNotice, startLaunch]);
 
   const stop = useCallback(async () => {
     const gameId = selectedRunningGame?.gameId ?? lastLaunched?.gameId;
@@ -294,17 +324,25 @@ export function useLauncherController(): LauncherContextValue {
     }
   }, [lastLaunched?.gameId, run, selectedRunningGame?.gameId, showNotice]);
 
-  const launchMultiplayer = useCallback(async (versionId: string, serverAddress: string) => {
+  const launchMultiplayer = useCallback(async (instanceId: string, serverAddress: string) => {
     if (!activeAccount) {
       showNotice("auth.required", "error");
       return;
     }
-    if (!versionId) {
+    // Multiplayer names the exact instance whose servers.dat it showed, so the
+    // game that starts is the one that holds the saved server.
+    const target = instanceId ? data.instances.find((instance) => instance.id === instanceId) : undefined;
+    if (!target?.versionId) {
       showNotice("instance.required", "error");
       return;
     }
-    await startLaunch({ versionId, serverAddress, accountId: activeAccount.id });
-  }, [activeAccount, showNotice, startLaunch]);
+    await startLaunch({
+      versionId: target.versionId,
+      instanceId: target.id,
+      serverAddress,
+      accountId: activeAccount.id,
+    });
+  }, [activeAccount, data.instances, showNotice, startLaunch]);
 
   const cancelPreparation = useCallback(async () => {
     const request = launchRequest.current;

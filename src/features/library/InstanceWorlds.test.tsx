@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { command } from "../../lib/launcher";
 import { pickLauncherPaths } from "../../lib/nativePaths";
+import { ConfirmContext, type ConfirmFn } from "../../components/ui/ConfirmDialog";
 import { InstanceWorlds } from "./InstanceWorlds";
 
 vi.mock("../../lib/launcher", async (importOriginal) => ({
@@ -27,6 +28,9 @@ vi.mock("react-i18next", () => ({
 
 const commandMock = vi.mocked(command);
 const pickLauncherPathsMock = vi.mocked(pickLauncherPaths);
+// Stands in for the awaited dialog; an unanswered confirmation declines.
+const confirmMock = vi.fn<ConfirmFn>(async () => false);
+const withConfirm = (node: React.ReactNode) => createElement(ConfirmContext.Provider, { value: confirmMock }, node);
 
 let root: Root;
 let container: HTMLDivElement;
@@ -49,6 +53,8 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   commandMock.mockReset();
   pickLauncherPathsMock.mockReset();
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(false);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -121,7 +127,7 @@ describe("InstanceWorlds data packs", () => {
     });
 
     await act(async () => {
-      root.render(createElement(InstanceWorlds, { versionId: "1.21.4", instanceId: "inst-1" }));
+      root.render(withConfirm(createElement(InstanceWorlds, { versionId: "1.21.4", instanceId: "inst-1" })));
     });
     await flush();
 
@@ -161,9 +167,7 @@ describe("InstanceWorlds data packs", () => {
     expect(container.textContent).toContain("library:notice.datapacksImported");
 
     // Toggle first datapack
-    const enabledBtn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (btn) => btn.getAttribute("aria-pressed") === "true",
-    );
+    const enabledBtn = container.querySelector<HTMLButtonElement>('[role="switch"][aria-checked="true"]');
     expect(enabledBtn).toBeDefined();
     await act(async () => {
       enabledBtn!.click();
@@ -179,7 +183,7 @@ describe("InstanceWorlds data packs", () => {
     expect(container.textContent).toContain("library:notice.datapackToggled");
 
     // Cancel confirmation must not delete
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirmSpy = confirmMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const deleteButtons = () =>
       [...container.querySelectorAll<HTMLButtonElement>("button")].filter((btn) =>
         btn.textContent?.includes("library:deleteDatapack"),
@@ -189,6 +193,7 @@ describe("InstanceWorlds data packs", () => {
     });
     await flush();
     expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("library:deleteDatapackConfirm"), { tone: "danger" });
     expect(commandMock).not.toHaveBeenCalledWith("delete_world_datapack", expect.anything());
 
     // Confirming deletes the datapack
@@ -205,6 +210,49 @@ describe("InstanceWorlds data packs", () => {
     expect(container.textContent).toContain("library:notice.datapackDeleted");
   });
 
+  it("heads the worlds with a refresh icon button and labels the import name next to its button", async () => {
+    commandMock.mockImplementation(async () => []);
+    await act(async () => {
+      root.render(createElement(InstanceWorlds, { versionId: "1.21.4", instanceId: "inst-1" }));
+    });
+    await flush();
+    const heading = container.querySelector(".vx-section-heading")!;
+    expect(heading.querySelector("h2")?.textContent).toBe("library:worlds");
+    const refresh = heading.querySelector<HTMLButtonElement>('button[aria-label="library:refresh"]')!;
+    expect(refresh.classList.contains("vx-button--icon")).toBe(true);
+    expect(buttonByText("common:actions.retry")).toBeUndefined();
+    const input = container.querySelector<HTMLInputElement>(".vx-world-import input")!;
+    const label = container.querySelector<HTMLLabelElement>(`label[for="${input.id}"]`);
+    expect(label?.textContent).toBe("library:worldName");
+    expect(input.hasAttribute("aria-label")).toBe(false);
+    expect(input.closest(".vx-detail-input-action")?.querySelector("button")?.textContent).toBe("library:importWorld");
+    const calls = commandMock.mock.calls.length;
+    await act(async () => refresh.click());
+    await flush();
+    expect(commandMock.mock.calls.slice(calls).map(([name]) => name)).toEqual(["list_worlds", "list_screenshots"]);
+  });
+
+  it("shows worlds, screenshots and data packs as inline empty states", async () => {
+    commandMock.mockImplementation(async (name) => name === "list_worlds"
+      ? [{ folderName: "EmptyWorld", name: "Empty World", hardcore: false, sizeBytes: 128 }]
+      : []);
+    await act(async () => {
+      root.render(createElement(InstanceWorlds, { versionId: "1.21.4" }));
+    });
+    await flush();
+    await act(async () => buttonByText("library:datapacks")!.click());
+    await flush();
+    const titles = [...container.querySelectorAll(".vx-empty--inline h2")].map((title) => title.textContent);
+    expect(titles).toEqual(["library:noDatapacks", "library:noScreenshots"]);
+    expect(container.querySelector(".vx-empty--panel")).toBeNull();
+    expect(buttonByText("library:datapacks")!.dataset.variant).toBe("secondary");
+    commandMock.mockImplementation(async () => []);
+    await act(async () => root.render(createElement(InstanceWorlds, { versionId: "1.21.6" })));
+    await flush();
+    expect([...container.querySelectorAll(".vx-empty--inline h2")].map((title) => title.textContent))
+      .toEqual(["library:noWorlds", "library:noScreenshots"]);
+  });
+
   it("shows empty state and error alerts for world data packs", async () => {
     commandMock.mockImplementation(async (name) => {
       if (name === "list_worlds") {
@@ -217,7 +265,7 @@ describe("InstanceWorlds data packs", () => {
     });
 
     await act(async () => {
-      root.render(createElement(InstanceWorlds, { versionId: "1.21.4" }));
+      root.render(withConfirm(createElement(InstanceWorlds, { versionId: "1.21.4" })));
     });
     await flush();
 

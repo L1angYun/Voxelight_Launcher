@@ -15,6 +15,10 @@ function Harness() {
   const { notify, dismiss } = useToast();
   const [first, setFirst] = useState(false), [second, setSecond] = useState(false);
   return <><button id="notify" onClick={() => notify({ message: "Download failed", kind: "error" })}>notify</button>
+    <button id="kind-info" onClick={() => notify({ message: "Info", kind: "info" })}>info</button>
+    <button id="kind-success" onClick={() => notify({ message: "Success", kind: "success" })}>success</button>
+    <button id="kind-warning" onClick={() => notify({ message: "Warning", kind: "warning" })}>warning</button>
+    <button id="kind-error" onClick={() => notify({ message: "Error", kind: "error" })}>error</button>
     <button id="replace" onClick={() => notify({ message: "Recovered" })}>replace</button>
     <button id="launcher" onClick={() => notify({ id: "launcher", message: "Preparing launch", onDismiss: launcherDismissed })}>launcher</button>
     <button id="launcher-replace" onClick={() => notify({ id: "launcher", message: "Launch failed", kind: "error", onDismiss: launcherDismissed })}>launcher replace</button>
@@ -52,6 +56,22 @@ it("replaces a notification and lets the visible close action dismiss it", async
   expect(document.querySelector(".vx-toast")?.textContent).toContain("Recovered");
   await act(async () => document.querySelector<HTMLButtonElement>(".vx-toast button")!.click());
   expect(document.querySelector(".vx-toast")).toBeNull();
+});
+it.each([
+  { kind: "info", icon: "lucide-info", role: "status" },
+  { kind: "success", icon: "lucide-circle-check", role: "status" },
+  { kind: "warning", icon: "lucide-triangle-alert", role: "status" },
+  { kind: "error", icon: "lucide-circle-alert", role: "alert" },
+] as const)("gives the $kind toast its 16px semantic icon and role", async ({ kind, icon, role }) => {
+  await click(`#kind-${kind}`);
+  const toast = document.querySelector<HTMLElement>(".vx-toast")!;
+  expect(toast.classList.contains(`vx-toast--${kind}`)).toBe(true);
+  expect(toast.getAttribute("role")).toBe(role);
+  expect(toast.querySelector(".vx-toast__body")?.textContent).toMatch(new RegExp(kind, "i"));
+  const glyph = toast.querySelector(".vx-toast__icon svg")!;
+  expect(glyph.getAttribute("class")).toContain(icon);
+  expect(glyph.getAttribute("width")).toBe("16");
+  expect(glyph.getAttribute("height")).toBe("16");
 });
 it.each([
   { mode: "full", effects: "full", reducedMotion: false },

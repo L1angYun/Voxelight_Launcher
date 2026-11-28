@@ -12,3 +12,14 @@ function subscribe(listener: () => void) { listeners.add(listener); return () =>
 export function useWorldAvailability(): WorldAvailability {
   return useSyncExternalStore(subscribe, () => availability, () => "unknown");
 }
+
+// True while the shell pauses the world scene (a custom background image is
+// shown over it). A paused scene ignores intro replay requests.
+let paused = false;
+export function publishWorldPaused(next: boolean) {
+  if (paused === next) return;
+  paused = next; listeners.forEach(listener => listener());
+}
+export function useWorldPaused(): boolean {
+  return useSyncExternalStore(subscribe, () => paused, () => false);
+}

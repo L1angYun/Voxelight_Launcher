@@ -242,6 +242,18 @@ export async function probeGlassRefraction(page, outputDirectory, selector = ".v
     await page.evaluate(() => {
       const s = window.__vxGlassPixelProbe;
       s.layer.style.background = "#808080";
+      // The uniform field must reach the lens unchanged. Ancestors of the glass
+      // between the pattern host and the lens (for example the window bar's own
+      // translucent gradient) also paint into its backdrop and would turn the
+      // field into a gradient that the bevel then refracts. Clear only their
+      // backgrounds, and only for the two uniform captures.
+      s.clearedBackgrounds = [];
+      for (let node = s.element.parentElement; node && node !== s.parent; node = node.parentElement) {
+        for (const [name, value] of [["background-image", "none"], ["background-color", "transparent"]]) {
+          s.clearedBackgrounds.push({ node, name, value: node.style.getPropertyValue(name), priority: node.style.getPropertyPriority(name) });
+          node.style.setProperty(name, value, "important");
+        }
+      }
       s.element.style.setProperty("backdrop-filter", s.filter, "important");
       s.element.style.setProperty("-webkit-backdrop-filter", s.filter, "important");
     });
@@ -291,6 +303,9 @@ export async function probeGlassRefraction(page, outputDirectory, selector = ".v
   } finally {
     await page.evaluate(() => {
       const s = window.__vxGlassPixelProbe;
+      for (const { node, name, value, priority } of (s.clearedBackgrounds ?? []).reverse()) {
+        if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
+      }
       s.element.style.cssText = s.elementStyle;
       s.parent.style.cssText = s.parentStyle;
       delete s.element.dataset.vxProbeGlass;

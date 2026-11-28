@@ -42,7 +42,12 @@ function contrast(first: readonly number[], second: readonly number[]) {
 function readKeyboardStation() {
   const active = document.activeElement as HTMLElement | null;
   const css = active ? getComputedStyle(active) : null;
+  // R9 spec §3.2: a flat select paints its single field ring on its surface,
+  // and the create dialog's version list on its well, not on the focused
+  // element itself; read the ring where it is painted.
   const owner = active?.closest(".vx-launch-console__selector-wrap")
+    ?? active?.closest(".vx-select--flat")?.querySelector(":scope > .vx-select__surface")
+    ?? active?.closest(".vx-create-version-well")
     ?? active?.closest(".vx-search,.vx-discover-search,.vx-select")
     ?? active?.closest(".vx-instance-card")?.querySelector(":scope > .vx-lattice-frame") ?? active;
   const ownerCss = owner ? getComputedStyle(owner) : null;
@@ -56,6 +61,19 @@ function readKeyboardStation() {
     return [...context.getImageData(0, 0, 1, 1).data];
   };
   const halo = document.querySelector<HTMLCanvasElement>(".vx-cursor-halo");
+  // R9 spec §3.2 single field ring: "0 0 0 1px <indicator>" computes as "<color> 0px 0px 0px 1px".
+  // A ring layer is a solid spread: no offset and no blur. The library sort menu
+  // draws its inner ring pixel with an inset layer of that kind instead of a border.
+  // Every layer is counted, parsed or not, so a second halo or spread layer
+  // (or one this parser cannot read) breaks the single ring.
+  const shadowSource = !ownerCss || ownerCss.boxShadow === "none" ? [] : ownerCss.boxShadow.split(/,(?![^(]*\))/);
+  const shadowLayers = shadowSource
+    .map(layer => /^(.+?) (-?\d+(?:\.\d+)?)px (-?\d+(?:\.\d+)?)px (\d+(?:\.\d+)?)px (-?\d+(?:\.\d+)?)px( inset)?$/.exec(layer.trim()))
+    .flatMap(match => match ? [{ color: match[1], x: Number(match[2]), y: Number(match[3]), blur: Number(match[4]),
+      spread: Number(match[5]), inset: Boolean(match[6]) }] : []);
+  const ringLayer = (inset: boolean) => shadowLayers.find(layer => layer.inset === inset
+    && layer.x === 0 && layer.y === 0 && layer.blur === 0 && layer.spread > 0) ?? null;
+  const fieldRing = ringLayer(false), insetRing = ringLayer(true);
   return { at: performance.now(), tag: active?.tagName, id: active?.id, className: active?.className,
     label: active?.getAttribute("aria-label"), text: active?.textContent?.trim().slice(0, 120),
     focusVisible: active?.matches(":focus-visible"), outlineColor: css?.outlineColor,
@@ -65,18 +83,64 @@ function readKeyboardStation() {
     owner: owner?.className, ownerOutlineColor: ownerCss?.outlineColor,
     ownerOutlineStyle: ownerCss?.outlineStyle, ownerOutlineWidth: ownerCss?.outlineWidth,
     ownerOutlineOffset: ownerCss?.outlineOffset, ownerOutlineRgba: rgba(ownerCss?.outlineColor ?? "transparent"),
+    ownerBorderWidth: ownerCss?.borderTopWidth, ownerBorderRgba: rgba(ownerCss?.borderTopColor ?? "transparent"),
+    ownerBoxShadow: ownerCss?.boxShadow, fieldRingRgba: fieldRing ? rgba(fieldRing.color) : null,
+    fieldRingSpread: fieldRing ? fieldRing.spread : null,
+    insetRingRgba: insetRing ? rgba(insetRing.color) : null, insetRingSpread: insetRing ? insetRing.spread : null,
+    shadowLayerCount: shadowSource.length,
+    ownerRadius: ownerCss ? parseFloat(ownerCss.borderTopLeftRadius) || 0 : 0,
     ownerVisible: (owner as HTMLElement | null)?.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
     bounds: owner?.getBoundingClientRect().toJSON(), indicatorColor, indicatorRgba: rgba(indicatorColor),
     halo: halo ? { state: halo.dataset.haloState, opacity: getComputedStyle(halo).opacity } : null };
 }
 
 type KeyboardStation = ReturnType<typeof readKeyboardStation>;
+
+// R9 spec §3.2: a field's single focus ring is its 1px indicator border plus a
+// 1px --field-focus shadow; its transparent -2px outline only serves forced
+// colors. Such a station is measured just outside that shadow.
+const fieldRingStation = (value: KeyboardStation) => value.ownerOutlineStyle !== "none"
+  && parseFloat(value.ownerOutlineWidth!) > 0 && value.ownerOutlineRgba[3] === 0;
+// The painted field ring runs from its inner edge (border, or inset layer) to
+// the outer end of its spread.
+const ringEdgeWidth = (value: KeyboardStation) => parseFloat(value.ownerBorderWidth ?? "0") || (value.insetRingSpread ?? 0);
+const stationRing = (value: KeyboardStation) => fieldRingStation(value) && value.fieldRingSpread !== null
+  ? { offset: "0px", width: value.fieldRingSpread + "px",
+    ring: { inner: ringEdgeWidth(value), outer: value.fieldRingSpread, radius: value.ownerRadius } }
+  : { offset: value.ownerOutlineOffset!, width: value.ownerOutlineWidth! };
 type VisitedStation = KeyboardStation & { after?: KeyboardStation; edges?: ReturnType<typeof focusEdgeSamples>;
+  ring?: ReturnType<typeof paintedRingBand> | null;
   screenshot?: string; haloCapture?: Awaited<ReturnType<typeof captureFocusFrame>>["haloCapture"];
   referenceCapture?: Awaited<ReturnType<typeof captureFocusFrame>>["referenceCapture"]; backgroundAttempts?: unknown[] };
 
-type SampleGeometry = { bounds: { left: number; right: number; top: number; bottom: number };
-  offset: string; width: string; foreground: number[] };
+type Bounds = { left: number; right: number; top: number; bottom: number };
+type RingBand = { inner: number; outer: number; radius: number };
+type SampleGeometry = { bounds: Bounds; offset: string; width: string; foreground: number[]; ring?: RingBand };
+type CapturedImage = { width: number; height: number; pixels: Uint8Array };
+
+/**
+ * The field ring's own pixels: every column fully inside the band from the
+ * inner edge to the end of the spread, on the straight left and right runs
+ * between the rounded corners. A pixel the cursor halo painted is read from
+ * the halo-hidden reference, so only the CSS ring is measured.
+ */
+function paintedRingBand(image: CapturedImage, bounds: Bounds, ring: RingBand, foreground: readonly number[],
+  haloPaint: CapturedImage, referenceImage: CapturedImage) {
+  const span = (from: number, to: number) => Array.from({ length: Math.max(0, Math.floor(to) - Math.ceil(from)) }, (_, i) => Math.ceil(from) + i);
+  const rows = span(bounds.top + ring.radius, bounds.bottom - ring.radius);
+  return [{ side: "left", xs: span(bounds.left - ring.outer, bounds.left + ring.inner) },
+    { side: "right", xs: span(bounds.right - ring.inner, bounds.right + ring.outer) }].map(({ side, xs }) => {
+    const columns = xs.map(x => {
+      const pixels = rows.map(y => {
+        const at = (y * image.width + x) * 4, source = haloPaint.pixels[at + 3] > 0 ? referenceImage : image;
+        return Array.from(source.pixels.subarray(at, at + 3));
+      });
+      const median = [0, 1, 2].map(channel => pixels.map(rgb => rgb[channel]).sort((a, b) => a - b)[Math.floor(pixels.length / 2)]);
+      return { x, rows: rows.length, median, maxDelta: Math.max(...median.map((value, index) => Math.abs(value - foreground[index]))) };
+    });
+    return { side, columns, maxDelta: columns.length ? Math.max(...columns.map(column => column.maxDelta)) : null };
+  });
+}
 
 async function sampleAdjacentFocus<T>(page: Page, screenshot: string, initial: T, read: () => Promise<T>,
   geometry: (value: T) => SampleGeometry, identity: (value: T) => unknown) {
@@ -88,7 +152,8 @@ async function sampleAdjacentFocus<T>(page: Page, screenshot: string, initial: T
       currentScreenshot, g.bounds, g.offset, g.width);
     const after = await read();
     const edges = focusEdgeSamples(image, g.bounds, g.offset, g.width, g.foreground, haloPaint, referenceImage);
-    const record = { before, after, edges, screenshot: currentScreenshot, haloCapture, referenceCapture };
+    const ring = g.ring ? paintedRingBand(image, g.bounds, g.ring, g.foreground, haloPaint, referenceImage) : null;
+    const record = { before, after, edges, ring, screenshot: currentScreenshot, haloCapture, referenceCapture };
     await writeFile(currentScreenshot.replace(/\.png$/, ".sampling.json"), JSON.stringify(record, null, 2));
     // Ring width/color belong to the normal frame. The existing halo can
     // suppress the native outline later; that reference-time CSS is not a
@@ -122,10 +187,10 @@ async function tabTo(page: Page, target: Locator, evidence?: { info: TestInfo; p
       expect(initial.bounds, name).toBeTruthy();
       const screenshot = evidence.info.outputPath(name + ".png");
       const captured = await sampleAdjacentFocus(page, screenshot, initial, () => page.evaluate(readKeyboardStation), value => ({
-        bounds: value.bounds!, offset: value.ownerOutlineOffset!, width: value.ownerOutlineWidth!, foreground: value.indicatorRgba.slice(0, 3),
+        bounds: value.bounds!, ...stationRing(value), foreground: value.indicatorRgba.slice(0, 3),
       }), value => [value.tag, value.id, value.label, value.focusVisible]);
       const { before, after, ...details } = captured;
-      const { edges } = captured;
+      const { edges, ring } = captured;
       const station = { ...before, after, ...details };
       visited.push(station);
       await writeFile(evidence.info.outputPath(name + ".json"), JSON.stringify(station, null, 2));
@@ -137,8 +202,40 @@ async function tabTo(page: Page, target: Locator, evidence?: { info: TestInfo; p
       expect.soft(after.bounds, name + " screenshot geometry").toEqual(before.bounds);
       expect.soft([after.tag, after.id, after.label], name + " focus retained").toEqual([before.tag, before.id, before.label]);
       expect.soft(after.indicatorRgba, name).toEqual(before.indicatorRgba);
-      for (const sample of [before, after]) if (sample.ownerOutlineStyle !== "none" && parseFloat(sample.ownerOutlineWidth!) > 0)
-        expect.soft(sample.ownerOutlineRgba, name + " visible CSS outline").toEqual(sample.indicatorRgba);
+      for (const sample of [before, after]) if (sample.ownerOutlineStyle !== "none" && parseFloat(sample.ownerOutlineWidth!) > 0) {
+        if (fieldRingStation(sample)) {
+          expect.soft([sample.ownerOutlineWidth, sample.ownerOutlineOffset], name + " forced-colors fallback outline").toEqual(["2px", "-2px"]);
+          if (sample.ownerBorderWidth !== "0px") {
+            expect.soft(sample.ownerBorderRgba, name + " single ring border").toEqual(sample.indicatorRgba);
+            expect.soft(sample.ownerBorderWidth, name + " single ring border").toBe("1px");
+          } else {
+            // The library sort menu matches the 38px search field: border 0,
+            // its inner ring pixel is an inset 1px indicator layer.
+            expect.soft(sample.insetRingRgba, name + " single ring inset edge").toEqual(sample.indicatorRgba);
+            expect.soft(sample.insetRingSpread, name + " single ring inset edge").toBe(1);
+          }
+          expect.soft(sample.fieldRingRgba, name + " single ring shadow").toEqual(sample.indicatorRgba);
+          expect.soft(sample.fieldRingSpread, name + " single ring shadow").toBe(1);
+          // Nothing else may be layered on the ring: only the outer spread, and
+          // the inset edge when there is no border.
+          expect.soft(sample.shadowLayerCount, name + " single ring shadow layers")
+            .toBe(1 + (sample.ownerBorderWidth === "0px" ? 1 : 0));
+        } else expect.soft(sample.ownerOutlineRgba, name + " visible CSS outline").toEqual(sample.indicatorRgba);
+      }
+      // A flat select surface and the version well paint only a field ring, so
+      // each must be one: border or inset edge, spread, and the fallback outline.
+      if (/(?:^|\s)(?:vx-select__surface|vx-create-version-well)(?:\s|$)/.test(String(before.owner ?? "")))
+        expect.soft(fieldRingStation(before) && before.fieldRingSpread !== null, name + " field ring owner").toBe(true);
+      // A field ring is painted, not only declared: its 2px band (inner edge
+      // plus spread) reads as the indicator on both straight sides.
+      if (fieldRingStation(before)) {
+        expect.soft(ring, name + " painted ring sampled").not.toBeNull();
+        for (const side of ring ?? []) {
+          expect.soft(side.columns.length, name + "/" + side.side + " painted ring columns").toBeGreaterThan(0);
+          expect.soft(side.columns.every(column => column.rows > 0), name + "/" + side.side + " painted ring rows").toBe(true);
+          expect.soft(side.maxDelta, name + "/" + side.side + " painted ring is the indicator").toBeLessThanOrEqual(8);
+        }
+      }
       for (const edge of edges) {
         expect.soft(edge.valid, name + "/" + edge.side + " complete adjacent edge").toBe(true);
         expect.soft(edge.ratio, name + "/" + edge.side + " median contrast").not.toBeNull();
@@ -162,10 +259,12 @@ async function outline(owner: Locator) {
     const rgba = [...context.getImageData(0, 0, 1, 1).data], rgb = rgba.slice(0, 3);
     context.fillStyle = indicatorColor; context.fillRect(0, 0, 1, 1);
     const indicatorRgba = [...context.getImageData(0, 0, 1, 1).data];
+    const fieldRing = /^(rgba?\([^)]*\)) 0px 0px 0px (\d+(?:\.\d+)?)px$/.exec(style.boxShadow);
     return { outlineColor: style.outlineColor, outlineStyle: style.outlineStyle,
       outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset,
       rgb, rgba, indicatorColor, indicatorRgb: indicatorRgba.slice(0, 3), indicatorRgba,
-      borderColor: style.borderTopColor, borderWidth: style.borderTopWidth,
+      borderColor: style.borderTopColor, borderWidth: style.borderTopWidth, boxShadow: style.boxShadow,
+      fieldRingColor: fieldRing?.[1] ?? null, fieldRingSpread: fieldRing ? parseFloat(fieldRing[2]) : null,
       visible: (element as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true }),
       opacity: style.opacity, visibility: style.visibility,
       indicator: root.getPropertyValue("--accent-indicator").trim(),
@@ -176,9 +275,12 @@ async function outline(owner: Locator) {
 async function inspectFocus(page: Page, owner: Locator, kind: "global" | "input" | "lattice" | "composite", name: string, info: TestInfo) {
   const initial = await outline(owner);
   const screenshot = info.outputPath(`${name}.png`);
-  const captured = await sampleAdjacentFocus(page, screenshot, initial, () => outline(owner), value => ({
-    bounds: value.bounds, offset: value.outlineOffset, width: value.outlineWidth, foreground: value.rgb,
-  }), value => [value.focusVisible, value.indicatorColor]);
+  // R9 spec §3.2: a field's single ring is its 1px indicator border plus a 1px
+  // --field-focus shadow, so its adjacent surface lies just outside that shadow.
+  const captured = await sampleAdjacentFocus(page, screenshot, initial, () => outline(owner), value => (kind === "input"
+    ? { bounds: value.bounds, offset: "0px", width: (value.fieldRingSpread ?? 0) + "px", foreground: value.indicatorRgb }
+    : { bounds: value.bounds, offset: value.outlineOffset, width: value.outlineWidth, foreground: value.rgb }),
+  value => [value.focusVisible, value.indicatorColor]);
   const { before: sample, after, edges, ...details } = captured;
   // Read pixels outside the visible ring, away from its antialiasing and the
   // control's own content. These are the actual adjacent compositor surfaces.
@@ -188,11 +290,17 @@ async function inspectFocus(page: Page, owner: Locator, kind: "global" | "input"
   expect.soft(sample.focusVisible, name).toBe(true);
   expect.soft(sample.outlineStyle, name).toBe("solid");
   expect.soft(sample.outlineWidth, name).toBe("2px");
-  expect.soft(sample.outlineColor, `${name} resolves indicator`).toBe(sample.indicatorColor);
-  expect.soft(sample.rgb, name).toEqual(sample.indicatorRgb);
   if (kind === "input") {
+    // The outline stays only as the transparent forced-colors fallback.
+    expect.soft(sample.outlineOffset, `${name} fallback outline offset`).toBe("-2px");
+    expect.soft(sample.rgba, `${name} fallback outline is transparent`).toEqual([0, 0, 0, 0]);
     expect.soft(sample.borderColor, `${name} focused input border`).toBe(sample.indicatorColor);
     expect.soft(sample.borderWidth, name).toBe("1px");
+    expect.soft(sample.fieldRingColor, `${name} field ring resolves indicator`).toBe(sample.indicatorColor);
+    expect.soft(sample.fieldRingSpread, `${name} field ring spread`).toBe(1);
+  } else {
+    expect.soft(sample.outlineColor, `${name} resolves indicator`).toBe(sample.indicatorColor);
+    expect.soft(sample.rgb, name).toEqual(sample.indicatorRgb);
   }
   expect.soft(after.bounds, `${name} screenshot geometry`).toEqual(sample.bounds);
   for (const edge of edges) {
@@ -271,9 +379,12 @@ nativeTest("R3-3 ruled focus sampling: the previously failing Close station reta
   const visited = await tabTo(page, close, { info, path: "close-site" });
   const station = visited.at(-1)!;
   expect(station.label).toBe("关闭");
-  expect(station.bounds).toMatchObject({ left: 1215, top: 22, right: 1253, bottom: 60 });
-  expect(station.edges!.map(edge => edge.distance)).toEqual([6, 5, 6, 5]);
-  expect(station.edges![0].points.map(point => point.x)).toEqual(Array(38).fill(1209));
+  // R9 ui-language-spec §2.6/§3.10: window controls are --control-sm (32px)
+  // IconButtons and the global ring is a 2px outline at --focus-ring-offset
+  // (2px), so the sampled edges sit 5/4px out.
+  expect(station.bounds).toMatchObject({ left: 1221, top: 25, right: 1253, bottom: 57 });
+  expect(station.edges!.map(edge => edge.distance)).toEqual([5, 4, 5, 4]);
+  expect(station.edges![0].points.map(point => point.x)).toEqual(Array(32).fill(1216));
   for (const edge of station.edges!) {
     expect(edge.replacedPoints.every(point => point.haloAlpha! > 0)).toBe(true);
     expect(edge.unaffectedPoints.every(point => point.haloAlpha === 0)).toBe(true);

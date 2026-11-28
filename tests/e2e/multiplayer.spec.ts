@@ -120,14 +120,24 @@ test("real status queries and direct join preserve the selected address", async 
   await expect(row).toContainText("在线");
   await expect(row).toContainText("42 ms");
   await row.getByRole("button", { name: "加入", exact: true }).click();
-  await expect.poll(async () => (await calls(page)).some((call) => call.name === "launch_game" && call.args?.serverAddress === "play.example.invalid:25565")).toBe(true);
+  await expect.poll(async () => (await calls(page)).some((call) => call.name === "launch_game" && call.args?.serverAddress === "play.example.invalid:25565"
+    && call.args?.instanceId === "fixture-world" && call.args?.versionId === "1.21.1")).toBe(true);
 });
 
 test("switching A to B to C prevents a stale bookmark action and late B display", async ({ page }) => {
-  await installLauncherFixture(page, { versionDirectoryCount: 3 });
+  // The game environment is an instance, so A, B and C are three instances on three versions.
+  await installLauncherFixture(page, {
+    versionDirectoryCount: 3,
+    instances: [
+      { id: "multiplayer-a", name: "联机环境 A", versionId: "1.21.1" },
+      { id: "multiplayer-b", name: "联机环境 B", versionId: "fixture-version-002" },
+      { id: "multiplayer-c", name: "联机环境 C", versionId: "fixture-version-003" },
+    ],
+  });
   await mockMultiplayer(page);
   await openMultiplayer(page);
   await expect(page.locator(".vx-server-row__copy h2")).toHaveText("Fixture server");
+  expect((await calls(page)).find((call) => call.name === "list_servers")?.args).toMatchObject({ instanceId: "multiplayer-a", versionId: "1.21.1" });
   await page.evaluate(() => {
     const probe = window as unknown as {
       __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -136,22 +146,27 @@ test("switching A to B to C prevents a stale bookmark action and late B display"
     const original = probe.__TAURI_INTERNALS__.invoke;
     probe.__TAURI_INTERNALS__.invoke = async (name, args) => {
       const result = await original(name, args);
-      const version = args?.versionId;
-      if (name !== "list_servers" || (version !== "fixture-version-002" && version !== "fixture-version-003")) return result;
-      const label = version === "fixture-version-002" ? "B" : "C";
+      const instance = args?.instanceId;
+      if (name !== "list_servers" || (instance !== "multiplayer-b" && instance !== "multiplayer-c")) return result;
+      const label = instance === "multiplayer-b" ? "B" : "C";
       if (label === "B") await new Promise<void>((resolve) => { probe.releaseFixtureServerB = resolve; });
       return [{ index: 0, name: `Bookmark ${label}`, address: `${label}.example.invalid`, hideAddress: false, snapshot: `snapshot-${label}` }];
     };
   });
-  async function changeEnvironment(name: string) {
-    await page.getByRole("combobox", { name: "游戏环境" }).click();
-    await page.getByRole("option", { name, exact: true }).click();
-  }
-  await changeEnvironment("fixture-version-002");
-  await expect.poll(async () => (await calls(page)).some((call) => call.name === "list_servers" && call.args?.versionId === "fixture-version-002")).toBe(true);
+  const environmentSelect = page.getByRole("combobox", { name: "游戏环境", exact: true });
+  const environmentMenu = page.getByRole("listbox", { name: "游戏环境", exact: true });
+  const environmentOption = (name: string) => environmentMenu.getByRole("option").filter({ has: page.getByTitle(name, { exact: true }) });
+  await environmentSelect.click();
+  // Instances are offered by name with their version as metadata; bare versions are not environments.
+  await expect(environmentMenu.locator(".vx-select__value")).toHaveText(["选择实例", "联机环境 A", "联机环境 B", "联机环境 C"]);
+  await expect(environmentMenu.locator(".vx-select__metadata")).toHaveText(["1.21.1", "fixture-version-002", "fixture-version-003"]);
+  await environmentOption("联机环境 B").click();
+  await expect.poll(async () => (await calls(page)).some((call) => call.name === "list_servers"
+    && call.args?.instanceId === "multiplayer-b" && call.args?.versionId === "fixture-version-002")).toBe(true);
   await expect(page.getByRole("button", { name: "移除服务器", exact: true })).toHaveCount(0);
   await expect(page.locator(".vx-server-row__copy h2")).toHaveCount(0);
-  await changeEnvironment("fixture-version-003");
+  await environmentSelect.click();
+  await environmentOption("联机环境 C").click();
   await expect(page.locator(".vx-server-row__copy h2")).toHaveText("Bookmark C");
   await page.evaluate(async () => {
     const release = (window as unknown as { releaseFixtureServerB?: () => void }).releaseFixtureServerB;
@@ -171,14 +186,16 @@ test("add, remove and empty LAN discovery keep separate outcomes", async ({ page
   await page.getByRole("textbox", { name: "服务器名称", exact: true }).fill("Added server");
   await page.getByRole("textbox", { name: "服务器地址", exact: true }).fill("added.example.invalid");
   await page.getByRole("button", { name: "保存服务器", exact: true }).click();
-  page.once("dialog", (dialog) => void dialog.accept());
   await page.locator('[data-server-address="play.example.invalid:25565"]').getByRole("button", { name: "移除服务器", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认操作", exact: true }).getByRole("button", { name: "确认", exact: true }).click();
   await page.getByRole("button", { name: "搜索局域网", exact: true }).click();
   await expect(page.getByText("当前网络中没有发现局域网世界。", { exact: true })).toBeVisible();
   const recorded = await calls(page);
   expect(recorded.some((call) => call.name === "save_server")).toBe(true);
+  expect(recorded.find((call) => call.name === "save_server")?.args).toMatchObject({ versionId: "1.21.1", instanceId: "fixture-world" });
   expect(recorded.find((call) => call.name === "remove_server")?.args).toMatchObject({
     versionId: "1.21.1",
+    instanceId: "fixture-world",
     index: 0,
     expected: { index: 0, snapshot: "1.21.1-1-0" },
   });
@@ -274,8 +291,8 @@ test("a server JAR is imported from its dialog, which fits the smallest window",
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await action.click();
   await expect(page.locator("dialog.vx-import-dialog[open]")).toHaveCount(0);
-  await expect(page.locator(".vx-managed-list [aria-current='true']")).toContainText("Paper · 1.21.1");
-  await expect(page.locator(".vx-managed-overview header p")).toContainText("Paper · 1.21.1");
+  await expect(page.locator(".vx-managed-list [aria-current='true']")).toContainText("Paper 1.21.1");
+  await expect(page.locator(".vx-managed-overview header p")).toContainText("Paper 1.21.1");
 });
 
 test("network check runs on demand and shows IPv4, IPv6, NAT type and direct-connect addresses", async ({ page }) => {

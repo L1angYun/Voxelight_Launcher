@@ -32,7 +32,7 @@
   },
   "search": {
     "label": "Buscar ajustes",
-    "placeholder": "Buscar ajustes, p. ej. memoria",
+    "placeholder": "Buscar, p. ej. memoria",
     "noMatch": "Ningún ajuste coincide.",
     "results": "Ajustes coincidentes",
     "resultCount_one": "1 ajuste coincidente",
@@ -101,6 +101,7 @@
     "clientIdBuiltinPlaceholder": "Déjalo vacío para usar la aplicación integrada",
     "builtinActive": "Hay una aplicación integrada de Microsoft disponible. Deja este campo vacío para usarla.",
     "curseforgeKey": "Clave de API de CurseForge",
+    "keySeparateHint": "Esta clave se cifra y guarda por separado; no la afecta el botón Guardar ajustes.",
     "keyPlaceholder": "Introduce tu propia clave de API",
     "curseforgeBuiltinPlaceholder": "Déjalo vacío para usar la clave integrada",
     "keyConfiguredPlaceholder": "Clave cifrada guardada; déjalo vacío para conservarla",
@@ -159,8 +160,8 @@
     "system": "Seguir al sistema"
   },
   "effects": {
-    "lite": "Ligero · movimiento esencial",
-    "full": "Completo · todos los efectos"
+    "lite": "Ligero (movimiento esencial)",
+    "full": "Completo (todos los efectos)"
   },
   "worldScene": {
     "horizon": "Horizonte",
@@ -173,24 +174,55 @@
     "cssFallback": "El mundo 3D no está disponible. Se muestra un fondo estático de puntos; el inicio de los juegos no se ve afectado.",
     "liteUnloaded": "El mundo 3D se retira de la memoria con efectos ligeros para ahorrar recursos. Vuelve a efectos completos para restaurarlo."
   },
+  "worldPreview": {
+    "replayIntro": "Repetir animación de entrada"
+  },
   "accent": {
-    "voxelight": "Verde Voxelight",
-    "system": "Acento del sistema",
-    "custom": "Acento personalizado",
+    "system": "Seguir el sistema",
+    "custom": "Personalizado",
     "systemCurrent": "Acento actual del sistema: {{color}}",
-    "presets": "Preajustes de acento",
-    "preset": "Color de acento {{color}}"
+    "names": {
+      "dianqing": "Índigo",
+      "kongquelan": "Azul pavo real",
+      "biqing": "Azul jade",
+      "zhulv": "Verde bambú",
+      "luweilv": "Verde caña",
+      "zhuhong": "Bermellón",
+      "haitanghong": "Rojo begonia",
+      "meiguihong": "Rojo rosa",
+      "qinglian": "Loto azul",
+      "hupohuang": "Amarillo ámbar",
+      "yanyuhui": "Gris golondrina"
+    }
   },
   "soundDescription": "Desactivado por defecto. Solo se usa en transiciones importantes.",
   "background": {
-    "title": "Fondo de inicio",
-    "description": "Elige una imagen local PNG, JPEG o WebP. El contenido superpuesto mantiene una capa de contraste estable.",
+    "title": "Fondo y luz ambiental",
+    "description": "Muestra una luz ambiental suave detrás de cada página y elige opcionalmente una imagen local PNG, JPEG o WebP como fondo de página completa con contraste estable.",
     "choose": "Elegir fondo",
-    "reset": "Restablecer fondo"
+    "reset": "Restablecer fondo",
+    "ambientEnabled": "Luz ambiental",
+    "ambientDescription": "Campos de color suaves fluyen detrás de cada página para que el vidrio líquido refracte de forma visible. El modo ligero y el movimiento reducido mantienen el color fijo.",
+    "ambientIntensity": "Intensidad de luz ambiental",
+    "blur": "Desenfoque del fondo",
+    "dim": "Oscurecimiento del fondo",
+    "drift": "Desplazamiento lento del fondo",
+    "driftDescription": "Desplaza suavemente la imagen de fondo con efectos completos cuando el movimiento reducido está desactivado.",
+    "percent": "{{value}}%",
+    "blurPixels": "{{value}} px"
   },
-  "gameDescription": "Archivos compartidos del juego y valores predeterminados de ventana. Las anulaciones por instancia siguen en los ajustes de la instancia.",
+  "gameDescription": "Carpetas del juego, bibliotecas compartidas, aislamiento y valores predeterminados de ventana. Las anulaciones por instancia están en los ajustes de la instancia.",
   "game": {
-    "browse": "Examinar",
+    "foldersDescription": "Añade cualquier carpeta que contenga versiones. Voxelight, PCL y HMCL pueden usar el mismo .minecraft al mismo tiempo.",
+    "active": "Activa",
+    "makeActive": "Usar {{name}}",
+    "folderLabel": "Etiqueta de la carpeta",
+    "openFolder": "Abrir {{name}}",
+    "removeFolder": "Quitar {{name}} de la lista",
+    "addFolder": "Añadir carpeta del juego",
+    "lastFolder": "La última carpeta del juego no se puede quitar",
+    "lastFolderHint": "Quitar una carpeta de la lista nunca elimina sus archivos. La última carpeta del juego no se puede quitar.",
+    "sharedFilesHint": "Las bibliotecas y los recursos se comparten dentro de cada carpeta del juego. Con el aislamiento, las partidas guardadas, los mods y las configuraciones se quedan en la carpeta de la instancia.",
     "isolationDescription": "Mantén mundos, mods y ajustes separados para cada versión del juego."
   },
   "javaDescription": "Elige el entorno de ejecución compartido y los valores predeterminados para nuevas instancias.",
@@ -202,8 +234,8 @@
   "downloadDescription": "Controla las descargas oficiales, las réplicas y el rendimiento de las tareas.",
   "downloadSource": {
     "official": "Solo oficial",
-    "auto": "Automático · oficial primero salvo que sea claramente más lento",
-    "bmclapi": "BMCLAPI primero · respaldo oficial",
+    "auto": "Automático",
+    "bmclapi": "BMCLAPI primero",
     "officialDescription": "Usa los servidores oficiales para los archivos del juego, cargadores y metadatos. La verificación de archivos sigue activa.",
     "autoDescription": "Mide la fuente oficial y BMCLAPI la primera vez que esta sesión obtiene la lista de versiones o un archivo. La oficial va primero salvo que no responda o sea claramente más lenta; la otra queda como respaldo. El resultado dura solo esta sesión. Nunca se guarda en tus ajustes ni se envía; se escribe una línea de resumen en el registro local del iniciador.",
     "bmclapiDescription": "Prueba primero con BMCLAPI para los archivos compatibles del juego y del cargador, y recurre a las direcciones oficiales si falla.",
@@ -225,7 +257,7 @@
     "dataNotice": "La desinstalación conserva los datos del iniciador de forma predeterminada. Quitar una cuenta o el registro de una instancia no elimina los archivos del juego.",
     "secretNotice": "Los preajustes excluyen cuentas, tokens de inicio de sesión y claves de servicio. Las credenciales de servicio se configuran en General.",
     "typeface": "Tipografía",
-    "typefaceCredit": "MiSans · Xiaomi"
+    "typefaceCredit": "MiSans de Xiaomi"
   },
   "proxy": {
     "title": "Proxy de red",
@@ -261,6 +293,8 @@
     "credentialStorage": "Las credenciales se guardan por separado en el almacén de credenciales del sistema.",
     "httpWarning": "Con un proxy HTTP, las credenciales del proxy viajan sin cifrar hacia el servidor proxy.",
     "saveEndpointFirst": "Guarda la dirección del proxy antes de cambiar las credenciales.",
+    "leaveEndpointUnsaved": "El usuario y la contraseña del proxy no se guardaron porque la dirección del proxy aún no está guardada. Guarda primero la dirección o descarta las credenciales.",
+    "leaveUsernameRequired": "La contraseña del proxy no se guardó porque no se ha escrito ningún nombre de usuario. Escribe el nombre de usuario o descarta las credenciales.",
     "username": "Usuario del proxy",
     "password": "Contraseña del proxy",
     "saveCredentials": "Guardar credenciales",
@@ -280,8 +314,8 @@
     "presetExported": "Preajuste exportado sin cuentas ni claves de servicio.",
     "presetImported": "Preajuste importado.",
     "presetImportedHeapRemoved": "Preajuste importado. Se ignoraron sus argumentos JVM -Xms/-Xmx; ajusta la memoria en los campos de memoria.",
-    "backgroundUpdated": "Fondo de inicio actualizado.",
-    "backgroundCleared": "Fondo de inicio predeterminado restaurado.",
+    "backgroundUpdated": "Fondo actualizado.",
+    "backgroundCleared": "Fondo predeterminado restaurado.",
     "javaDetected_one": "Se encontró {{count}} entorno de Java.",
     "javaDetected_other": "Se encontraron {{count}} entornos de Java.",
     "javaNotFound": "No se encontró ningún entorno de Java. Instala uno o introduce su ruta.",
@@ -303,7 +337,7 @@
       "anthropic": "Anthropic"
     },
     "model": "Modelo",
-    "modelPlaceholder": "p. ej. gpt-4o-mini, claude-sonnet-4-20250514, deepseek-chat",
+    "modelPlaceholder": "p. ej. gpt-4o-mini",
     "baseUrl": "URL base de la API (opcional)",
     "baseUrlHint": "Déjalo vacío para usar el punto de conexión HTTPS predeterminado del proveedor. Usa HTTPS para servidores remotos, o http://127.0.0.1 / http://localhost para servidores locales como Ollama o LM Studio.",
     "apiKey": "Clave de API de Lumen",
@@ -327,7 +361,7 @@
     "mcpTitle": "Servidor MCP local",
     "mcpDescription": "Desactivado por defecto en cada inicio. Escucha estrictamente en 127.0.0.1 y exige un token Bearer por sesión con comprobaciones de Host/Origin en loopback.",
     "mcpPort": "Puerto MCP (1024–65535)",
-    "mcpRunning": "En ejecución en 127.0.0.1:{{port}} (solo localhost).",
+    "mcpRunningShort": "En ejecución.",
     "mcpStopped": "Detenido.",
     "mcpEndpoint": "Punto de conexión",
     "mcpToken": "Token de sesión",

@@ -56,14 +56,30 @@ test("settings search opens the section and focuses the setting at the smallest 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("a custom home background shows on Home only, over a paused world", async ({ page }) => {
+// R9 D7 (ui-language-spec §2.11.1 and §2.11.4): the custom background is the
+// full-page layer of every page. It is mounted once outside the page
+// transitions, and the 3D world it covers stays paused and hidden on every page.
+test("a custom background stays on every page over a paused world", async ({ page }) => {
   await installLauncherFixture(page, { customBackground: "C:\\SyntheticFixture\\background.png" });
   await page.goto("/?next-ui");
-  const layer = page.locator("[data-home-background]");
+  const layer = page.locator("[data-app-background]");
+  const scene = page.locator(".vx-global-scene");
   await expect(layer).toHaveAttribute("data-visible", "true");
-  await expect(page.locator(".vx-global-scene")).toHaveAttribute("data-paused", "true");
-  await navigation(page).getByRole("button", { name: "游戏库", exact: true }).click();
-  await expect(layer).not.toHaveAttribute("data-visible", "true");
+  await expect(layer.locator("[data-app-background-image]")).toHaveAttribute("style", /background-image: url\(/);
+  await expect(scene).toHaveAttribute("data-paused", "true");
+  await expect(scene).toBeHidden();
+  const mounted = await layer.elementHandle();
+  for (const [name, heading] of [["游戏库", "游戏库"], ["设置", "设置"]] as const) {
+    await navigation(page).getByRole("button", { name, exact: true }).click();
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+    // Home's own launch-side scrim leaves with Home; only the shared layer stays.
+    await expect(page.locator(".vx-home")).toHaveCount(0);
+    await expect(layer).toHaveCount(1);
+    await expect(layer).toHaveAttribute("data-visible", "true");
+    expect(await layer.evaluate((node, original) => node === original, mounted)).toBe(true);
+    await expect(scene).toHaveAttribute("data-paused", "true");
+    await expect(scene).toBeHidden();
+  }
 });
 
 test("local resource packs can be searched and disabled in a batch", async ({ page }) => {
@@ -77,7 +93,8 @@ test("local resource packs can be searched and disabled in a batch", async ({ pa
   const search = page.getByRole("searchbox", { name: "搜索文件" });
   await search.fill("f");
   await expect(page.getByRole("checkbox", { name: /low-pixel/ })).toHaveCount(0);
-  await page.getByRole("checkbox", { name: "选择所有可见文件" }).check();
+  // Select-all is labelled with the count it selects: the two files the search shows.
+  await page.getByRole("checkbox", { name: "全选（2）", exact: true }).check();
   await expect(page.getByText("已选择 2 个文件")).toBeVisible();
   await page.getByRole("button", { name: "禁用", exact: true }).click();
   await expect.poll(async () => (await calls(page)).filter((call) => call.name === "toggle_resource").map((call) => call.args?.fileName))
@@ -96,14 +113,17 @@ test("local resources can be deleted in a batch with confirmation and logs tab l
   await page.getByRole("tab", { name: "内容", exact: true }).click();
   await page.getByRole("checkbox", { name: /alpha/ }).check();
   await page.getByRole("checkbox", { name: /beta/ }).check();
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "删除", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认操作", exact: true }).getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.getByText("已从磁盘永久删除 2 个资源。")).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /alpha/ })).toHaveCount(0);
   await expect(page.getByRole("checkbox", { name: /gamma/ })).toHaveCount(1);
   await page.getByRole("tab", { name: "日志", exact: true }).click();
   await expect(page.getByRole("heading", { name: "游戏日志", exact: true })).toBeVisible();
-  await expect(page.getByRole("searchbox", { name: "搜索游戏日志" })).toBeVisible();
+  await expect.poll(async () => (await calls(page)).some((call) => call.name === "read_game_log")).toBe(true);
+  // The fixture's log has no lines: the section says so, and offers no search over nothing.
+  await expect(page.getByRole("heading", { name: "还没有游戏日志", exact: true })).toBeVisible();
+  await expect(page.getByRole("searchbox", { name: "搜索游戏日志" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -151,10 +171,10 @@ test("instance settings changes an existing instance's loader while preserving t
   await page.getByRole("tab", { name: "设置", exact: true }).click();
   await expect(page.getByRole("heading", { name: "加载器", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Fabric", exact: true }).click();
-  page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "更换加载器", exact: true }).click();
+  await page.getByRole("dialog", { name: "确认操作", exact: true }).getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.getByText("实例加载器已更换。", { exact: true })).toBeVisible();
-  await expect(page.getByText("Minecraft 1.21.1 · Fabric 0.16.9", { exact: true })).toBeVisible();
+  await expect(page.getByText("Minecraft 1.21.1，Fabric 0.16.9", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -201,7 +221,7 @@ test("Lumen stays invisible until configured, wakes proactively on crash, and fa
   await dialog.getByRole("textbox", { name: "发给 Lumen 的消息" }).fill("给我的实例添加一条备注");
   await dialog.getByRole("button", { name: "发送", exact: true }).click();
   await expect(dialog.getByText("确认 Lumen 写入操作")).toBeVisible();
-  await expect(dialog.getByText("update_instance_notes")).toBeVisible();
+  await expect(dialog.getByText("更新实例备注", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "批准并执行", exact: true }).click();
   await expect(dialog.getByText("已更新实例备注。")).toBeVisible();
   await page.keyboard.press("Escape");

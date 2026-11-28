@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
 import { droppedFileName, useFileDrop } from "../../app/FileDropContext";
-import { Image, RotateCcw, Upload, UserRound } from "lucide-react";
+import { Image, RefreshCw, RotateCcw, Upload, UserRound } from "lucide-react";
 import { command, type Account, type Config } from "../../lib/launcher";
 import type { useAccountSkin } from "../../lib/accountSkin";
 import { useDefaultSkin, type DefaultSkinId } from "../../lib/defaultSkin";
@@ -10,7 +10,7 @@ import { useAppearance } from "../../app/AppearanceProvider";
 import type { PlayerProfile } from "../../lib/playerProfile";
 import { CharacterCanvas, type CharacterAnimation } from "../../visual/character/CharacterCanvas";
 import type { SkinModel } from "../../components/skinTexture";
-import { Button } from "../../components/ui/Button";
+import { Button, IconButton } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { Segmented } from "../../components/ui/Segmented";
 import { SectionPanel } from "../../components/ui/SectionPanel";
@@ -310,15 +310,21 @@ export function AppearancePanel({
       <div className="vx-appearance-wardrobe">
       {previewMode === "account" && online ? (
         <div className="vx-appearance-controls">
-          <div className="vx-action-row">
-            <Button variant="secondary" disabled={busy} onClick={appearance.refresh}>{t("accounts:appearance.refresh")}</Button>
-          </div>
-          {profile ? (
-            <div className="vx-appearance-current">
-              <strong>{profile.name}</strong>
-              <span>{profile.skins.some((skin) => skin.state.toUpperCase() === "ACTIVE") ? t("accounts:appearance.customSkin") : t("accounts:appearance.defaultSkin")}</span>
+          <div className="vx-appearance-current">
+            <div className="vx-appearance-current__identity">
+              <strong>{profile?.name ?? account?.username}</strong>
+              {profile ? (
+                <span>{profile.skins.some((skin) => skin.state.toUpperCase() === "ACTIVE") ? t("accounts:appearance.customSkin") : t("accounts:appearance.defaultSkin")}</span>
+              ) : null}
             </div>
-          ) : null}
+            <IconButton
+              size="sm"
+              label={t("accounts:appearance.refresh")}
+              icon={<RefreshCw size={14} />}
+              disabled={busy || appearance.loading}
+              onClick={appearance.refresh}
+            />
+          </div>
           {editable ? (
             <>
               <label>

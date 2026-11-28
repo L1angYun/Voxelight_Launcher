@@ -1,5 +1,8 @@
-import { cloneElement, forwardRef, isValidElement, Fragment, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { cloneElement, forwardRef, isValidElement, Fragment, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
+import { ICON } from "../../design/icons";
+
+const BUTTON_ICON_SIZE = { sm: ICON.sm, md: ICON.md, lg: ICON.lg } as const;
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: "primary" | "secondary" | "ghost";
@@ -13,9 +16,18 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   { variant = "secondary", tone = "default", icon, loading = false, size = "md", className, children, disabled, type = "button", ...props },
   ref,
 ) {
-  const iconSize = size === "sm" ? 14 : size === "lg" ? 18 : 16;
-  const sizedIcon = isValidElement<{ width?: number; height?: number }>(icon) && icon.type !== Fragment
-    ? cloneElement(icon, { width: iconSize, height: iconSize }) : icon;
+  const iconSize = BUTTON_ICON_SIZE[size];
+  const iconElement = isValidElement<Record<string, unknown>>(icon) && icon.type !== Fragment
+    ? icon as ReactElement<Record<string, unknown>>
+    : null;
+  const sizedIcon = iconElement
+    ? cloneElement(iconElement, {
+        width: iconSize,
+        height: iconSize,
+        ...("strokeWidth" in iconElement.props ? { strokeWidth: undefined } : {}),
+        ...("absoluteStrokeWidth" in iconElement.props ? { absoluteStrokeWidth: undefined } : {}),
+      })
+    : icon;
   return (
     <button
       {...props}

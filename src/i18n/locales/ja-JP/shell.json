@@ -8,6 +8,11 @@
   "shortcuts": {
     "title": "キーボードショートカット",
     "description": "これらのショートカットはランチャー内のどこでも使えます。",
+    "or": "または",
+    "groups": {
+      "navigation": "ナビゲーション",
+      "general": "全般"
+    },
     "actions": {
       "goTo": "{{page}}へ移動",
       "assistant": "Lumen を開く",
@@ -53,7 +58,7 @@
         "javaNone": "ローカルの Java が見つかりませんでした。Voxelight がゲームに合う公式ランタイムを自動で準備できます。",
         "redetect": "再スキャン",
         "memoryTitle": "メモリ割り当て",
-        "memorySummary": "システム RAM {{total}} GiB を検出 · 自動推奨：{{recommended}} MB。",
+        "memorySummary": "システム RAM {{total}} GiB を検出しました。自動推奨：{{recommended}} MB。",
         "memoryAuto": "メモリ自動割り当てが有効です。システムの RAM に合わせて自動調整されます。",
         "proxyTitle": "ネットワークプロキシ",
         "proxySystem": "Windows システムプロキシに従います（{{url}}）。",
@@ -69,16 +74,37 @@
           "bmclapi": "BMCLAPI"
         }
       },
+      "lumen": {
+        "title": "任意のアシスタント Lumen を紹介します",
+        "body": "Lumen は Voxelight の任意の AI アシスタントです。クラッシュやダウンロード、インスタンスの問題を理解する手助けをします。設定しなくてもゲームは問題なく遊べます。",
+        "ownKey": "AI プロバイダーの API キーはご自身で用意します。",
+        "readOnly": "既定では読み取り専用で、許可するまで何も変更できません。",
+        "asksFirst": "変更する前には必ず確認します。",
+        "setUp": "今すぐ設定",
+        "later": "あとで"
+      },
       "ready": {
         "title": "すべての準備が整いました",
         "body": "Voxelight の主要な機能はこちらにまとまっています。この初回セットアップは F1 キーでいつでも開き直せます。"
       }
     },
     "steps": {
-      "library": { "title": "ライブラリ", "body": "インスタンスとバージョンを管理します。" },
-      "discover": { "title": "探索", "body": "MOD や MODパックなどを探せます。" },
-      "downloads": { "title": "ダウンロード", "body": "ダウンロードの進捗と履歴を確認できます。" },
-      "settings": { "title": "設定", "body": "Java、メモリ、外観を調整します。" }
+      "library": {
+        "title": "ライブラリ",
+        "body": "インスタンスとバージョンを管理します。"
+      },
+      "discover": {
+        "title": "探索",
+        "body": "MOD や MODパックなどを探せます。"
+      },
+      "downloads": {
+        "title": "ダウンロード",
+        "body": "ダウンロードの進捗と履歴を確認できます。"
+      },
+      "settings": {
+        "title": "設定",
+        "body": "Java、メモリ、外観を調整します。"
+      }
     }
   },
   "notifications": {
@@ -121,7 +147,27 @@
     "resource.versionMissing": "先に Minecraft をインストールするか、互換性のあるインスタンスを作成してください。",
     "resource.installAfterCreate": "インスタンスの作成は完了しましたが、リソースのインストールに失敗しました。リソースのインストールを再試行してください。",
     "resource.sourceUnsupported": "このソースではインストール先の自動選択にまだ対応していません。先に互換性のあるインスタンスを作成してください。",
+    "discover.requestInvalid": "検索リクエストが無効です。フィルターを変更して再試行してください。",
+    "discover.pageLimit": "検索結果は最初の 10,000 件まで表示されます。範囲を絞って他の結果を表示してください。",
+    "discover.versionPageLimit": "それより前のバージョンはプロジェクトページで確認してください。",
+    "discover.projectNotFound": "このプロジェクトまたはバージョンは存在しません。",
+    "discover.modrinthUnreachable": "Modrinth に接続できません。ネットワークを確認して再試行してください。",
+    "discover.modrinthRateLimited": "Modrinth へのリクエストが多すぎます。しばらくしてから再試行してください。",
+    "discover.modrinthFailed": "Modrinth がリクエストを完了できませんでした。再試行してください。",
+    "discover.curseforgeUnreachable": "CurseForge に接続できません。ネットワークを確認して再試行してください。",
+    "discover.curseforgeRateLimited": "CurseForge へのリクエストが多すぎます。しばらくしてから再試行してください。",
+    "discover.curseforgeRefused": "CurseForge がリクエストを拒否しました。自分の API Key と権限を確認してください。",
+    "discover.curseforgeFailed": "CurseForge がリクエストを完了できませんでした。再試行してください。",
     "resource.loaderUnavailable": "このゲームバージョンで利用できるローダーバージョンがありません。別のゲームバージョンを選択してください。",
+    "resource.manualDownload": "ランチャーはこの CurseForge ファイルをダウンロードできません。CurseForge のページから手動でダウンロードし、リソースフォルダーに入れてください。",
+    "resource.dependencyIncompatible": "インスタンスで互換性のないプロジェクト {{project}} が有効になっています。先に無効化してから、このリソースをインストールしてください。ファイルは変更されていません。",
+    "resource.dependencyLimit": "必須の依存関係グラフが大きすぎるか階層が深すぎるため、安全にインストールできません。ファイルは変更されていません。",
+    "resource.dependencyCycle": "必須の依存関係に循環（{{project}} を含む）があるため、インストールを続行できません。ファイルは変更されていません。",
+    "resource.dependencyUnavailable": "必須の依存関係「{{name}}」には、このゲームバージョンとローダーに対応するファイルがないか、検証できませんでした。ファイルは変更されていません。",
+    "resource.dependencyConflict": "必須の依存関係でバージョンまたはファイル名が競合しているため、安全にインストールできません。ファイルは変更されていません。",
+    "resource.dependencyInvalid": "必須の依存関係を検証できないか、このクライアントインスタンスに対応していません。ファイルは変更されていません。",
+    "resource.dependencyInstallFirst": "このリソースには別カテゴリの「{{name}}」が必要です。先に「{{name}}」をこのインスタンスへインストールしてから再試行してください。ファイルは変更されていません。",
+    "resource.dependencyManualDownload": "必須の依存関係「{{name}}」（{{file}}）を自動ダウンロードできません。作者がランチャーによるダウンロードを許可していないか、CurseForge がダウンロード URL を提供していません。{{url}} から {{file}} を手動でダウンロードし、インスタンスの {{folder}} フォルダーに配置してから再試行してください。ファイルは変更されていません。",
     "loader.optifineInvalid": "選択したファイルは有効な OptiFine インストーラー JAR ではありません。",
     "loader.optifineVersionMismatch": "選択した OptiFine インストーラーは Minecraft {{installer}} 用ですが、対象バージョンは {{expected}} です。",
     "loader.optifineOnlineUnavailable": "OptiFine はオンラインでインストールできません。ダウンロードに Voxelight が検証できるチェックサムがないためです。optifine.net からインストーラーをダウンロードし、JAR をインポートしてください。",
@@ -132,10 +178,26 @@
     "loader.switchBackupNoSpace": "インスタンスをバックアップできませんでした。ランチャーのバックアップを保存するドライブの空き容量は {{available}} MB ですが、約 {{needed}} MB 必要です。ローダーは変更されていません。",
     "loader.switchBackupChanged": "バックアップ中にインスタンスのファイルが変更されたため、バックアップできませんでした。これらのファイルを使っているプログラムを閉じてから再試行してください。ローダーは変更されていません。",
     "instance.baseVersionUnknown": "このインスタンスのベース Minecraft バージョンを特定できません。対応するバージョンプロファイルが存在するか確認してください。",
+    "gameFolder.notFound": "そのゲームフォルダーはリストにありません。設定で追加し直してください。",
+    "gameFolder.unsupported": "このフォルダーには versions ディレクトリがなく、空でもないため、ゲームフォルダーとして追加できません。",
+    "gameFolder.unavailable": "ゲームフォルダーを開けませんでした：{{reason}}",
+    "instance.sharedRootRequired": "このインスタンスはゲームフォルダーとゲームディレクトリを共有しています。バックアップ、復元、エクスポート、ローダーの切り替え、MODパックの更新には専用のゲームディレクトリが必要です。先にこのインスタンスへ割り当ててください。",
+    "instance.deleteConfirmRequired": "インスタンスフォルダーを削除するには明示的な確認が必要です。",
+    "instance.folderUnsafe": "このフォルダーはランチャーが管理するインスタンスフォルダーではないため、削除されませんでした。",
+    "instance.folderNameInvalid": "表示可能な文字を 1～64 文字使用してください。名前にパス区切り文字や Windows の予約名を含めることはできず、末尾をドットまたは空白にすることもできません。",
+    "instance.folderNameTaken": "この名前のインスタンスフォルダーはゲームフォルダーにすでに存在します。別の名前を選んでください。",
+    "instance.createUnsupportedLoader": "インスタンスの作成にはこのローダーを使用できません。代わりにインストーラーをインポートしてください。",
+    "instance.isolationUnsupported": "ゲームディレクトリを切り替えられるのは、標準のバージョンフォルダー形式のインスタンスだけです。",
+    "instance.isolationCopyOnly": "ワールドをコピーできるのは、専用ゲームディレクトリへ切り替えるときだけです。",
+    "instance.convertUnsupported": "変換できるのは、ランチャーが管理するインスタンスフォルダーだけです。",
+    "instance.convertNotNeeded": "このインスタンスはすでに標準のバージョンフォルダーです。",
+    "instance.conversionNotPending": "復旧が必要な中断されたインスタンス変換はありません。",
     "server.importArgsFileMismatch": "選択した引数ファイルはインポートしたサーバー内容に含まれていません。",
     "resource.manifestUnavailable": "Minecraft のバージョン一覧を読み込めませんでした。ネットワーク接続を確認して再試行してください。",
     "version.loaderReinstall": "{{id}} のバージョンプロファイルが破損しています。ランチャーで同じゲームバージョンとローダーを再インストールしてください。ワールドや MOD は置き換えられません。",
-    "version.profileConflict": "取得元を検証できなかったため、{{id}} の既存プロファイルを保持しました。まず versions フォルダ内の該当 JSON をバックアップして移動したうえで、元のバージョンまたはローダーを再インストールしてください。",
+    "version.loaderArtifactMissing": "ローダーのインストーラーが生成したファイルが不足しているか破損しています。ランチャーで該当のローダーを再インストールしてください（例：インスタンスページから）。ワールドや MOD は置き換えられません。",
+    "version.profileConflict": "{{id}} のバージョンプロファイルを更新中にファイルが変更されたため、既存のファイルを保持しました。このゲームディレクトリを使用している他のランチャーを閉じてから再試行してください。",
+    "version.offlineUnverified": "{{id}} の既存バージョンプロファイルを保持しましたが、オフライン起動の前に一度インターネットに接続して Mojang の公式メタデータを取得・検証する必要があります。",
     "download.cancelled": "インストールをキャンセルしました。",
     "instance.running": "このインスタンスはすでに実行中です。二重起動しないでください。",
     "install.gameRunning": "同じゲームディレクトリのゲームが実行中です。バージョンやローダーをインストールする前にゲームを終了してください。",
@@ -214,7 +276,34 @@
     "assistant.modelRequired": "先に「設定 → Lumen & MCP」でモデル名を入力してください。",
     "assistant.invalidBaseUrl": "Lumen API ベース URL には HTTPS、またはローカルループバック HTTP（127.0.0.1 / localhost）を使用してください。",
     "assistant.providerError": "設定された AI サービスからエラーが返されました。",
-    "assistant.emptyMessage": "送信する前にメッセージを入力してください。"
+    "assistant.emptyMessage": "送信する前にメッセージを入力してください。",
+    "instance.deleteDependants": "次のインスタンスがこのバージョンフォルダーを継承しているため削除できません：{{instances}}。先にこれらのインスタンスを削除するか、このバージョンを残してください。",
+    "instance.officialVersionName": "その名前は正式な Minecraft バージョンです。公式 ID と同じ名前で継承元が異なるバージョンフォルダーは起動できないため、別の名前を選んでください。",
+    "instance.loaderSwitchShared": "このインスタンスのバージョンフォルダーは共有されています。公式の Minecraft バージョンか、単独で完結したバージョンであるか、ほかのインスタンスが継承しています。その場でローダーを切り替えるとそれらも変わってしまうため、インスタンスは変更されていません。代わりに、使いたいローダーで新しいインスタンスを作成してください。",
+    "instance.loaderSwitchInstallerFolder": "このインスタンスは、ローダーのインストーラーが作成したバージョンフォルダーです（そのローダーのバージョン名が付いています）。同じローダーをもう一度インストールすると（たとえばそのローダーで別のインスタンスを作成またはインポートしたとき）、バージョンプロファイルが上書きされるため、その場でローダーを切り替えることはできません。インスタンスは変更されていません。「インスタンスをコピー」でコピーを作成してコピー側でローダーを切り替えるか、使いたいローダーで新しいインスタンスを作成してください。",
+    "backup.kindMismatch": "このバックアップは別の形式のインスタンス（たとえば標準のバージョンフォルダーへ変換する前）から作成されたため、その場で復元できません。インスタンスは変更されていません。バックアップ ZIP を新規インスタンスとしてインポートできます。",
+    "instance.recycleFailed": "フォルダーをごみ箱へ移動できませんでした：{{reason}}。何も削除されていません。",
+    "instance.recycleUnavailable": "このフォルダーはごみ箱へ移動できません：{{reason}}。何も削除されていません。完全に削除する場合は、別途確認が必要な完全削除を使用してください。",
+    "instance.launchBlocked": "このインスタンスは起動できません。{{reason}}",
+    "gameFolder.nested": "ゲームフォルダーを別の設定済みゲームフォルダーの中に置くことはできません。独立したフォルダーを選んでください。",
+    "gameFolder.dataDirectory": "ランチャー自身のデータディレクトリはゲームフォルダーにできません。別のフォルダーを選んでください。"
+  },
+  "errorReasons": {
+    "recycle": {
+      "networkShare": "ネットワーク共有上にあります",
+      "noRecycleBin": "このドライブにはごみ箱がありません",
+      "unknownDrive": "保存先のドライブを特定できません",
+      "pathTooLong": "パスが長すぎてごみ箱で扱えません",
+      "unsupportedPath": "パスを安全にごみ箱へ渡せません",
+      "unsupportedSystem": "このシステムはごみ箱に対応していません",
+      "shellError": "Windows がエラー {{code}} を返しました",
+      "aborted": "操作がキャンセルされました",
+      "unknown": "予期しないエラーが発生しました"
+    },
+    "gameFolder": {
+      "invalidPath": "このパスは使用できません",
+      "openFailed": "システムで開けませんでした"
+    }
   },
   "assistant": {
     "title": "Lumen",
@@ -222,6 +311,47 @@
     "notConfigured": "モデル未設定",
     "configure": "設定する",
     "toolCount": "{{count}} ツール",
+    "tools": {
+      "list_instances": "インスタンス一覧",
+      "list_installed_versions": "インストール済みバージョン一覧",
+      "list_accounts": "アカウント一覧",
+      "get_launcher_config": "ランチャー設定を読み取る",
+      "get_memory_overview": "メモリ概要を読み取る",
+      "detect_java_runtimes": "Java ランタイムを検出",
+      "list_remote_versions": "リモートバージョン一覧",
+      "list_loader_versions": "ローダーバージョン一覧",
+      "list_download_tasks": "ダウンロードタスク一覧",
+      "list_running_games": "実行中のゲーム一覧",
+      "list_instance_resources": "インスタンスのリソース一覧",
+      "list_instance_worlds": "インスタンスのワールド一覧",
+      "list_world_datapacks": "ワールドのデータパック一覧",
+      "list_instance_backups": "インスタンスのバックアップ一覧",
+      "read_instance_log": "インスタンスログを読み取る",
+      "diagnose_instance": "インスタンスを診断",
+      "search_modrinth": "Modrinth を検索",
+      "list_multiplayer_servers": "マルチプレイサーバー一覧",
+      "list_managed_servers": "管理サーバー一覧",
+      "read_managed_server_logs": "管理サーバーログを読み取る",
+      "check_network_environment": "ネットワーク環境を確認",
+      "detect_local_proxies": "ローカルプロキシを検出",
+      "toggle_instance_resource": "インスタンスリソースを切り替え",
+      "toggle_world_datapack": "ワールドのデータパックを切り替え",
+      "create_instance": "インスタンスを作成",
+      "update_instance_notes": "インスタンスのメモを更新",
+      "update_instance_settings": "インスタンス設定を更新",
+      "backup_instance": "インスタンスをバックアップ",
+      "clone_instance": "インスタンスを複製",
+      "change_instance_loader": "インスタンスのローダーを変更",
+      "install_minecraft_version": "Minecraft バージョンをインストール",
+      "install_modrinth_resource": "Modrinth リソースをインストール",
+      "launch_instance": "インスタンスを起動",
+      "stop_running_game": "ゲームを停止",
+      "retry_failed_downloads": "失敗したダウンロードを再試行",
+      "clear_unfinished_downloads": "未完了のダウンロードを消去",
+      "save_multiplayer_server": "マルチプレイサーバーを保存",
+      "start_managed_server": "管理サーバーを起動",
+      "stop_managed_server": "管理サーバーを停止"
+    },
     "emptyReady": "ランチャー構成について Lumen に質問するか、下の定型プロンプトを選んでください。",
     "emptyUnconfigured": "Lumen を有効にするには、「設定 → Lumen & MCP」でプロバイダー、モデル、API キー（またはローカルループバックエンドポイント）を設定してください。",
     "prompts": {

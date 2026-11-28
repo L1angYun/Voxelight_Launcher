@@ -49,7 +49,7 @@ impl ResourceKind {
         }
     }
 
-    fn folder(self) -> &'static str {
+    pub(crate) fn folder(self) -> &'static str {
         match self {
             Self::Mod => "mods",
             Self::ResourcePack => "resourcepacks",
@@ -98,49 +98,53 @@ struct Project {
 }
 
 #[derive(Clone, Deserialize)]
-struct Version {
-    id: String,
+pub(crate) struct Version {
+    pub(crate) id: String,
     #[serde(default)]
-    version_type: String,
+    pub(crate) version_type: String,
     #[serde(default)]
-    name: String,
+    pub(crate) name: String,
     #[serde(default)]
-    version_number: String,
+    pub(crate) version_number: String,
     #[serde(default)]
-    project_id: String,
+    pub(crate) project_id: String,
     #[serde(default)]
-    date_published: String,
-    game_versions: Vec<String>,
+    pub(crate) date_published: String,
+    pub(crate) game_versions: Vec<String>,
     #[serde(default)]
-    loaders: Vec<String>,
+    pub(crate) loaders: Vec<String>,
     #[serde(default)]
-    dependencies: Vec<Dependency>,
+    pub(crate) dependencies: Vec<Dependency>,
     #[serde(default)]
-    environment: String,
-    files: Vec<ResourceFile>,
+    pub(crate) environment: String,
+    pub(crate) files: Vec<ResourceFile>,
 }
 
 #[derive(Clone, Deserialize)]
-struct Dependency {
-    dependency_type: String,
-    project_id: Option<String>,
-    version_id: Option<String>,
+pub(crate) struct Dependency {
+    pub(crate) dependency_type: String,
+    pub(crate) project_id: Option<String>,
+    pub(crate) version_id: Option<String>,
     #[serde(default)]
-    file_name: Option<String>,
+    pub(crate) file_name: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
-struct ResourceFile {
-    filename: String,
-    url: String,
-    primary: bool,
-    size: u64,
-    hashes: FileHashes,
+pub(crate) struct ResourceFile {
+    pub(crate) filename: String,
+    pub(crate) url: String,
+    pub(crate) primary: bool,
+    pub(crate) size: u64,
+    pub(crate) hashes: FileHashes,
 }
 
 #[derive(Clone, Deserialize)]
-struct FileHashes {
-    sha512: String,
+pub(crate) struct FileHashes {
+    pub(crate) sha512: String,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize)]
@@ -153,6 +157,12 @@ pub struct ResourceInstall {
     pub warning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dependency_count: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub changed_count: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already_installed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,7 +185,7 @@ impl ResourceProgress {
         }
     }
 
-    fn emit(
+    pub(crate) fn emit(
         &self,
         state: &LauncherState,
         stage: &str,
@@ -229,20 +239,15 @@ pub(crate) fn resource_directory(
     kind: ResourceKind,
 ) -> Result<PathBuf, String> {
     validate_id(version_id)?;
-    let instance = match instance_id {
-        Some(id) => {
-            let instance = data
-                .instances
-                .iter()
-                .find(|item| item.id == id)
-                .ok_or("目标实例不存在，请重新选择实例")?;
-            if instance.version_id != version_id {
-                return Err("所选实例和 Minecraft 版本不一致，请重新选择".into());
-            }
-            Some(instance)
+    // A request that names only a version still means the instance of that
+    // version, exactly like launch. Otherwise a shared instance would receive
+    // files in the version folder (or the reverse) depending on a global flag.
+    let instance = crate::minecraft::target_instance(data, version_id, instance_id)?;
+    if let Some(instance) = instance {
+        if instance.version_id != version_id {
+            return Err("所选实例和 Minecraft 版本不一致，请重新选择".into());
         }
-        None => None,
-    };
+    }
     let game_directory = crate::minecraft::game_directory(&data.config, version_id, instance)?;
     reject_links(&game_directory)?;
     safe_join(&game_directory, kind.folder())
@@ -326,9 +331,21 @@ pub(crate) fn test_endpoints() -> Option<TestEndpoints> {
 /// A test's stand-in for the Minecraft and loader install (never in a release build).
 pub(crate) fn prepared_version() -> Option<String> {
     #[cfg(test)]
-    return test_endpoints().and_then(|endpoints| endpoints.prepared_version);
+    return test_endpoints().and_then(|endpoints| endpoints.prepared_version).inspect(|_| {
+        if let Some(write) = PREPARED_INSTALL.with(|hook| hook.borrow_mut().take()) {
+            write();
+        }
+    });
     #[cfg(not(test))]
     None
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What the stand-in install writes to the game folder, as the real
+    /// install would (for example a loader folder it creates).
+    pub(crate) static PREPARED_INSTALL: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The Modrinth API base.
@@ -373,6 +390,11 @@ pub(super) fn client(state: &LauncherState, download: bool) -> Result<reqwest::C
         .map_err(|_| "无法建立 Modrinth 网络客户端".into())
 }
 
+pub(crate) const MODRINTH_UNREACHABLE: &str = "无法连接 Modrinth，请检查网络后重试";
+pub(crate) const MODRINTH_READ_FAILED: &str = "读取 Modrinth 响应失败，请重试";
+pub(crate) const MODRINTH_RATE_LIMITED: &str = "Modrinth 请求过于频繁，请稍后重试";
+pub(crate) const MODRINTH_NOT_FOUND: &str = "Modrinth 项目或版本不存在";
+
 async fn api_json<T: DeserializeOwned>(
     client: &reqwest::Client,
     endpoint: &str,
@@ -384,15 +406,15 @@ async fn api_json<T: DeserializeOwned>(
         .send()
         .await
         .map_err(|error| crate::network::proxy_auth_code(&error)
-            .unwrap_or_else(|| "无法连接 Modrinth，请检查网络后重试".into()))?;
+            .unwrap_or_else(|| MODRINTH_UNREACHABLE.into()))?;
     if response.status() == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED {
         return Err(crate::network::Error::Authentication.code().into());
     }
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return Err("Modrinth 请求过于频繁，请稍后重试".into());
+        return Err(MODRINTH_RATE_LIMITED.into());
     }
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err("Modrinth 项目或版本不存在".into());
+        return Err(MODRINTH_NOT_FOUND.into());
     }
     if !response.status().is_success() {
         return Err(format!(
@@ -409,7 +431,7 @@ async fn api_json<T: DeserializeOwned>(
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| "读取 Modrinth 响应失败，请重试")?;
+        let chunk = chunk.map_err(|_| MODRINTH_READ_FAILED)?;
         if bytes.len().saturating_add(chunk.len()) > MAX_METADATA_BYTES {
             return Err("Modrinth 元数据超过处理限制".into());
         }
@@ -511,49 +533,89 @@ fn modrinth_details(
         },
         versions: versions
             .into_iter()
-            .map(|version| {
-                let matches = context.is_some_and(|target| {
-                    (!needs_loader || target.loader.is_some())
-                        && compatible(
-                            &version,
-                            &target.game_version,
-                            target.loader.as_deref().filter(|_| needs_loader),
-                        )
-                });
-                ResourceVersion {
-                    id: version.id,
-                    name: version.name,
-                    version_number: version.version_number,
-                    date_published: version.date_published,
-                    game_versions: version.game_versions,
-                    loaders: version.loaders,
-                    compatible: matches,
-                }
-            })
+            .map(|version| modrinth_version(version, context, needs_loader))
             .collect(),
         dependencies,
     }
 }
 
-#[tauri::command]
-pub async fn get_modrinth_project_details(
-    state: tauri::State<'_, Arc<LauncherState>>,
-    project_id: String,
-    version_id: Option<String>,
-    instance_id: Option<String>,
-    resource_type: String,
-) -> AppResult<ResourceProjectDetails> {
+/// The project drawer shows this many versions before its "load more" action.
+pub(crate) const PROJECT_VERSION_PAGE: usize = 30;
+/// Version paging stops here; older versions stay on the project page.
+pub(crate) const MAX_PROJECT_VERSION_OFFSET: usize = 300;
+
+/// The project details plus whether the source has older versions the drawer
+/// can still request. `details` is flattened, so the initial response keeps its
+/// existing shape.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDetailsPage {
+    #[serde(flatten)]
+    pub details: ResourceProjectDetails,
+    pub has_more_versions: bool,
+}
+
+/// One appended page of project versions.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceVersionPage {
+    pub versions: Vec<ResourceVersion>,
+    pub has_more: bool,
+}
+
+pub(crate) const VERSION_PAGE_LIMIT: &str = "资源版本分页超过上限，请打开项目页面查看更早版本";
+
+pub(crate) fn version_offset(value: Option<u32>) -> AppResult<usize> {
+    let offset = value.unwrap_or(0) as usize;
+    if offset > MAX_PROJECT_VERSION_OFFSET {
+        return Err(expected(VERSION_PAGE_LIMIT));
+    }
+    Ok(offset)
+}
+
+fn modrinth_version(
+    version: Version,
+    context: Option<&ResourceContext>,
+    needs_loader: bool,
+) -> ResourceVersion {
+    let matches = context.is_some_and(|target| {
+        (!needs_loader || target.loader.is_some())
+            && compatible(
+                &version,
+                &target.game_version,
+                target.loader.as_deref().filter(|_| needs_loader),
+            )
+    });
+    ResourceVersion {
+        id: version.id,
+        name: version.name,
+        version_number: version.version_number,
+        date_published: version.date_published,
+        game_versions: version.game_versions,
+        loaders: version.loaders,
+        compatible: matches,
+    }
+}
+
+/// Fetches the project and every version the drawer may page through, using
+/// exactly the same context filter and ordering as the initial details.
+async fn modrinth_details_source(
+    state: &LauncherState,
+    project_id: &str,
+    version_id: Option<&str>,
+    instance_id: Option<&str>,
+    resource_type: &str,
+) -> AppResult<(Project, Vec<Version>, Option<ResourceContext>)> {
     let kind = if resource_type == "modpack" {
         ResourceKind::Mod
     } else {
-        ResourceKind::parse(&resource_type).map_err(expected)?
+        ResourceKind::parse(resource_type).map_err(|error| expected(invalid_request(error)))?
     };
-    identifier(&project_id).map_err(expected)?;
+    identifier(project_id).map_err(|error| expected(invalid_request(error)))?;
     let context = version_id
-        .as_deref()
         .filter(|id| !id.is_empty())
-        .and_then(|id| resource_context(&state, id, instance_id.as_deref()).ok());
-    let api = client(&state, false).map_err(expected)?;
+        .and_then(|id| resource_context(state, id, instance_id).ok());
+    let api = client(state, false).map_err(expected)?;
     let project: Project = api_json(&api, &format!("project/{project_id}"), &[])
         .await
         .map_err(expected)?;
@@ -568,7 +630,7 @@ pub async fn get_modrinth_project_details(
     let filter = context.as_ref().filter(|target| {
         resource_type != "modpack" && (kind != ResourceKind::Mod || target.loader.is_some())
     });
-    let mut versions = if let Some(target) = filter {
+    let versions = if let Some(target) = filter {
         project_versions(
             &api,
             &project.id,
@@ -582,8 +644,104 @@ pub async fn get_modrinth_project_details(
     } else {
         all_project_versions(&api, &project.id).await?
     };
-    versions.truncate(30);
-    Ok(modrinth_details(project, versions, context.as_ref()))
+    Ok((project, versions, context))
+}
+
+pub(crate) async fn modrinth_details_for_state(
+    state: &LauncherState,
+    project_id: String,
+    version_id: Option<String>,
+    instance_id: Option<String>,
+    resource_type: String,
+) -> AppResult<ProjectDetailsPage> {
+    let (project, mut versions, context) = modrinth_details_source(
+        state,
+        &project_id,
+        version_id.as_deref(),
+        instance_id.as_deref(),
+        &resource_type,
+    )
+    .await
+    .map_err(|error| crate::errors::discover_error(crate::errors::DiscoverSource::Modrinth, error))?;
+    let has_more_versions = versions.len() > PROJECT_VERSION_PAGE;
+    versions.truncate(PROJECT_VERSION_PAGE);
+    Ok(ProjectDetailsPage {
+        details: modrinth_details(project, versions, context.as_ref()),
+        has_more_versions,
+    })
+}
+
+pub(crate) async fn modrinth_versions_page(
+    state: &LauncherState,
+    project_id: String,
+    version_id: Option<String>,
+    instance_id: Option<String>,
+    resource_type: String,
+    offset: Option<u32>,
+) -> AppResult<ResourceVersionPage> {
+    let refused = |error| crate::errors::discover_error(crate::errors::DiscoverSource::Modrinth, error);
+    let offset = version_offset(offset).map_err(refused)?;
+    let (project, versions, context) = modrinth_details_source(
+        state,
+        &project_id,
+        version_id.as_deref(),
+        instance_id.as_deref(),
+        &resource_type,
+    )
+    .await
+    .map_err(refused)?;
+    let total = versions.len();
+    let versions: Vec<ResourceVersion> = versions
+        .into_iter()
+        .skip(offset)
+        .take(PROJECT_VERSION_PAGE)
+        .map(|version| {
+            modrinth_version(version, context.as_ref(), project.project_type == "mod")
+        })
+        .collect();
+    let next = offset + versions.len();
+    Ok(ResourceVersionPage {
+        has_more: next < total && next <= MAX_PROJECT_VERSION_OFFSET,
+        versions,
+    })
+}
+
+#[tauri::command]
+pub async fn get_modrinth_project_details(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    project_id: String,
+    version_id: Option<String>,
+    instance_id: Option<String>,
+    resource_type: String,
+) -> AppResult<ProjectDetailsPage> {
+    modrinth_details_for_state(
+        &state,
+        project_id,
+        version_id,
+        instance_id,
+        resource_type,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_modrinth_project_versions(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    project_id: String,
+    version_id: Option<String>,
+    instance_id: Option<String>,
+    resource_type: String,
+    offset: Option<u32>,
+) -> AppResult<ResourceVersionPage> {
+    modrinth_versions_page(
+        &state,
+        project_id,
+        version_id,
+        instance_id,
+        resource_type,
+        offset,
+    )
+    .await
 }
 
 async fn all_project_versions(
@@ -1079,6 +1237,7 @@ pub(crate) struct ResourceTarget {
     pub(crate) directory: PathBuf,
     pub(crate) minecraft: String,
     pub(crate) loader: Option<String>,
+    pub(crate) detected_loader: Option<String>,
 }
 
 pub(crate) fn resource_target(
@@ -1088,11 +1247,12 @@ pub(crate) fn resource_target(
     kind: ResourceKind,
 ) -> AppResult<ResourceTarget> {
     let data = state.snapshot()?;
+    let instance = crate::minecraft::target_instance(&data, version_id, instance_id)?;
     let directory = resource_directory(&data, version_id, instance_id, kind)?;
-    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory))?;
+    let root = crate::minecraft::metadata_root(&data, instance)?;
     let (minecraft, detected_loader) = context_for_version(&root, version_id)?;
     let loader = if kind == ResourceKind::Mod {
-        Some(detected_loader.ok_or_else(|| {
+        Some(detected_loader.clone().ok_or_else(|| {
             AppError::new("resource.loaderRequired")
                 .with_param("versionId", version_id)
                 .with_detail("当前是原版 Minecraft，无法加载模组。请创建或选择带加载器的实例。")
@@ -1104,6 +1264,7 @@ pub(crate) fn resource_target(
         directory,
         minecraft,
         loader,
+        detected_loader,
     })
 }
 
@@ -1145,8 +1306,9 @@ pub(crate) fn resource_context(
     instance_id: Option<&str>,
 ) -> AppResult<ResourceContext> {
     let data = state.snapshot()?;
+    let instance = crate::minecraft::target_instance(&data, version_id, instance_id)?;
     resource_directory(&data, version_id, instance_id, ResourceKind::Mod)?;
-    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory))?;
+    let root = crate::minecraft::metadata_root(&data, instance)?;
     let (game_version, loader) = context_for_version(&root, version_id)?;
     Ok(ResourceContext {
         game_version,
@@ -1180,8 +1342,9 @@ fn target_running(
     instance_id: Option<&str>,
     running: &[crate::processes::RunningGame],
 ) -> bool {
-    let instance =
-        instance_id.and_then(|id| data.instances.iter().find(|instance| instance.id == id));
+    let instance = crate::minecraft::target_instance(data, version_id, instance_id)
+        .ok()
+        .flatten();
     let directory = crate::minecraft::game_directory(&data.config, version_id, instance)
         .and_then(|path| crate::processes::canonical_game_directory(&path)).ok();
     running.iter().any(|game| {
@@ -1213,8 +1376,8 @@ pub(crate) fn require_target_stopped(
     instance_id: Option<&str>,
 ) -> AppResult<()> {
     let data = state.snapshot()?;
-    let instance = instance_id.map(|id| data.instances.iter().find(|value| value.id == id)
-        .ok_or("实例不存在")).transpose().map_err(|error| crate::errors::expected(error))?;
+    let instance = crate::minecraft::target_instance(&data, version_id, instance_id)
+        .map_err(|error| crate::errors::expected(error))?;
     let directory = crate::minecraft::game_directory(&data.config, version_id, instance)?;
     state.games.require_directory_stopped(&directory, instance_id, false)?;
     Ok(())
@@ -1225,10 +1388,14 @@ pub(crate) fn target_candidates(
 ) -> AppResult<Vec<crate::resource_targets::TargetCandidate>> {
     let data = state.snapshot()?;
     let running = state.games.snapshot()?;
-    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory)).ok();
     let mut candidates = Vec::new();
-    for instance in &data.instances {
-        let context = root.as_deref().and_then(|root| version_context(root, &instance.version_id).ok());
+    // Only the active folder's visible instances. Each one resolves its profile
+    // in its own game folder instead of wherever the active root points.
+    for instance in crate::commands::active_folder_instances(&data) {
+        let instance_root = crate::minecraft::metadata_root(&data, Some(&instance)).ok();
+        let context = instance_root
+            .as_deref()
+            .and_then(|root| version_context(root, &instance.version_id).ok());
         candidates.push(crate::resource_targets::TargetCandidate {
             kind: "instance".into(),
             instance_id: Some(instance.id.clone()),
@@ -1240,13 +1407,23 @@ pub(crate) fn target_candidates(
             running: target_running(&data, &instance.version_id, Some(&instance.id), &running),
         });
     }
+    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory)).ok();
     let instance_versions: HashSet<_> = data
         .instances
         .iter()
         .map(|instance| instance.version_id.as_str())
         .collect();
+    // Loader profiles installed only to publish a named instance are parents,
+    // not separate targets, even when no library record was created for them.
+    let derived_parents: HashSet<&str> = data
+        .instances
+        .iter()
+        .filter_map(|instance| instance.derived_from.as_deref())
+        .collect();
     for version in crate::minecraft::scan_versions(&data.config) {
-        if instance_versions.contains(version.id.as_str()) {
+        if instance_versions.contains(version.id.as_str())
+            || derived_parents.contains(version.id.as_str())
+        {
             continue;
         }
         let context = root.as_deref().and_then(|root| version_context(root, &version.id).ok());
@@ -1536,7 +1713,7 @@ pub(crate) async fn run_resource_request(
     Ok(match (request.source, existing) {
         (ResourceSource::Modrinth, true) => ResourceOutcome::Installed(install_modrinth(state, app, task, request).await?),
         (ResourceSource::Curseforge, true) => {
-            ResourceOutcome::Installed(crate::curseforge::install_curseforge(state, task, request).await?)
+            ResourceOutcome::Installed(crate::curseforge::install_curseforge(state, app, task, request).await?)
         }
         (ResourceSource::Modrinth, false) => ResourceOutcome::Created(create_with_modrinth(state, app, task, request).await?),
         (ResourceSource::Curseforge, false) => {
@@ -1556,11 +1733,14 @@ pub(crate) async fn run_queued_resource(app: AppHandle, state: Arc<LauncherState
     }
 }
 
+/// `derived_from` is the loader folder the create's own install produced; it
+/// is hidden behind the new instance like the window's create flow does.
 pub(crate) async fn create_resource_instance_then_install<F, Fut>(
     state: &LauncherState,
     task: &str,
     name: String,
     version_id: String,
+    derived_from: Option<String>,
     install: F,
 ) -> AppResult<ResourceInstanceResult>
 where
@@ -1569,7 +1749,14 @@ where
 {
     // This is the registration boundary: a cancelled loader never leaves an instance.
     state.control.checkpoint().await?;
-    let instance = crate::commands::create_instance_inner(state, name, version_id)?;
+    // Create a standard version folder with its own profile, exactly like the
+    // window's create flow, instead of a launcher-managed instances/<uuid>.
+    let instance = crate::commands::create_instance_from_version_impl(
+        state,
+        Some(name),
+        version_id,
+        derived_from,
+    )?;
     // From here a retry, also one after a crash, installs into this instance
     // instead of creating a second one. The journal is saved at once.
     if let Some(crate::downloads::RetryRequest::Resource { request }) = state.control.retry_of(task) {
@@ -1676,6 +1863,7 @@ async fn create_with_modrinth(
         .await?;
         state.control.checkpoint().await?;
         progress.stage(state, "resource-loader", "安装 Minecraft 及加载器");
+        let parents = crate::commands::LoaderParents::before_active_install(state);
         let version_id = match prepared_version() {
             Some(version_id) => version_id,
             None => {
@@ -1704,7 +1892,9 @@ async fn create_with_modrinth(
             task,
             name.clone(),
             version_id.clone(),
+            parents.derived_from(&version_id, &name),
             move |instance| async move {
+                let version_id = instance.version_id.clone();
                 require_resource_stopped(&install_state, &version_id, Some(&instance.id))?;
                 let target =
                     resource_target(&install_state, &version_id, Some(&instance.id), kind)?;
@@ -1810,6 +2000,279 @@ async fn select_modrinth_install_version(
     Ok(version)
 }
 
+pub(crate) const SEARCH_PAGE_SIZE: u32 = 24;
+pub(crate) const SEARCH_LIMIT_MAX: u32 = 50;
+/// CurseForge indexes search results from zero and rejects index + pageSize
+/// above 10000; Modrinth paging is bounded the same way for the launcher.
+pub(crate) const SEARCH_INDEX_LIMIT: u64 = 10_000;
+pub(crate) const SEARCH_PAGE_LIMIT: &str = "搜索分页超过 10000 项限制";
+/// Prefix of a Discover request refused before anything was sent; the rest
+/// names the invalid part.
+pub(crate) const DISCOVER_REQUEST_INVALID: &str = "资源搜索请求无效：";
+const MOD_LOADER_CATEGORIES: [&str; 4] = ["fabric", "forge", "neoforge", "quilt"];
+
+pub(crate) fn invalid_request(reason: impl std::fmt::Display) -> String {
+    format!("{DISCOVER_REQUEST_INVALID}{reason}")
+}
+
+pub(crate) fn search_limit(value: Option<u32>) -> Result<u32, String> {
+    let limit = value.unwrap_or(SEARCH_PAGE_SIZE);
+    if !(1..=SEARCH_LIMIT_MAX).contains(&limit) {
+        return Err(invalid_request(format!("每页数量须为 1 到 {SEARCH_LIMIT_MAX}")));
+    }
+    Ok(limit)
+}
+
+pub(crate) fn search_offset(value: Option<u32>, limit: u32) -> Result<u32, String> {
+    let offset = value.unwrap_or(0);
+    if u64::from(offset) + u64::from(limit) > SEARCH_INDEX_LIMIT {
+        return Err(SEARCH_PAGE_LIMIT.into());
+    }
+    Ok(offset)
+}
+
+/// The next index after a page of `received` raw hits. A source that answers
+/// with more than it was asked for does not move paging past the request.
+pub(crate) fn next_search_offset(offset: u32, limit: u32, received: usize) -> u32 {
+    offset + u32::try_from(received).unwrap_or(u32::MAX).min(limit)
+}
+
+fn modrinth_sort(value: Option<&str>) -> Result<&'static str, String> {
+    match value.unwrap_or("relevance") {
+        "relevance" => Ok("relevance"),
+        "downloads" => Ok("downloads"),
+        "follows" => Ok("follows"),
+        "newest" => Ok("newest"),
+        "updated" => Ok("updated"),
+        _ => Err(invalid_request("不支持的 Modrinth 排序方式")),
+    }
+}
+
+/// The CurseForge `sortField` and `sortOrder` of a Discover sort. The keys
+/// Modrinth shares (downloads, updated) mean the same order on both sources;
+/// names read from A to Z, every other order is largest or newest first.
+pub(crate) fn curseforge_sort(value: Option<&str>) -> Result<(u32, &'static str), String> {
+    match value.unwrap_or("downloads") {
+        "featured" => Ok((1, "desc")),
+        "popularity" => Ok((2, "desc")),
+        // The pre-fix keys stay accepted for callers of the older command shape.
+        "updated" | "lastUpdated" => Ok((3, "desc")),
+        "name" => Ok((4, "asc")),
+        "downloads" | "totalDownloads" => Ok((6, "desc")),
+        _ => Err(invalid_request("不支持的 CurseForge 排序方式")),
+    }
+}
+
+/// Modrinth facets for a search. Discover asks for `any_loader`: a mod search
+/// without one of the four installable loaders still keeps to projects for one
+/// of them. The assistant's search keeps its own unfiltered facets.
+fn modrinth_search_facets(
+    project_type: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    any_loader: bool,
+) -> Result<String, String> {
+    let mut facets: Vec<Vec<String>> = vec![vec![format!("project_type:{project_type}")]];
+    if let Some(version) = game_version.map(str::trim).filter(|v| !v.is_empty()) {
+        facets.push(vec![format!("versions:{version}")]);
+    }
+    if project_type == "mod" {
+        match loader
+            .map(str::trim)
+            .filter(|v| MOD_LOADER_CATEGORIES.contains(v))
+        {
+            Some(l) => facets.push(vec![format!("categories:{l}")]),
+            None if any_loader => facets.push(
+                MOD_LOADER_CATEGORIES
+                    .iter()
+                    .map(|l| format!("categories:{l}"))
+                    .collect(),
+            ),
+            None => {}
+        }
+    }
+    serde_json::to_string(&facets).map_err(|e| e.to_string())
+}
+
+/// A validated Discover search: the parameters to send and the first index
+/// they ask for. Building it sends nothing.
+#[derive(Debug)]
+pub(crate) struct SearchQuery {
+    pub(crate) params: Vec<(String, String)>,
+    pub(crate) offset: u32,
+    pub(crate) limit: u32,
+}
+
+impl SearchQuery {
+    #[cfg(test)]
+    pub(crate) fn param(&self, name: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+pub(crate) fn modrinth_search_query(
+    query: &str,
+    project_type: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<&str>,
+) -> Result<SearchQuery, String> {
+    if !matches!(project_type, "mod" | "resourcepack" | "shader" | "modpack") {
+        return Err(invalid_request("不支持的资源类型"));
+    }
+    if query.chars().count() > 500 || query.chars().any(char::is_control) {
+        return Err(invalid_request("搜索内容过长或包含无效字符"));
+    }
+    let limit = search_limit(limit)?;
+    let offset = search_offset(offset, limit)?;
+    let index = modrinth_sort(sort)?;
+    let facets = modrinth_search_facets(project_type, game_version, loader, true)?;
+    Ok(SearchQuery {
+        params: vec![
+            ("query".to_owned(), query.to_owned()),
+            ("limit".to_owned(), limit.to_string()),
+            ("offset".to_owned(), offset.to_string()),
+            ("index".to_owned(), index.to_owned()),
+            ("facets".to_owned(), facets),
+        ],
+        offset,
+        limit,
+    })
+}
+
+#[derive(Serialize)]
+pub struct ModrinthSearchProject {
+    pub project_id: String,
+    pub slug: String,
+    pub title: String,
+    pub description: String,
+    pub icon_url: Option<String>,
+    pub downloads: u64,
+    pub author: String,
+    pub project_type: String,
+    pub versions: Vec<String>,
+    pub categories: Vec<String>,
+}
+
+/// One Discover page. `next_offset` counts the hits the source returned, so
+/// the next page starts after them even when the page shows fewer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModrinthSearchPage {
+    pub hits: Vec<ModrinthSearchProject>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_hits: Option<u64>,
+    pub next_offset: u32,
+}
+
+fn string_list(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) async fn search_modrinth_page(
+    state: &LauncherState,
+    query: &str,
+    project_type: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<&str>,
+) -> Result<ModrinthSearchPage, String> {
+    let request =
+        modrinth_search_query(query, project_type, game_version, loader, offset, limit, sort)?;
+    let api = client(state, false)?;
+    let body: Value = api_json(&api, "search", &request.params).await?;
+    let total_hits = body.get("total_hits").and_then(Value::as_u64);
+    let raw = body["hits"].as_array().cloned().unwrap_or_default();
+    let next_offset = next_search_offset(request.offset, request.limit, raw.len());
+    let hits = raw
+        .into_iter()
+        .map(|hit| ModrinthSearchProject {
+            project_id: hit["project_id"].as_str().unwrap_or_default().to_owned(),
+            slug: hit["slug"].as_str().unwrap_or_default().to_owned(),
+            title: hit["title"].as_str().unwrap_or_default().to_owned(),
+            description: hit["description"].as_str().unwrap_or_default().to_owned(),
+            icon_url: hit["icon_url"].as_str().map(str::to_owned),
+            downloads: hit["downloads"].as_u64().unwrap_or(0),
+            author: hit["author"].as_str().unwrap_or_default().to_owned(),
+            project_type: hit["project_type"].as_str().unwrap_or_default().to_owned(),
+            versions: string_list(&hit["versions"]),
+            categories: string_list(&hit["categories"]),
+        })
+        .collect();
+    Ok(ModrinthSearchPage {
+        hits,
+        total_hits,
+        next_offset,
+    })
+}
+
+/// What the Discover command runs: the page, or a failure with a Discover code.
+pub(crate) async fn search_modrinth_for_discover(
+    state: &LauncherState,
+    query: &str,
+    project_type: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<&str>,
+) -> AppResult<ModrinthSearchPage> {
+    search_modrinth_page(
+        state,
+        query,
+        project_type,
+        game_version,
+        loader,
+        offset,
+        limit,
+        sort,
+    )
+    .await
+    .map_err(|error| {
+        crate::errors::discover_failure(crate::errors::DiscoverSource::Modrinth, error)
+    })
+}
+
+#[tauri::command]
+pub async fn search_modrinth(
+    state: tauri::State<'_, Arc<LauncherState>>,
+    query: String,
+    resource_type: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<String>,
+) -> AppResult<ModrinthSearchPage> {
+    search_modrinth_for_discover(
+        &state,
+        &query,
+        &resource_type,
+        game_version.as_deref(),
+        loader.as_deref(),
+        offset,
+        limit,
+        sort.as_deref(),
+    )
+    .await
+}
+
 pub(crate) async fn search_modrinth_for_state(
     state: &LauncherState,
     query: &str,
@@ -1821,19 +2284,7 @@ pub(crate) async fn search_modrinth_for_state(
     if !matches!(project_type, "mod" | "resourcepack" | "shader" | "modpack") {
         return Err("不支持的资源类型".into());
     }
-    let mut facets: Vec<Vec<String>> = vec![vec![format!("project_type:{project_type}")]];
-    if let Some(version) = game_version.map(str::trim).filter(|v| !v.is_empty()) {
-        facets.push(vec![format!("versions:{version}")]);
-    }
-    if project_type == "mod" {
-        if let Some(l) = loader
-            .map(str::trim)
-            .filter(|v| matches!(*v, "fabric" | "forge" | "neoforge" | "quilt"))
-        {
-            facets.push(vec![format!("categories:{l}")]);
-        }
-    }
-    let facets_json = serde_json::to_string(&facets).map_err(|e| e.to_string())?;
+    let facets_json = modrinth_search_facets(project_type, game_version, loader, false)?;
     let limit_str = limit.clamp(1, 20).to_string();
     let api = client(state, false)?;
     let query_params = [
@@ -2562,12 +3013,12 @@ mod tests {
         ]);
         ordered(&section(cf, "pub(crate) async fn create_with_pinned_file("), &[
             "with_reserved_resource_task(", "let key = service_key(", "get_pinned_file(",
-            "validate_pinned_creation_pair(", "can_create_pinned(", "install_loader_inner(",
+            "validate_pinned_creation_pair(", "prepare_install(", "install_loader_inner(",
             "create_resource_instance_then_install(", "require_resource_stopped(", "resource_target(",
-            "resource_transactions::require_no_pending(", "let path = download(",
+            "resource_transactions::require_no_pending(", "install_prepared(",
         ]);
         ordered(&section(mr, "async fn create_resource_instance_then_install<"), &[
-            "state.control.checkpoint().await", "create_instance_inner(", "into_instance(request, &instance)",
+            "state.control.checkpoint().await", "create_instance_from_version_impl(", "into_instance(request, &instance)",
             "state.control.set_retry(task,", "state.control.checkpoint().await", "install(instance.clone()).await",
         ]);
     }
@@ -3072,6 +3523,7 @@ mod tests {
             &task,
             "Example".into(),
             "fabric-test".into(),
+            None,
             |_| async { panic!("cancelled install must not start") },
         ));
         let error = result.err().unwrap();
@@ -3098,6 +3550,7 @@ mod tests {
             &task,
             "Example".into(),
             "fabric-test".into(),
+            None,
             move |_| async move {
                 install_state.control.cancel(&install_task);
                 install_state.control.checkpoint().await?;
@@ -3111,7 +3564,7 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(error.params["instanceId"], instances[0].id);
         assert_eq!(error.params["instanceName"], "Example");
-        assert_eq!(error.params["versionId"], "fabric-test");
+        assert_eq!(error.params["versionId"], "Example");
         assert!(Path::new(&instances[0].game_directory).is_dir());
         finish_resource_task(&state, &task, Some(&error));
         assert_eq!(state.control.list().len(), 1);
@@ -3129,6 +3582,7 @@ mod tests {
             &task,
             "Example".into(),
             "fabric-test".into(),
+            None,
             |_| async { Err(expected("磁盘写入失败")) },
         ));
         let error = result.err().unwrap();
@@ -3174,6 +3628,120 @@ mod tests {
     }
 
     #[test]
+    fn m5_a_version_only_resource_target_uses_the_stored_isolation() {
+        let (root, state) = resource_fixture();
+        state
+            .update(|data| {
+                data.instances.push(Instance {
+                    id: "shared-fabric".into(),
+                    name: "Shared Fabric".into(),
+                    version_id: "fabric-test".into(),
+                    game_directory: root.to_string_lossy().into_owned(),
+                    game_folder: root.to_string_lossy().into_owned(),
+                    kind: "version".into(),
+                    isolated: false,
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+        let data = state.snapshot().unwrap();
+        let directory =
+            resource_directory(&data, "fabric-test", None, ResourceKind::Mod).unwrap();
+        assert_eq!(
+            directory,
+            root.join("mods"),
+            "a version-only request must use the shared instance, not the global flag"
+        );
+        require_target_stopped(&state, "fabric-test", None).unwrap();
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn m5_planner_targets_only_visible_instances_of_the_active_folder() {
+        let holder = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/resource-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let active = holder.path().join("active");
+        let other = holder.path().join("other");
+        for (root, base) in [(&active, "1.21.1"), (&other, "1.20.1")] {
+            for (id, metadata) in [
+                (
+                    "fabric-test",
+                    serde_json::json!({"id":"fabric-test","inheritsFrom":base,"mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient"}),
+                ),
+                (base, serde_json::json!({"id": base, "mainClass": "net.minecraft.client.main.Main"})),
+            ] {
+                let directory = root.join("versions").join(id);
+                fs::create_dir_all(&directory).unwrap();
+                fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+                fs::write(directory.join(format!("{id}.jar")), b"jar").unwrap();
+            }
+        }
+        let mut config = crate::models::Config {
+            game_directory: active.to_string_lossy().into_owned(),
+            game_folders: vec![
+                crate::models::GameFolder { path: active.to_string_lossy().into_owned(), label: "A".into(), active: true },
+                crate::models::GameFolder { path: other.to_string_lossy().into_owned(), label: "B".into(), active: false },
+            ],
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = LauncherState::test_fixture(
+            holder.path().join("data"),
+            Persisted {
+                config,
+                instances: vec![
+                    Instance {
+                        id: "visible".into(), name: "Visible".into(), version_id: "fabric-test".into(),
+                        game_directory: active.join("versions/fabric-test").to_string_lossy().into_owned(),
+                        game_folder: active.to_string_lossy().into_owned(), kind: "version".into(),
+                        isolated: true, ..Default::default()
+                    },
+                    Instance {
+                        id: "hidden".into(), name: "Hidden".into(), version_id: "fabric-test".into(),
+                        game_directory: active.join("mods-hidden").to_string_lossy().into_owned(),
+                        game_folder: active.to_string_lossy().into_owned(), kind: "version".into(),
+                        hidden: true, isolated: true, ..Default::default()
+                    },
+                    Instance {
+                        id: "missing".into(), name: "Missing".into(), version_id: "fabric-test".into(),
+                        game_directory: active.join("mods-missing").to_string_lossy().into_owned(),
+                        game_folder: active.to_string_lossy().into_owned(), kind: "version".into(),
+                        folder_missing_since: Some("2026-01-01T00:00:00Z".into()), ..Default::default()
+                    },
+                    Instance {
+                        id: "other-folder".into(), name: "Other".into(), version_id: "fabric-test".into(),
+                        game_directory: other.join("versions/fabric-test").to_string_lossy().into_owned(),
+                        game_folder: other.to_string_lossy().into_owned(), kind: "version".into(),
+                        isolated: true, ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        let candidates = target_candidates(&state).unwrap();
+        let instances: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| candidate.kind == "instance")
+            .map(|candidate| candidate.instance_id.clone().unwrap())
+            .collect();
+        assert_eq!(instances, vec!["visible"]);
+        let visible = candidates
+            .iter()
+            .find(|candidate| candidate.instance_id.as_deref() == Some("visible"))
+            .unwrap();
+        assert_eq!(visible.game_version.as_deref(), Some("1.21.1"));
+        assert_eq!(visible.loader.as_deref(), Some("fabric"));
+        drop(state);
+    }
+
+    #[test]
     fn planner_candidates_resolve_inherited_metadata_and_version_directories() {
         let (root, state) = resource_fixture();
         let instance =
@@ -3185,7 +3753,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let context = resource_context(&state, "fabric-test", Some(&instance.id)).unwrap();
+        let context = resource_context(&state, &instance.version_id, Some(&instance.id)).unwrap();
         assert_eq!(context.game_version, "1.21.1");
         assert_eq!(context.loader.as_deref(), Some("fabric"));
         let candidates = target_candidates(&state).unwrap();
@@ -3195,9 +3763,12 @@ mod tests {
             .unwrap();
         assert_eq!(candidate.game_version.as_deref(), Some("1.21.1"));
         assert_eq!(candidate.loader.as_deref(), Some("fabric"));
-        assert!(!candidates
-            .iter()
-            .any(|candidate| candidate.kind == "version" && candidate.version_id == "fabric-test"));
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.kind == "version" && candidate.version_id == "fabric-test"),
+            "a pre-existing loader parent stays a visible instance"
+        );
         assert!(candidates
             .iter()
             .any(|candidate| candidate.kind == "version" && candidate.version_id == "1.21.1"));
@@ -3218,7 +3789,7 @@ mod tests {
                 .unwrap();
         }
         let candidates = target_candidates(&state).unwrap();
-        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates.len(), 4);
         assert_eq!(
             candidates
                 .iter()
@@ -3226,14 +3797,13 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(
-            candidates
-                .iter()
-                .filter(|row| row.kind == "version")
-                .map(|row| row.version_id.as_str())
-                .collect::<Vec<_>>(),
-            ["1.21.1"]
-        );
+        let mut versions: Vec<_> = candidates
+            .iter()
+            .filter(|row| row.kind == "version")
+            .map(|row| row.version_id.as_str())
+            .collect();
+        versions.sort();
+        assert_eq!(versions, ["1.21.1", "fabric-test"]);
         drop(state);
         cleanup_fixture(root);
     }
@@ -3279,7 +3849,10 @@ mod tests {
                         row.resource_version_id.as_deref()
                     ))
                     .collect::<Vec<_>>(),
-                [(Some(instance.id.as_str()), Some("fixture-version"))]
+                [
+                    (Some(instance.id.as_str()), Some("fixture-version")),
+                    (None, Some("fixture-version")),
+                ]
             );
             assert_eq!(
                 serde_json::to_value(plan).unwrap()["manifestUnavailable"],
@@ -4163,8 +4736,140 @@ mod tests {
         })
     }
 
+    fn curseforge_project_for(id: u64, name: &str) -> Scripted {
+        json(serde_json::json!({"data": {
+            "id": id, "gameId": 432, "name": name, "slug": format!("fixture-{id}"),
+            "summary": name, "classId": 6, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": true
+        }}))
+    }
+
+    fn curseforge_dependency_file(
+        id: u64,
+        mod_id: u64,
+        name: &str,
+        day: u32,
+        cdn: &RangeServer,
+        bytes: &[u8],
+        dependencies: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut file = curseforge_file(id, name, day, cdn, bytes);
+        file["modId"] = serde_json::json!(mod_id);
+        file["releaseType"] = serde_json::json!(1);
+        file["dependencies"] = dependencies;
+        file
+    }
+
+    fn curseforge_dependency(mod_id: u64, relation_type: u32) -> serde_json::Value {
+        serde_json::json!({"modId": mod_id, "relationType": relation_type})
+    }
+
+    fn curseforge_existing_request(project_id: &str, file_id: Option<u64>) -> ResourceRequest {
+        ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: project_id.into(),
+            resource_type: "mod".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id,
+                resource_version_id: None,
+            },
+        }
+    }
+
+    fn curseforge_fingerprint_answer(mod_id: u64, file: serde_json::Value) -> Scripted {
+        json(serde_json::json!({
+            "data": {"exactMatches": [{"id": mod_id, "file": file}]}
+        }))
+    }
+
     fn instance_mods(state: &LauncherState, instance_id: &str) -> PathBuf {
-        resource_target(state, "fabric-test", Some(instance_id), ResourceKind::Mod).unwrap().directory
+        let data = state.snapshot().unwrap();
+        let version_id = data
+            .instances
+            .iter()
+            .find(|instance| instance.id == instance_id)
+            .map(|instance| instance.version_id.clone())
+            .unwrap_or_else(|| "fabric-test".into());
+        resource_target(state, &version_id, Some(instance_id), ResourceKind::Mod).unwrap().directory
+    }
+
+    #[test]
+    fn a_resource_create_hides_only_the_loader_folder_its_own_install_created() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let named = |source: ResourceSource, name: &str| {
+            let mut request = if source == ResourceSource::Modrinth {
+                create_request(source, "mod", None, Some("older"))
+            } else {
+                create_request(source, "mod", Some(123), None)
+            };
+            if let ReservedTarget::Create { name: target, .. } = &mut request.target {
+                *target = name.into();
+            }
+            request
+        };
+        let bytes = b"created mod".as_slice();
+        for (source, loader_folder) in [(ResourceSource::Modrinth, "fabric-new"), (ResourceSource::Curseforge, "fabric-newer")] {
+            let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"m\"")]);
+            let api = if source == ResourceSource::Modrinth {
+                RangeServer::new(vec![modrinth_project(), json(modrinth_version("older", 1, &cdn, bytes))])
+            } else {
+                RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": curseforge_file(123, "pinned.jar", 1, &cdn, bytes)}))])
+            };
+            let _endpoints = Endpoints::set(&state, &api, &cdn).preparing(loader_folder);
+            // The stand-in install creates its loader folder, as the real one would.
+            let game = root.clone();
+            let folder = loader_folder.to_owned();
+            PREPARED_INSTALL.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    let directory = game.join("versions").join(&folder);
+                    fs::create_dir_all(&directory).unwrap();
+                    fs::write(
+                        directory.join(format!("{folder}.json")),
+                        serde_json::json!({
+                            "id": folder, "inheritsFrom": "1.21.1",
+                            "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16.9" }],
+                            "launcherMetadata": { "loaderVersion": "0.16.9" }
+                        })
+                        .to_string(),
+                    )
+                    .unwrap();
+                }))
+            });
+            let request = named(source, &format!("New {loader_folder}"));
+            let task = state.control.reserve_resource(request.clone()).unwrap();
+            let created = run(&state, &task, request).unwrap().created().unwrap();
+            assert_eq!(created.instance.derived_from.as_deref(), Some(loader_folder), "{source:?}");
+            drop((_endpoints, api, cdn));
+
+            // A create that reuses a loader folder already on disk hides nothing.
+            let cdn = RangeServer::new(vec![Scripted::ok(bytes, "\"m\"")]);
+            let api = if source == ResourceSource::Modrinth {
+                RangeServer::new(vec![modrinth_project(), json(modrinth_version("older", 1, &cdn, bytes))])
+            } else {
+                RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": curseforge_file(123, "pinned.jar", 1, &cdn, bytes)}))])
+            };
+            let _endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+            let request = named(source, &format!("Reused {loader_folder}"));
+            let task = state.control.reserve_resource(request.clone()).unwrap();
+            let reused = run(&state, &task, request).unwrap().created().unwrap();
+            assert_eq!(reused.instance.derived_from, None, "{source:?}");
+        }
+        crate::instances::sync_version_instances(&state).unwrap();
+        let mut visible: Vec<String> = crate::instances::visible_instances(&state.snapshot().unwrap())
+            .into_iter()
+            .map(|instance| instance.version_id)
+            .collect();
+        visible.sort();
+        assert_eq!(
+            visible,
+            ["1.21.1", "New fabric-new", "New fabric-newer", "Reused fabric-new", "Reused fabric-newer", "fabric-test"],
+            "only the loader folders the creates installed are hidden"
+        );
+        drop(state);
+        cleanup_fixture(root);
     }
 
     #[test]
@@ -4210,6 +4915,95 @@ mod tests {
         let task = state.control.reserve_resource(request.clone()).unwrap();
         assert!(run(&state, &task, request).is_err());
         assert_eq!((cdn.count(), state.snapshot().unwrap().instances.len()), (0, 1));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_create_installs_required_dependencies_in_one_transaction() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"create main mod".as_slice();
+        let dep_bytes = b"create required dependency".as_slice();
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(dep_bytes, "\"d\""),
+        ]);
+        let mut main = curseforge_file(28001, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let dep = curseforge_dependency_file(
+            28002,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+        let request = create_request(ResourceSource::Curseforge, "mod", Some(28001), None);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let created = run(&state, &task, request).unwrap().created().unwrap();
+        let directory = instance_mods(&state, &created.instance.id);
+        assert_eq!(fs::read(directory.join("main.jar")).unwrap(), main_bytes);
+        assert_eq!(fs::read(directory.join("dependency.jar")).unwrap(), dep_bytes);
+        assert_eq!(cdn.count(), 2);
+        let history = resource_transactions::history(&directory).unwrap();
+        assert_eq!(history.len(), 1, "one transaction holds both files");
+        assert_eq!(
+            history[0].projects,
+            ["cf:456".to_owned(), "cf:789".to_owned()]
+        );
+        assert_eq!(state.snapshot().unwrap().instances.len(), 1);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_create_refuses_a_restricted_dependency_before_the_instance_exists() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"restricted create main".as_slice();
+        let dep_bytes = b"restricted create dependency".as_slice();
+        let cdn = RangeServer::new(Vec::new());
+        let mut main = curseforge_file(28101, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let mut dep = curseforge_dependency_file(
+            28102,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        dep.as_object_mut().unwrap().remove("downloadUrl");
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Restricted Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn).preparing("fabric-test");
+        let request = create_request(ResourceSource::Curseforge, "mod", Some(28101), None);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyManualDownload", "{error:?}");
+        assert_eq!(error.params["name"], "Restricted Dependency");
+        assert_eq!(error.params["file"], "dependency.jar");
+        assert_eq!(error.params["folder"], "mods");
+        assert_eq!(
+            error.params["url"],
+            "https://www.curseforge.com/projects/789"
+        );
+        assert!(state.snapshot().unwrap().instances.is_empty());
+        assert_eq!(cdn.count(), 0);
         drop(state);
         cleanup_fixture(root);
     }
@@ -4292,7 +5086,7 @@ mod tests {
         assert_eq!(instances.len(), 1);
         let existing = ResourceRequest {
             target: ReservedTarget::Existing {
-                version_id: "fabric-test".into(), instance_id: Some(instances[0].id.clone()), file_id: None, resource_version_id: Some("newer".into()),
+                version_id: instances[0].version_id.clone(), instance_id: Some(instances[0].id.clone()), file_id: None, resource_version_id: Some("newer".into()),
             },
             ..create
         };
@@ -4353,7 +5147,7 @@ mod tests {
         let request = create_request(ResourceSource::Modrinth, "shader", None, Some("optifine-only"));
         let task = state.control.reserve_resource(request.clone()).unwrap();
         let created = run(&state, &task, request).unwrap().created().unwrap();
-        let shaders = resource_target(&state, "fabric-test", Some(&created.instance.id), ResourceKind::Shader).unwrap().directory;
+        let shaders = resource_target(&state, &created.instance.version_id, Some(&created.instance.id), ResourceKind::Shader).unwrap().directory;
         assert_eq!(fs::read(shaders.join("optifine-only.zip")).unwrap(), bytes);
         drop(state);
         cleanup_fixture(root);
@@ -6257,7 +7051,8 @@ mod tests {
     }
 
     #[test]
-    fn c8_reselecting_the_installed_file_does_not_check_its_dependencies() {
+    fn c8_reselecting_the_installed_file_installs_missing_dependencies_and_skips_when_none() {
+        // 1) A dependency-free file already installed still short-circuits with 2 API calls.
         let (root, state) = resource_fixture();
         save_curseforge_key(&state);
         let directory = mods(&state);
@@ -6265,27 +7060,58 @@ mod tests {
         let bytes = c8_jar("example", "1");
         fs::write(directory.join("example-1.jar"), &bytes).unwrap();
         let cdn = RangeServer::new(Vec::new());
-        let mut file = curseforge_file(15001, "example-1.jar", 2, &cdn, &bytes);
-        file["dependencies"] = serde_json::json!([{"modId": 999, "relationType": 3}]);
-        let api = RangeServer::new(vec![curseforge_project(), json(serde_json::json!({"data": file}))]);
-        let _endpoints = Endpoints::set(&state, &api, &cdn);
-        let request = ResourceRequest {
-            source: ResourceSource::Curseforge,
-            project_id: "456".into(),
-            resource_type: "mod".into(),
-            target: ReservedTarget::Existing {
-                version_id: "fabric-test".into(),
-                instance_id: None,
-                file_id: Some(15001),
-                resource_version_id: None,
-            },
-        };
+        let plain_file = curseforge_file(15000, "example-1.jar", 2, &cdn, &bytes);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": plain_file})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(15000));
         let task = state.control.reserve_resource(request.clone()).unwrap();
         let installed = run(&state, &task, request).unwrap().installed().unwrap();
         assert!(installed.update_id.is_none());
+        assert!(installed.already_installed);
         assert_eq!(installed.warning.as_deref(), Some("资源已是选定版本。"));
-        assert_eq!(api.count(), 2, "the dependency of a file already there is not looked up");
+        assert_eq!(api.count(), 2, "a dependency-free file already there makes no extra lookups");
+        drop((endpoints, api, cdn));
+
+        // 2) Re-installing a present root whose required dependency is missing
+        // installs the missing dependency in one transaction without re-downloading the root.
+        let dep_bytes = b"missing required dependency".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(dep_bytes, "\"d\"")]);
+        let mut file = curseforge_file(15001, "example-1.jar", 2, &cdn, &bytes);
+        file["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let root_fp = c8_fingerprint_of(file.clone(), &bytes);
+        let dep = curseforge_dependency_file(
+            15002,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file})),
+            curseforge_fingerprint_answer(456, root_fp),
+            curseforge_project_for(789, "Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(15001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert!(installed.update_id.is_some());
+        assert!(!installed.already_installed);
+        assert_eq!(installed.dependency_count, 1);
+        assert_eq!(cdn.count(), 1, "only the missing dependency is downloaded; the root is reused");
         assert_eq!(fs::read(directory.join("example-1.jar")).unwrap(), bytes);
+        assert_eq!(fs::read(directory.join("dependency.jar")).unwrap(), dep_bytes);
+        let found = journals(&state);
+        assert_eq!(found.len(), 1);
+        let journal: serde_json::Value = serde_json::from_str(&found[0]).unwrap();
+        assert_eq!(journal["projects"], serde_json::json!(["cf:456", "cf:789"]));
         drop(state);
         cleanup_fixture(root);
     }
@@ -6334,6 +7160,1106 @@ mod tests {
         assert_eq!(names, ["New.jar"], "the selected file stays and the copy is set aside");
         assert_eq!(fs::read(directory.join("New.jar")).unwrap(), bytes);
         assert_eq!(cdn.count(), 0);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    // ---- CurseForge required dependencies ---------------------------------------
+
+    #[test]
+    fn c9_curseforge_required_dependency_is_installed_in_the_same_transaction() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"curseforge main mod".as_slice();
+        let dep_bytes = b"curseforge required dependency".as_slice();
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(dep_bytes, "\"d\""),
+        ]);
+        let mut main = curseforge_file(20001, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let dep = curseforge_dependency_file(
+            20002,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(20001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "main.jar");
+        assert!(installed.update_id.is_some());
+        assert!(
+            installed
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("1 个必需前置")),
+            "{:?}",
+            installed.warning
+        );
+        assert_eq!(fs::read(mods(&state).join("main.jar")).unwrap(), main_bytes);
+        assert_eq!(
+            fs::read(mods(&state).join("dependency.jar")).unwrap(),
+            dep_bytes
+        );
+        assert_eq!(cdn.count(), 2, "the main file and its dependency are downloaded");
+        let found = journals(&state);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let journal: serde_json::Value = serde_json::from_str(&found[0]).unwrap();
+        assert_eq!(journal["projects"], serde_json::json!(["cf:456", "cf:789"]));
+        assert_eq!(task_row(&state, &task).status, "completed");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_two_level_required_dependency_chain_is_installed() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"chain main".as_slice();
+        let first_bytes = b"chain first dependency".as_slice();
+        let second_bytes = b"chain second dependency".as_slice();
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(first_bytes, "\"f\""),
+            Scripted::ok(second_bytes, "\"s\""),
+        ]);
+        let mut main = curseforge_file(21001, "main.jar", 3, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let first = curseforge_dependency_file(
+            21002,
+            789,
+            "first.jar",
+            2,
+            &cdn,
+            first_bytes,
+            serde_json::json!([curseforge_dependency(790, 3)]),
+        );
+        let second = curseforge_dependency_file(
+            21003,
+            790,
+            "second.jar",
+            1,
+            &cdn,
+            second_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "First"),
+            json(serde_json::json!({"data": [first]})),
+            curseforge_project_for(790, "Second"),
+            json(serde_json::json!({"data": [second]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(21001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert!(
+            installed
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("2 个必需前置")),
+            "{:?}",
+            installed.warning
+        );
+        for (name, bytes) in [
+            ("main.jar", main_bytes),
+            ("first.jar", first_bytes),
+            ("second.jar", second_bytes),
+        ] {
+            assert_eq!(fs::read(mods(&state).join(name)).unwrap(), bytes, "{name}");
+        }
+        let found = journals(&state);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let journal: serde_json::Value = serde_json::from_str(&found[0]).unwrap();
+        assert_eq!(
+            journal["projects"],
+            serde_json::json!(["cf:456", "cf:789", "cf:790"])
+        );
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_dependency_cycle_writes_nothing() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"cycle main".as_slice();
+        let dep_bytes = b"cycle dependency".as_slice();
+        let cdn = RangeServer::new(Vec::new());
+        let mut main = curseforge_file(22001, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let dep = curseforge_dependency_file(
+            22002,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([curseforge_dependency(456, 3)]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(22001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyCycle", "{error:?}");
+        assert!(
+            error.detail.as_deref().is_some_and(|detail| detail.contains("循环依赖")),
+            "{error:?}"
+        );
+        assert!(
+            error.params["project"] == "Fixture" || error.params["project"] == "Dependency",
+            "{error:?}"
+        );
+        assert_eq!(cdn.count(), 0, "a cycle is refused before any download");
+        assert!(!mods(&state).exists(), "the live folder is not created");
+        assert!(journals(&state).is_empty());
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_already_installed_dependency_is_skipped() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let dep_bytes = b"already installed dependency".as_slice();
+        fs::write(directory.join("dependency.jar"), dep_bytes).unwrap();
+        let main_bytes = b"main with installed dependency".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(main_bytes, "\"m\"")]);
+        let mut main = curseforge_file(23001, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let dep = c8_fingerprint_of(
+            curseforge_dependency_file(
+                23002,
+                789,
+                "dependency.jar",
+                1,
+                &cdn,
+                dep_bytes,
+                serde_json::json!([]),
+            ),
+            dep_bytes,
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_fingerprint_answer(789, dep),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(23001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "main.jar");
+        assert_eq!(fs::read(directory.join("dependency.jar")).unwrap(), dep_bytes);
+        assert_eq!(cdn.count(), 1, "the installed dependency is not downloaded again");
+        assert_eq!(api.count(), 3);
+        assert!(
+            api.header(2, ":path").as_deref() == Some("/fingerprints/432"),
+            "{:?}",
+            api.header(2, ":path")
+        );
+        assert!(
+            !(0..api.count()).any(|index| api
+                .header(index, ":path")
+                .is_some_and(|path| path.starts_with("/mods/789"))),
+            "a dependency already installed is not looked up"
+        );
+        let journal: serde_json::Value =
+            serde_json::from_str(&journals(&state)[0]).unwrap();
+        assert_eq!(journal["projects"], serde_json::json!(["cf:456", "cf:789"]));
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_optional_dependency_is_never_installed() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"optional dependency main".as_slice();
+        let dep_bytes = b"required dependency".as_slice();
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(dep_bytes, "\"d\""),
+        ]);
+        let mut main = curseforge_file(24001, "main.jar", 3, &cdn, main_bytes);
+        // Relation types: 1 EmbeddedLibrary, 2 OptionalDependency, 3 RequiredDependency,
+        // 4 Tool, 6 Include. Only 3 may be resolved and installed.
+        main["dependencies"] = serde_json::json!([
+            curseforge_dependency(789, 3),
+            curseforge_dependency(790, 2),
+            curseforge_dependency(791, 1),
+            curseforge_dependency(792, 4),
+            curseforge_dependency(793, 6),
+        ]);
+        let dep = curseforge_dependency_file(
+            24002,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Required"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(24001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.dependency_count, 1);
+        assert_eq!(fs::read(mods(&state).join("dependency.jar")).unwrap(), dep_bytes);
+        for skipped in [790, 791, 792, 793] {
+            let prefix = format!("/mods/{skipped}");
+            assert!(
+                !(0..api.count()).any(|index| api
+                    .header(index, ":path")
+                    .is_some_and(|path| path.starts_with(&prefix))),
+                "non-required relation project {skipped} must never be resolved"
+            );
+        }
+        assert_eq!(cdn.count(), 2);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_dependency_prefers_a_release_over_a_newer_beta() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"release preference main".as_slice();
+        let release_bytes = b"older release dependency".as_slice();
+        let beta_bytes = b"newer beta dependency".as_slice();
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(release_bytes, "\"r\""),
+        ]);
+        let mut main = curseforge_file(24501, "main.jar", 3, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let mut beta = curseforge_dependency_file(
+            24502,
+            789,
+            "dependency-beta.jar",
+            3,
+            &cdn,
+            beta_bytes,
+            serde_json::json!([]),
+        );
+        beta["releaseType"] = serde_json::json!(2);
+        let release = curseforge_dependency_file(
+            24503,
+            789,
+            "dependency-release.jar",
+            1,
+            &cdn,
+            release_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Dependency"),
+            json(serde_json::json!({"data": [beta, release]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(24501));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(
+            fs::read(mods(&state).join("dependency-release.jar")).unwrap(),
+            release_bytes,
+            "a release wins even when a newer beta is listed first"
+        );
+        assert!(!mods(&state).join("dependency-beta.jar").exists());
+        assert_eq!(cdn.count(), 2);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_incompatible_project_refuses_before_writing() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let incompatible_bytes = b"enabled incompatible project".as_slice();
+        fs::write(directory.join("incompatible.jar"), incompatible_bytes).unwrap();
+        let main_bytes = b"main with incompatible dependency".as_slice();
+        let cdn = RangeServer::new(Vec::new());
+        let mut main = curseforge_file(25001, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(999, 5)]);
+        let incompatible = c8_fingerprint_of(
+            curseforge_dependency_file(
+                25002,
+                999,
+                "incompatible.jar",
+                1,
+                &cdn,
+                incompatible_bytes,
+                serde_json::json!([]),
+            ),
+            incompatible_bytes,
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main.clone()})),
+            curseforge_fingerprint_answer(999, incompatible.clone()),
+            curseforge_project_for(999, "Incompatible Mod"),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(25001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request.clone()).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyIncompatible", "{error:?}");
+        assert_eq!(
+            error.params["project"],
+            "Incompatible Mod (incompatible.jar)",
+            "incompatible refusal must name the project, not a raw id"
+        );
+        assert_eq!(cdn.count(), 0);
+        assert_eq!(
+            fs::read(directory.join("incompatible.jar")).unwrap(),
+            incompatible_bytes
+        );
+        assert!(!directory.join("main.jar").exists());
+        assert!(journals(&state).is_empty());
+        drop((endpoints, api));
+
+        // Even when the project lookup returns 404, fall back to the local filename (not bare id).
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_fingerprint_answer(999, incompatible),
+            Scripted::status(404),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyIncompatible", "{error:?}");
+        assert_eq!(error.params["project"], "incompatible.jar");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_restricted_dependency_stops_with_manual_download() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"main with restricted dependency".as_slice();
+        let dep_bytes = b"restricted dependency".as_slice();
+        let cdn = RangeServer::new(Vec::new());
+        let mut main = curseforge_file(26001, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let mut dep = curseforge_dependency_file(
+            26002,
+            789,
+            "dependency-1.2.3.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        dep.as_object_mut().unwrap().remove("downloadUrl");
+        let dep_project = json(serde_json::json!({"data": {
+            "id": 789, "gameId": 432, "name": "Restricted Dependency", "slug": "restricted-dep",
+            "summary": "Restricted", "classId": 6, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": false,
+            "links": {"websiteUrl": "https://www.curseforge.com/minecraft/mc-mods/restricted-dep"}
+        }}));
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            dep_project,
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(26001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyManualDownload", "{error:?}");
+        assert_eq!(error.params["name"], "Restricted Dependency");
+        assert_eq!(error.params["file"], "dependency-1.2.3.jar");
+        assert_eq!(error.params["folder"], "mods");
+        assert_eq!(
+            error.params["url"],
+            "https://www.curseforge.com/minecraft/mc-mods/restricted-dep"
+        );
+        assert_eq!(cdn.count(), 0);
+        assert!(!mods(&state).exists());
+        assert!(journals(&state).is_empty());
+        drop((endpoints, api));
+
+        // Same-class resource-pack dependency reports folder = "resourcepacks" and
+        // rejects an untrusted websiteUrl (bare curseforge.com without www.).
+        let pack_main_bytes = b"pack main".as_slice();
+        let pack_dep_bytes = b"pack restricted dep".as_slice();
+        let mut pack_main = curseforge_file(26101, "pack-main.zip", 2, &cdn, pack_main_bytes);
+        pack_main["gameVersions"] = serde_json::json!(["1.21.1"]);
+        pack_main["dependencies"] = serde_json::json!([curseforge_dependency(790, 3)]);
+        let mut pack_dep = curseforge_dependency_file(
+            26102,
+            790,
+            "pack-dep-2.0.zip",
+            1,
+            &cdn,
+            pack_dep_bytes,
+            serde_json::json!([]),
+        );
+        pack_dep["gameVersions"] = serde_json::json!(["1.21.1"]);
+        pack_dep.as_object_mut().unwrap().remove("downloadUrl");
+        let pack_root_project = json(serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Pack Root", "slug": "pack-root",
+            "summary": "Pack", "classId": 12, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": true
+        }}));
+        let pack_dep_project = json(serde_json::json!({"data": {
+            "id": 790, "gameId": 432, "name": "Restricted Pack Dep", "slug": "pack-dep",
+            "summary": "Pack Dep", "classId": 12, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": false,
+            "links": {"websiteUrl": "https://curseforge.com/minecraft/texture-packs/pack-dep"}
+        }}));
+        let api = RangeServer::new(vec![
+            pack_root_project,
+            json(serde_json::json!({"data": pack_main})),
+            pack_dep_project,
+            json(serde_json::json!({"data": [pack_dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "resourcepack".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(26101),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyManualDownload", "{error:?}");
+        assert_eq!(error.params["name"], "Restricted Pack Dep");
+        assert_eq!(error.params["file"], "pack-dep-2.0.zip");
+        assert_eq!(error.params["folder"], "resourcepacks");
+        assert_eq!(
+            error.params["url"],
+            "https://www.curseforge.com/projects/790",
+            "only https://www.curseforge.com links are trusted"
+        );
+        assert_eq!(cdn.count(), 0);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_failing_dependency_download_rolls_back_the_main_file() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"main downloaded before the failing dependency".as_slice();
+        let dep_bytes = b"dependency that cannot be downloaded".as_slice();
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::status(404),
+        ]);
+        let mut main = curseforge_file(27001, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let dep = curseforge_dependency_file(
+            27002,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Failing Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(27001));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert!(
+            error
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("HTTP 404")),
+            "{error:?}"
+        );
+        assert_eq!(cdn.count(), 2, "the main file was attempted before the dependency failed");
+        assert!(!mods(&state).join("main.jar").exists(), "the main file is rolled back");
+        assert!(!mods(&state).join("dependency.jar").exists());
+        assert!(journals(&state).is_empty(), "no journal for a discarded stage");
+        assert_eq!(task_row(&state, &task).status, "failed");
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_cross_category_resourcepack_installs_when_required_mod_is_enabled() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let mods_dir = mods(&state);
+        let packs_dir = resource_target(&state, "fabric-test", None, ResourceKind::ResourcePack)
+            .unwrap()
+            .directory;
+        fs::create_dir_all(&mods_dir).unwrap();
+        let emf_bytes = b"entity model features mod jar".as_slice();
+        fs::write(mods_dir.join("emf.jar"), emf_bytes).unwrap();
+        let pack_bytes = b"fresh animations resource pack zip".as_slice();
+        let cdn = RangeServer::new(vec![Scripted::ok(pack_bytes, "\"p\"")]);
+        let pack_project = json(serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Fresh Animations", "slug": "fresh-animations",
+            "summary": "Pack", "classId": 12, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": true
+        }}));
+        let mut pack_file = curseforge_file(29001, "fresh-animations.zip", 2, &cdn, pack_bytes);
+        pack_file["gameVersions"] = serde_json::json!(["1.21.1"]);
+        pack_file["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let emf_file = c8_fingerprint_of(
+            curseforge_dependency_file(
+                29002,
+                789,
+                "emf.jar",
+                1,
+                &cdn,
+                emf_bytes,
+                serde_json::json!([]),
+            ),
+            emf_bytes,
+        );
+        let api = RangeServer::new(vec![
+            pack_project,
+            json(serde_json::json!({"data": pack_file})),
+            curseforge_project_for(789, "Entity Model Features"),
+            curseforge_fingerprint_answer(789, emf_file),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "resourcepack".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(29001),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "fresh-animations.zip");
+        assert!(installed.update_id.is_some());
+        assert_eq!(fs::read(packs_dir.join("fresh-animations.zip")).unwrap(), pack_bytes);
+        assert!(
+            !packs_dir.join("emf.jar").exists(),
+            "cross-category mod dependency must never be written into resourcepacks/"
+        );
+        assert_eq!(fs::read(mods_dir.join("emf.jar")).unwrap(), emf_bytes);
+        assert_eq!(cdn.count(), 1);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_cross_category_dependency_refuses_when_missing_or_disabled() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let mods_dir = mods(&state);
+        let packs_dir = resource_target(&state, "fabric-test", None, ResourceKind::ResourcePack)
+            .unwrap()
+            .directory;
+        let shaders_dir = resource_target(&state, "fabric-test", None, ResourceKind::Shader)
+            .unwrap()
+            .directory;
+        let cdn = RangeServer::new(Vec::new());
+        let pack_bytes = b"fresh animations zip".as_slice();
+        let pack_project = json(serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Fresh Animations", "slug": "fresh-animations",
+            "summary": "Pack", "classId": 12, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": true
+        }}));
+        let mut pack_file = curseforge_file(29101, "fresh-animations.zip", 2, &cdn, pack_bytes);
+        pack_file["gameVersions"] = serde_json::json!(["1.21.1"]);
+        pack_file["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+
+        // 1) Required mod completely missing -> coded resource.dependencyInstallFirst before staging.
+        let api = RangeServer::new(vec![
+            pack_project.clone(),
+            json(serde_json::json!({"data": pack_file.clone()})),
+            curseforge_project_for(789, "Entity Model Features"),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "resourcepack".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(29101),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request.clone()).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyInstallFirst", "{error:?}");
+        assert_eq!(error.params["name"], "Entity Model Features");
+        assert_eq!(cdn.count(), 0);
+        assert!(!packs_dir.exists());
+        drop((endpoints, api));
+
+        // 2) Required mod exists only as .jar.disabled -> disabled files do NOT count!
+        fs::create_dir_all(&mods_dir).unwrap();
+        fs::write(mods_dir.join("emf.jar.disabled"), b"disabled emf").unwrap();
+        let api = RangeServer::new(vec![
+            pack_project,
+            json(serde_json::json!({"data": pack_file})),
+            curseforge_project_for(789, "Entity Model Features"),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyInstallFirst", "{error:?}");
+        assert_eq!(error.params["name"], "Entity Model Features");
+        assert_eq!(cdn.count(), 0);
+        assert!(!packs_dir.exists());
+        drop((endpoints, api));
+
+        // 3) Shader requiring a missing mod -> same coded refusal before staging.
+        let shader_bytes = b"shader pack zip".as_slice();
+        let shader_project = json(serde_json::json!({"data": {
+            "id": 456, "gameId": 432, "name": "Complementary", "slug": "complementary",
+            "summary": "Shader", "classId": 6552, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": true
+        }}));
+        let mut shader_file = curseforge_file(29102, "complementary.zip", 2, &cdn, shader_bytes);
+        shader_file["gameVersions"] = serde_json::json!(["1.21.1"]);
+        shader_file["dependencies"] = serde_json::json!([curseforge_dependency(790, 3)]);
+        let api = RangeServer::new(vec![
+            shader_project,
+            json(serde_json::json!({"data": shader_file})),
+            curseforge_project_for(790, "Iris Shaders"),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let shader_request = ResourceRequest {
+            source: ResourceSource::Curseforge,
+            project_id: "456".into(),
+            resource_type: "shader".into(),
+            target: ReservedTarget::Existing {
+                version_id: "fabric-test".into(),
+                instance_id: None,
+                file_id: Some(29102),
+                resource_version_id: None,
+            },
+        };
+        let task = state.control.reserve_resource(shader_request.clone()).unwrap();
+        let error = run(&state, &task, shader_request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyInstallFirst", "{error:?}");
+        assert_eq!(error.params["name"], "Iris Shaders");
+        assert_eq!(cdn.count(), 0);
+        assert!(!shaders_dir.exists());
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn c9_curseforge_case_only_name_root_with_installed_dependency_sets_aside_duplicate() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let root_bytes = c8_jar("example", "1");
+        let dep_bytes = c8_jar("depmod", "1");
+        fs::write(directory.join("New.jar"), &root_bytes).unwrap();
+        fs::write(directory.join("dependency.jar"), &dep_bytes).unwrap();
+        let cdn = RangeServer::new(Vec::new());
+        let mut file = curseforge_file(16101, "new.jar", 2, &cdn, &root_bytes);
+        file["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let root_fp = c8_fingerprint_of(file.clone(), &root_bytes);
+        let dep_fp = c8_fingerprint_of(
+            curseforge_dependency_file(
+                16102,
+                789,
+                "dependency.jar",
+                1,
+                &cdn,
+                &dep_bytes,
+                serde_json::json!([]),
+            ),
+            &dep_bytes,
+        );
+        let request = curseforge_existing_request("456", Some(16101));
+
+        // 1) Root + dependency already present and no duplicate copy -> no journal, already installed.
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file.clone()})),
+            json(serde_json::json!({
+                "data": {"exactMatches": [
+                    {"id": 456, "file": root_fp.clone()},
+                    {"id": 789, "file": dep_fp.clone()},
+                ]}
+            })),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request.clone()).unwrap().installed().unwrap();
+        assert!(installed.update_id.is_none());
+        assert!(installed.already_installed);
+        assert!(journals(&state).is_empty());
+        assert_eq!(cdn.count(), 0);
+        drop((endpoints, api));
+
+        // 2) Add another enabled copy of the same mod (also CurseForge-identified as another file
+        // of project 456): root is NEVER marked keep, goes through download(SetAside), moves
+        // example-2.jar aside, and keeps both New.jar and dependency.jar with 0 CDN calls.
+        let copy_bytes = c8_jar("example", "2");
+        fs::write(directory.join("example-2.jar"), &copy_bytes).unwrap();
+        let old_copy_fp = c8_fingerprint_of(
+            curseforge_file(16100, "example-2.jar", 1, &cdn, &copy_bytes),
+            &copy_bytes,
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": file})),
+            json(serde_json::json!({
+                "data": {"exactMatches": [
+                    {"id": 456, "file": old_copy_fp},
+                    {"id": 456, "file": root_fp},
+                    {"id": 789, "file": dep_fp},
+                ]}
+            })),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert!(installed.update_id.is_some());
+        assert_eq!(
+            installed.changed_count, 0,
+            "reusing the root unchanged while only moving a duplicate aside writes 0 files"
+        );
+        assert!(
+            installed
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("example-2.jar")),
+            "{:?}",
+            installed.warning
+        );
+        let names: Vec<_> = c8_snapshot(&directory).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["New.jar", "dependency.jar"]);
+        assert_eq!(fs::read(directory.join("New.jar")).unwrap(), root_bytes);
+        assert_eq!(fs::read(directory.join("dependency.jar")).unwrap(), dep_bytes);
+        assert_eq!(cdn.count(), 0);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_disabled_dependency_is_installed_and_disabled_incompatible_is_ignored() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let dep_bytes = b"disabled required dependency bytes".as_slice();
+        let incompatible_bytes = b"disabled incompatible mod bytes".as_slice();
+        let main_bytes = b"main with disabled dep and disabled incompatible".as_slice();
+        // Both exist only as .jar.disabled!
+        fs::write(directory.join("dependency.jar.disabled"), dep_bytes).unwrap();
+        fs::write(directory.join("incompatible.jar.disabled"), incompatible_bytes).unwrap();
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(dep_bytes, "\"d\""),
+        ]);
+        let mut main = curseforge_file(29201, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([
+            curseforge_dependency(789, 3),
+            curseforge_dependency(999, 5),
+        ]);
+        let dep = curseforge_dependency_file(
+            29202,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        // Because all local files are disabled, installed_dependencies skips fingerprinting them
+        // (0 fingerprint calls) and resolves 789 from the API while ignoring disabled 999.
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(29201));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "main.jar");
+        assert_eq!(fs::read(directory.join("main.jar")).unwrap(), main_bytes);
+        assert_eq!(fs::read(directory.join("dependency.jar")).unwrap(), dep_bytes);
+        assert_eq!(cdn.count(), 2);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_unavailable_dependency_returns_coded_error_naming_project() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"main with unavailable dep".as_slice();
+        let cdn = RangeServer::new(Vec::new());
+        let mut main = curseforge_file(29301, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Forge Only Library"),
+            json(serde_json::json!({"data": []})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(29301));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyUnavailable", "{error:?}");
+        assert_eq!(error.params["name"], "Forge Only Library");
+        assert_eq!(cdn.count(), 0);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_many_required_dependencies_stop_before_fetching() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"bundle mod with 80 required deps".as_slice();
+        let cdn = RangeServer::new(Vec::new());
+        let mut main = curseforge_file(29401, "bundle.jar", 2, &cdn, main_bytes);
+        let deps: Vec<_> = (1000..1080)
+            .map(|id| curseforge_dependency(id, 3))
+            .collect();
+        main["dependencies"] = serde_json::json!(deps);
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(29401));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyLimit", "{error:?}");
+        assert_eq!(
+            api.count(),
+            2,
+            "64-project cap must refuse before fetching any of the 80 dependencies"
+        );
+        assert_eq!(cdn.count(), 0);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_dependency_download_reports_byte_progress_mid_transfer() {
+        // 1) One-go path (< 1 MiB): cut mid-stream and verify intermediate byte progress was recorded.
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"small main".as_slice();
+        let small_dep_bytes: Vec<u8> = (0..256 * 1024).map(|index| (index % 251) as u8).collect();
+        let cut = 64 * 1024;
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(&small_dep_bytes, "\"s\"").cut(cut),
+        ]);
+        let mut main = curseforge_file(29501, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let small_dep = curseforge_dependency_file(
+            29502,
+            789,
+            "small-dep.jar",
+            1,
+            &cdn,
+            &small_dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(789, "Small Dep"),
+            json(serde_json::json!({"data": [small_dep]})),
+        ]);
+        let endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(29501));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        assert!(run(&state, &task, request).is_err());
+        let row = task_row(&state, &task);
+        assert!(
+            row.bytes_completed > 0 && row.bytes_completed < small_dep_bytes.len() as u64,
+            "expected mid-transfer byte progress on one-go download, got {}/{}",
+            row.bytes_completed,
+            row.bytes_total
+        );
+        assert_eq!(row.bytes_total, small_dep_bytes.len() as u64);
+        drop((endpoints, api, cdn));
+
+        // 2) Resumable part path (>= 1 MiB): cut mid-stream and verify Reporting emitted byte progress.
+        let big_dep_bytes = c9_big_jar("bigdep", "1");
+        let big_cut = 300 * 1024;
+        let cdn = RangeServer::new(vec![
+            Scripted::ok(main_bytes, "\"m\""),
+            Scripted::ok(&big_dep_bytes, "\"b\"").cut(big_cut),
+        ]);
+        let mut main = curseforge_file(29601, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(790, 3)]);
+        let big_dep = curseforge_dependency_file(
+            29602,
+            790,
+            "big-dep.jar",
+            1,
+            &cdn,
+            &big_dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_project_for(790, "Big Dep"),
+            json(serde_json::json!({"data": [big_dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(29601));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        assert!(run(&state, &task, request).is_err());
+        let row = task_row(&state, &task);
+        assert!(
+            row.bytes_completed > 0 && row.bytes_completed < big_dep_bytes.len() as u64,
+            "expected mid-transfer byte progress on resumable part download, got {}/{}",
+            row.bytes_completed,
+            row.bytes_total
+        );
+        assert_eq!(row.bytes_total, big_dep_bytes.len() as u64);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_reused_root_with_missing_dependency_counts_only_written_files() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let directory = mods(&state);
+        fs::create_dir_all(&directory).unwrap();
+        let main_bytes = b"already present root mod jar".as_slice();
+        let dep_bytes = b"missing required dependency jar".as_slice();
+        fs::write(directory.join("main.jar"), main_bytes).unwrap();
+        let cdn = RangeServer::new(vec![Scripted::ok(dep_bytes, "\"d\"")]);
+        let mut main = curseforge_file(29701, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(789, 3)]);
+        let main_fp = c8_fingerprint_of(main.clone(), main_bytes);
+        let dep = curseforge_dependency_file(
+            29702,
+            789,
+            "dependency.jar",
+            1,
+            &cdn,
+            dep_bytes,
+            serde_json::json!([]),
+        );
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            curseforge_fingerprint_answer(456, main_fp),
+            curseforge_project_for(789, "Dependency"),
+            json(serde_json::json!({"data": [dep]})),
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(29701));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let installed = run(&state, &task, request).unwrap().installed().unwrap();
+        assert_eq!(installed.file_name, "main.jar");
+        assert!(!installed.already_installed);
+        assert_eq!(installed.dependency_count, 1);
+        assert_eq!(
+            installed.changed_count, 1,
+            "the reused unchanged root file must not be counted as added or updated"
+        );
+        assert_eq!(
+            installed.warning.as_deref(),
+            Some("已校验 1 个必需前置，本次新增或更新 1 个资源")
+        );
+        assert_eq!(cdn.count(), 1, "only the missing dependency is downloaded");
+        assert_eq!(fs::read(directory.join("main.jar")).unwrap(), main_bytes);
+        assert_eq!(fs::read(directory.join("dependency.jar")).unwrap(), dep_bytes);
+        drop(state);
+        cleanup_fixture(root);
+    }
+
+    #[test]
+    fn c9_curseforge_unknown_class_dependency_is_check_only_and_refuses_install_first() {
+        let (root, state) = resource_fixture();
+        save_curseforge_key(&state);
+        let main_bytes = b"main depending on unknown class project".as_slice();
+        let cdn = RangeServer::new(Vec::new());
+        let mut main = curseforge_file(29801, "main.jar", 2, &cdn, main_bytes);
+        main["dependencies"] = serde_json::json!([curseforge_dependency(799, 3)]);
+        let unknown_class_project = json(serde_json::json!({"data": {
+            "id": 799, "gameId": 432, "name": "Unknown Category Dependency", "slug": "unknown-cat",
+            "summary": "Unknown classId", "classId": null, "downloadCount": 0.0, "authors": [],
+            "allowModDistribution": true
+        }}));
+        let api = RangeServer::new(vec![
+            curseforge_project(),
+            json(serde_json::json!({"data": main})),
+            unknown_class_project,
+        ]);
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let request = curseforge_existing_request("456", Some(29801));
+        let task = state.control.reserve_resource(request.clone()).unwrap();
+        let error = run(&state, &task, request).err().unwrap();
+        assert_eq!(error.code, "resource.dependencyInstallFirst", "{error:?}");
+        assert_eq!(error.params["name"], "Unknown Category Dependency");
+        assert!(
+            error.params.get("folder").is_none(),
+            "unknown class has no known target folder: {:?}",
+            error.params
+        );
+        assert_eq!(
+            api.count(),
+            3,
+            "unknown class_id must refuse check-only without fetching dependency files"
+        );
+        assert_eq!(cdn.count(), 0);
+        assert!(!mods(&state).exists());
+        assert!(journals(&state).is_empty());
         drop(state);
         cleanup_fixture(root);
     }
@@ -6933,8 +8859,9 @@ mod c9_wiring {
         let install = body(&transactions, "pub(super) async fn install(");
         assert!(install.contains("resource_parts(state,directory)"), "the parts folder is found from the live folder, not next/");
         let download = body(&curseforge, "async fn download(");
-        assert!(download.contains("if!download_part(state,&client,&url,file,&expected,reuse,&temporary).await?{"));
+        assert!(download.contains("if!download_part(state,&client,&url,file,&expected,reuse,&temporary,progress).await?{"));
         let part = body(&curseforge, "async fn download_part(");
+        assert!(part.contains("crate::parts::Reporting{hooks:&control,report:&report,}"), "CurseForge part downloads report byte progress");
         assert!(part.contains("crate::parts::publish_new_off_task(part,temporary)"), "the part never replaces a file");
         let replace = body(&curseforge, "async fn replace_with_file(");
         assert!(replace.contains("crate::resources::resource_parts(state,directory)"), "found from the live folder, not next/");
@@ -6943,6 +8870,56 @@ mod c9_wiring {
 
 #[cfg(test)]
 mod c8_wiring {
+    use super::*;
+    use crate::parts::range_server::{RangeServer, Scripted};
+
+    fn json(value: serde_json::Value) -> Scripted {
+        Scripted::ok(value.to_string().as_bytes(), "\"j\"")
+    }
+
+    fn c8_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    struct Endpoints;
+
+    impl Endpoints {
+        fn set(state: &LauncherState, api: &RangeServer, cdn: &RangeServer) -> Self {
+            state.update(|persisted| {
+                persisted.config.proxy_mode = "none".into();
+                Ok(())
+            }).unwrap();
+            TEST_ENDPOINTS.with(|endpoints| {
+                *endpoints.borrow_mut() = Some(TestEndpoints {
+                    modrinth_api: format!("http://{}", api.address),
+                    curseforge_api: format!("http://{}", api.address),
+                    cdn: cdn.address.parse().unwrap(),
+                    prepared_version: None,
+                })
+            });
+            Endpoints
+        }
+    }
+
+    impl Drop for Endpoints {
+        fn drop(&mut self) {
+            TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
+        }
+    }
+
+    fn modrinth_project() -> Scripted {
+        json(serde_json::json!({"id": "fixture-project", "title": "Fixture", "project_type": "mod"}))
+    }
+
+    fn save_curseforge_key(state: &LauncherState) -> String {
+        let key = ["$", "2a", "$", "10", "$"].join("") + &"a".repeat(53);
+        crate::secrets::save_service_secret(&state.data_dir, "curseforge-api-key", &key).unwrap();
+        key
+    }
+
     #[test]
     fn c8_curseforge_installs_and_updates_go_through_the_journaled_replace() {
         let resources = crate::storage::executable_source(include_str!("resources.rs"));
@@ -6960,16 +8937,23 @@ mod c8_wiring {
         // A cancel is checked after CurseForge answered, before its failure becomes a notice.
         let guard = check.find("state.control.checkpoint().await.map_err(expected)?").unwrap();
         assert!(curse < guard && guard < check.find("curseforge_part(curseforge)").unwrap());
-        // Installing into an instance and updating both use the staged, journaled replace.
+        // Installing into an instance resolves required dependencies through
+        // the shared planner and commits every file in one journaled replace.
         let install = body(&curseforge, "pub(crate) async fn install_curseforge(");
-        assert!(install.contains("replace_with_file(state, &directory, kind, &project.data, &file, None, true)"));
+        assert!(install.contains("prepare_install("));
+        assert!(install.contains("install_prepared("));
         assert!(!install.contains("download(state"), "no direct write into the live folder");
+        let prepare = body(&curseforge, "async fn prepare_install(");
+        assert!(prepare.contains("resource_transactions::resolve_dependency_plan("));
+        let commit = body(&curseforge, "async fn install_prepared(");
+        let commit_compact: String = commit.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(commit_compact.contains("resource_transactions::install_entries(state,directory,name,InstallSource::Curseforge,root_destination,projects,entries,kind,Some(progress),reuse,fetch,)"));
         let update = body(&curseforge, "pub(crate) async fn update_one(");
         assert!(update.find("identify(&client, &key, &locals)").unwrap() < update.find("get_pinned_file(").unwrap());
         assert!(update.trim_end().ends_with("Ok(replace_with_file(state, directory, kind, &project, &file, Some(file_name), enabled).await?)"));
         let replace = body(&curseforge, "async fn replace_with_file(");
         assert!(replace.find("require_no_pending(directory)").unwrap() < replace.find("stage_commit(").unwrap());
-        assert!(replace.contains("download(state, project, file, &next, kind, duplicates, reuse)"), "writes only into the staged copy");
+        assert!(replace.contains("download(state, project, file, &next, kind, duplicates, reuse, None)"), "writes only into the staged copy");
         assert!(replace.contains("if enabled { Duplicates::SetAside(&aside) } else { Duplicates::Keep }"), "a disabled update leaves enabled copies alone");
     }
 
@@ -6984,8 +8968,11 @@ mod c8_wiring {
         };
         for marker in [
             "async fn check_dependencies(",
-            "pub(crate) async fn install_curseforge(",
+            "async fn installed_dependencies(",
+            "async fn project(",
+            "async fn selected_file(",
             "pub(crate) async fn create_with_pinned_file(",
+            "pub(crate) async fn install_curseforge(",
             "async fn projects(",
             "async fn newest_release(",
             "pub(crate) async fn curseforge_updates(",
@@ -7000,7 +8987,9 @@ mod c8_wiring {
                     }
                     calls += 1;
                     assert!(
-                        text[..at].ends_with("in_task(state,") || text[..at].ends_with("during_cancellable_io("),
+                        text[..at].ends_with("in_task(state,")
+                            || text[..at].ends_with("in_task(self.state,")
+                            || text[..at].ends_with("during_cancellable_io("),
                         "{marker} calls {call} outside in_task"
                     );
                 }
@@ -7010,10 +8999,774 @@ mod c8_wiring {
         let download = body("async fn download(");
         assert!(download.contains("during_cancellable_io(client.get(url).send())"));
         assert!(download.contains("whileletSome(chunk)=state.control.during_cancellable_io(stream.next()).await?"));
-        // Searches and details are not tasks.
-        for marker in ["pub async fn search_curseforge(", "pub async fn get_curseforge_project_details("] {
-            assert!(!body(marker).contains("in_task("), "{marker}");
+        // Searches, project details and version pages are not tasks: a
+        // cancelled install must not stop them. Read the bodies that send the
+        // requests, not only the command wrappers.
+        for marker in [
+            "pub async fn search_curseforge(",
+            "pub(crate) async fn search_curseforge_for_discover(",
+            "pub(crate) async fn search_curseforge_inner(",
+            "pub async fn get_curseforge_project_details(",
+            "pub async fn get_curseforge_project_versions(",
+            "pub(crate) async fn curseforge_details_for_state(",
+            "pub(crate) async fn curseforge_versions_page(",
+            "async fn curseforge_source(",
+        ] {
+            let text = body(marker);
+            assert!(!text.contains("in_task(") && !text.contains("during_cancellable_io("), "{marker}");
         }
+        for marker in [
+            "pub(crate) async fn search_curseforge_inner(",
+            "pub(crate) async fn curseforge_details_for_state(",
+            "pub(crate) async fn curseforge_versions_page(",
+        ] {
+            let text = body(marker);
+            assert!(text.contains("api(") || text.contains("files_page_with_total("), "{marker} makes CurseForge requests");
+        }
+    }
+
+    // ---- Discover paging and sorting ---------------------------------------
+
+    fn discover_fixture() -> (crate::instances::StagingDirectory, LauncherState) {
+        let folder = crate::instances::StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/discover-paging-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let mut persisted = Persisted::default();
+        persisted.config.game_directory = folder.path().join("game").to_string_lossy().into_owned();
+        let state = LauncherState::test_fixture(
+            folder.path().join("data"),
+            persisted,
+            crate::storage::test_client(),
+        );
+        (folder, state)
+    }
+
+    fn query_params(server: &RangeServer, request: usize) -> std::collections::HashMap<String, String> {
+        let path = server.header(request, ":path").expect("a recorded request path");
+        reqwest::Url::parse(&format!("http://test.invalid{path}"))
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect()
+    }
+
+    fn facets(query: &SearchQuery) -> Vec<Vec<String>> {
+        serde_json::from_str(query.param("facets").expect("facets")).unwrap()
+    }
+
+    fn modrinth_hit(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "project_id": id, "slug": id, "title": id, "description": "Rendering",
+            "icon_url": "https://cdn.invalid/icon.png", "downloads": 1200, "author": "Author",
+            "project_type": "mod", "versions": ["1.21.1"], "categories": ["fabric"]
+        })
+    }
+
+    fn modrinth_search_answer() -> Scripted {
+        json(serde_json::json!({
+            "hits": [modrinth_hit("sodium"), modrinth_hit("iris")],
+            "offset": 20, "limit": 15, "total_hits": 123
+        }))
+    }
+
+    #[test]
+    fn discover_modrinth_search_query_carries_paging_sort_and_target_facets() {
+        let query = modrinth_search_query(
+            "sodium",
+            "mod",
+            Some("1.21.1"),
+            Some("fabric"),
+            Some(20),
+            Some(15),
+            Some("downloads"),
+        )
+        .unwrap();
+        assert_eq!(query.param("query"), Some("sodium"));
+        assert_eq!(query.param("offset"), Some("20"));
+        assert_eq!(query.param("limit"), Some("15"));
+        assert_eq!(query.param("index"), Some("downloads"));
+        assert_eq!(
+            facets(&query),
+            [vec!["project_type:mod"], vec!["versions:1.21.1"], vec!["categories:fabric"]]
+        );
+        let defaults = modrinth_search_query("", "shader", None, None, None, None, None).unwrap();
+        assert_eq!((defaults.offset, defaults.limit), (0, SEARCH_PAGE_SIZE));
+        assert_eq!(defaults.param("index"), Some("relevance"));
+        for sort in ["relevance", "downloads", "follows", "newest", "updated"] {
+            let query = modrinth_search_query("", "mod", None, None, None, None, Some(sort)).unwrap();
+            assert_eq!(query.param("index"), Some(sort));
+        }
+        // index + limit may reach the 10000 window exactly.
+        assert!(modrinth_search_query("", "mod", None, None, Some(9976), Some(24), None).is_ok());
+    }
+
+    #[test]
+    fn discover_modrinth_mod_search_without_a_usable_loader_keeps_to_the_four_loaders() {
+        let any = vec![
+            "categories:fabric",
+            "categories:forge",
+            "categories:neoforge",
+            "categories:quilt",
+        ];
+        for loader in [None, Some(""), Some("vanilla"), Some("optifine")] {
+            let query =
+                modrinth_search_query("", "mod", Some("1.21.1"), loader, None, None, None).unwrap();
+            assert_eq!(
+                facets(&query),
+                [vec!["project_type:mod"], vec!["versions:1.21.1"], any.clone()],
+                "{loader:?}"
+            );
+        }
+        let packs = modrinth_search_query("", "resourcepack", None, None, None, None, None).unwrap();
+        assert_eq!(facets(&packs), [vec!["project_type:resourcepack"]]);
+
+        // The Discover command itself sends the any-of facet; the test above
+        // would not catch a command that stopped asking for it.
+        let (_folder, state) = discover_fixture();
+        let api = RangeServer::new(vec![modrinth_search_answer()]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        c8_runtime()
+            .block_on(search_modrinth_for_discover(
+                &state,
+                "",
+                "mod",
+                Some("1.21.1"),
+                None,
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        let query = query_params(&api, 0);
+        let sent: Vec<Vec<String>> = serde_json::from_str(&query["facets"]).unwrap();
+        assert_eq!(sent[2], any, "the Discover command keeps the four-loader group");
+    }
+
+    #[test]
+    fn assistant_modrinth_search_keeps_its_own_facets_and_limit() {
+        let (_folder, state) = discover_fixture();
+        let api = RangeServer::new(vec![modrinth_search_answer()]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let result = c8_runtime()
+            .block_on(search_modrinth_for_state(&state, "sodium", "mod", None, None, 50))
+            .unwrap();
+        assert_eq!(result["count"], 2);
+        assert_eq!(result["hits"][0]["projectId"], "sodium");
+        let query = query_params(&api, 0);
+        assert_eq!(query.get("limit").map(String::as_str), Some("20"));
+        assert_eq!(query.get("index").map(String::as_str), Some("relevance"));
+        assert!(!query.contains_key("offset"));
+        let facets: Vec<Vec<String>> = serde_json::from_str(&query["facets"]).unwrap();
+        assert_eq!(facets, [vec!["project_type:mod"]], "no loader group for the assistant");
+    }
+
+    #[test]
+    fn discover_modrinth_search_refuses_bad_requests_before_sending_anything() {
+        let refused = |query: &str,
+                       project_type: &str,
+                       offset: Option<u32>,
+                       limit: Option<u32>,
+                       sort: Option<&str>| {
+            modrinth_search_query(query, project_type, None, None, offset, limit, sort).unwrap_err()
+        };
+        assert_eq!(refused("", "mod", Some(9977), Some(24), None), SEARCH_PAGE_LIMIT);
+        assert_eq!(refused("", "mod", Some(u32::MAX), Some(50), None), SEARCH_PAGE_LIMIT);
+        for error in [
+            refused("", "mod", None, Some(51), None),
+            refused("", "mod", None, Some(0), None),
+            refused("", "mod", None, None, Some("popularity")),
+            refused("", "mod", None, None, Some("bogus")),
+            refused("", "plugin", None, None, None),
+            refused("x".repeat(501).as_str(), "mod", None, None, None),
+            refused("a\nb", "mod", None, None, None),
+        ] {
+            assert!(error.starts_with(DISCOVER_REQUEST_INVALID), "{error}");
+        }
+        // The command path reports the Discover code and sends nothing.
+        let (_folder, state) = discover_fixture();
+        let api = RangeServer::new(vec![modrinth_search_answer()]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        for (offset, limit, sort, code) in [
+            (Some(9977), Some(24), None, "discover.pageLimit"),
+            (None, Some(51), None, "discover.requestInvalid"),
+            (None, None, Some("popularity"), "discover.requestInvalid"),
+        ] {
+            let error = runtime
+                .block_on(search_modrinth_for_discover(
+                    &state, "", "mod", None, None, offset, limit, sort,
+                ))
+                .err()
+                .expect("a refused search");
+            assert_eq!(error.code, code, "offset={offset:?} limit={limit:?} sort={sort:?}");
+        }
+        assert_eq!(api.count(), 0, "a refused search sends nothing");
+    }
+
+    #[test]
+    fn discover_modrinth_search_returns_the_total_and_where_the_next_page_starts() {
+        let (_folder, state) = discover_fixture();
+        let api = RangeServer::new(vec![modrinth_search_answer()]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let page = c8_runtime()
+            .block_on(search_modrinth_for_discover(
+                &state,
+                "",
+                "mod",
+                Some("1.21.1"),
+                Some("fabric"),
+                Some(20),
+                Some(15),
+                Some("updated"),
+            ))
+            .unwrap();
+        assert_eq!(page.total_hits, Some(123));
+        assert_eq!(page.next_offset, 22);
+        assert_eq!(page.hits[1].project_id, "iris");
+        assert_eq!(page.hits[0].versions, ["1.21.1"]);
+        let value = serde_json::to_value(&page).unwrap();
+        assert_eq!(value["totalHits"], 123);
+        assert_eq!(value["nextOffset"], 22);
+        assert_eq!(value["hits"][0]["project_id"], "sodium");
+        let query = query_params(&api, 0);
+        assert!(api.header(0, ":path").is_some_and(|path| path.starts_with("/search?")));
+        assert_eq!(query.get("offset").map(String::as_str), Some("20"));
+        assert_eq!(query.get("limit").map(String::as_str), Some("15"));
+        assert_eq!(query.get("index").map(String::as_str), Some("updated"));
+        assert!(query
+            .get("facets")
+            .is_some_and(|facets| facets.contains("versions:1.21.1") && facets.contains("categories:fabric")));
+    }
+
+    #[test]
+    fn discover_next_search_offset_counts_raw_hits_but_never_passes_the_request() {
+        assert_eq!(next_search_offset(20, 15, 2), 22);
+        assert_eq!(next_search_offset(20, 15, 40), 35);
+        assert_eq!(next_search_offset(0, 24, 0), 0);
+    }
+
+    fn modrinth_paging_version(day: u32) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("version-{day:02}"),
+            "project_id": "fixture-project",
+            "version_type": "release",
+            "name": format!("Version {day}"),
+            "version_number": format!("1.0.{day}"),
+            "date_published": format!("2026-01-{day:02}T00:00:00Z"),
+            "game_versions": ["1.21.1"],
+            "loaders": ["fabric"],
+            "files": [],
+            "dependencies": []
+        })
+    }
+
+    #[test]
+    fn discover_modrinth_versions_page_continues_after_the_details_cap() {
+        let (_folder, state) = discover_fixture();
+        let versions: Vec<_> = (1..=35).map(modrinth_paging_version).collect();
+        let api = RangeServer::new(vec![
+            modrinth_project(),
+            json(serde_json::Value::Array(versions.clone())),
+            modrinth_project(),
+            json(serde_json::Value::Array(versions)),
+        ]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        let details = runtime
+            .block_on(modrinth_details_for_state(
+                &state,
+                "fixture-project".into(),
+                None,
+                None,
+                "mod".into(),
+            ))
+            .unwrap();
+        assert_eq!(details.details.versions.len(), PROJECT_VERSION_PAGE);
+        assert!(details.has_more_versions);
+        let serialized = serde_json::to_value(&details).unwrap();
+        assert_eq!(serialized["hasMoreVersions"], true);
+        assert_eq!(
+            serialized["versions"].as_array().unwrap().len(),
+            PROJECT_VERSION_PAGE
+        );
+        let page = runtime
+            .block_on(modrinth_versions_page(
+                &state,
+                "fixture-project".into(),
+                None,
+                None,
+                "mod".into(),
+                Some(PROJECT_VERSION_PAGE as u32),
+            ))
+            .unwrap();
+        assert_eq!(page.versions.len(), 5);
+        assert!(!page.has_more);
+        let refused = runtime
+            .block_on(modrinth_versions_page(
+                &state,
+                "fixture-project".into(),
+                None,
+                None,
+                "mod".into(),
+                Some(301),
+            ))
+            .err()
+            .expect("version paging is bounded");
+        assert_eq!(refused.code, "discover.versionPageLimit");
+        assert_eq!(api.count(), 4, "the bounded page sends nothing");
+    }
+
+    fn curseforge_search_page() -> serde_json::Value {
+        let project = |id: u64, class: u64| {
+            serde_json::json!({
+                "id": id, "gameId": 432, "name": format!("Fixture {id}"), "slug": format!("fixture-{id}"),
+                "summary": "Fixture", "classId": class, "downloadCount": 10.0,
+                "authors": [{"name": "Author"}]
+            })
+        };
+        serde_json::json!({
+            "data": [project(456, 6), project(457, 12), project(458, 6)],
+            "pagination": {"totalCount": 250, "index": 24, "pageSize": 24}
+        })
+    }
+
+    #[test]
+    fn discover_curseforge_search_query_carries_paging_sort_and_order() {
+        let (class, query) = crate::curseforge::curseforge_search_query(
+            "sodium".into(),
+            "mod",
+            Some("1.21.1".into()),
+            Some("fabric".into()),
+            Some(24),
+            Some(24),
+            Some("popularity"),
+        )
+        .unwrap();
+        assert_eq!(class, 6);
+        for (name, value) in [
+            ("gameId", "432"),
+            ("classId", "6"),
+            ("searchFilter", "sodium"),
+            ("index", "24"),
+            ("pageSize", "24"),
+            ("sortField", "2"),
+            ("sortOrder", "desc"),
+            ("gameVersion", "1.21.1"),
+            ("modLoaderType", "4"),
+        ] {
+            assert_eq!(query.param(name), Some(value), "{name}");
+        }
+        for (sort, field, order) in [
+            (None, "6", "desc"),
+            (Some("downloads"), "6", "desc"),
+            (Some("totalDownloads"), "6", "desc"),
+            (Some("updated"), "3", "desc"),
+            (Some("lastUpdated"), "3", "desc"),
+            (Some("featured"), "1", "desc"),
+            (Some("popularity"), "2", "desc"),
+            (Some("name"), "4", "asc"),
+        ] {
+            let (_, query) = crate::curseforge::curseforge_search_query(
+                String::new(),
+                "resourcepack",
+                None,
+                None,
+                None,
+                None,
+                sort,
+            )
+            .unwrap();
+            assert_eq!(
+                (query.param("sortField"), query.param("sortOrder")),
+                (Some(field), Some(order)),
+                "{sort:?}"
+            );
+        }
+        assert!(crate::curseforge::curseforge_search_query(
+            String::new(),
+            "mod",
+            None,
+            None,
+            Some(9976),
+            Some(24),
+            None
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn discover_curseforge_search_refuses_bad_requests_before_sending_anything() {
+        let refused = |query: &str,
+                       kind: &str,
+                       game: Option<&str>,
+                       loader: Option<&str>,
+                       offset: Option<u32>,
+                       limit: Option<u32>,
+                       sort: Option<&str>| {
+            crate::curseforge::curseforge_search_query(
+                query.to_owned(),
+                kind,
+                game.map(str::to_owned),
+                loader.map(str::to_owned),
+                offset,
+                limit,
+                sort,
+            )
+            .unwrap_err()
+        };
+        assert_eq!(
+            refused("", "mod", None, None, Some(9977), Some(24), None),
+            SEARCH_PAGE_LIMIT
+        );
+        for error in [
+            refused("", "mod", None, None, None, Some(51), None),
+            refused("", "mod", None, None, None, Some(0), None),
+            refused("", "mod", None, None, None, None, Some("relevance")),
+            refused("", "mod", None, None, None, None, Some("follows")),
+            refused("", "mod", None, None, None, None, Some("bogus")),
+            refused("", "plugin", None, None, None, None, None),
+            refused("", "mod", Some("1.21/../x"), None, None, None, None),
+            refused("", "mod", None, Some("liteloader"), None, None, None),
+            refused("x".repeat(501).as_str(), "mod", None, None, None, None, None),
+        ] {
+            assert!(error.starts_with(DISCOVER_REQUEST_INVALID), "{error}");
+        }
+        // The command path reports the Discover code and sends nothing.
+        let (_folder, state) = discover_fixture();
+        save_curseforge_key(&state);
+        let api = RangeServer::new(vec![json(curseforge_search_page())]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let runtime = c8_runtime();
+        for (offset, limit, sort, code) in [
+            (Some(9977), Some(24), None, "discover.pageLimit"),
+            (None, Some(51), None, "discover.requestInvalid"),
+            (None, None, Some("relevance"), "discover.requestInvalid"),
+        ] {
+            let error = runtime
+                .block_on(crate::curseforge::search_curseforge_for_discover(
+                    &state,
+                    String::new(),
+                    "mod".into(),
+                    None,
+                    None,
+                    offset,
+                    limit,
+                    sort.map(str::to_owned),
+                ))
+                .err()
+                .expect("a refused search");
+            assert_eq!(error.code, code, "offset={offset:?} limit={limit:?} sort={sort:?}");
+        }
+        assert_eq!(api.count(), 0, "a refused search sends nothing");
+    }
+
+    #[test]
+    fn discover_curseforge_search_returns_the_total_and_counts_skipped_hits_for_the_next_page() {
+        let (_folder, state) = discover_fixture();
+        save_curseforge_key(&state);
+        let api = RangeServer::new(vec![json(curseforge_search_page())]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let page = c8_runtime()
+            .block_on(crate::curseforge::search_curseforge_for_discover(
+                &state,
+                "sodium".into(),
+                "mod".into(),
+                Some("1.21.1".into()),
+                Some("fabric".into()),
+                Some(24),
+                Some(24),
+                Some("name".into()),
+            ))
+            .unwrap();
+        assert_eq!(page.total_hits, Some(250));
+        let ids: Vec<_> = page.hits.iter().map(|hit| hit.project_id.as_str()).collect();
+        assert_eq!(ids, ["456", "458"], "a project of another class is left out");
+        assert_eq!(page.next_offset, 27, "but it still counts for the next index");
+        let value = serde_json::to_value(&page).unwrap();
+        assert_eq!(value["totalHits"], 250);
+        assert_eq!(value["nextOffset"], 27);
+        assert!(api.header(0, ":path").is_some_and(|path| path.starts_with("/mods/search?")));
+        let query = query_params(&api, 0);
+        for (name, value) in [
+            ("index", "24"),
+            ("pageSize", "24"),
+            ("sortField", "4"),
+            ("sortOrder", "asc"),
+            ("classId", "6"),
+            ("gameVersion", "1.21.1"),
+            ("modLoaderType", "4"),
+        ] {
+            assert_eq!(query.get(name).map(String::as_str), Some(value), "{name}");
+        }
+    }
+
+    fn curseforge_paging_file(id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "modId": 98765, "gameId": 432, "isAvailable": id % 5 != 0,
+            "fileName": format!("fixture-{id}.jar"), "fileLength": 1,
+            "downloadUrl": null, "hashes": [],
+            "gameVersions": ["1.21.1", "Fabric"], "dependencies": [],
+            "fileDate": format!("2026-01-{:02}T00:00:00Z", id % 28 + 1)
+        })
+    }
+
+    fn curseforge_files(ids: std::ops::Range<u64>, total: u64) -> Scripted {
+        let files: Vec<_> = ids.map(curseforge_paging_file).collect();
+        json(serde_json::json!({
+            "data": files,
+            "pagination": {"totalCount": total, "pageSize": 50}
+        }))
+    }
+
+    /// Three raw pages of 50, 50 and 20 files where every fifth file is not
+    /// available: the pages the drawer shows count only the available ones.
+    #[test]
+    fn discover_curseforge_versions_page_skips_unavailable_files_across_raw_pages() {
+        let (_folder, state) = discover_fixture();
+        save_curseforge_key(&state);
+        let project = json(serde_json::json!({"data": {
+            "id": 98765, "gameId": 432, "name": "Fixture", "slug": "fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": []
+        }}));
+        let api = RangeServer::new(vec![
+            project,
+            curseforge_files(1000..1050, 120),
+            curseforge_files(1050..1100, 120),
+            curseforge_files(1100..1120, 120),
+        ]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let available: Vec<String> = (1000..1120_u64)
+            .filter(|id| id % 5 != 0)
+            .map(|id| id.to_string())
+            .collect();
+        let runtime = c8_runtime();
+        let details = runtime
+            .block_on(crate::curseforge::curseforge_details_for_state(
+                &state,
+                "98765".into(),
+                None,
+                None,
+                "mod".into(),
+            ))
+            .unwrap();
+        let ids = |versions: &[ResourceVersion]| -> Vec<String> {
+            versions.iter().map(|version| version.id.clone()).collect()
+        };
+        assert_eq!(ids(&details.details.versions), available[..30]);
+        assert!(details.has_more_versions);
+        let versions = |offset: u32| {
+            runtime
+                .block_on(crate::curseforge::curseforge_versions_page(
+                    &state,
+                    "98765".into(),
+                    None,
+                    None,
+                    "mod".into(),
+                    Some(offset),
+                ))
+                .unwrap()
+        };
+        let second = versions(30);
+        assert_eq!(ids(&second.versions), available[30..60]);
+        assert!(second.has_more);
+        // The project, the first raw page (kept from the details) and one more.
+        assert_eq!(api.count(), 3, "the scan stops once the page is filled");
+        let third = versions(60);
+        assert_eq!(ids(&third.versions), available[60..90]);
+        assert!(third.has_more);
+        assert_eq!(api.count(), 4);
+        let last = versions(90);
+        assert_eq!(ids(&last.versions), available[90..]);
+        assert!(!last.has_more);
+        assert_eq!(api.count(), 4, "every raw page is already known");
+    }
+
+    #[test]
+    fn discover_curseforge_versions_scan_stops_after_ten_raw_pages() {
+        let (_folder, state) = discover_fixture();
+        save_curseforge_key(&state);
+        // No file is available, so the scan never fills a page.
+        let unavailable = |ids: std::ops::Range<u64>| {
+            let files: Vec<_> = ids
+                .map(|id| {
+                    let mut file = curseforge_paging_file(id);
+                    file["isAvailable"] = false.into();
+                    file
+                })
+                .collect();
+            json(serde_json::json!({"data": files, "pagination": {"totalCount": 560, "pageSize": 50}}))
+        };
+        let mut script: Vec<Scripted> =
+            (0..11_u64).map(|page| unavailable(page * 50..page * 50 + 50)).collect();
+        script.push(unavailable(550..560));
+        let api = RangeServer::new(script);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let page = c8_runtime()
+            .block_on(crate::curseforge::curseforge_versions_page(
+                &state,
+                "98765".into(),
+                None,
+                None,
+                "mod".into(),
+                Some(0),
+            ))
+            .unwrap();
+        assert!(page.versions.is_empty());
+        assert!(!page.has_more);
+        assert_eq!(api.count(), 10, "at most 500 raw files are scanned");
+    }
+
+    #[test]
+    fn discover_frontend_keeps_the_webview_off_the_modrinth_api() {
+        let launcher = include_str!("../../src/lib/launcher.ts");
+        assert!(!launcher.contains("searchResources"), "the dead direct fetch is gone");
+        assert!(!launcher.contains("api.modrinth.com"), "the WebView does not call Modrinth directly");
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = config["app"]["security"]["csp"].as_str().expect("the app CSP");
+        assert!(!csp.contains("https://api.modrinth.com"), "connect-src no longer allows the API host");
+        assert!(csp.contains("img-src 'self' data: blob: https:"), "cdn.modrinth.com images stay allowed");
+        assert!(csp.contains("https://textures.minecraft.net"), "skin textures stay allowed");
+    }
+
+    #[test]
+    fn discover_search_failures_reach_the_page_with_mapped_codes() {
+        let runtime = c8_runtime();
+        // Modrinth: proxy authentication, rate limiting and a server failure
+        // each map to their own code, never to the generic error.
+        for (status, code) in [
+            (407, "proxy.authentication"),
+            (429, "discover.modrinthRateLimited"),
+            (502, "discover.modrinthFailed"),
+        ] {
+            let (_folder, state) = discover_fixture();
+            let api = RangeServer::new(vec![Scripted::status(status)]);
+            let cdn = RangeServer::new(Vec::new());
+            let _endpoints = Endpoints::set(&state, &api, &cdn);
+            let error = runtime
+                .block_on(search_modrinth_for_discover(
+                    &state, "", "mod", None, None, None, None, None,
+                ))
+                .err()
+                .expect("a failed search");
+            assert_eq!(error.code, code, "HTTP {status}");
+            assert_ne!(error.code, "internal.unexpected", "HTTP {status}");
+            assert_eq!(api.count(), 1, "HTTP {status}");
+        }
+        // An invalid proxy configuration is refused before a request leaves.
+        let (_folder, state) = discover_fixture();
+        let api = RangeServer::new(Vec::new());
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        state
+            .update(|persisted| {
+                persisted.config.proxy_mode = "custom".into();
+                persisted.config.proxy_scheme = "http".into();
+                persisted.config.proxy_host = "http://bad host".into();
+                persisted.config.proxy_port = 8080;
+                Ok(())
+            })
+            .unwrap();
+        let error = runtime
+            .block_on(search_modrinth_for_discover(
+                &state, "", "mod", None, None, None, None, None,
+            ))
+            .err()
+            .expect("an invalid proxy");
+        assert_eq!(error.code, "proxy.invalidHost");
+        assert_eq!(api.count(), 0);
+
+        // CurseForge: a refused key and a missing key keep their launcher-wide
+        // codes; neither becomes the generic error.
+        let (_folder, state) = discover_fixture();
+        save_curseforge_key(&state);
+        let api = RangeServer::new(vec![Scripted::status(403)]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = runtime
+            .block_on(crate::curseforge::search_curseforge_for_discover(
+                &state, String::new(), "mod".into(), None, None, None, None, None,
+            ))
+            .err()
+            .expect("a refused search");
+        assert_eq!(error.code, "discover.curseforgeRefused");
+
+        // A CurseForge 407 keeps the launcher's proxy-authentication text.
+        let (_folder, state) = discover_fixture();
+        save_curseforge_key(&state);
+        let api = RangeServer::new(vec![Scripted::status(407)]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = runtime
+            .block_on(crate::curseforge::search_curseforge_for_discover(
+                &state, String::new(), "mod".into(), None, None, None, None, None,
+            ))
+            .err()
+            .expect("a proxy-authenticated search");
+        assert_eq!(error.code, "proxy.authentication");
+
+        let (_folder, state) = discover_fixture();
+        let api = RangeServer::new(Vec::new());
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = runtime
+            .block_on(crate::curseforge::search_curseforge_for_discover(
+                &state, String::new(), "mod".into(), None, None, None, None, None,
+            ))
+            .err()
+            .expect("a missing key");
+        assert_eq!(error.code, "auth.serviceKeyMissing");
+        assert_eq!(api.count(), 0, "a missing key sends nothing");
+    }
+
+    #[test]
+    fn discover_version_pages_map_source_failures() {
+        let runtime = c8_runtime();
+        let (_folder, state) = discover_fixture();
+        let api = RangeServer::new(vec![Scripted::status(502)]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = runtime
+            .block_on(modrinth_versions_page(
+                &state,
+                "fixture-project".into(),
+                None,
+                None,
+                "mod".into(),
+                Some(0),
+            ))
+            .err()
+            .expect("a failed version page");
+        assert_eq!(error.code, "discover.modrinthFailed");
+
+        let (_folder, state) = discover_fixture();
+        save_curseforge_key(&state);
+        let api = RangeServer::new(vec![Scripted::status(403)]);
+        let cdn = RangeServer::new(Vec::new());
+        let _endpoints = Endpoints::set(&state, &api, &cdn);
+        let error = runtime
+            .block_on(crate::curseforge::curseforge_versions_page(
+                &state,
+                "98765".into(),
+                None,
+                None,
+                "mod".into(),
+                Some(0),
+            ))
+            .err()
+            .expect("a refused version page");
+        assert_eq!(error.code, "discover.curseforgeRefused");
     }
 }
 

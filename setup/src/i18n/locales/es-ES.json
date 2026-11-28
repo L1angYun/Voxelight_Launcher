@@ -1,0 +1,146 @@
+{
+  "app": {
+    "productName": "Voxelight Launcher",
+    "setupName": "Instalador de Voxelight",
+    "wordmark": "VOXELIGHT",
+    "stepCount": "Paso {{current}} de {{total}}",
+    "stepAnnouncement": "Paso {{current}} de {{total}}: {{title}}"
+  },
+  "chrome": {
+    "windowControls": "Controles de la ventana",
+    "minimize": "Minimizar",
+    "close": "Cerrar",
+    "closeBlocked": "Espera a que termine la instalación antes de cerrar"
+  },
+  "actions": {
+    "back": "Atrás",
+    "next": "Continuar",
+    "install": "Instalar",
+    "update": "Actualizar",
+    "reinstall": "Reinstalar",
+    "browse": "Examinar",
+    "classicInstaller": "Abrir el instalador clásico",
+    "launch": "Abrir Voxelight",
+    "close": "Cerrar",
+    "retry": "Reintentar",
+    "copyDetails": "Copiar detalles",
+    "copied": "Detalles copiados al portapapeles.",
+    "copyFailed": "No se pudo acceder al portapapeles. Selecciona los detalles de abajo para copiarlos manualmente.",
+    "viewLicense": "Ver licencia GPL-3.0"
+  },
+  "welcome": {
+    "title": "Instalar Voxelight Launcher",
+    "version": "Versión {{version}}",
+    "summary": "Un lanzador de código abierto para Minecraft: Java Edition en Windows. Administra instancias aisladas, cargadores de mods, mundos y descargas en un espacio sereno.",
+    "perUserNote": "Se instala solo para tu cuenta de Windows sin privilegios de administrador. Tus archivos de Minecraft permanecen aparte.",
+    "licenseLead": "Distribuido bajo licencia GNU GPL-3.0-only. No necesitas aceptar ningún acuerdo para instalar.",
+    "updateNotice": "Se detectó una instalación existente ({{installed}}) y se actualizará a {{target}}.",
+    "reinstallNotice": "La versión {{version}} ya está instalada en este equipo.",
+    "downgradeNotice": "Ya hay instalada una versión más reciente ({{installed}}). Este instalador no permite volver a una anterior."
+  },
+  "location": {
+    "title": "Ubicación de instalación",
+    "description": "Elige una carpeta de usuario para Voxelight Launcher. Tu carpeta de juego y tus mundos nunca se modifican.",
+    "fieldLabel": "Carpeta de destino",
+    "placeholder": "Selecciona una carpeta en una unidad local",
+    "spaceSummary": "Necesita {{required}}, {{available}} disponibles en esta unidad",
+    "spaceRequiredOnly": "Necesita unos {{required}} de espacio libre",
+    "checking": "Comprobando carpeta…",
+    "modeUpdateTitle": "Actualizar de {{from}} a {{to}}",
+    "modeUpdateHint": "Se conservará tu carpeta de instalación actual para mantener sincronizados los accesos directos y el registro.",
+    "modeReinstallTitle": "Reinstalar {{version}}",
+    "modeReinstallHint": "Se conservará tu carpeta de instalación actual. Tus cuentas, instancias y ajustes permanecen intactos.",
+    "modeFolderMissingHint": "Voxelight Launcher ya no está en su carpeta registrada, así que puedes elegir dónde instalarlo.",
+    "keptFolderUnusableHint": "El instalador conserva la carpeta de la instalación existente, pero esa carpeta ya no se puede usar. El instalador clásico puede quitar la copia anterior e instalar en otra carpeta. También puedes desinstalar Voxelight Launcher desde Configuración de Windows y volver a ejecutar el instalador.",
+    "classicInstallerFailed": "No se pudo abrir el instalador clásico. Cierra el instalador y vuelve a ejecutarlo.",
+    "modeDowngradeTitle": "Ya está instalada una versión más reciente ({{installed}})",
+    "modeDowngradeHint": "No se permite bajar a la versión {{target}}. Desinstala primero {{installed}} si necesitas una versión anterior."
+  },
+  "pathErrors": {
+    "empty": "Introduce una carpeta de destino.",
+    "invalidChars": "La ruta contiene caracteres o nombres reservados que Windows no permite.",
+    "notAbsolute": "Introduce una ruta completa en una unidad local, como C:\\Users\\User\\AppData\\Local\\Voxelight Launcher.",
+    "driveRoot": "Elige una subcarpeta en lugar de la raíz de la unidad.",
+    "protectedLocation": "Elige una carpeta de usuario fuera de Windows y Archivos de programa.",
+    "sharedLocation": "Elige una carpeta solo para tu cuenta. No se permiten ubicaciones compartidas como ProgramData, la carpeta Pública ni la raíz de una unidad.",
+    "reparsePoint": "La ruta seleccionada atraviesa un enlace simbólico o punto de unión, lo cual no está permitido.",
+    "isFile": "Ya existe un archivo en esa ruta. Elige una carpeta.",
+    "driveMissing": "La unidad o carpeta superior indicada no existe.",
+    "notWritable": "Tu cuenta no tiene permiso de escritura en esta carpeta.",
+    "insufficientSpace": "No hay espacio suficiente en esta unidad. Se necesitan {{required}} y solo hay {{available}} disponibles."
+  },
+  "options": {
+    "title": "Opciones de instalación",
+    "description": "Revisa los accesos directos y el inicio automático antes de comenzar.",
+    "shortcutsTitle": "Accesos directos en el escritorio y el menú Inicio",
+    "shortcutsHint": "Crea accesos directos en el escritorio y el menú Inicio. Si lo desactivas, no se creará ninguno de los dos.",
+    "shortcutsUpdateHint": "Al actualizar se conservan tus accesos directos tal como están.",
+    "launchTitle": "Abrir Voxelight al terminar",
+    "launchHint": "Inicia Voxelight Launcher automáticamente en cuanto finalice la instalación.",
+    "launchElevatedHint": "El instalador se está ejecutando como administrador, así que no puede iniciar Voxelight con tus permisos de usuario normales. Cuando termine la instalación, abre Voxelight desde el menú Inicio.",
+    "summaryLabel": "Resumen",
+    "summaryTarget": "Carpeta: {{path}}",
+    "summaryActionInstall": "Acción: instalación nueva de {{version}}",
+    "summaryActionUpdate": "Acción: actualización de {{from}} a {{to}}",
+    "summaryActionReinstall": "Acción: reinstalación de {{version}}"
+  },
+  "installing": {
+    "title": "Instalando Voxelight",
+    "subtitle": "Mantén esta ventana abierta hasta que finalice la instalación.",
+    "progressLabel": "Progreso de la instalación",
+    "phases": {
+      "extract": "Extraer",
+      "install": "Instalar",
+      "verify": "Verificar"
+    },
+    "status": {
+      "extract": "Verificando y extrayendo los archivos del instalador…",
+      "install": "Instalando los archivos de Voxelight Launcher…",
+      "installOverwrite": "Actualizando los archivos existentes…",
+      "verify": "Verificando la instalación y limpiando archivos temporales…"
+    },
+    "bytesWritten": "{{written}} de {{expected}} escritos"
+  },
+  "done": {
+    "title": "Voxelight está listo",
+    "description": "Voxelight Launcher {{version}} se ha instalado en la carpeta elegida.",
+    "installedAt": "Instalado en {{path}}",
+    "launchingNote": "Iniciando Voxelight Launcher.",
+    "launchFailed": "No se pudo iniciar Voxelight Launcher automáticamente. Usa el botón de abajo o ábrelo desde el menú Inicio.",
+    "launchBlockedElevated": "El instalador se está ejecutando como administrador. Para iniciar Voxelight con tus permisos de usuario normales, cierra el instalador y abre Voxelight Launcher desde el menú Inicio."
+  },
+  "error": {
+    "title": "La instalación no se completó",
+    "summary": "No se realizaron cambios globales en el sistema. Revisa el motivo, copia los detalles si los necesitas o vuelve a intentarlo.",
+    "detailsLabel": "Detalles técnicos",
+    "detailVersion": "Versión: {{value}}",
+    "detailTarget": "Carpeta: {{value}}",
+    "detailPhase": "Fase: {{value}}",
+    "detailExitCode": "Código de salida: {{value}}",
+    "detailCode": "Código: {{value}}",
+    "detailNone": "ninguno",
+    "reasons": {
+      "nsisExit1": "La instalación se canceló o se detuvo antes de terminar (código 1). Cierra cualquier copia abierta de Voxelight Launcher e inténtalo de nuevo.",
+      "nsisExit2": "El instalador se detuvo antes de tiempo (código 2). Comprueba que el lanzador esté cerrado, que la carpeta sea escribible y que no haya una versión más reciente.",
+      "nsisExit5": "Windows denegó el acceso de escritura a la carpeta elegida (código 5). Elige una carpeta de usuario con permiso de escritura y reintenta.",
+      "nsisExit112": "La unidad de destino se quedó sin espacio libre durante la instalación (código 112). Libera espacio o elige otra unidad.",
+      "nsisExit1223": "La operación se canceló antes de terminar (código 1223).",
+      "nsisExit1602": "Se canceló la desinstalación de la versión anterior (código 1602).",
+      "nsisExit1618": "Ya hay otro instalador de Windows en ejecución (código 1618). Espera a que termine y vuelve a intentarlo.",
+      "nsisExitOther": "El instalador finalizó de forma inesperada con el código {{code}}.",
+      "hashMismatch": "El paquete integrado no superó la comprobación SHA-256. Vuelve a descargar el instalador de Voxelight desde la página oficial de lanzamientos.",
+      "extractFailed": "No se pudieron extraer los archivos en la carpeta temporal. Comprueba el espacio libre y el antivirus.",
+      "spawnFailed": "No se pudo iniciar el motor de instalación de Windows. Revisa tu software de seguridad e inténtalo de nuevo.",
+      "verifyFailed": "El instalador terminó, pero no se encontró voxelight-launcher.exe en la carpeta de destino.",
+      "downgradeBlocked": "Ya hay instalada una versión más reciente de Voxelight Launcher, por lo que se rechazó la degradación.",
+      "alreadyInstalling": "Ya hay una instalación en curso.",
+      "launcherRunning": "Voxelight Launcher sigue en ejecución. Cierra Voxelight y elige Reintentar."
+    }
+  },
+  "license": {
+    "title": "Licencia Pública General de GNU v3.0",
+    "description": "Voxelight Launcher es software libre distribuido bajo GPL-3.0-only. Se muestra solo con fines informativos.",
+    "close": "Cerrar diálogo",
+    "loading": "Cargando el texto de la licencia…"
+  }
+}

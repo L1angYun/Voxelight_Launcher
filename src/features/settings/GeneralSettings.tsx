@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { pickLauncherPath } from "../../lib/nativePaths";
-import { Download, KeyRound, RotateCcw, Upload } from "lucide-react";
+import { Download, RotateCcw, Upload } from "lucide-react";
 import { command, type Config } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
+import { useLeaveGuard, useSharedSave } from "../../app/leaveGuard";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { useLumen } from "../assistant/LumenContext";
@@ -12,6 +13,7 @@ import type { SettingsSectionProps } from "./types";
 export function GeneralSettings({ config, onChange, onPersisted, onError, onNotice }: SettingsSectionProps) {
   const { t } = useTranslation();
   const lumen = useLumen();
+  const keyHintId = useId();
   const [key, setKey] = useState("");
   const [configured, setConfigured] = useState(false);
   const [builtin, setBuiltin] = useState(false);
@@ -21,6 +23,7 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
   const [resetting, setResetting] = useState(false);
   const mountedRef = useRef(true);
   const statusGenRef = useRef(0);
+  const secretSave = useSharedSave<boolean>();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -44,21 +47,38 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
     void loadServiceStatus();
   }, [loadServiceStatus]);
 
-  async function saveSecret(secret: string) {
-    setBusy(true);
-    try {
-      const value = await command<boolean>("set_service_secret", { service: "curseforge", secret });
-      setConfigured(value);
-      if (secret) {
-        setKey("");
-        onNotice("secretSaved");
-      } else onNotice("secretCleared");
-    } catch (cause) {
-      onError(cause);
-    } finally {
-      setBusy(false);
-    }
+  function saveSecret(secret: string): Promise<boolean> {
+    return secretSave.run(async () => {
+      setBusy(true);
+      try {
+        const value = await command<boolean>("set_service_secret", { service: "curseforge", secret });
+        setConfigured(value);
+        if (secret) {
+          setKey("");
+          onNotice("secretSaved");
+        } else onNotice("secretCleared");
+        return true;
+      } catch (cause) {
+        onError(cause);
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    });
   }
+
+  // The typed key lives only in this field, outside the settings draft, so it
+  // registers with the leave guard itself and saves through the same command.
+  useLeaveGuard(key.trim().length > 0, {
+    save: async () => {
+      const running = secretSave.current();
+      if (running) return (await running) ? { ok: true } : { ok: false };
+      if (!key.trim()) return { ok: true };
+      return (await saveSecret(key)) ? { ok: true } : { ok: false };
+    },
+    discard: () => setKey(""),
+    running: secretSave.current,
+  });
 
   async function preset(mode: "import" | "export") {
     try {
@@ -83,7 +103,7 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
     <div className="vx-settings-section">
       <header><h2>{t("settings:section.general")}</h2><p>{t("settings:generalDescription")}</p></header>
       <section className="vx-settings-group">
-        <h3><KeyRound size={17} />{t("settings:service.title")}</h3>
+        <h3>{t("settings:service.title")}</h3>
         <p>{t("settings:service.description")}</p>
         <label data-settings-target="general-client-id">
           {t(builtin ? "settings:service.clientIdOptional" : "settings:service.clientId")}
@@ -102,6 +122,7 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
               aria-label="CurseForge API Key"
               type="password"
               autoComplete="off"
+              aria-describedby={keyHintId}
               value={key}
               placeholder={configured
                 ? t("settings:service.keyConfiguredPlaceholder")
@@ -110,6 +131,7 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
             />
             <Button variant="secondary" loading={busy} disabled={!key.trim()} onClick={() => void saveSecret(key)}>{t("settings:service.saveKey")}</Button>
           </span>
+          <small className="vx-settings-hint" id={keyHintId}>{t("settings:service.keySeparateHint")}</small>
         </label>
         {configured ? <p role="status">{t("settings:service.configured")} <Button variant="ghost" disabled={busy} onClick={() => void saveSecret("")}>{t("settings:service.clearKey")}</Button></p> : null}
       </section>
@@ -124,7 +146,7 @@ export function GeneralSettings({ config, onChange, onPersisted, onError, onNoti
       </section>
 
       <section className="vx-settings-group">
-        <h3><RotateCcw size={17} />{t("settings:resetLauncher.title")}</h3>
+        <h3>{t("settings:resetLauncher.title")}</h3>
         <p>{t("settings:resetLauncher.description")}</p>
         <div className="vx-action-row" data-settings-target="general-reset-launcher">
           <Button

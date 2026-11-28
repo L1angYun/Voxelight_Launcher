@@ -6,7 +6,7 @@
   --vx-lens-edge-width: 20px;
   --vx-lens-blur: calc(var(--vx-lens-frost) * 1.875px);
   --vx-lens-radius-menu: 20px;
-  --vx-lens-menu-blur: 10px;
+  --vx-lens-menu-blur: var(--glass-blur-frosted, 10px);
   --vx-lens-shadow: none;
 }
 .vx-glass-provider { position: relative; isolation: isolate; }
@@ -30,11 +30,24 @@
 .vx-glass-surface {
   position: relative;
   isolation: isolate;
+  --vx-lens-boundary: rgb(237 233 224 / .22);
   border: 1px solid transparent;
   background: transparent;
   box-shadow: var(--vx-lens-shadow);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px) saturate(var(--glass-saturate, 1.65));
+  backdrop-filter: blur(8px) saturate(var(--glass-saturate, 1.65));
+}
+.vx-glass-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  border-radius: var(--vx-glass-radius, var(--radius-md));
+  background:
+    linear-gradient(155deg, var(--glass-sheen-top, transparent) 0%, transparent 46%, var(--glass-sheen-bottom, transparent) 100%),
+    color-mix(in oklab, var(--glass-tint-color, var(--surface-panel)) calc(var(--vx-glass-tint, .24) * 100%), transparent);
+  box-shadow: var(--glass-rim-highlight, none);
 }
 .vx-lens-reflection {
   position: absolute;
@@ -45,27 +58,31 @@
   overflow: visible;
   pointer-events: none;
 }
-.vx-glass-surface--nav { border-radius: var(--radius-glass-nav); }
-.vx-glass-surface--control { border-radius: var(--radius-pill); }
+.vx-glass-surface--nav { --vx-glass-radius: var(--radius-glass-nav); --vx-glass-tint: .22; border-radius: var(--radius-glass-nav); }
+.vx-glass-surface--control { --vx-glass-radius: var(--radius-pill); --vx-glass-tint: .20; border-radius: var(--radius-pill); }
 .vx-glass-surface--dialog {
+  --vx-glass-radius: var(--radius-lg);
+  --vx-glass-tint: .44;
   --vx-lens-blur: var(--vx-lens-menu-blur);
+  --vx-lens-shadow: var(--shadow-glass);
   border-radius: var(--radius-lg);
 }
-.vx-glass-surface--toast { border-radius: var(--radius-md); }
+.vx-glass-surface--toast { --vx-glass-radius: var(--radius-md); --vx-glass-tint: .38; border-radius: var(--radius-md); }
 .vx-glass-provider[data-glass-mode="lite"] .vx-glass-surface {
-  border-color: color-mix(in srgb, var(--text-primary) 15%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  border-color: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  box-shadow: var(--glass-edge, none);
+  -webkit-backdrop-filter: blur(8px) saturate(var(--glass-saturate, 1.65));
+  backdrop-filter: blur(8px) saturate(var(--glass-saturate, 1.65));
 }
 [data-glass-mode="full"] .vx-glass-surface[data-glass-refraction="curvature"] {
-  -webkit-backdrop-filter: blur(var(--vx-lens-blur)) var(--vx-glass-refraction);
-  backdrop-filter: blur(var(--vx-lens-blur)) var(--vx-glass-refraction);
+  -webkit-backdrop-filter: blur(var(--vx-lens-blur)) saturate(var(--glass-saturate, 1.65)) var(--vx-glass-refraction);
+  backdrop-filter: blur(var(--vx-lens-blur)) saturate(var(--glass-saturate, 1.65)) var(--vx-glass-refraction);
 }
 }
 @layer overrides {
 [data-theme="light"] .vx-glass-surface[data-glass-variant="control"] {
-  --vx-lens-boundary: color-mix(in srgb, var(--text-secondary) 65%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-secondary) 65%, transparent), var(--shadow-raised);
+  --vx-lens-boundary: var(--glass-control-boundary);
+  box-shadow: inset 0 0 0 1px var(--glass-control-boundary), var(--shadow-raised);
 }
 .vx-glass-provider[data-glass-mode="fallback"] .vx-glass-surface {
   border-color: var(--border-subtle);

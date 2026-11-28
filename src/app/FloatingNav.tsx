@@ -20,6 +20,7 @@ import { useAppearance } from "./AppearanceProvider";
 import { GlassSurface } from "../visual/glass/GlassSystem";
 import { clamp, jellyMatrix, Spring } from "../visual/glass/jelly";
 import { MOTION } from "../design/motion";
+import { ICON } from "../design/icons";
 import "./shell.css";
 
 export type NavigationPage = "home" | "library" | "discover" | "multiplayer" | "downloads" | "accounts" | "settings";
@@ -477,7 +478,7 @@ export function FloatingNav({
         data-tour-anchor={id}
         aria-current={active ? "page" : undefined}
         aria-label={`${t(item.labelKey)}${activityLabel}`}
-        title={id === "accounts" && accountName ? `${t(item.labelKey)} · ${accountName}` : t(item.labelKey)}
+        title={id === "accounts" && accountName ? `${t(item.labelKey)}: ${accountName}` : t(item.labelKey)}
         onClick={(event) => {
           if (suppressClickRef.current) {
             event.preventDefault();
@@ -498,8 +499,8 @@ export function FloatingNav({
         onBlur={() => pressRef.current(false)}
       >
         {id === "accounts" ? (
-          <span className="vx-floating-nav__avatar" aria-hidden="true"><PlayerAvatar skinUrl={accountSkinUrl} username={accountName} size={19} /></span>
-        ) : <Icon size={16} aria-hidden="true" />}
+          <span className="vx-floating-nav__avatar" aria-hidden="true"><PlayerAvatar skinUrl={accountSkinUrl} username={accountName} size={ICON.lg} /></span>
+        ) : <Icon size={ICON.md} aria-hidden="true" />}
         <span className="vx-floating-nav__label">{t(item.labelKey)}</span>
         {id === "downloads" && activeTaskCount > 0 ? <span className="vx-floating-nav__count" aria-hidden="true">{activeTaskCount}</span> : null}
       </button>

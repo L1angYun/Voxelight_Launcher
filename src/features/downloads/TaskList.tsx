@@ -17,6 +17,7 @@ import {
   type Registry,
 } from "../../app/registry";
 import { Button } from "../../components/ui/Button";
+import { ICON } from "../../design/icons";
 import { LatticeProgress } from "../../visual/lattice/LatticeProgress";
 import type { LatticeStatus } from "../../visual/lattice/model";
 import { formatBytes, formatDate, formatNumber } from "../../i18n/format";
@@ -49,7 +50,7 @@ function StatusIcon({ status }: { status: string }) {
           : status === "queued" || status === "paused"
             ? Clock3
             : Download;
-  return <Icon size={18} aria-hidden="true" />;
+  return <Icon size={ICON.sm} aria-hidden="true" />;
 }
 
 const actionIcons = {
@@ -162,7 +163,7 @@ function TaskRow({
   const actions = taskActions(task.status, task.retryable);
   const actionButtons = actions.map(action => {
     const Icon = actionIcons[action], label = t(`common:actions.${action}`);
-    return <Button key={action} variant="ghost" size="sm" icon={<Icon size={14} />}
+    return <Button key={action} variant="ghost" size="sm" icon={<Icon />}
       loading={busyTaskId === task.id} disabled={busyTaskId !== null} aria-label={`${label}: ${title}`}
       onClick={() => onAction(task, action)}>{label}</Button>;
   });

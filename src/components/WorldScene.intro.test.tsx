@@ -2,6 +2,7 @@
 // @vitest-environment jsdom
 import type { Root } from "react-dom/client";
 import type { WorldDrawMetrics } from "./world/renderer";
+import { WORLD_INTRO_REPLAY_EVENT } from "./world/worldReplay";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const bridge = vi.hoisted(() => ({ create: vi.fn() }));
@@ -253,4 +254,81 @@ it("unloads the renderer and ends the intro immediately when switching to Lite e
   expect(document.documentElement.dataset.worldIntro).toBe("off");
   expect(fake.dispose).toHaveBeenCalledTimes(1);
   expect(frames.size).toBe(0);
+});
+
+it("replays the entrance animation on demand from the current camera, restarts cleanly, and returns to settled state", async () => {
+  await render({ scene: "massif", page: "content" });
+  await frame(16);
+  const settled = fake.draw.mock.calls.at(-1)![0];
+  expect(settled.introActive).toBe(false);
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+  const cameraBefore = { eye: [...settled.eye], at: [...settled.at], fov: settled.fov };
+
+  await react.act(async () => {
+    window.dispatchEvent(new Event(WORLD_INTRO_REPLAY_EVENT));
+  });
+  const started = fake.draw.mock.calls.at(-1)![0];
+  expect(started.introActive).toBe(true);
+  expect(started.introTime).toBe(0);
+  expect(started.morph).toMatchObject({ toWord: true, fromWord: false, transit: 10 });
+  expect(started.eye).toEqual(cameraBefore.eye);
+  expect(started.at).toEqual(cameraBefore.at);
+  expect(started.fov).toBe(cameraBefore.fov);
+  expect(document.documentElement.dataset.worldIntro).toBe("on");
+
+  // Advance through the readable word gather into stage 2, then press a replay button
+  // (pointerdown + click): must restart cleanly instead of cancelling.
+  await frame(900);
+  await frame(700);
+  expect(fake.draw.mock.calls.at(-1)![0].morph.fromWord).toBe(true);
+
+  const replayButton = document.createElement("button");
+  replayButton.setAttribute("data-world-intro-replay", "");
+  replayButton.addEventListener("click", () => window.dispatchEvent(new Event(WORLD_INTRO_REPLAY_EVENT)));
+  container.append(replayButton);
+
+  await react.act(async () => {
+    replayButton.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    replayButton.click();
+  });
+  const restarted = fake.draw.mock.calls.at(-1)![0];
+  expect(restarted.introActive).toBe(true);
+  expect(restarted.introTime).toBe(0);
+  expect(restarted.morph).toMatchObject({ toWord: true, fromWord: false, transit: 10 });
+  expect(restarted.eye).toEqual(cameraBefore.eye);
+  expect(restarted.at).toEqual(cameraBefore.at);
+  expect(document.documentElement.dataset.worldIntro).toBe("on");
+
+  // Wait past the old deadline (900 ms) — restarted replay must still be active.
+  await react.act(async () => { now += 1000; vi.advanceTimersByTime(1000); });
+  await frame(0);
+  expect(fake.draw.mock.calls.at(-1)![0].introActive).toBe(true);
+  expect(document.documentElement.dataset.worldIntro).toBe("on");
+
+  // Finishes at the new 2.5 s deadline and returns exactly to the settled state.
+  await react.act(async () => { now += 1500; vi.advanceTimersByTime(1500); });
+  const finished = fake.draw.mock.calls.at(-1)![0];
+  expect(finished.introActive).toBe(false);
+  expect(finished.eye).toEqual(cameraBefore.eye);
+  expect(finished.at).toEqual(cameraBefore.at);
+  expect(finished.island).toBe(settled.island);
+  expect(finished.exposure).toBe(settled.exposure);
+  expect(finished.bloom).toBe(settled.bloom);
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+});
+
+it.each([
+  { label: "reduced motion", props: { reducedMotion: true } },
+  { label: "lite effects", props: { effects: "lite" as const } },
+  { label: "solid material", props: { material: "solid" as const } },
+  { label: "preparing phase", props: { phase: "preparing" as const, fraction: .2 } },
+])("treats replay requests as a no-op under $label", async ({ props }) => {
+  await render(props);
+  const drawsBefore = fake.draw.mock.calls.length;
+  await react.act(async () => {
+    window.dispatchEvent(new Event(WORLD_INTRO_REPLAY_EVENT));
+  });
+  expect(document.documentElement.dataset.worldIntro).toBe("off");
+  expect(fake.draw).toHaveBeenCalledTimes(drawsBefore);
+  expect(fake.draw.mock.calls.every(([drawn]) => !drawn.introActive)).toBe(true);
 });

@@ -8,7 +8,7 @@
     "network": "ネットワーク診断"
   },
   "environment": "ゲーム環境",
-  "chooseEnvironment": "インストール済みバージョンを選択",
+  "chooseEnvironment": "インスタンスを選択",
   "environmentRequired": "サーバーを保存または参加する前に、ゲーム環境を選択してください。",
   "refresh": "更新",
   "addServer": "サーバーを追加",
@@ -95,6 +95,7 @@
   "sendCommand": "コマンドを送信",
   "playerAction": "プレイヤー操作",
   "playerName": "プレイヤー名",
+  "playerNamePlaceholder": "例：Steve",
   "managePlayer": "プレイヤーを管理",
   "playerActions": {
     "whitelist add": "ホワイトリストに追加",

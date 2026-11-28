@@ -12,11 +12,12 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("shared points own the hovered edge and the selected static frame returns after leaving", async ({ page }) => {
-  await installLauncherFixture(page, { worldMaterial: "solid" });
+  // A second instance takes the hover: a populated library has no create card.
+  await installLauncherFixture(page, { worldMaterial: "solid", instanceCount: 2 });
   await page.goto("/");
   await page.locator('button[data-page="library"]').click();
   const selected = page.locator('article[data-instance-id="fixture-world"]');
-  const create = page.locator("[data-create-instance]");
+  const create = page.locator('article[data-instance-id="fixture-world-002"]');
   const halo = page.locator("canvas.vx-cursor-halo");
   await expect(halo).toHaveAttribute("data-halo-points", "30");
   await selected.hover();
@@ -64,18 +65,23 @@ test("system light and dark changes update the interface and rendered world toge
   await installLauncherFixture(page, { theme: "system", effects: "full", worldMaterial: "solid" });
   await page.goto("/");
   const scene = page.locator(".world-scene");
+  // R9 §2.11.1: the app root carries the --world-ink base and the world is a
+  // transparent layer above the ambient light, so the theme base is read there.
+  const base = page.locator(".vx-glass-provider.vx-app");
   const canvas = await scene.locator("canvas").elementHandle();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(scene).toHaveAttribute("data-world-tier", "static");
   await expect(scene.locator("canvas")).toBeVisible();
   await expect.poll(async () => Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(0);
   const darkFrames = Number(await scene.getAttribute("data-world-frames"));
-  await expect(scene).toHaveCSS("background-color", "rgb(7, 8, 11)");
+  await expect(scene).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(base).toHaveCSS("background-color", "rgb(7, 8, 11)");
   const dark = await captureWorld(page, resolve(evidence, "system-dark-world.png"));
   await page.screenshot({ path: resolve(evidence, "system-dark-ui.png") });
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await expect(scene).toHaveCSS("background-color", "rgb(243, 241, 235)");
+  await expect(scene).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(base).toHaveCSS("background-color", "rgb(243, 241, 235)");
   await expect(scene).toHaveAttribute("data-world-tier", "static");
   await expect.poll(async () => Number(await scene.getAttribute("data-world-frames"))).toBeGreaterThan(darkFrames);
   const light = await captureWorld(page, resolve(evidence, "system-light-world.png"));
@@ -94,7 +100,8 @@ test("system light and dark changes update the interface and rendered world toge
   expect(measurements.light - measurements.dark).toBeGreaterThan(80);
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(scene).toHaveCSS("background-color", "rgb(7, 8, 11)");
+  await expect(scene).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(base).toHaveCSS("background-color", "rgb(7, 8, 11)");
   const restored = await captureWorld(page, resolve(evidence, "system-restored-dark-world.png"));
   expect(Math.abs(sky(restored) - measurements.dark)).toBeLessThan(3);
   await writeFile(resolve(evidence, "system-sky-luminance.json"), JSON.stringify(measurements, null, 2));

@@ -76,7 +76,11 @@ test("review B: launch title and selector move together while status and cancel 
   expect.soft(rows.some(row => row.statusOpacity !== null && row.statusOpacity > .01 && row.statusOpacity < .99), "status has an opacity intermediate").toBe(true);
   expect(rows.some(row => row.cancelDisabled === true)).toBe(true);
   expect(rows.some(row => row.cancelDisabled === false)).toBe(true);
-  expect.soft(rows.some(row => row.cancelDisabled === false && row.cancelOpacity! > .56 && row.cancelOpacity! < .99), "enabling cancel fades its own opacity").toBe(true);
+  // R9 spec §3.1: a disabled primary keeps opacity 1 (the home.css launch guard
+  // included), so the short cancel guard never dims the white-on-accent label
+  // and enabling cancel cannot snap its own opacity.
+  expect.soft(rows.filter(row => row.cancelOpacity !== null).map(row => row.cancelOpacity), "cancel keeps full opacity through its guard and once enabled")
+    .toEqual(rows.filter(row => row.cancelOpacity !== null).map(() => 1));
   await page.screenshot({ path: info.outputPath("launch-preparing.png") });
 });
 
@@ -184,7 +188,8 @@ test("R2-10 light lens selector has a readable left boundary against its adjacen
       variant: element.getAttribute("data-glass-variant"), backdrop: css.backdropFilter,
       dispersion: Number(css.getPropertyValue("--vx-lens-dispersion")),
       refraction: Number(css.getPropertyValue("--vx-lens-refraction")),
-      boundary: css.getPropertyValue("--vx-lens-boundary"),
+      boundary: css.getPropertyValue("--vx-lens-boundary"), borderStrong: css.getPropertyValue("--border-strong"),
+      glassControlBoundary: css.getPropertyValue("--glass-control-boundary"),
       boundaryStrokeWidth: element.querySelector("[data-vx-boundary]")?.getAttribute("stroke-width") };
   });
   const image = decodePng(await page.screenshot({ path: info.outputPath("light-selector-boundary.png"), scale: "css" }));
@@ -203,7 +208,12 @@ test("R2-10 light lens selector has a readable left boundary against its adjacen
   for (let dy = -4; dy <= 4; dy++) {
     const y = Math.round(r.y + r.height / 2 + dy);
     const edgeX = r.x + 3 + radius - Math.sqrt(radius ** 2 - dy ** 2);
-    const background = { x: Math.floor(edgeX) - 3, y, rgb: pixel(Math.floor(edgeX) - 3, y) };
+    // A 22px background lattice dot can land on a single reference pixel;
+    // the adjacent background is the per-channel median of the five pixels
+    // ending at the former single reference (edge - 3px).
+    const run = [7, 6, 5, 4, 3].map(offset => pixel(Math.floor(edgeX) - offset, y));
+    const median = [0, 1, 2].map(channel => run.map(rgb => rgb[channel]).sort((a, b) => a - b)[2]);
+    const background = { x: Math.floor(edgeX) - 3, y, rgb: median, run };
     const strip = [];
     for (let x = Math.floor(edgeX) - 1; x <= Math.ceil(edgeX) + 2; x++) {
       const rgb = pixel(x, y); strip.push({ x, y, rgb, contrast: contrast(rgb, background.rgb) });
@@ -216,6 +226,15 @@ test("R2-10 light lens selector has a readable left boundary against its adjacen
   expect(geometry.refraction).toBe(.9);
   expect(geometry.dispersion).toBe(.65);
   expect(geometry.boundaryStrokeWidth).toBe("2");
+  // Owner requirement (round 2, R2-10): the left boundary contrasts at least
+  // 2.5:1 with its adjacent background. R9 ui-language-spec §2.8 moved this
+  // boundary to --border-strong (28%), which measures only about 1.6:1 here and
+  // misses that floor, so the owner requirement wins: the light glass control
+  // paints --glass-control-boundary (65% --text-secondary) on both the lens
+  // stroke and the inset edge, in every row.
+  expect(geometry.boundary).toBe("rgb(72 76 82 / .65)");
+  expect(geometry.boundary).toBe(geometry.glassControlBoundary);
+  expect(geometry.shadow).toMatch(/^rgba\(72, 76, 82, 0\.65\) 0px 0px 0px 1px inset, /);
   for (const row of rows) expect.soft(row.maximumContrast, `left edge row ${row.dy}`).toBeGreaterThanOrEqual(2.5);
 });
 
@@ -338,7 +357,8 @@ test("review D: detail identity gains a readable plate while card artwork stays 
   await page.locator(".vx-instance-card__select").first().click();
   const identity = page.locator(".vx-detail-header .vx-instance-identity");
   await expect(identity).toBeVisible();
-  await expect.soft(identity).toHaveCSS("background-color", "rgb(13, 15, 20)");
+  // R9 ui-language-spec §2.1: dark --surface-card is #131417.
+  await expect.soft(identity).toHaveCSS("background-color", "rgb(19, 20, 23)");
   await expect.soft(identity).toHaveCSS("border-top-width", "1px");
   await expect.soft(identity).toHaveCSS("border-radius", "6px");
   await expect.soft(identity.locator(".vx-instance-glyph")).toHaveCSS("width", "32px");

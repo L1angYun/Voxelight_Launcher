@@ -169,13 +169,11 @@ async function render(props: { returning?: boolean } = {}) {
   });
 }
 
-async function chooseHomeInstance(id?: string) {
+async function chooseHomeInstance(id: string) {
   const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="当前实例"]');
   expect(trigger).not.toBeNull();
   await act(async () => trigger!.click());
-  const option = document.querySelector<HTMLElement>(id
-    ? `[role="option"][data-instance-id="${id}"]`
-    : '[role="option"][data-version-directory]');
+  const option = document.querySelector<HTMLElement>(`[role="option"][data-instance-id="${id}"]`);
   expect(option).not.toBeNull();
   await act(async () => option!.click());
 }
@@ -646,13 +644,19 @@ describe("HomePage", () => {
     expect(container.querySelector(".vx-home__character-panel")?.getAttribute("aria-label")).toBe("CyanFixture 的角色预览");
   });
 
-  it("keeps version-directory selection after clearing the instance", async () => {
+  it("lists only instances in the home picker", async () => {
+    mockLauncher.data.instances = [
+      ...mockLauncher.data.instances,
+      { ...mockLauncher.data.instances[0], id: "fixture-second", name: "第二个测试世界" },
+    ];
     await render();
-    await chooseHomeInstance();
-    mockLauncher.selectedInstance = undefined;
-    await render();
-    expect(container.querySelector(".vx-home__console-name")?.textContent).toBe("1.21.1");
-    expect(container.querySelector('[role="combobox"][aria-label="当前实例"]')?.textContent).toContain("使用版本目录");
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="当前实例"]')!;
+    await act(async () => trigger.click());
+    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options.length).toBeGreaterThan(1);
+    expect(options.every((option) => option.hasAttribute("data-instance-id"))).toBe(true);
+    expect(document.querySelector("[data-version-directory]")).toBeNull();
+    expect(document.body.textContent).not.toContain("使用版本目录");
   });
 
   it("does not show a completed or unrelated transfer as game preparation", async () => {

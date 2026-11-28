@@ -102,6 +102,13 @@ describe("shared selection controls", () => {
     expect(nav?.querySelector('[aria-current="page"]')?.textContent).toBe("First");
   });
 
+  it("exposes data-fill and horizontal orientation when fill is enabled", () => {
+    render(<Segmented semantic="toggle" label="Fill" options={options} value="first" onChange={() => {}} fill />);
+    const rootEl = container.querySelector<HTMLElement>(".vx-segmented")!;
+    expect(rootEl.dataset.fill).toBe("true");
+    expect(rootEl.dataset.orientation).toBe("horizontal");
+  });
+
   it("replaces section content immediately and removes pending motion for reduced motion", () => {
     function Panels() {
       const [panel, setPanel] = useState("first");

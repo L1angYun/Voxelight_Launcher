@@ -12,9 +12,13 @@
     "modpack": "Modpack"
   },
   "target": "Install into",
-  "versionDirectory": "Use version directory",
+  "versionDirectory": "Selected version",
   "details": "View details",
   "install": "Install",
+  "installLatest": "Install latest compatible",
+  "installLatestInto": "Install latest compatible into {{name}}",
+  "compatibleWith": "Works with {{version}}",
+  "noVersionFor": "No {{version}} version",
   "installVersion": "Install version {{version}}",
   "installVersionNotice": "Installing a different version may replace the installed version. Required dependencies are resolved separately.",
   "noResults": "No resources found",
@@ -23,6 +27,30 @@
   "authorUnknown": "Unknown author",
   "versions": "Compatible versions",
   "noVersions": "No compatible versions for the current instance",
+  "sortLabel": "Sort by",
+  "sort": {
+    "relevance": "Relevance",
+    "downloads": "Downloads",
+    "follows": "Followers",
+    "newest": "Newest",
+    "updated": "Recently updated",
+    "featured": "Featured",
+    "popularity": "Popularity",
+    "name": "Name"
+  },
+  "results": {
+    "showing": "Showing {{shown}}",
+    "showingOf": "Showing {{shown}} of {{total}}"
+  },
+  "filtersLabel": "Active filters",
+  "filter": {
+    "type": "Type: {{value}}",
+    "gameVersion": "Version: {{value}}",
+    "loader": "Loader: {{value}}",
+    "sort": "Sort: {{value}}"
+  },
+  "loadMore": "Load more",
+  "loadMoreVersions": "Load more versions",
   "fits": {
     "count_one": "Fits {{count}} instance",
     "count_other": "Fits {{count}} instances",
@@ -43,7 +71,7 @@
   "external": "Open project page",
   "installTarget": {
     "newInstance": "New instance",
-    "title": "Choose install location · {{title}}",
+    "title": "Choose install location for {{title}}",
     "compatible": "Compatible locations",
     "incompatible": "Incompatible ({{count}})",
     "installInto": "Install into {{name}}",
@@ -59,6 +87,19 @@
     "downloads": "View in Downloads",
     "cancel": "Cancel installation",
     "curseforge": "Create a compatible instance, then select it to install this CurseForge project.",
+    "manual": {
+      "title": "Manual download required",
+      "reason": {
+        "distributionForbidden": "The author does not allow other apps to download this file.",
+        "noDownloadUrl": "CurseForge does not offer this file for download in other apps.",
+        "untrustedUrl": "CurseForge's download address for this file is not on its official download servers, so the launcher will not use it."
+      },
+      "file": "File: {{fileName}}",
+      "fileNamed": "File: {{name}} ({{fileName}})",
+      "open": "Open the file page on CurseForge",
+      "folder": "Download it yourself, then put it in the {{folder}} folder of the instance you want to use it in.",
+      "folderTarget": "Download it yourself, then put it in the {{folder}} folder of {{name}}."
+    },
     "reason": {
       "vanilla": "Vanilla cannot load mods",
       "loaderMismatch": "Incompatible loader",
@@ -70,7 +111,6 @@
       "datapack": "Datapacks belong in a world's datapacks folder and are not supported yet",
       "noSupportedLoader": "This project has no Fabric, NeoForge, Forge, or Quilt versions",
       "noVersions": "No downloadable versions",
-      "curseforgeRequiredDependencies": "This CurseForge file requires other resources. Install its dependencies in a compatible instance first, then install this file.",
       "noPinnedCreationLoader": "This file does not support a loader available for new instances.",
       "noReleaseVersions": "This project has no installable release game version.",
       "manifestUnavailable": "The game version manifest is temporarily unavailable, so a new instance cannot be suggested."
@@ -78,9 +118,15 @@
   },
   "notice": {
     "resourceInstalled": "Resource installed.",
+    "resourceInstalledWithDependencies_one": "Resource installed ({{count}} required dependency verified, {{changed}} added or updated).",
+    "resourceInstalledWithDependencies_other": "Resource installed ({{count}} required dependencies verified, {{changed}} added or updated).",
+    "resourceAlreadyInstalled": "This resource and its required dependencies are already at the selected version.",
     "instanceInstalled": "Instance installed.",
-    "resourceInstalledNew": "Resource installed into the new instance."
+    "resourceInstalledNew": "Resource installed into the new instance.",
+    "resourceInstalledNewWithDependencies_one": "Resource installed into the new instance ({{count}} required dependency verified, {{changed}} added or updated).",
+    "resourceInstalledNewWithDependencies_other": "Resource installed into the new instance ({{count}} required dependencies verified, {{changed}} added or updated)."
   },
   "importCurseforgeZip": "Import a CurseForge ZIP instead",
-  "curseforgeZipRequired": "Choose a CurseForge modpack ZIP file."
+  "curseforgeZipRequired": "Choose a CurseForge modpack ZIP file.",
+  "versionDirectoryTarget": "Selected version ({{version}})"
 }

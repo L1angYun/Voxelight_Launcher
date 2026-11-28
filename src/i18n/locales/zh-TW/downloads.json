@@ -4,7 +4,7 @@
   "history": "歷史任務",
   "activeCount": "{{count}} 項進行中任務",
   "historyCount": "{{count}} 項歷史任務",
-  "taskTitle": "{{kind}} · {{target}}",
+  "taskTitle": "{{kind}}：{{target}}",
   "interruptedDescription": "啟動器關閉時任務尚未完成；重試可重複使用已驗證的檔案。",
   "interruptedNoRetry": "啟動器關閉時任務尚未完成。",
   "tasks": {
@@ -31,7 +31,8 @@
       "server-install": "伺服器安裝",
       "server-import": "伺服器匯入",
       "server-start": "準備伺服器",
-      "default-skin": "角色預覽"
+      "default-skin": "角色預覽",
+      "instance-create": "建立實例"
     },
     "stage": {
       "queued": "等待佇列",
@@ -70,7 +71,7 @@
   },
   "progress": {
     "files": "{{completed}} / {{total}} 個檔案",
-    "completedUnknown": "{{completed}} 個檔案 · 總量未知",
+    "completedUnknown": "{{completed}} 個檔案，總量未知",
     "byteLabel": "{{completed}} / {{total}}",
     "byteLabelUnknown": "已下載 {{completed}}，總量未知",
     "bytesCompleted": "已下載 {{completed}}",
@@ -87,7 +88,9 @@
     "historyTitle": "尚無任務歷史",
     "historyDescription": "已完成與可復原的任務會保留在這裡。",
     "filteredTitle": "沒有符合條件的任務",
-    "filteredDescription": "更換篩選條件以檢視下載歷史。"
+    "filteredDescription": "更換篩選條件以檢視下載歷史。",
+    "discover": "前往探索內容",
+    "installGame": "安裝遊戲版本"
   },
   "errors": {
     "taskFailed": "任務未能完成。可重試時會顯示復原操作，也可以回到對應來源重新執行。",

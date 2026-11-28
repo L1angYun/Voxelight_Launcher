@@ -31,6 +31,7 @@ commands.allow = [
   "set_launcher_background",
   "export_launcher_config",
   "import_launcher_config",
+  "open_game_folder",
 ]
 
 [[permission]]
@@ -77,10 +78,21 @@ identifier = "launcher-library"
 description = "Allow the launcher library commands in the local main window."
 commands.allow = [
   "create_instance",
+  "create_game_instance",
+  "create_instance_from_version",
+  "suggest_instance_name",
+  "copy_instance",
   "remove_instance",
+  "delete_instance",
+  "list_instance_dependants",
+  "list_hidden_instances",
+  "restore_instance",
+  "set_instance_isolation",
+  "set_active_game_folder",
+  "convert_managed_instance",
+  "recover_instance_conversion",
   "update_instance",
   "change_instance_loader",
-  "clone_instance",
   "backup_instance",
   "list_instance_backups",
   "restore_instance_backup",
@@ -128,7 +140,9 @@ description = "Allow the launcher discover commands in the local main window."
 commands.allow = [
   "get_resource_context",
   "get_modrinth_project_details",
+  "get_modrinth_project_versions",
   "get_curseforge_project_details",
+  "get_curseforge_project_versions",
   "resolve_resource_targets",
   "create_instance_for_resource",
   "install_resource",
@@ -143,6 +157,7 @@ commands.allow = [
   "recover_resource_update",
   "install_modrinth_modpack",
   "install_curseforge_modpack",
+  "search_modrinth",
   "search_curseforge",
   "install_curseforge_resource",
 ]

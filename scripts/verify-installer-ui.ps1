@@ -64,7 +64,35 @@ $isolatedData = Join-Path $OutputDirectory "data"
 $isolatedGame = Join-Path $OutputDirectory "game"
 $realData = Join-Path $env:LOCALAPPDATA "dev.voxelight.launcher"
 $installerRegistryPath = "Software\voxelight\Voxelight Launcher"
-$registryBefore = $null
+
+function Get-InstallerRegistryState {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($installerRegistryPath)
+    if (-not $key) { return @{ exists = $false; values = @() } }
+    try {
+        $values = @()
+        foreach ($name in $key.GetValueNames()) {
+            $kind = $key.GetValueKind($name)
+            $data = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($data -is [byte[]]) { $data = [Convert]::ToBase64String($data) }
+            $values += @{ name = $name; kind = $kind.ToString(); data = $data }
+        }
+        return @{ exists = $true; values = $values }
+    } finally {
+        $key.Dispose()
+    }
+}
+
+function Get-RememberedInstallLocation {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($installerRegistryPath)
+    if (-not $key) { return $null }
+    try {
+        return $key.GetValue("", $null)
+    } finally {
+        $key.Dispose()
+    }
+}
+
+$registryBefore = Get-InstallerRegistryState
 $env:VOXELIGHT_LAUNCHER_DATA_DIR = $isolatedData
 $env:VOXELIGHT_LAUNCHER_GAME_DIR = $isolatedGame
 New-Item -ItemType Directory -Force -Path $isolatedData, $isolatedGame | Out-Null
@@ -102,10 +130,12 @@ $report = [ordered]@{
     installer = $Installer
     target = $target
     protectedPath = $protected
+    rememberedLocationExistedBefore = [bool]$registryBefore.exists
     screenshots = @()
     checks = @()
     cleanupError = $null
     registryRestoreError = $null
+    targetRemoved = $false
     success = $false
 }
 $startedProcesses = @()
@@ -122,12 +152,6 @@ function Get-Names([string]$Path) {
 function Reset-LanguageForTest {
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($installerRegistryPath)
     try {
-        if (-not $script:registryBefore) {
-            $script:registryBefore = @{
-                language = $key.GetValue("Installer Language", $null)
-                installLocation = $key.GetValue("", $null)
-            }
-        }
         $key.DeleteValue("Installer Language", $false)
     } finally {
         $key.Close()
@@ -135,18 +159,22 @@ function Reset-LanguageForTest {
 }
 
 function Restore-InstallerRegistry {
-    if (-not $registryBefore) { return }
+    if (-not $registryBefore.exists) {
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($installerRegistryPath, $false)
+        return
+    }
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($installerRegistryPath)
     try {
-        if ($null -eq $registryBefore.language) {
-            $key.DeleteValue("Installer Language", $false)
-        } else {
-            $key.SetValue("Installer Language", $registryBefore.language)
+        foreach ($name in @($key.GetValueNames())) {
+            $key.DeleteValue($name, $false)
         }
-        if ($null -eq $registryBefore.installLocation) {
-            $key.DeleteValue("", $false)
-        } else {
-            $key.SetValue("", $registryBefore.installLocation)
+        foreach ($value in @($registryBefore.values)) {
+            $kind = [Microsoft.Win32.RegistryValueKind]$value.kind
+            $data = $value.data
+            if ($kind -eq [Microsoft.Win32.RegistryValueKind]::Binary) {
+                $data = [Convert]::FromBase64String([string]$data)
+            }
+            $key.SetValue([string]$value.name, $data, $kind)
         }
     } finally {
         $key.Close()
@@ -459,10 +487,12 @@ function Uninstall-Last {
     $process = Start-Process -FilePath $uninstaller -ArgumentList "/S" -WindowStyle Hidden -PassThru
     $process.WaitForExit(120000) | Out-Null
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
-    while ((Test-Path -LiteralPath $executable) -and [DateTime]::UtcNow -lt $deadline) {
+    while (((Test-Path -LiteralPath $executable) -or (Test-Path -LiteralPath $uninstaller)) -and
+        [DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 250
     }
     if (Test-Path -LiteralPath $executable) { throw "Uninstall left the test executable behind" }
+    if (Test-Path -LiteralPath $uninstaller) { throw "Uninstall left the test uninstaller behind" }
     if ((Get-Content -Raw (Join-Path $isolatedData "owned-state.json")) -ne '{"preserve":true}') {
         throw "Uninstall changed isolated launcher data"
     }
@@ -710,9 +740,40 @@ try {
         if ($process -and -not $process.HasExited) { Stop-Installer $process }
     }
     try { Uninstall-Last } catch { $report.cleanupError = $_.Exception.Message }
-    try { Restore-InstallerRegistry } catch { $report.registryRestoreError = $_.Exception.Message }
+    try {
+        Restore-InstallerRegistry
+        $rememberedAfter = Get-RememberedInstallLocation
+        $report.rememberedLocationAfter = $rememberedAfter
+        $report.rememberedLocationPointsAtTarget = (
+            $null -ne $rememberedAfter -and
+            [IO.Path]::GetFullPath($rememberedAfter) -eq [IO.Path]::GetFullPath($target)
+        )
+        if ($report.rememberedLocationPointsAtTarget) {
+            $report.registryRestoreError = "Remembered install location still points at the temporary target"
+        }
+    } catch {
+        $report.registryRestoreError = $_.Exception.Message
+    }
+    try {
+        if (Test-Path -LiteralPath $target) {
+            $remaining = @(Get-ChildItem -LiteralPath $target -Force)
+            if ($remaining.Count -eq 0) {
+                Remove-Item -LiteralPath $target -Force
+            } else {
+                $report.cleanupError = "Temporary target directory was not empty: $target"
+            }
+        }
+        $report.targetRemoved = -not (Test-Path -LiteralPath $target)
+    } catch {
+        $report.cleanupError = $_.Exception.Message
+    }
     Restore-Links
-    if ($report.cleanupError -or $report.registryRestoreError) { $report.success = $false }
+    if (-not $report.cleanupError -and -not $report.registryRestoreError -and $report.targetRemoved) {
+        $report.checks += "post-uninstall cleanup restored the remembered install location and removed the temporary target"
+    }
+    if ($report.cleanupError -or $report.registryRestoreError -or -not $report.targetRemoved) {
+        $report.success = $false
+    }
     if (-not $uninstallVerified) { $report.success = $false }
     $report.finishedAt = [DateTime]::UtcNow.ToString("o")
     $reportPath = Join-Path $OutputDirectory "report.json"

@@ -16,12 +16,11 @@
   width: calc(max(40px, (100% - 1280px) / 2) + var(--home-rail) + 300px);
   pointer-events: none;
   background: linear-gradient(90deg,
-    var(--world-ink, var(--bg-base)) 0,
-    var(--world-ink, var(--bg-base)) calc(100% - 320px),
-    color-mix(in srgb, var(--world-ink, var(--bg-base)) 88%, transparent) calc(100% - 250px),
-    color-mix(in srgb, var(--world-ink, var(--bg-base)) 62%, transparent) calc(100% - 180px),
-    color-mix(in srgb, var(--world-ink, var(--bg-base)) 32%, transparent) calc(100% - 110px),
-    color-mix(in srgb, var(--world-ink, var(--bg-base)) 10%, transparent) calc(100% - 45px),
+    color-mix(in srgb, var(--world-ink) calc(var(--home-scrim-opacity, .94) * 100%), transparent) 0,
+    color-mix(in srgb, var(--world-ink) calc(var(--home-scrim-opacity, .94) * 82%), transparent) calc(100% - 320px),
+    color-mix(in srgb, var(--world-ink) calc(var(--home-scrim-opacity, .94) * 58%), transparent) calc(100% - 250px),
+    color-mix(in srgb, var(--world-ink) calc(var(--home-scrim-opacity, .94) * 32%), transparent) calc(100% - 180px),
+    color-mix(in srgb, var(--world-ink) calc(var(--home-scrim-opacity, .94) * 12%), transparent) calc(100% - 95px),
     transparent);
 }
 .vx-home__layout {
@@ -29,11 +28,11 @@
   display: grid;
   grid-template-columns: var(--home-rail) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto;
-  gap: 32px;
+  gap: var(--space-6);
   width: min(calc(100% - 80px), 1280px);
   height: 100%;
   margin-inline: auto;
-  padding-block: 32px;
+  padding-block: var(--space-6);
 }
 .vx-home__stage {
   position: relative;
@@ -42,9 +41,9 @@
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 24px;
+  gap: var(--space-5);
   min-width: 0;
-  padding: 32px 24px 24px;
+  padding: var(--space-6) var(--space-5) var(--space-5);
 }
 .vx-home__identity { min-width: 0; transition: opacity var(--duration-exit) var(--ease-out); }
 .vx-home:has(.vx-instance-picker__trigger:focus-visible) .vx-home__identity { transition: none; }
@@ -81,7 +80,7 @@
 .vx-home__stage:has(.vx-home__empty) { gap: var(--space-4); }
 .vx-home__stage:has(.vx-home__empty) .vx-home__console-name { margin-block-end: 0; }
 .vx-home .vx-home__empty.vx-empty { display: grid; gap: var(--space-4); padding: 0; text-align: start; }
-.vx-home__empty > p { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.65; }
+.vx-home__empty > p { margin: 0; color: var(--text-secondary); font: var(--type-body); }
 .vx-home__empty .vx-empty__actions { display: flex; gap: var(--space-2); flex-wrap: wrap; inline-size: max-content; max-inline-size: calc(100vw - var(--page-gutter) * 2); }
 
 /* A separate row gives the floating controls space above every canvas size. */
@@ -132,7 +131,7 @@
   inset: auto 22% 12%;
   height: 10%;
   border-radius: 50%;
-  background: radial-gradient(ellipse, color-mix(in srgb, var(--text-primary) 10%, transparent), transparent 70%);
+  background: radial-gradient(ellipse, var(--fill-selected), transparent 70%);
 }
 .vx-home__preview-source {
   display: flex;
@@ -140,18 +139,17 @@
   max-width: 100%;
   justify-content: center;
   align-items: baseline;
-  gap: 8px;
-  margin: 24px 0 0;
-  padding: 0 16px;
+  gap: var(--space-2);
+  margin: var(--space-5) 0 0;
+  padding: 0 var(--space-4);
   border-radius: var(--radius-pill);
   background: var(--surface-card);
   color: var(--text-secondary);
-  font-size: var(--text-xs);
-  line-height: 1.6;
+  font: var(--type-meta);
   text-align: center;
   overflow-wrap: anywhere;
   grid-row: 3;
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--border-subtle);
 }
 .vx-home__preview-source svg { flex: 0 0 auto; align-self: center; }
 .vx-character-placeholder {
@@ -161,22 +159,22 @@
   width: min(100%, 320px);
   display: flex;
   height: fit-content;
-  padding: 32px 16px;
+  padding: var(--space-6) var(--space-4);
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
   border-radius: var(--radius-md);
   background: var(--surface-panel);
   color: var(--text-secondary);
   text-align: center;
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--border-subtle);
   max-width: 320px;
 }
 .vx-character-placeholder > svg { color: var(--text-tertiary); }
-.vx-character-placeholder strong { font-size: var(--text-md); font-weight: var(--weight-strong); line-height: 1.6; }
+.vx-character-placeholder strong { font: var(--type-body-strong); }
 
-.vx-launch-console { display: grid; gap: 12px; min-width: 0; }
+.vx-launch-console { display: grid; gap: var(--space-3); min-width: 0; }
 .vx-launch-console__context { min-width: 0; }
 .vx-launch-console__instance { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .vx-jelly-control { min-width: 0; }
@@ -185,7 +183,7 @@
 .vx-launch-console__selector { display: flex; align-items: center; width: 100%; min-width: 0; min-height: 48px; border-radius: var(--radius-pill); }
 .vx-instance-picker__popover > .vx-listbox-surface { position: relative; inset-inline-start: -4px; width: calc(100% + 4px); }
 .vx-launch-console__instance > .vx-button { flex: 0 0 auto; }
-.vx-launch-console__actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.vx-launch-console__actions { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
 .vx-launch-console__launch-wrap { position: relative; flex: 1; height: 56px; border-radius: var(--radius-pill); color: var(--accent-foreground); transform: var(--jelly-matrix, matrix(1, 0, 0, 1, 0, 0)); transform-origin: 50% 50%; }
 .vx-launch-console__launch { width: 100%; height: 56px; border-radius: var(--radius-pill); background: var(--accent); transition: background var(--duration-fast); pointer-events: none; }
 .vx-launch-console__content { position: absolute; inset: 0; border-radius: inherit; }
@@ -200,56 +198,67 @@
 .vx-launch-console__launch-wrap .vx-button__icon { color: inherit; }
 .vx-launch-console__launch-wrap .vx-button:hover:not(:disabled):not([aria-disabled="true"]) { background: transparent; color: var(--accent-foreground); }
 .vx-launch-console__launch-wrap .vx-button:active:not(:disabled):not([aria-disabled="true"]) { transform: none; }
-.vx-launch-console__launch-wrap .vx-button:is(:disabled,[aria-disabled="true"]) { opacity: .55; }
-.vx-launch-console__status { display: grid; gap: 8px; min-width: 0; font-size: var(--text-xs); }
-.vx-launch-console__progress-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.vx-launch-console__progress-heading > span { display: inline-flex; align-items: center; gap: 8px; }
-.vx-launch-console__progress-text { font-family: var(--font-matrix); font-weight: 900; font-variant-numeric: tabular-nums; font-size: var(--text-xl); }
+/* The accent fill sets the contrast; dimming the label would push white-on-accent
+   (4.5:1 at the Windows blue fallback) below the readable limit. The short guard
+   state only changes the pointer. */
+.vx-launch-console__launch-wrap .vx-button:is(:disabled,[aria-disabled="true"]) { opacity: 1; cursor: default; }
+/* A launch blocked by another operation is not the primary action for now:
+   it keeps its 56px block on a neutral fill, with the label at the secondary
+   text step (above 4.5:1 in both themes) rather than dimmed. */
+.vx-launch-console__launch-wrap[data-blocked="true"] > .vx-launch-console__launch { background: var(--fill-selected); box-shadow: inset 0 0 0 1px var(--border-subtle); }
+.vx-launch-console__launch-wrap[data-blocked="true"] .vx-button { color: var(--text-secondary); }
+.vx-launch-console__status { display: grid; gap: var(--space-2); min-width: 0; font-size: var(--text-caption); }
+.vx-launch-console__progress-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.vx-launch-console__progress-heading > span { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.vx-launch-console__progress-text { flex: 0 1 auto; min-width: 0; font: var(--type-matrix); font-variant-numeric: tabular-nums; text-align: end; }
+/* Doto is reserved for ASCII figures at 20px and above. A word ("total unknown"
+   in any locale) reads in the UI face at the stage label's size instead. */
+.vx-launch-console__progress-text[data-matrix="false"] { font: var(--type-body-strong); color: var(--text-primary); }
 .vx-launch-console__file-count { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.vx-launch-console__running { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 56px; padding-inline: 20px 10px; }
-.vx-launch-console__running > span { display: inline-flex; align-items: baseline; gap: 8px; font-size: var(--text-sm); }
+.vx-launch-console__running { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); height: var(--control-lg); padding-inline: var(--space-5) var(--space-3); }
+.vx-launch-console__running > span { display: inline-flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-body); }
 .vx-launch-console__running .vx-button { width: auto; }
-.vx-launch-console__busy { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); }
+.vx-launch-console__busy { margin: 0; color: var(--text-secondary); font: var(--type-body); }
 
 .vx-home__recent { grid-column: 2; grid-row: 2; min-width: 0; }
-.vx-recent { display: grid; gap: 16px; }
+.vx-recent { display: grid; gap: var(--space-4); }
 .vx-section-heading h2 { margin: 0; color: var(--text-secondary); font: var(--type-section); }
-.vx-recent__grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,240px),1fr)); gap: 12px; }
+.vx-recent__grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,240px),1fr)); gap: var(--space-3); }
 .vx-recent-card {
   position: relative;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: baseline;
-  column-gap: 12px;
-  row-gap: 4px;
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
   min-width: 0;
   min-height: 80px;
-  padding: 16px;
-  border: 0;
-  border: 1px solid var(--hairline, var(--border-subtle));
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  background: var(--surface-card, var(--bg-raised));
+  background: var(--surface-card);
   color: var(--text-primary);
   text-align: start;
 }
 .vx-recent-card__icon { grid-column: 1; grid-row: 1 / 3; align-self: center; width: 24px; height: 24px; color: var(--text-secondary); }
-.vx-recent-card__name { grid-column: 2; grid-row: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); font-weight: var(--weight-strong); }
-.vx-recent-card__meta { grid-column: 2; grid-row: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
-.vx-recent-card:hover { background: var(--surface-solid); }
+.vx-recent-card__name { grid-column: 2; grid-row: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--type-caption-strong); }
+.vx-recent-card__meta { grid-column: 2; grid-row: 2; display: flex; flex-wrap: wrap; gap: var(--space-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
+.vx-recent-card__loader { color: var(--text-tertiary); }
+.vx-recent-card:hover { background: var(--surface-card-hover); }
 
 @media (hover: hover) {
   .vx-launch-console__launch-wrap:has([data-launch-primary]:hover:not([aria-disabled="true"])) > .vx-launch-console__launch { background: var(--accent-hover); }
 }
 
 @media (max-width: 1179px) {
-  .vx-home__layout { column-gap: 24px; row-gap: 24px; padding-block: 24px; }
-  .vx-home__stage { padding: 24px 20px 20px; }
-  .vx-recent__grid { gap: 8px; }
-  .vx-recent-card { column-gap: 8px; padding: 12px; min-height: 72px; }
+  .vx-home__layout { column-gap: var(--space-5); row-gap: var(--space-5); padding-block: var(--space-5); }
+  .vx-home__stage { padding: var(--space-5) var(--space-4) var(--space-4); }
+  .vx-recent__grid { gap: var(--space-2); }
+  .vx-recent-card { column-gap: var(--space-2); padding: var(--space-3); min-height: 72px; }
 }
 @media (max-height: 760px) and (min-width: 901px) {
-  .vx-home__layout { padding-block: 24px; }
+  .vx-home__layout { padding-block: var(--space-5); }
   .vx-home { --home-character-height: 310px; }
 }
 .vx-home[data-motion-tier="none"] :where(.vx-home__layout, .vx-home__layout *) { animation: none !important; transition: none !important; }
@@ -263,7 +272,19 @@
 from { opacity: 0; }
 to { opacity: 1; }
 }
-.vx-home:has(.vx-home__preview-source) { --home-preview-block: calc(24px + var(--text-xs)*1.6 + 2px); }
+/* The world entrance lasts 2.5s. The identity stays out of the wordmark's way
+   only for its first part, then fades in at about 40% of it. An open picker
+   still hides it, so the animation is limited to the closed state. A custom
+   photo covers the wordmark, and home-background.css keeps the identity shown
+   at once over it; an animation would beat that rule, so it skips that case. */
+[data-world-intro="on"] .vx-app-body:not(:has(> .vx-app-background[data-visible="true"])) .vx-home__identity:not([data-picker-open="true"]) {
+  animation: vx-home-identity-arrive var(--duration-slow) var(--ease-out) 600ms both;
+}
+@keyframes vx-home-identity-arrive {
+from { opacity: 0; }
+to { opacity: 1; }
+}
+.vx-home:has(.vx-home__preview-source) { --home-preview-block: calc(var(--space-5) + var(--text-caption) * var(--leading-body) + 2px); }
 }
 @layer overrides {
 [data-reduced-motion="true"] .vx-home__identity,
@@ -276,9 +297,9 @@ to { opacity: 1; }
 .vx-recent-card[aria-current="true"] { outline: 2px solid Highlight; }
 }
 [data-reduced-transparency="true"] .vx-home::before,
-[data-high-contrast="true"] .vx-home::before { background: var(--bg-base); width: calc(max(40px, (100% - 1280px) / 2) + var(--home-rail) + 24px); }
+[data-high-contrast="true"] .vx-home::before { background: var(--world-ink); width: calc(max(40px, (100% - 1280px) / 2) + var(--home-rail) + 24px); }
 @media (prefers-reduced-transparency: reduce) {
-  .vx-home::before { background: var(--bg-base); }
+  .vx-home::before { background: var(--world-ink); }
 }
 @media (forced-colors: active) {
   .vx-home::before { background: Canvas; }

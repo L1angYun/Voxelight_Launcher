@@ -24,6 +24,183 @@ pub const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_m
 const VERSION_PROFILE_BYTES: u64 = 8 * 1024 * 1024;
 const VERSION_PROFILE_TOO_LARGE: &str = "版本元数据大小超过 8 MiB";
 
+#[cfg(not(test))]
+static ACTIVE_DATA_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ACTIVE_DATA_DIR: std::sync::RwLock<Option<PathBuf>> = const { std::sync::RwLock::new(None) };
+}
+
+fn record_data_dir_in(lock: &std::sync::RwLock<Option<PathBuf>>, dir: &Path) {
+    if let Ok(guard) = lock.read() {
+        if guard.as_deref() == Some(dir) {
+            return;
+        }
+    }
+    if let Ok(mut guard) = lock.write() {
+        *guard = Some(dir.to_path_buf());
+    }
+}
+
+fn scan_data_dir_from(
+    lock: &std::sync::RwLock<Option<PathBuf>>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let recorded = lock.read().ok().and_then(|guard| guard.clone());
+    recorded.or_else(fallback)
+}
+
+fn record_active_data_dir(dir: &Path) {
+    #[cfg(not(test))]
+    record_data_dir_in(&ACTIVE_DATA_DIR, dir);
+    #[cfg(test)]
+    TEST_ACTIVE_DATA_DIR.with(|lock| record_data_dir_in(lock, dir));
+}
+
+fn scan_data_dir() -> Option<PathBuf> {
+    #[cfg(not(test))]
+    {
+        scan_data_dir_from(&ACTIVE_DATA_DIR, || crate::storage::data_directory().ok())
+    }
+    #[cfg(test)]
+    {
+        TEST_ACTIVE_DATA_DIR.with(|lock| scan_data_dir_from(lock, || None))
+    }
+}
+
+#[cfg(test)]
+fn clear_test_active_data_dir() {
+    TEST_ACTIVE_DATA_DIR.with(|lock| {
+        if let Ok(mut guard) = lock.write() {
+            *guard = None;
+        }
+    });
+}
+
+fn verified_profile_path(data_dir: &Path, id: &str) -> Result<PathBuf, String> {
+    validate_id(id)?;
+    safe_join(data_dir, &format!("verified-profiles/versions/{id}/{id}.json"))
+}
+
+async fn cache_verified_profile(state: &LauncherState, id: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = verified_profile_path(&state.data_dir, id)?;
+    if read_version_profile(&path).await.ok().flatten().as_deref() == Some(bytes) {
+        return Ok(());
+    }
+    let parent = path.parent().ok_or("已校验版本缓存目录无效")?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|error| format!("无法创建已校验版本缓存目录：{error}"))?;
+    let temp = path.with_extension(format!("json-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .await
+        .map_err(|error| format!("无法写入已校验版本缓存：{error}"))?;
+    file.write_all(bytes)
+        .await
+        .map_err(|error| format!("无法写入已校验版本缓存：{error}"))?;
+    file.sync_all()
+        .await
+        .map_err(|error| format!("无法同步已校验版本缓存：{error}"))?;
+    drop(file);
+    if let Err(error) = tokio::fs::rename(&temp, &path).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(format!("无法保存已校验版本缓存：{error}"));
+    }
+    Ok(())
+}
+
+fn read_manifest_cache_sync(data_dir: &Path, file: &str) -> Option<Value> {
+    let bytes = fs::read(data_dir.join(file)).ok()?;
+    let value = parse_json(&bytes).ok()?;
+    validate_manifest(&value).ok()?;
+    Some(value)
+}
+
+fn read_cached_manifests_sync(data_dir: &Path, source: &str) -> Vec<Value> {
+    let Ok(candidates) = download_url_candidates(MANIFEST_URL, source) else {
+        return Vec::new();
+    };
+    let mut files = candidates
+        .into_iter()
+        .map(|candidate| manifest_cache_file(candidate.mirror))
+        .collect::<Vec<_>>();
+    if source != "official" {
+        // Legacy caches have unknown origin and cannot establish an official hash chain.
+        files.push("official-version-manifest.json");
+    }
+    files
+        .into_iter()
+        .filter_map(|file| read_manifest_cache_sync(data_dir, file))
+        .collect()
+}
+
+/// Official Minecraft ids already known from the local manifest cache. Used to
+/// refuse an instance folder named exactly like another official version: its
+/// own profile would stop the inheritance chain at the wrong Minecraft version.
+pub(crate) fn cached_official_version_ids(
+    state: &LauncherState,
+    source: &str,
+) -> std::collections::HashSet<String> {
+    read_cached_manifests_sync(&state.data_dir, source)
+        .iter()
+        .filter_map(|manifest| manifest["versions"].as_array())
+        .flatten()
+        .filter_map(|version| version["id"].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn verify_bytes_against_manifests(bytes: &[u8], id: &str, manifests: &[Value]) -> Option<Value> {
+    for manifest in manifests {
+        if let Ok(version) = manifest_version(manifest, id) {
+            if let Ok(metadata) =
+                parse_official_metadata(bytes, id, version["sha1"].as_str().unwrap_or(""))
+            {
+                return Some(metadata);
+            }
+        }
+    }
+    None
+}
+
+fn verified_cached_profile_with_manifests(
+    data_dir: &Path,
+    id: &str,
+    manifests: &[Value],
+) -> Option<Value> {
+    let path = verified_profile_path(data_dir, id).ok()?;
+    let bytes = read_local_profile(&path, id).ok()?;
+    verify_bytes_against_manifests(&bytes, id, manifests)
+}
+
+/// Returns the exact SHA-1-verified official vanilla JSON bytes for `id` from
+/// `.minecraft/versions/<id>/<id>.json` (when verified in place) or Voxelight's
+/// own verified copy in `state.data_dir` (when the local file was left alone).
+pub(crate) async fn verified_profile_bytes(
+    state: &LauncherState,
+    root: &Path,
+    id: &str,
+) -> Result<Vec<u8>, String> {
+    validate_id(id)?;
+    let source = crate::source_select::effective_download_source(state, &state.snapshot()?.config.download_source).await?;
+    let manifests = read_cached_manifests(state, &source).await?;
+    let local_path = safe_join(root, &format!("versions/{id}/{id}.json"))?;
+    let verified_path = verified_profile_path(&state.data_dir, id)?;
+    for path in [&local_path, &verified_path] {
+        let Ok(Some(bytes)) = read_version_profile(path).await else {
+            continue;
+        };
+        if verify_bytes_against_manifests(&bytes, id, &manifests).is_some() {
+            return Ok(bytes);
+        }
+    }
+    Err(format!("缺少已校验的原版版本元数据文件：{id}"))
+}
+
 pub fn game_directory(
     config: &Config,
     version_id: &str,
@@ -617,18 +794,45 @@ pub async fn list_versions(state: &LauncherState) -> Result<Value, String> {
 }
 
 pub fn scan_versions(config: &Config) -> Vec<InstalledVersion> {
+    scan_versions_with_data_dir(config, scan_data_dir().as_deref())
+}
+
+fn scan_versions_with_data_dir(config: &Config, data_dir: Option<&Path>) -> Vec<InstalledVersion> {
     let Ok(root) = crate::processes::configured_game_root(Path::new(&config.game_directory)) else {
         return vec![];
     };
-    let root = root.as_path();
+    scan_versions_at_root(&root, &config.download_source, data_dir)
+}
+
+/// Scan one already verified game root. Read-only: it only enumerates
+/// `versions/*` and reads profile JSON, never following a link out of the root.
+pub(crate) fn scan_versions_at_root(
+    root: &Path,
+    download_source: &str,
+    data_dir: Option<&Path>,
+) -> Vec<InstalledVersion> {
+    #[cfg(test)]
+    SCAN_PATHS
+        .lock()
+        .expect("scan path list")
+        .push(root.to_path_buf());
     let Ok(versions) = safe_join(root, "versions") else {
         return vec![];
     };
     let Ok(entries) = fs::read_dir(versions) else {
         return vec![];
     };
+    let manifests = data_dir
+        .map(|dir| read_cached_manifests_sync(dir, download_source))
+        .unwrap_or_default();
     let mut result = Vec::new();
+    let mut walked = 0_usize;
     for entry in entries.flatten() {
+        walked += 1;
+        // A version list is bounded; a runaway folder must not stall startup.
+        if walked > 20_000 {
+            break;
+        }
         let id = entry.file_name().to_string_lossy().into_owned();
         if validate_id(&id).is_err() {
             continue;
@@ -639,22 +843,41 @@ pub fn scan_versions(config: &Config) -> Vec<InstalledVersion> {
         if !path.is_file() {
             continue;
         }
-        let resolved = resolve_local_metadata(root, &id);
-        let (metadata, has_client, reason) = match resolved {
+        let resolved = resolve_local_chain(root, &id, data_dir, &manifests);
+        let (metadata, has_client, reason, reason_code) = match resolved {
             Ok(metadata) => {
-                let client_id = metadata["_launcherClientId"].as_str().unwrap_or(&id);
+                let client_id = metadata["_launcherClientId"].as_str().unwrap_or(&id).to_owned();
                 let installed = safe_join(root, &format!("versions/{client_id}/{client_id}.jar"))
                     .is_ok_and(|p| p.is_file());
-                let reason = if !valid_main_class(&metadata) {
-                    Some("版本主类格式无效".into())
+                let (reason, reason_code) = if !valid_main_class(&metadata) {
+                    (
+                        Some("版本主类格式无效".into()),
+                        Some("invalidMainClass".to_owned()),
+                    )
                 } else if !installed {
-                    Some("继承的原版客户端尚未安装完成；请安装或修复版本".into())
+                    (
+                        Some("继承的原版客户端尚未安装完成；请安装或修复版本".into()),
+                        Some(scan_missing_base_code(&id, &client_id).to_owned()),
+                    )
                 } else {
-                    None
+                    (None, None)
                 };
-                (metadata, installed, reason)
+                (metadata, installed, reason, reason_code)
             }
-            Err(error) => (json!({}), false, Some(error)),
+            // A PCL or HMCL instance whose vanilla base folder is absent (a
+            // shared or freshly downloaded .minecraft, or a deleted base).
+            // Launch preparation installs an official base, so this is the
+            // repairable state, never an unreadable profile.
+            Err(LocalResolveError::BaseMissing(base)) => (
+                json!({}),
+                false,
+                Some(format!("缺少继承版本 {base}，请先安装原版")),
+                Some("baseMissing".to_owned()),
+            ),
+            Err(LocalResolveError::Other(error)) => {
+                let code = scan_error_code(&error);
+                (json!({}), false, Some(error), Some(code.to_owned()))
+            }
         };
         result.push(InstalledVersion {
             id,
@@ -662,6 +885,7 @@ pub fn scan_versions(config: &Config) -> Vec<InstalledVersion> {
             installed: has_client,
             launchable: reason.is_none(),
             reason,
+            reason_code,
             java_major: metadata["javaVersion"]["majorVersion"]
                 .as_u64()
                 .map(|v| v as u32),
@@ -669,6 +893,43 @@ pub fn scan_versions(config: &Config) -> Vec<InstalledVersion> {
     }
     result.sort_by(|a, b| b.id.cmp(&a.id));
     result
+}
+
+/// Test-only record of `versions/` folders scanned, so bootstrap can be checked
+/// to scan each configured folder exactly once. Paths keep tests that run in
+/// parallel from counting each other.
+#[cfg(test)]
+pub(crate) static SCAN_PATHS: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A stable code for a version folder that exists but cannot launch. The UI
+/// translates it and keeps the folder listed; it is not "missing".
+fn scan_error_code(error: &str) -> &'static str {
+    if error.starts_with(crate::errors::LOADER_REINSTALL_PREFIX) {
+        "loaderDamaged"
+    } else if error.contains("请先安装目标 Minecraft 版本")
+        || error.contains("缺少已校验的原版版本元数据")
+        || error.contains("继承的原版客户端")
+        || error.contains("继承元数据")
+    {
+        "baseMissing"
+    } else if error.contains("主类") {
+        "invalidMainClass"
+    } else {
+        "metadataInvalid"
+    }
+}
+
+/// Whether the missing client belongs to the scanned folder itself or to the
+/// base it inherits. Both keep the folder, but the interface says which file
+/// to repair. The merged metadata no longer has `inheritsFrom`; the client id
+/// the resolver chose says whose jar it is.
+fn scan_missing_base_code(id: &str, client_id: &str) -> &'static str {
+    if client_id == id {
+        "clientJarMissing"
+    } else {
+        "baseMissing"
+    }
 }
 
 fn supported_main_class(metadata: &Value) -> bool {
@@ -784,6 +1045,46 @@ fn merge_chain(mut chain: Vec<Value>) -> Result<Value, String> {
 }
 
 pub(crate) fn resolve_local_metadata(root: &Path, id: &str) -> Result<Value, String> {
+    resolve_local_chain(root, id, None, &[]).map_err(LocalResolveError::into_message)
+}
+
+/// Why the local resolver could not build a version's metadata. The scan must
+/// tell an absent inherited base (repairable: launch preparation installs an
+/// official base) from a profile it cannot read or trust.
+#[derive(Debug)]
+enum LocalResolveError {
+    /// The profile of a version the scanned folder inherits does not exist.
+    BaseMissing(String),
+    Other(String),
+}
+
+impl LocalResolveError {
+    fn into_message(self) -> String {
+        match self {
+            Self::BaseMissing(base) => format!("缺少继承版本 {base}，请先安装原版"),
+            Self::Other(message) => message,
+        }
+    }
+}
+
+impl From<String> for LocalResolveError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for LocalResolveError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.to_owned())
+    }
+}
+
+fn resolve_local_chain(
+    root: &Path,
+    id: &str,
+    data_dir: Option<&Path>,
+    manifests: &[Value],
+) -> Result<Value, LocalResolveError> {
     let mut chain = Vec::new();
     let mut visited = HashSet::new();
     let mut current = id.to_owned();
@@ -793,14 +1094,65 @@ pub(crate) fn resolve_local_metadata(root: &Path, id: &str) -> Result<Value, Str
             return Err("版本继承循环或超过 16 层".into());
         }
         let path = safe_join(root, &format!("versions/{current}/{current}.json"))?;
-        let metadata = parse_json(&read_local_profile(&path, &current)?)?;
-        if metadata["id"].as_str() != Some(current.as_str()) {
-            return Err(format!("版本目录与元数据 ID 不匹配：{current}"));
+        let local_bytes = read_local_profile(&path, &current);
+        if matches!(&local_bytes, Err(error) if error == VERSION_PROFILE_TOO_LARGE) {
+            return Err(VERSION_PROFILE_TOO_LARGE.into());
         }
-        let parent = metadata["inheritsFrom"]
-            .as_str()
-            .or_else(|| metadata["jar"].as_str().filter(|jar| *jar != current))
-            .map(str::to_owned);
+        let local = local_bytes
+            .as_deref()
+            .ok()
+            .and_then(|bytes| parse_json(bytes).ok());
+        // An official vanilla id listed in an allowed manifest is always a
+        // terminal vanilla profile; ignore any local inheritsFrom/jar fields.
+        let listed_in_manifest = manifests
+            .iter()
+            .any(|manifest| manifest_version(manifest, &current).is_ok());
+        let parent = if listed_in_manifest {
+            None
+        } else {
+            local
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata["inheritsFrom"]
+                        .as_str()
+                        .or_else(|| metadata["jar"].as_str().filter(|jar| *jar != current))
+                })
+                .map(str::to_owned)
+        };
+        if parent.is_none() {
+            if let Some(verified) = local_bytes
+                .as_deref()
+                .ok()
+                .and_then(|bytes| verify_bytes_against_manifests(bytes, &current, manifests))
+                .or_else(|| {
+                    data_dir.and_then(|dir| {
+                        verified_cached_profile_with_manifests(dir, &current, manifests)
+                    })
+                })
+            {
+                chain.push(verified);
+                break;
+            }
+        }
+        let metadata = match local {
+            Some(metadata) => metadata,
+            None => {
+                // Only an inherited version can be "missing": the scanned
+                // folder's own profile was just found.
+                if !chain.is_empty()
+                    && matches!(
+                        fs::symlink_metadata(&path),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                    )
+                {
+                    return Err(LocalResolveError::BaseMissing(current));
+                }
+                parse_json(&local_bytes?)?
+            }
+        };
+        if metadata["id"].as_str() != Some(current.as_str()) {
+            return Err(format!("版本目录与元数据 ID 不匹配：{current}").into());
+        }
         if parent.is_none() && !supported_main_class(&metadata) {
             return Err("独立第三方版本缺少可验证的原版继承关系".into());
         }
@@ -811,7 +1163,7 @@ pub(crate) fn resolve_local_metadata(root: &Path, id: &str) -> Result<Value, Str
             break;
         }
     }
-    merge_chain(chain)
+    Ok(merge_chain(chain)?)
 }
 
 fn read_local_profile(path: &Path, id: &str) -> Result<Vec<u8>, String> {
@@ -865,6 +1217,51 @@ async fn resolve_metadata_resolved(
     resolve_metadata_at_roots(state, id, root, None, source, resolver).await
 }
 
+async fn is_official_id_in_allowed_manifests(
+    state: &LauncherState,
+    id: &str,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+    prefetched: &mut Option<Vec<(bool, Vec<u8>, Value)>>,
+) -> Result<bool, String> {
+    let cached = read_cached_manifests(state, source).await?;
+    if cached
+        .iter()
+        .any(|manifest| manifest_version(manifest, id).is_ok())
+    {
+        return Ok(true);
+    }
+    if !cached.is_empty() {
+        return Ok(false);
+    }
+    if prefetched.is_none() {
+        let mut fetched = Vec::new();
+        for candidate in download_url_candidates(MANIFEST_URL, source)? {
+            let Ok(bytes) =
+                fetch_bytes_once(state.client()?, &candidate.url, 16 * 1024 * 1024, resolver).await
+            else {
+                continue;
+            };
+            let Ok(manifest) = parse_json(&bytes).and_then(|value| {
+                validate_manifest(&value)?;
+                Ok(value)
+            }) else {
+                continue;
+            };
+            let listed = manifest_version(&manifest, id).is_ok();
+            fetched.push((candidate.mirror, bytes, manifest));
+            if listed {
+                break;
+            }
+        }
+        *prefetched = Some(fetched);
+    }
+    Ok(prefetched.as_deref().is_some_and(|list| {
+        list.iter()
+            .any(|(_, _, manifest)| manifest_version(manifest, id).is_ok())
+    }))
+}
+
 async fn resolve_metadata_at_roots(
     state: &LauncherState,
     id: &str,
@@ -876,6 +1273,11 @@ async fn resolve_metadata_at_roots(
     let mut chain = Vec::new();
     let mut visited = HashSet::new();
     let mut current = id.to_owned();
+    let mut prefetched_manifests: Option<Vec<(bool, Vec<u8>, Value)>> = None;
+    let owned_profiles = state
+        .snapshot()
+        .map(|data| data.owned_profiles)
+        .unwrap_or_default();
     loop {
         validate_id(&current)?;
         if chain.len() >= 16 || !visited.insert(current.clone()) {
@@ -895,7 +1297,7 @@ async fn resolve_metadata_at_roots(
             // metadata at the terminal owner, and must not be replaced by name alone.
             Some(Err(_)) | None => None,
         };
-        let parent = local
+        let local_parent = local
             .as_ref()
             .and_then(|metadata| {
                 metadata["inheritsFrom"]
@@ -903,22 +1305,89 @@ async fn resolve_metadata_at_roots(
                     .or_else(|| metadata["jar"].as_str().filter(|jar| *jar != current))
             })
             .map(str::to_owned);
+        // Never allow a tampered vanilla JSON (adding inheritsFrom/jar) to pose
+        // as a loader child and inject arguments, mainClass, logging, or libraries.
+        let names_parent = local_parent.is_some();
+        let parent = match local_parent {
+            Some(parent)
+                if !is_official_id_in_allowed_manifests(
+                    state,
+                    &current,
+                    source,
+                    resolver,
+                    &mut prefetched_manifests,
+                )
+                .await? =>
+            {
+                Some(parent)
+            }
+            _ => None,
+        };
+        // A recorded hash never stands in for Mojang's: an id listed in an
+        // allowed manifest is always verified against its manifest entry, so a
+        // profile Voxelight once wrote over an official one is replaced, not
+        // trusted. A refused parent above already proved the id is listed.
+        let trusted_owned = parent.is_none()
+            && !names_parent
+            && bytes.as_deref().is_some_and(|bytes| {
+                crate::instances::profile_hash_matches(&owned_profiles, &path, bytes)
+            })
+            && !read_cached_manifests(state, source)
+                .await?
+                .iter()
+                .chain(prefetched_manifests.iter().flatten().map(|(_, _, manifest)| manifest))
+                .any(|manifest| manifest_version(manifest, &current).is_ok());
         if let Some(parent) = parent {
             let metadata = local.ok_or("继承元数据丢失")?;
             if metadata["id"].as_str() != Some(current.as_str())
                 || (metadata.get("mainClass").is_some() && !valid_main_class(&metadata))
             {
+                if known_loader_profile(state, &current)? {
+                    return Err(format!(
+                        "{}{current}",
+                        crate::errors::LOADER_REINSTALL_PREFIX
+                    ));
+                }
                 return Err("第三方版本 ID 或主类格式无效".into());
             }
             chain.push(metadata);
             current = parent;
+        } else if trusted_owned {
+            // Voxelight wrote this profile itself (its hash is recorded), so a
+            // named instance profile is trusted without a Mojang manifest entry.
+            let metadata = local.ok_or("实例版本配置缺失")?;
+            if metadata["id"].as_str() != Some(current.as_str())
+                || (metadata.get("mainClass").is_some() && !valid_main_class(&metadata))
+            {
+                return Err("实例版本配置无效".into());
+            }
+            chain.push(metadata);
+            break;
         } else {
             // A mod loader's JSON is custom metadata; only this terminal parent is
             // fetched/checked against the vanilla manifest and its entry SHA-1.
             let leaf = if let Some(cache) = preview_cache {
-                official_metadata_at_paths(state, &current, cache, Some(root), source, resolver).await?
+                official_metadata_at_paths_with_prefetched(
+                    state,
+                    &current,
+                    cache,
+                    Some(root),
+                    source,
+                    resolver,
+                    prefetched_manifests.as_deref(),
+                )
+                .await?
             } else {
-                official_metadata_with_resolver(state, &current, root, source, resolver).await?
+                official_metadata_at_paths_with_prefetched(
+                    state,
+                    &current,
+                    root,
+                    None,
+                    source,
+                    resolver,
+                    prefetched_manifests.as_deref(),
+                )
+                .await?
             };
             chain.push(leaf);
             break;
@@ -968,7 +1437,7 @@ fn known_loader_profile(state: &LauncherState, id: &str) -> Result<bool, String>
             && (!instance.loader_version.is_empty()
                 || matches!(
                     instance.loader.as_str(),
-                    "fabric" | "quilt" | "forge" | "neoforge"
+                    "fabric" | "quilt" | "forge" | "neoforge" | "optifine"
                 ))
     }) {
         return Ok(true);
@@ -976,8 +1445,22 @@ fn known_loader_profile(state: &LauncherState, id: &str) -> Result<bool, String>
     let id = id.to_ascii_lowercase();
     Ok(id.starts_with("fabric-loader-")
         || id.starts_with("quilt-loader-")
+        || id.starts_with("fabric-")
+        || id.starts_with("quilt-")
+        || id.contains("-fabric-")
+        || id.contains("-fabric ")
+        || id.ends_with("-fabric")
+        || id.contains("-quilt-")
+        || id.contains("-quilt ")
+        || id.ends_with("-quilt")
         || id.contains("-forge-")
+        || id.contains("-forge ")
+        || id.contains("-forge_")
         || id.contains("-neoforge-")
+        || id.contains("-neoforge ")
+        || id.contains("-neoforge_")
+        || id.contains("-optifine")
+        || id.contains("_optifine")
         || id.starts_with("forge-")
         || id.starts_with("neoforge-"))
 }
@@ -1409,7 +1892,8 @@ async fn ensure_download_with_policy(
     let mut slot = open_part();
     if file.url.is_empty() {
         return Err(format!(
-            "缺少安装器后处理生成的文件：{}；请重新安装对应加载器",
+            "{}{}；请重新安装对应加载器",
+            crate::errors::LOADER_ARTIFACT_MISSING_PREFIX,
             file.path.display()
         ));
     }
@@ -1577,7 +2061,8 @@ async fn ensure_json_download_with_source_and_control_resolved(
     }
     if file.url.is_empty() {
         return Err(format!(
-            "缺少安装器后处理生成的文件：{}；请重新安装对应加载器",
+            "{}{}；请重新安装对应加载器",
+            crate::errors::LOADER_ARTIFACT_MISSING_PREFIX,
             file.path.display()
         ));
     }
@@ -1644,9 +2129,28 @@ async fn library_download_with_source(
     root: &Path,
     source: &str,
 ) -> Result<Option<Download>, String> {
+    library_download_with_source_resolved(state, library, root, source, &identity_url).await
+}
+
+async fn library_download_with_source_resolved(
+    state: &LauncherState,
+    library: &Value,
+    root: &Path,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<Option<Download>, String> {
     if let Some(artifact) = library["downloads"].get("artifact") {
         if artifact["sha1"].as_str().is_some_and(valid_sha1) {
-            return Ok(Some(download_from(artifact, root, None)?));
+            let fallback_path = if artifact["path"].as_str().is_none() {
+                library["name"].as_str().map(maven_path).transpose()?
+            } else {
+                None
+            };
+            return Ok(Some(download_from(
+                artifact,
+                root,
+                fallback_path.as_deref(),
+            )?));
         }
     }
     // Older versions use Maven coordinates and a publisher sidecar checksum.
@@ -1654,10 +2158,13 @@ async fn library_download_with_source(
         return Ok(None);
     }
     let name = library["name"].as_str().ok_or("依赖库缺少名称")?;
-    let path = library["downloads"]["artifact"]["path"]
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or(maven_path(name)?);
+    // Only derive the Maven path when the publisher did not provide one. A
+    // library name that is not a Maven coordinate must not fail a library
+    // whose explicit artifact path is already usable.
+    let path = match library["downloads"]["artifact"]["path"].as_str() {
+        Some(path) => path.to_owned(),
+        None => maven_path(name)?,
+    };
     let base = library["url"]
         .as_str()
         .unwrap_or("https://libraries.minecraft.net/");
@@ -1669,11 +2176,12 @@ async fn library_download_with_source(
     let hash = if let Some(hash) = library["sha1"].as_str().filter(|hash| valid_sha1(hash)) {
         hash.to_ascii_lowercase()
     } else {
-        let (_, hash) = fetch_bytes_candidates(
+        let (_, hash, _) = fetch_bytes_candidates_resolved(
             state.client()?,
             &format!("{url}.sha1"),
             1024,
             source,
+            resolver,
             |bytes| {
                 let checksum = std::str::from_utf8(bytes)
                     .map_err(|_| "依赖校验值无效")?
@@ -1771,35 +2279,64 @@ async fn official_metadata_at_paths(
     source: &str,
     resolver: &(dyn Fn(&str) -> String + Sync),
 ) -> Result<Value, String> {
+    official_metadata_at_paths_with_prefetched(
+        state,
+        id,
+        root,
+        read_only_installed,
+        source,
+        resolver,
+        None,
+    )
+    .await
+}
+
+async fn official_metadata_at_paths_with_prefetched(
+    state: &LauncherState,
+    id: &str,
+    root: &Path,
+    read_only_installed: Option<&Path>,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+    prefetched: Option<&[(bool, Vec<u8>, Value)]>,
+) -> Result<Value, String> {
     validate_id(id)?;
+    record_active_data_dir(&state.data_dir);
     let relative = format!("versions/{id}/{id}.json");
     let local_path = safe_join(root, &relative)?;
-    let installed_path = read_only_installed.map(|root| safe_join(root, &relative)).transpose()?;
-    let candidate_metadata = async {
-        let mut candidates = Vec::with_capacity(2);
-        if let Some(bytes) = read_version_profile(&local_path).await? {
-            candidates.push(bytes);
-        }
-        if let Some(path) = installed_path.as_ref() {
-            if let Some(bytes) = read_version_profile(path).await? {
-                candidates.push(bytes);
-            }
-        }
-        Ok::<_, String>(candidates)
-    }.await?;
+    let installed_path = read_only_installed
+        .map(|root| safe_join(root, &relative))
+        .transpose()?;
+    let verified_cache_path = verified_profile_path(&state.data_dir, id)?;
+    let local_bytes = read_version_profile(&local_path).await?;
+    let installed_bytes = match installed_path.as_ref() {
+        Some(path) => read_version_profile(path).await?,
+        None => None,
+    };
+    let verified_cache_bytes = read_version_profile(&verified_cache_path)
+        .await
+        .ok()
+        .flatten();
+    let has_unverified_valid_local = local_bytes
+        .as_deref()
+        .is_some_and(is_valid_profile_json)
+        || installed_bytes
+            .as_deref()
+            .is_some_and(is_valid_profile_json);
     // Offline checksums must come from a manifest origin allowed by the current source.
     let cached_manifests = read_cached_manifests(state, source).await?;
-    for local_bytes in &candidate_metadata {
-        for cached in &cached_manifests {
-            if let Ok(version) = manifest_version(cached, id) {
-                if let Ok(metadata) = parse_official_metadata(
-                    &local_bytes,
-                    id,
-                    version["sha1"].as_str().unwrap_or(""),
-                ) {
-                    return Ok(metadata);
-                }
-            }
+    for bytes in local_bytes.iter().chain(installed_bytes.iter()) {
+        if let Some(metadata) = verify_bytes_against_manifests(bytes, id, &cached_manifests) {
+            return Ok(metadata);
+        }
+    }
+    if let Some(cached_bytes) = verified_cache_bytes.as_deref() {
+        if let Some(metadata) = verify_bytes_against_manifests(cached_bytes, id, &cached_manifests)
+        {
+            let ownership_manifests = profile_ownership_manifests(state).await;
+            let _ = publish_official_profile(id, &local_path, cached_bytes, &ownership_manifests)
+                .await?;
+            return Ok(metadata);
         }
     }
     let candidates = download_url_candidates(MANIFEST_URL, source)?;
@@ -1808,9 +2345,22 @@ async fn official_metadata_at_paths(
     let ownership_manifests = profile_ownership_manifests(state).await;
     let mut errors = Vec::new();
     let mut profile_conflict = None;
+    let mut any_manifest_fetched = false;
+    let mut any_manifest_had_id = false;
+    let mut saw_metadata_validation_error = false;
     for candidate in candidates {
-        let manifest_bytes =
-            match fetch_bytes_once(state.client()?, &candidate.url, 16 * 1024 * 1024, resolver).await
+        let (manifest_bytes, manifest) = if let Some((_, bytes, value)) = prefetched
+            .and_then(|list| list.iter().find(|(mirror, _, _)| *mirror == candidate.mirror))
+        {
+            (bytes.clone(), value.clone())
+        } else {
+            let bytes = match fetch_bytes_once(
+                state.client()?,
+                &candidate.url,
+                16 * 1024 * 1024,
+                resolver,
+            )
+            .await
             {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -1818,16 +2368,19 @@ async fn official_metadata_at_paths(
                     continue;
                 }
             };
-        let manifest = match parse_json(&manifest_bytes).and_then(|value| {
-            validate_manifest(&value)?;
-            Ok(value)
-        }) {
-            Ok(value) => value,
-            Err(error) => {
-                errors.push(format!("{}：{error}", candidate.url));
-                continue;
-            }
+            let value = match parse_json(&bytes).and_then(|value| {
+                validate_manifest(&value)?;
+                Ok(value)
+            }) {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(format!("{}：{error}", candidate.url));
+                    continue;
+                }
+            };
+            (bytes, value)
         };
+        any_manifest_fetched = true;
         cache_manifest(state, &manifest_bytes, candidate.mirror).await;
         let version = match manifest_version(&manifest, id) {
             Ok(version) => version,
@@ -1836,6 +2389,7 @@ async fn official_metadata_at_paths(
                 continue;
             }
         };
+        any_manifest_had_id = true;
         let url = version["url"]
             .as_str()
             .ok_or("版本元数据 URL 缺失")?
@@ -1844,9 +2398,32 @@ async fn official_metadata_at_paths(
             .as_str()
             .ok_or("官方版本清单缺少 SHA-1")?
             .to_owned();
-        for local_bytes in &candidate_metadata {
-            if let Ok(metadata) = parse_official_metadata(local_bytes, id, &expected) {
+        for bytes in local_bytes.iter().chain(installed_bytes.iter()) {
+            if let Ok(metadata) = parse_official_metadata(bytes, id, &expected) {
                 return Ok(metadata);
+            }
+        }
+        if let Some(cached_bytes) = verified_cache_bytes.as_deref() {
+            if let Ok(metadata) = parse_official_metadata(cached_bytes, id, &expected) {
+                match publish_official_profile(
+                    id,
+                    &local_path,
+                    cached_bytes,
+                    &ownership_manifests,
+                )
+                .await
+                {
+                    Ok(PublishOutcome::Published | PublishOutcome::PreservedUnverified) => {
+                        return Ok(metadata);
+                    }
+                    Err(error)
+                        if error.starts_with(crate::errors::PROFILE_CONFLICT_PREFIX) =>
+                    {
+                        profile_conflict = Some(error);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
         match fetch_bytes_candidates_resolved(
@@ -1860,16 +2437,15 @@ async fn official_metadata_at_paths(
         .await
         {
             Ok((bytes, metadata, _)) => {
-                tokio::fs::create_dir_all(local_path.parent().ok_or("版本目录无效")?)
-                    .await
-                    .map_err(|e| e.to_string())?;
                 match publish_official_profile(id, &local_path, &bytes, &ownership_manifests).await
                 {
-                    Ok(()) => {}
-                    // A valid local profile can match a different permitted
-                    // manifest revision. Try that chain before reporting a conflict.
+                    Ok(PublishOutcome::Published) => {}
+                    Ok(PublishOutcome::PreservedUnverified) => {
+                        cache_verified_profile(state, id, &bytes).await?;
+                    }
+                    // A concurrent modification conflict during update stops replacement.
                     Err(error)
-                        if error == format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX) =>
+                        if error.starts_with(crate::errors::PROFILE_CONFLICT_PREFIX) =>
                     {
                         profile_conflict = Some(error);
                         continue;
@@ -1878,10 +2454,37 @@ async fn official_metadata_at_paths(
                 }
                 return Ok(metadata);
             }
-            Err(error) => errors.push(format!("{} 的版本链：{error}", candidate.url)),
+            Err(error) => {
+                if error.contains("SHA-1")
+                    || error.contains("版本元数据无效")
+                    || error.contains("官方 Java 原版版本")
+                {
+                    saw_metadata_validation_error = true;
+                }
+                errors.push(format!("{} 的版本链：{error}", candidate.url));
+            }
         }
     }
-    Err(profile_conflict.unwrap_or_else(|| format!("原版元数据候选均失败：{}", errors.join("；"))))
+    if let Some(conflict) = profile_conflict {
+        return Err(conflict);
+    }
+    // Use the offline-unverified code only when offline with no cached allowed
+    // manifest, when a cached allowed manifest lists the id, or when an online
+    // manifest listed the id but the metadata transfer failed without a
+    // checksum/schema rejection. Unlisted standalone ids keep existing errors.
+    let offline_needs_network = (!any_manifest_fetched
+        && (cached_manifests.is_empty()
+            || cached_manifests
+                .iter()
+                .any(|manifest| manifest_version(manifest, id).is_ok())))
+        || (any_manifest_had_id && !saw_metadata_validation_error);
+    if has_unverified_valid_local && offline_needs_network {
+        return Err(format!(
+            "{}{id}",
+            crate::errors::PROFILE_OFFLINE_UNVERIFIED_PREFIX
+        ));
+    }
+    Err(format!("原版元数据候选均失败：{}", errors.join("；")))
 }
 
 async fn read_version_profile(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -1923,25 +2526,35 @@ fn is_valid_profile_json(bytes: &[u8]) -> bool {
         && serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_ok()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublishOutcome {
+    Published,
+    PreservedUnverified,
+}
+
 async fn publish_official_profile(
     id: &str,
     path: &Path,
     verified: &[u8],
     ownership_manifests: &[Value],
-) -> Result<(), String> {
+) -> Result<PublishOutcome, String> {
     let previous = read_version_profile(path).await?;
     if previous.as_deref() == Some(verified) {
-        return Ok(());
+        return Ok(PublishOutcome::Published);
     }
     // The caller verified both this ID's manifest entry and the response's
     // SHA-1. Broken data keeps its original bytes in quarantine. Valid JSON
-    // may be a custom profile, so only an earlier verified copy may move.
+    // may belong to another launcher or a user customization, so leave it
+    // untouched and let the caller keep a verified copy in launcher data.
     let corrupt = previous.as_deref().is_some_and(|bytes| !is_valid_profile_json(bytes));
     if let Some(previous) = previous.as_deref() {
         if !corrupt && !previously_verified_profile(ownership_manifests, id, previous) {
-            return Err(format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX));
+            return Ok(PublishOutcome::PreservedUnverified);
         }
     }
+    tokio::fs::create_dir_all(path.parent().ok_or("版本目录无效")?)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Reserve our staging/quarantine name exclusively on the same volume.
     // Nothing from the old profile is removed until the replacement is ready.
@@ -1968,7 +2581,7 @@ async fn publish_official_profile(
         if let Some(previous) = previous.as_deref() {
             let current = read_version_profile(path).await?;
             if current.as_deref() == Some(verified) {
-                return Ok(()); // a concurrent resolver already published it
+                return Ok(PublishOutcome::Published); // a concurrent resolver already published it
             }
             if current.as_deref().is_some_and(|bytes| bytes != previous) {
                 return Err(format!("{}{id}", crate::errors::PROFILE_CONFLICT_PREFIX));
@@ -1989,7 +2602,7 @@ async fn publish_official_profile(
                 return Err(format!("发布版本元数据失败（不会覆盖已存在文件）：{error}"));
             }
         }
-        Ok(())
+        Ok(PublishOutcome::Published)
     }
     .await;
     let _ = tokio::fs::remove_file(&staged).await;
@@ -2074,32 +2687,52 @@ async fn install_with_config(
     id: &str,
     config: &Config,
 ) -> Result<(InstallResult, Value), String> {
-    validate_id(id)?;
     let effective = crate::source_select::with_effective_source(state, config).await?;
     let config = &effective;
+    install_with_effective_source_resolved(
+        state,
+        Some(app),
+        id,
+        config,
+        &config.download_source,
+        &identity_url,
+    )
+    .await
+}
+
+async fn install_with_effective_source_resolved(
+    state: &LauncherState,
+    app: Option<&AppHandle>,
+    id: &str,
+    config: &Config,
+    source: &str,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<(InstallResult, Value), String> {
+    validate_id(id)?;
     let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
     let root = root.as_path();
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     state.control.checkpoint().await?;
-    progress(
-        app,
-        state,
-        id,
-        "metadata",
-        0,
-        0,
-        0,
-        0,
-        "解析版本继承链并校验 Mojang 原版元数据",
-    );
-    log(
-        app,
-        state,
-        "info",
-        format!("准备安装/修复 {id}；原版及加载器资源分别验证来源与 SHA-1"),
-    );
-    let mut metadata =
-        resolve_metadata_with_source(state, id, root, &config.download_source).await?;
+    if let Some(app) = app {
+        progress(
+            app,
+            state,
+            id,
+            "metadata",
+            0,
+            0,
+            0,
+            0,
+            "解析版本继承链并校验 Mojang 原版元数据",
+        );
+        log(
+            app,
+            state,
+            "info",
+            format!("准备安装/修复 {id}；原版及加载器资源分别验证来源与 SHA-1"),
+        );
+    }
+    let mut metadata = resolve_metadata_resolved(state, id, root, source, resolver).await?;
     let client_id = metadata["_launcherClientId"]
         .as_str()
         .unwrap_or(id)
@@ -2121,7 +2754,7 @@ async fn install_with_config(
             continue;
         }
         if let Some(file) =
-            library_download_with_source(state, library, &libraries, &config.download_source)
+            library_download_with_source_resolved(state, library, &libraries, source, resolver)
                 .await?
         {
             files.insert(file.path.clone(), file);
@@ -2140,11 +2773,12 @@ async fn install_with_config(
             root,
             Some(&format!("assets/indexes/{asset_id}.json")),
         )?;
-        let (assets, _) = ensure_json_download_with_source_and_control(
+        let (assets, _) = ensure_json_download_with_source_and_control_resolved(
             state.client()?,
             &index,
-            &config.download_source,
+            source,
             Some(&state.control),
+            resolver,
             |value| {
                 let objects = value["objects"].as_object().ok_or("资源索引无效")?;
                 for object in objects.values() {
@@ -2180,28 +2814,34 @@ async fn install_with_config(
     let completed = AtomicUsize::new(0);
     let downloaded = AtomicUsize::new(0);
     let completed_bytes = AtomicU64::new(0);
-    progress(
-        app,
-        state,
-        id,
-        "download",
-        0,
-        total,
-        0,
-        total_bytes,
-        format!("检查并下载 {total} 个文件"),
-    );
-    let download_source = config.download_source.as_str();
+    if let Some(app) = app {
+        progress(
+            app,
+            state,
+            id,
+            "download",
+            0,
+            total,
+            0,
+            total_bytes,
+            format!("检查并下载 {total} 个文件"),
+        );
+    }
     stream::iter(files.into_iter().map(|file| {
         let completed = &completed;
         let downloaded = &downloaded;
         let completed_bytes = &completed_bytes;
         async move {
-            let was_downloaded = ensure_download_with_source_and_control(
-                state,
+            let was_downloaded = ensure_download_with_policy(
+                state.client()?,
+                state.mirror_client().map(Some),
                 &file,
-                download_source,
-                Some(&state.control),
+                source,
+                DownloadPolicy::Foreground(&state.control),
+                resolver,
+                Some(&state.data_dir),
+                false,
+                part_store_for(state, &file).as_ref(),
             )
             .await?;
             if was_downloaded {
@@ -2210,18 +2850,20 @@ async fn install_with_config(
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             let bytes = completed_bytes.fetch_add(file.size.unwrap_or(0), Ordering::Relaxed)
                 + file.size.unwrap_or(0);
-            if done == 1 || done % 10 == 0 || done == total {
-                progress(
-                    app,
-                    state,
-                    id,
-                    "download",
-                    done,
-                    total,
-                    bytes,
-                    total_bytes,
-                    format!("已校验 {done}/{total} 个文件"),
-                );
+            if let Some(app) = app {
+                if done == 1 || done % 10 == 0 || done == total {
+                    progress(
+                        app,
+                        state,
+                        id,
+                        "download",
+                        done,
+                        total,
+                        bytes,
+                        total_bytes,
+                        format!("已校验 {done}/{total} 个文件"),
+                    );
+                }
             }
             Ok::<_, String>(())
         }
@@ -2232,7 +2874,7 @@ async fn install_with_config(
     if client_id != id {
         // Keep the verified official base JAR under the selected inherited version's
         // name as well: Forge's ignoreList/version_name contract uses this basename.
-        let source = safe_join(root, &format!("versions/{client_id}/{client_id}.jar"))?;
+        let source_jar = safe_join(root, &format!("versions/{client_id}/{client_id}.jar"))?;
         let destination = safe_join(root, &format!("versions/{id}/{id}.jar"))?;
         let alias = Download {
             path: destination.clone(),
@@ -2248,7 +2890,7 @@ async fn install_with_config(
             tokio::fs::create_dir_all(destination.parent().ok_or("版本目录无效")?)
                 .await
                 .map_err(|e| e.to_string())?;
-            tokio::fs::copy(source, &temporary)
+            tokio::fs::copy(source_jar, &temporary)
                 .await
                 .map_err(|e| e.to_string())?;
             tokio::fs::rename(temporary, destination)
@@ -2258,23 +2900,25 @@ async fn install_with_config(
         metadata["_launcherClientId"] = id.into();
     }
     let count = downloaded.load(Ordering::Relaxed);
-    progress(
-        app,
-        state,
-        id,
-        "complete",
-        total,
-        total,
-        total_bytes,
-        total_bytes,
-        "安装完成，全部资源校验通过",
-    );
-    log(
-        app,
-        state,
-        "info",
-        format!("{id} 安装完成：下载 {count}，复用 {} 个文件", total - count),
-    );
+    if let Some(app) = app {
+        progress(
+            app,
+            state,
+            id,
+            "complete",
+            total,
+            total,
+            total_bytes,
+            total_bytes,
+            "安装完成，全部资源校验通过",
+        );
+        log(
+            app,
+            state,
+            "info",
+            format!("{id} 安装完成：下载 {count}，复用 {} 个文件", total - count),
+        );
+    }
     Ok((
         InstallResult {
             version_id: id.into(),
@@ -2391,6 +3035,7 @@ fn java_candidates(config: &Config, data_dir: &Path) -> Vec<PathBuf> {
 }
 
 pub async fn detect_java(config: &Config, data_dir: &Path) -> Vec<JavaRuntime> {
+    record_active_data_dir(data_dir);
     let mut runtimes: Vec<_> = stream::iter(java_candidates(config, data_dir).into_iter().map(inspect_java))
         .buffer_unordered(4)
         .filter_map(|runtime| async { runtime })
@@ -3102,6 +3747,14 @@ fn append_direct_connect(
     Ok(())
 }
 
+/// Launch preparation installs the official base and client jar. These scan
+/// states are exactly what that step repairs; blocking them would turn a
+/// formerly working launch into a dead end. A damaged loader profile or an
+/// impossible main class cannot be fixed by the generic launch installer.
+fn launch_issue_is_repairable(reason: &str) -> bool {
+    matches!(reason, "baseMissing" | "clientJarMissing")
+}
+
 pub(crate) async fn with_launch_preparation<T, F>(
     state: &LauncherState,
     task_id: &str,
@@ -3127,6 +3780,15 @@ where
         let instance = instance_id
             .map(|id| snapshot.instances.iter().find(|value| value.id == id).ok_or("实例不存在"))
             .transpose()?;
+        if let Some(reason) = instance
+            .and_then(|value| value.issue.as_deref())
+            .filter(|reason| !launch_issue_is_repairable(reason))
+        {
+            return Err(format!(
+                "{}{reason}",
+                crate::errors::INSTANCE_LAUNCH_BLOCKED_PREFIX
+            ));
+        }
         let directory = game_directory(&snapshot.config, id, instance)?;
         state.games.require_directory_stopped(&directory, instance_id, true)?;
         // A launch writes the launch time and changes the files that an
@@ -3145,6 +3807,77 @@ where
     result
 }
 
+/// A backend caller that names only a version (a shortcut, Lumen or MCP) uses
+/// the matching version-folder instance of the active game folder, so its
+/// stored isolation and settings apply.
+pub(crate) fn version_instance_for_launch(data: &Persisted, version_id: &str) -> Option<String> {
+    data.instances
+        .iter()
+        .find(|instance| {
+            instance.is_version_folder()
+                && instance.version_id == version_id
+                && !instance.hidden
+                && instance.folder_missing_since.is_none()
+                && (instance.game_folder.is_empty()
+                    || crate::models::same_game_folder_path(
+                        &instance.game_folder,
+                        &data.config.game_directory,
+                    ))
+        })
+        .map(|instance| instance.id.clone())
+}
+
+/// The game folder whose `versions/` holds this instance's profile. A managed
+/// legacy record lives under the active folder; a version instance belongs to
+/// the folder it was scanned from.
+pub(crate) fn metadata_root(data: &Persisted, instance: Option<&Instance>) -> Result<PathBuf, String> {
+    match instance.filter(|instance| !instance.game_folder.trim().is_empty()) {
+        Some(instance) => crate::processes::configured_game_root(Path::new(&instance.game_folder)),
+        None => crate::processes::configured_game_root(Path::new(&data.config.game_directory)),
+    }
+}
+
+/// The instance a resource, log, server or diagnosis request targets. A caller
+/// that names only a version gets the version-folder instance of the active
+/// game folder, exactly as `launch` does, so the stored isolation applies.
+pub(crate) fn target_instance<'a>(
+    data: &'a Persisted,
+    version_id: &str,
+    instance_id: Option<&str>,
+) -> Result<Option<&'a Instance>, String> {
+    if let Some(id) = instance_id {
+        let instance = data
+            .instances
+            .iter()
+            .find(|instance| instance.id == id)
+            .ok_or("实例不存在")?;
+        return Ok(Some(instance));
+    }
+    let id = version_instance_for_launch(data, version_id)
+        .or_else(|| {
+            // A just-created version folder can exist before the next scan has
+            // registered it; resolve it by folder name in the active folder.
+            data.instances
+                .iter()
+                .find(|instance| {
+                    instance.is_version_folder()
+                        && instance.version_id == version_id
+                        && !instance.hidden
+                        && instance.folder_missing_since.is_none()
+                        && crate::models::same_game_folder_path(
+                            &instance.game_folder,
+                            &data.config.game_directory,
+                        )
+                })
+                .map(|instance| instance.id.clone())
+        });
+    Ok(id.and_then(|id| {
+        data.instances
+            .iter()
+            .find(|instance| instance.id == id)
+    }))
+}
+
 pub async fn launch(
     state: Arc<LauncherState>,
     app: AppHandle,
@@ -3154,6 +3887,13 @@ pub async fn launch(
     account_id: Option<String>,
     server_address: Option<String>,
 ) -> Result<LaunchResult, String> {
+    // Shortcuts and Lumen may still name a version only. Every launchable
+    // version is an instance now, so use its stored settings and game
+    // directory instead of the legacy global isolation layout.
+    let instance_id = match instance_id {
+        Some(instance_id) => Some(instance_id),
+        None => version_instance_for_launch(&state.snapshot()?, &id),
+    };
     let shared = state.clone();
     let target = id.clone();
     let requested_instance = instance_id.clone();
@@ -3233,6 +3973,96 @@ fn launcher_jvm_options(
     Ok(arguments)
 }
 
+fn metadata_jvm_arguments(
+    metadata: &Value,
+    variables: &HashMap<String, String>,
+    natives: &Path,
+    classpath: &str,
+) -> Result<Vec<String>, String> {
+    if let Some(values) = metadata["arguments"].get("jvm") {
+        read_arguments(values, variables)
+    } else {
+        Ok(vec![
+            format!("-Djava.library.path={}", process_path_text(natives)?),
+            "-cp".into(),
+            classpath.to_owned(),
+        ])
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn append_version_launch_arguments(
+    state: &LauncherState,
+    root: &Path,
+    config: &Config,
+    logging_source: Option<&str>,
+    metadata: &Value,
+    variables: &HashMap<String, String>,
+    natives: &Path,
+    classpath: &str,
+    authlib: Option<(&Path, &str)>,
+    server_address: Option<&str>,
+    arguments: &mut Vec<String>,
+    resolver: &(dyn Fn(&str) -> String + Sync),
+) -> Result<usize, String> {
+    arguments.extend(metadata_jvm_arguments(
+        metadata, variables, natives, classpath,
+    )?);
+    // Log4j config is part of official metadata and must be verified before passing to Java.
+    if let Some(file) = metadata["logging"]["client"].get("file") {
+        let file_id = file["id"].as_str().ok_or("日志配置缺少文件名")?;
+        validate_id(file_id)?;
+        let download = download_from(file, root, Some(&format!("assets/log_configs/{file_id}")))?;
+        let source = logging_source.ok_or("日志配置缺少下载源")?;
+        ensure_download_with_policy(
+            state.client()?,
+            state.mirror_client().map(Some),
+            &download,
+            source,
+            DownloadPolicy::Foreground(&state.control),
+            resolver,
+            Some(&state.data_dir),
+            false,
+            part_store_for(state, &download).as_ref(),
+        )
+        .await?;
+        let template = metadata["logging"]["client"]["argument"]
+            .as_str()
+            .ok_or("日志配置参数缺失")?;
+        arguments.push(template.replace("${path}", &process_path_text(&download.path)?));
+    }
+    if let Some((injector, server)) = authlib {
+        arguments.push(javaagent_argument(injector, server)?);
+        arguments.push("-Dauthlibinjector.side=client".into());
+    }
+    let jvm_argument_count = arguments.len();
+    arguments.push(metadata["mainClass"].as_str().ok_or("启动主类缺失")?.into());
+    if let Some(legacy) = metadata["_launcherLegacyGameArguments"].as_str() {
+        for argument in shell_words::split(legacy).map_err(|e| e.to_string())? {
+            arguments.push(expand(&argument, variables)?);
+        }
+    } else if let Some(values) = metadata["arguments"].get("game") {
+        arguments.extend(read_arguments(values, variables)?);
+    } else {
+        let legacy = metadata["minecraftArguments"]
+            .as_str()
+            .ok_or("版本不含游戏启动参数")?;
+        for argument in shell_words::split(legacy).map_err(|e| e.to_string())? {
+            arguments.push(expand(&argument, variables)?);
+        }
+    }
+    arguments.extend([
+        "--width".into(),
+        config.screen_width.clamp(320, 16384).to_string(),
+        "--height".into(),
+        config.screen_height.clamp(240, 16384).to_string(),
+    ]);
+    if let Some(address) = server_address {
+        append_direct_connect(arguments, metadata, address)?;
+    }
+    Ok(jvm_argument_count)
+}
+
 /// Java's response file text for the JVM options (one quoted option per line).
 fn jvm_response_file(arguments: &[String]) -> String {
     arguments
@@ -3266,7 +4096,6 @@ async fn launch_prepared(
     if let Some(address) = server_address.as_deref() {
         server_parts(address)?;
     }
-    let root = crate::processes::configured_game_root(Path::new(&snapshot.config.game_directory))?;
     let instance = if let Some(instance_id) = instance_id.as_ref() {
         let instance = snapshot
             .instances
@@ -3293,11 +4122,21 @@ async fn launch_prepared(
             config.screen_height = height;
         }
     }
+    // A version-folder instance reads versions, libraries and assets from its
+    // own game folder, not from whichever folder happens to be active.
+    if let Some(folder) = instance
+        .map(|instance| instance.game_folder.as_str())
+        .filter(|folder| !folder.trim().is_empty())
+    {
+        config.game_directory = folder.to_owned();
+        config.normalize_game_folders();
+    }
+    let root = crate::processes::configured_game_root(Path::new(&config.game_directory))?;
     let custom = shell_words::split(&config.jvm_arguments)
         .map_err(|e| format!("自定义 JVM 参数引号不匹配：{e}"))?;
     let managed_proxy_args = launch_proxy_args(&config, instance, &custom)?;
-    let game_dir = game_directory(&snapshot.config, &id, instance)?;
-    let (_, metadata) = install_with_config(&state, &app, &id, &snapshot.config).await?;
+    let game_dir = game_directory(&config, &id, instance)?;
+    let (_, metadata) = install_with_config(&state, &app, &id, &config).await?;
     let loader = instance
         .map(|instance| instance.loader.as_str())
         .filter(|loader| matches!(*loader, "forge" | "neoforge" | "fabric" | "quilt"))
@@ -3403,60 +4242,40 @@ async fn launch_prepared(
     let mut arguments = launcher_jvm_options(memory, managed_proxy_args, &custom, || {
         process_path_text(&launch_scratch.java_temp()?)
     })?;
-    if let Some(values) = metadata["arguments"].get("jvm") {
-        arguments.extend(read_arguments(values, &variables)?);
+    let logging_source = if metadata["logging"]["client"].get("file").is_some() {
+        Some(crate::source_select::effective_download_source(&state, &config.download_source).await?)
     } else {
-        arguments.extend([
-            format!("-Djava.library.path={}", process_path_text(&natives)?),
-            "-cp".into(),
-            classpath,
-        ]);
-    }
-    // Log4j config is part of official metadata and must be verified before passing to Java.
-    if let Some(file) = metadata["logging"]["client"].get("file") {
-        let file_id = file["id"].as_str().ok_or("日志配置缺少文件名")?;
-        validate_id(file_id)?;
-        let download = download_from(file, &root, Some(&format!("assets/log_configs/{file_id}")))?;
-        let source = crate::source_select::effective_download_source(&state, &config.download_source).await?;
-        ensure_download_with_source_and_control(&state, &download, &source, Some(&state.control)).await?;
-        let template = metadata["logging"]["client"]["argument"]
-            .as_str()
-            .ok_or("日志配置参数缺失")?;
-        arguments.push(template.replace("${path}", &process_path_text(&download.path)?));
-    }
-    if let Some(server) = credentials
+        None
+    };
+    let authlib_injector_path = if credentials
         .as_ref()
         .and_then(|c| c.authlib_server.as_deref())
+        .is_some()
     {
-        let injector = crate::loaders::authlib_injector(&state).await?;
-        arguments.push(javaagent_argument(&injector, server)?);
-        arguments.push("-Dauthlibinjector.side=client".into());
-    }
-    let jvm_argument_count = arguments.len();
-    arguments.push(metadata["mainClass"].as_str().ok_or("启动主类缺失")?.into());
-    if let Some(legacy) = metadata["_launcherLegacyGameArguments"].as_str() {
-        for argument in shell_words::split(legacy).map_err(|e| e.to_string())? {
-            arguments.push(expand(&argument, &variables)?);
-        }
-    } else if let Some(values) = metadata["arguments"].get("game") {
-        arguments.extend(read_arguments(values, &variables)?);
+        Some(crate::loaders::authlib_injector(&state).await?)
     } else {
-        let legacy = metadata["minecraftArguments"]
-            .as_str()
-            .ok_or("版本不含游戏启动参数")?;
-        for argument in shell_words::split(legacy).map_err(|e| e.to_string())? {
-            arguments.push(expand(&argument, &variables)?);
-        }
-    }
-    arguments.extend([
-        "--width".into(),
-        config.screen_width.clamp(320, 16384).to_string(),
-        "--height".into(),
-        config.screen_height.clamp(240, 16384).to_string(),
-    ]);
-    if let Some(address) = server_address.as_deref() {
-        append_direct_connect(&mut arguments, &metadata, address)?;
-    }
+        None
+    };
+    let authlib = authlib_injector_path.as_deref().zip(
+        credentials
+            .as_ref()
+            .and_then(|c| c.authlib_server.as_deref()),
+    );
+    let jvm_argument_count = append_version_launch_arguments(
+        &state,
+        &root,
+        &config,
+        logging_source.as_deref(),
+        &metadata,
+        &variables,
+        &natives,
+        &classpath,
+        authlib,
+        server_address.as_deref(),
+        &mut arguments,
+        &identity_url,
+    )
+    .await?;
     let mut command = tokio::process::Command::new(to_process_path(Path::new(&java.path))?);
     if java.major >= 9 {
         // Java's response file avoids Windows' 32 KiB process command-line limit.
@@ -4180,6 +4999,51 @@ mod tests {
         });
     }
 
+    #[test]
+    fn an_owned_profile_at_an_official_id_is_verified_not_trusted() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("owned-official-profile");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let canonical = br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","type":"release","libraries":[],"arguments":{"game":["--demo"]}}"#;
+            // What an earlier loader switch on the official folder wrote over
+            // Mojang's profile, with its hash recorded as Voxelight's own.
+            let rewritten = br#"{"id":"source-test","inheritsFrom":"source-test","mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.9"}]}"#;
+            let official = root.join("versions/source-test/source-test.json");
+            fs::create_dir_all(official.parent().unwrap()).unwrap();
+            fs::write(&official, rewritten).unwrap();
+            crate::instances::remember_owned_profile(&state, &official, rewritten).unwrap();
+            let named = root.join("versions/Survival/Survival.json");
+            fs::create_dir_all(named.parent().unwrap()).unwrap();
+            let named_bytes = br#"{"id":"Survival","inheritsFrom":"source-test"}"#;
+            fs::write(&named, named_bytes).unwrap();
+            crate::instances::remember_owned_profile(&state, &named, named_bytes).unwrap();
+            let manifest = manifest_fixture(vec![json!({
+                "id": "source-test",
+                "url": "https://piston-meta.mojang.com/v1/packages/source-test.json",
+                "sha1": format!("{:x}", Sha1::digest(canonical)),
+            })]);
+            let server = TestServer::new(&[
+                ("/piston-meta.mojang.com/mc/game/version_manifest_v2.json", 200, &manifest),
+                ("/piston-meta.mojang.com/v1/packages/source-test.json", 200, canonical),
+            ]);
+            let resolver = server.resolver();
+            let result = resolve_metadata_resolved(&state, "Survival", &root, "official", &resolver).await.unwrap();
+            assert_eq!(result["id"], "Survival");
+            assert_eq!(result["mainClass"], "net.minecraft.client.main.Main", "the official metadata is used");
+            assert_eq!(result["_launcherClientId"], "source-test");
+            assert_eq!(result["arguments"]["game"], json!(["--demo"]));
+            // A second resolve reads the now cached manifest, still without
+            // trusting the recorded hash.
+            let again = resolve_metadata_resolved(&state, "source-test", &root, "official", &resolver).await.unwrap();
+            assert_eq!(again["mainClass"], "net.minecraft.client.main.Main");
+            drop(resolver);
+            drop(server);
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
     fn assert_manifest_listed_damage_is_quarantined(damaged: &[u8]) {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let directory = source_test_directory("verification-damaged-profile");
@@ -4242,7 +5106,6 @@ mod tests {
     fn official_lookup_keeps_valid_custom_profiles_at_official_id() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let directory = source_test_directory("preserve-custom-profile");
-            let state = source_test_state(&directory.join("data"));
             let root = directory.join("game");
             let canonical = br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","type":"release","libraries":[],"arguments":{"game":["--demo"]}}"#;
             let manifest = manifest_fixture(vec![json!({
@@ -4258,20 +5121,937 @@ mod tests {
             let path = root.join("versions/source-test/source-test.json");
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             let deep_valid = format!("{}0{}", "[".repeat(140), "]".repeat(140));
-            for custom in [
+            for (index, custom) in [
                 &br#"{"id":"source-test","mainClass":"net.minecraft.client.main.Main","libraries":[],"arguments":{"game":["--custom"]}}"#[..],
                 &b"null"[..],
                 &b"1e1024"[..],
                 deep_valid.as_bytes(),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let state = source_test_state(&directory.join(format!("data-{index}")));
                 fs::write(&path, custom).unwrap();
-                let error = official_metadata_with_resolver(&state, "source-test", &root, "official", &resolver).await.unwrap_err();
-                let localized = crate::errors::expected(error);
-                assert_eq!(localized.code, "version.profileConflict");
-                assert_eq!(localized.params["id"], "source-test");
+                let resolved = official_metadata_with_resolver(&state, "source-test", &root, "official", &resolver).await.unwrap();
+                assert_eq!(resolved["arguments"]["game"], json!(["--demo"]));
                 assert_eq!(fs::read(&path).unwrap(), custom);
                 assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+                assert_eq!(
+                    fs::read(verified_profile_path(&state.data_dir, "source-test").unwrap()).unwrap(),
+                    canonical
+                );
             }
+            drop(resolver);
+            drop(server);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_launch_other_launcher_vanilla_profile_prepares_using_verified_metadata_and_preserves_local_file() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("fb-launch-vanilla");
+            let data_dir = directory.join("data");
+            let root = directory.join("game");
+            fs::create_dir_all(&data_dir).unwrap();
+            fs::create_dir_all(&root).unwrap();
+            let state = LauncherState::test_fixture(
+                data_dir.clone(),
+                Persisted {
+                    config: Config {
+                        game_directory: root.to_string_lossy().into_owned(),
+                        download_source: "official".into(),
+                        ..Config::default()
+                    },
+                    ..Persisted::default()
+                },
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .unwrap(),
+            );
+            let client_bytes = b"official-1.21.1-client-jar";
+            let lib_bytes = b"official-library-jar";
+            let asset_bytes = b"official-asset-bytes";
+            let log_bytes = b"official-log-config";
+            let asset_hash = format!("{:x}", Sha1::digest(asset_bytes));
+            let asset_prefix = &asset_hash[..2];
+            let asset_index_bytes = serde_json::to_vec(&json!({
+                "objects": {
+                    "minecraft/sounds/click.ogg": {
+                        "hash": asset_hash,
+                        "size": asset_bytes.len(),
+                    }
+                }
+            }))
+            .unwrap();
+            let official_value = json!({
+                "id": "1.21.1",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "javaVersion": { "component": "java-runtime-delta", "majorVersion": 21 },
+                "downloads": {
+                    "client": {
+                        "url": "https://piston-data.mojang.com/v1/objects/client/1.21.1.jar",
+                        "sha1": format!("{:x}", Sha1::digest(client_bytes)),
+                        "size": client_bytes.len(),
+                    }
+                },
+                "libraries": [{
+                    "name": "com.example:official-lib:1.0",
+                    "downloads": {
+                        "artifact": {
+                            "path": "com/example/official-lib/1.0/official-lib-1.0.jar",
+                            "url": "https://libraries.minecraft.net/com/example/official-lib/1.0/official-lib-1.0.jar",
+                            "sha1": format!("{:x}", Sha1::digest(lib_bytes)),
+                            "size": lib_bytes.len(),
+                        }
+                    }
+                }],
+                "assetIndex": {
+                    "id": "17",
+                    "url": "https://piston-meta.mojang.com/v1/packages/assets/17.json",
+                    "sha1": format!("{:x}", Sha1::digest(&asset_index_bytes)),
+                    "size": asset_index_bytes.len(),
+                },
+                "logging": {
+                    "client": {
+                        "argument": "-Dlog4j.configurationFile=${path}",
+                        "file": {
+                            "id": "client-1.12.xml",
+                            "url": "https://piston-data.mojang.com/v1/objects/log/client-1.12.xml",
+                            "sha1": format!("{:x}", Sha1::digest(log_bytes)),
+                            "size": log_bytes.len(),
+                        },
+                        "type": "log4j2-xml",
+                    }
+                },
+                "arguments": {
+                    "jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"],
+                    "game": ["--username", "${auth_player_name}", "--version", "${version_name}"]
+                }
+            });
+            let official_bytes = serde_json::to_vec(&official_value).unwrap();
+
+            // A parent profile that must never be followed from the tampered
+            // vanilla file. It exists so a resolver that trusts the local
+            // inheritsFrom would visibly merge it into the launch.
+            let parent_client_bytes = b"official-1.21-client-jar";
+            let parent_value = json!({
+                "id": "1.21",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "javaVersion": { "component": "java-runtime-delta", "majorVersion": 21 },
+                "downloads": {
+                    "client": {
+                        "url": "https://piston-data.mojang.com/v1/objects/client/1.21.jar",
+                        "sha1": format!("{:x}", Sha1::digest(parent_client_bytes)),
+                        "size": parent_client_bytes.len(),
+                    }
+                },
+                "libraries": [],
+                "arguments": {
+                    "jvm": ["-cp", "${classpath}"],
+                    "game": ["--username", "${auth_player_name}"]
+                }
+            });
+            let parent_bytes = serde_json::to_vec(&parent_value).unwrap();
+
+            // Other launcher wrote a reformatted version JSON that also adds
+            // inheritsFrom/jar, an extra field, an extra JVM argument, an
+            // injected library, and altered mainClass/Java/type/logging fields.
+            let mut local_value = official_value.clone();
+            local_value["inheritsFrom"] = json!("1.21");
+            local_value["jar"] = json!("1.21");
+            local_value["_otherLauncher"] = json!("pcl2");
+            local_value["type"] = json!("custom");
+            local_value["javaVersion"]["majorVersion"] = json!(8);
+            local_value["mainClass"] = json!("com.example.TamperedMain");
+            local_value["arguments"]["jvm"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("-Dlocal.unverified.arg=should-not-be-used"));
+            local_value["libraries"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name": "com.untrusted:injected:1.0"}));
+            local_value["logging"]["client"]["file"]["id"] = json!("client-tampered.xml");
+            local_value["logging"]["client"]["file"]["url"] =
+                json!("https://piston-data.mojang.com/v1/objects/tampered/client-tampered.xml");
+            local_value["logging"]["client"]["file"]["sha1"] =
+                json!(format!("{:x}", Sha1::digest(b"tampered-log")));
+            local_value["logging"]["client"]["file"]["size"] = json!(12);
+            let local_bytes = serde_json::to_vec_pretty(&local_value).unwrap();
+            let local_json = root.join("versions/1.21.1/1.21.1.json");
+            fs::create_dir_all(local_json.parent().unwrap()).unwrap();
+            fs::write(&local_json, &local_bytes).unwrap();
+
+            let manifest = manifest_fixture(vec![
+                json!({
+                    "id": "1.21.1",
+                    "type": "release",
+                    "url": "https://piston-meta.mojang.com/v1/packages/1.21.1.json",
+                    "sha1": format!("{:x}", Sha1::digest(&official_bytes)),
+                }),
+                json!({
+                    "id": "1.21",
+                    "type": "release",
+                    "url": "https://piston-meta.mojang.com/v1/packages/1.21.json",
+                    "sha1": format!("{:x}", Sha1::digest(&parent_bytes)),
+                }),
+            ]);
+            let asset_route = format!("/resources.download.minecraft.net/{asset_prefix}/{asset_hash}");
+            let server = TestServer::new(&[
+                ("/piston-meta.mojang.com/mc/game/version_manifest_v2.json", 200, &manifest),
+                ("/piston-meta.mojang.com/v1/packages/1.21.1.json", 200, &official_bytes),
+                ("/piston-meta.mojang.com/v1/packages/1.21.json", 200, &parent_bytes),
+                ("/piston-data.mojang.com/v1/objects/client/1.21.1.jar", 200, client_bytes),
+                ("/piston-data.mojang.com/v1/objects/client/1.21.jar", 200, parent_client_bytes),
+                ("/piston-data.mojang.com/v1/objects/log/client-1.12.xml", 200, log_bytes),
+                ("/piston-data.mojang.com/v1/objects/tampered/client-tampered.xml", 200, b"tampered-log"),
+                ("/libraries.minecraft.net/com/example/official-lib/1.0/official-lib-1.0.jar", 200, lib_bytes),
+                ("/piston-meta.mojang.com/v1/packages/assets/17.json", 200, &asset_index_bytes),
+                (&asset_route, 200, asset_bytes),
+            ]);
+            let resolver = server.resolver();
+
+            // Exercise the production install path that launch_prepared calls,
+            // rather than reimplementing its download pipeline in the test.
+            let config = state.snapshot().unwrap().config;
+            let (installed, metadata) = install_with_effective_source_resolved(
+                &state,
+                None,
+                "1.21.1",
+                &config,
+                "official",
+                &resolver,
+            )
+            .await
+            .unwrap();
+            assert_eq!(installed.version_id, "1.21.1");
+            assert_eq!(metadata["mainClass"], "net.minecraft.client.main.Main");
+            assert_eq!(metadata["javaVersion"]["majorVersion"], 21);
+            assert_eq!(metadata["logging"]["client"]["file"]["id"], "client-1.12.xml");
+            assert_eq!(metadata["libraries"].as_array().unwrap().len(), 1);
+            assert!(!metadata["libraries"].as_array().unwrap().iter().any(|library| {
+                library["name"].as_str().is_some_and(|name| name.contains("injected"))
+            }));
+
+            let classpath = build_classpath(&metadata, &root, "1.21.1").unwrap();
+            assert!(classpath.contains("official-lib-1.0.jar"));
+            assert!(classpath.contains("1.21.1.jar"));
+            assert!(!classpath.contains("injected"));
+            let natives = root.join("natives");
+            let variables = HashMap::from([
+                ("auth_player_name".into(), "Tester".into()),
+                ("version_name".into(), "1.21.1".into()),
+                ("natives_directory".into(), process_path_text(&natives).unwrap()),
+                ("classpath".into(), classpath.clone()),
+            ]);
+            let mut arguments = vec!["-Xmx2048M".to_owned()];
+            // The production launch-argument builder, fed the metadata the
+            // production install returned: this is the closest testable point
+            // to what launch_prepared hands to Java.
+            let jvm_count = append_version_launch_arguments(
+                &state,
+                &root,
+                &config,
+                Some("official"),
+                &metadata,
+                &variables,
+                &natives,
+                &classpath,
+                None,
+                None,
+                &mut arguments,
+                &resolver,
+            )
+            .await
+            .unwrap();
+            assert_eq!(arguments[jvm_count], "net.minecraft.client.main.Main");
+            assert!(
+                !arguments.iter().any(|arg| arg.contains("local.unverified.arg")),
+                "extra JVM arg in the tampered local file must never reach the launch: {arguments:?}"
+            );
+            assert!(
+                !arguments.iter().any(|arg| arg.contains("Tampered") || arg.contains("tampered")),
+                "tampered mainClass or logging config must never reach the launch: {arguments:?}"
+            );
+            assert!(
+                arguments.iter().any(|arg| arg.contains("client-1.12.xml")),
+                "the verified logging config must reach the launch: {arguments:?}"
+            );
+            assert_eq!(java_constraint(&metadata, None).required, 21);
+
+            assert_eq!(
+                fs::read(&local_json).unwrap(),
+                local_bytes,
+                "unverified local file bytes in .minecraft must remain untouched"
+            );
+            let mut version_entries: Vec<_> = fs::read_dir(local_json.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            version_entries.sort();
+            assert_eq!(version_entries, ["1.21.1.jar", "1.21.1.json"]);
+
+            let verified_copy = verified_profile_path(&state.data_dir, "1.21.1").unwrap();
+            assert_eq!(fs::read(&verified_copy).unwrap(), official_bytes);
+            assert_eq!(
+                verified_profile_bytes(&state, &root, "1.21.1").await.unwrap(),
+                official_bytes,
+                "installer staging receives the exact verified bytes, not a path to re-read"
+            );
+            assert_eq!(fs::read(&local_json).unwrap(), local_bytes);
+            let requests = server.requests();
+            assert!(
+                requests.iter().any(|request| request.contains("client-1.12.xml")),
+                "the verified logging config is downloaded: {requests:?}"
+            );
+            assert!(
+                !requests.iter().any(|request| request.contains("tampered")),
+                "the tampered logging config is never requested: {requests:?}"
+            );
+            assert!(
+                !requests.iter().any(|request| request.contains("packages/1.21.json")),
+                "a manifest-listed vanilla id must be terminal: {requests:?}"
+            );
+            assert!(
+                !requests.iter().any(|request| request.contains("client/1.21.jar")),
+                "the parent profile is never downloaded: {requests:?}"
+            );
+
+            // Library scan picks up Voxelight's verified copy (Java 21, release), not local custom/8.
+            let scanned =
+                scan_versions_with_data_dir(&state.snapshot().unwrap().config, Some(&state.data_dir));
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].id, "1.21.1");
+            assert!(scanned[0].installed && scanned[0].launchable);
+            assert_eq!(scanned[0].version_type, "release");
+            assert_eq!(scanned[0].java_major, Some(21));
+
+            // Subsequent launch works offline using the launcher-owned verified copy.
+            let address = server.address.clone();
+            drop(resolver);
+            drop(server);
+            let offline = |url: &str| TestServer::resolve(&address, url);
+            let offline_metadata =
+                resolve_metadata_resolved(&state, "1.21.1", &root, "official", &offline)
+                    .await
+                    .unwrap();
+            assert_eq!(offline_metadata["javaVersion"]["majorVersion"], 21);
+            assert!(!offline_metadata["arguments"]["jvm"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|arg| arg.as_str().is_some_and(|s| s.contains("local.unverified.arg"))));
+            assert_eq!(fs::read(&local_json).unwrap(), local_bytes);
+
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_launch_fabric_child_inheriting_other_launcher_vanilla_profile_prepares_cleanly() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("fb-launch-fabric-child");
+            let data_dir = directory.join("data");
+            let root = directory.join("game");
+            fs::create_dir_all(&data_dir).unwrap();
+            fs::create_dir_all(&root).unwrap();
+            let state = LauncherState::test_fixture(
+                data_dir,
+                Persisted {
+                    config: Config {
+                        game_directory: root.to_string_lossy().into_owned(),
+                        download_source: "official".into(),
+                        ..Config::default()
+                    },
+                    ..Persisted::default()
+                },
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .unwrap(),
+            );
+            let client_bytes = b"official-1.21.1-client-jar";
+            let official_lib = b"official-asm-jar";
+            let fabric_lib = b"fabric-loader-0.19.3-jar";
+            let official_value = json!({
+                "id": "1.21.1",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "javaVersion": { "component": "java-runtime-delta", "majorVersion": 21 },
+                "downloads": {
+                    "client": {
+                        "url": "https://piston-data.mojang.com/v1/objects/client/1.21.1.jar",
+                        "sha1": format!("{:x}", Sha1::digest(client_bytes)),
+                        "size": client_bytes.len(),
+                    }
+                },
+                "libraries": [{
+                    "name": "com.example:official-lib:1.0",
+                    "downloads": {
+                        "artifact": {
+                            "path": "com/example/official-lib/1.0/official-lib-1.0.jar",
+                            "url": "https://libraries.minecraft.net/com/example/official-lib/1.0/official-lib-1.0.jar",
+                            "sha1": format!("{:x}", Sha1::digest(official_lib)),
+                            "size": official_lib.len(),
+                        }
+                    }
+                }],
+                "arguments": {
+                    "jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"],
+                    "game": ["--username", "${auth_player_name}"]
+                }
+            });
+            let official_bytes = serde_json::to_vec(&official_value).unwrap();
+
+            let mut local_vanilla = official_value.clone();
+            local_vanilla["_otherLauncher"] = json!("hmcl");
+            local_vanilla["javaVersion"]["majorVersion"] = json!(8);
+            local_vanilla["arguments"]["jvm"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("-Dlocal.unverified.arg=should-not-be-used"));
+            let local_vanilla_bytes = serde_json::to_vec_pretty(&local_vanilla).unwrap();
+            let vanilla_path = root.join("versions/1.21.1/1.21.1.json");
+            fs::create_dir_all(vanilla_path.parent().unwrap()).unwrap();
+            fs::write(&vanilla_path, &local_vanilla_bytes).unwrap();
+
+            let fabric_value = json!({
+                "id": "1.21.1-fabric-0.19.3",
+                "inheritsFrom": "1.21.1",
+                "type": "release",
+                "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+                "arguments": {
+                    "jvm": ["-DFabricMcEmu= net.minecraft.client.main.Main "],
+                    "game": []
+                },
+                "libraries": [{
+                    "name": "net.fabricmc:fabric-loader:0.19.3",
+                    "url": "https://maven.fabricmc.net/",
+                    "sha1": format!("{:x}", Sha1::digest(fabric_lib)),
+                    "size": fabric_lib.len(),
+                }]
+            });
+            let fabric_bytes = serde_json::to_vec_pretty(&fabric_value).unwrap();
+            let fabric_path =
+                root.join("versions/1.21.1-fabric-0.19.3/1.21.1-fabric-0.19.3.json");
+            fs::create_dir_all(fabric_path.parent().unwrap()).unwrap();
+            fs::write(&fabric_path, &fabric_bytes).unwrap();
+
+            let manifest = manifest_fixture(vec![json!({
+                "id": "1.21.1",
+                "type": "release",
+                "url": "https://piston-meta.mojang.com/v1/packages/1.21.1.json",
+                "sha1": format!("{:x}", Sha1::digest(&official_bytes)),
+            })]);
+            let server = TestServer::new(&[
+                ("/piston-meta.mojang.com/mc/game/version_manifest_v2.json", 200, &manifest),
+                ("/piston-meta.mojang.com/v1/packages/1.21.1.json", 200, &official_bytes),
+                ("/piston-data.mojang.com/v1/objects/client/1.21.1.jar", 200, client_bytes),
+                ("/libraries.minecraft.net/com/example/official-lib/1.0/official-lib-1.0.jar", 200, official_lib),
+                ("/maven.fabricmc.net/net/fabricmc/fabric-loader/0.19.3/fabric-loader-0.19.3.jar", 200, fabric_lib),
+            ]);
+            let resolver = server.resolver();
+
+            let task = state
+                .control
+                .reserve_launch("1.21.1-fabric-0.19.3", None)
+                .unwrap();
+            let shared = &state;
+            let (metadata, classpath, jvm_args) = with_launch_preparation(
+                &state,
+                &task,
+                "1.21.1-fabric-0.19.3",
+                None,
+                |snapshot| async move {
+                    let root = Path::new(&snapshot.config.game_directory);
+                    let metadata = resolve_metadata_resolved(
+                        shared,
+                        "1.21.1-fabric-0.19.3",
+                        root,
+                        "official",
+                        &resolver,
+                    )
+                    .await?;
+                    let client_id = metadata["_launcherClientId"].as_str().unwrap().to_owned();
+                    let client = download_from(
+                        &metadata["downloads"]["client"],
+                        root,
+                        Some(&format!("versions/{client_id}/{client_id}.jar")),
+                    )?;
+                    ensure_download_with_source_and_control_resolved(
+                        shared.client()?,
+                        Ok(None),
+                        &client,
+                        "official",
+                        Some(&shared.control),
+                        &resolver,
+                    )
+                    .await?;
+                    let libraries_root = safe_join(root, "libraries")?;
+                    for library in metadata["libraries"].as_array().unwrap() {
+                        if let Some(download) =
+                            library_download_with_source(shared, library, &libraries_root, "official")
+                                .await?
+                        {
+                            ensure_download_with_source_and_control_resolved(
+                                shared.client()?,
+                                Ok(None),
+                                &download,
+                                "official",
+                                Some(&shared.control),
+                                &resolver,
+                            )
+                            .await?;
+                        }
+                    }
+                    let classpath = build_classpath(&metadata, root, "1.21.1-fabric-0.19.3")?;
+                    let natives = root.join("natives");
+                    let variables = HashMap::from([
+                        ("natives_directory".into(), process_path_text(&natives)?),
+                        ("classpath".into(), classpath.clone()),
+                    ]);
+                    let jvm_args =
+                        metadata_jvm_arguments(&metadata, &variables, &natives, &classpath)?;
+                    Ok((metadata, classpath, jvm_args))
+                },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(metadata["id"], "1.21.1-fabric-0.19.3");
+            assert_eq!(metadata["_launcherBaseId"], "1.21.1");
+            assert_eq!(
+                metadata["mainClass"],
+                "net.fabricmc.loader.impl.launch.knot.KnotClient"
+            );
+            assert_eq!(java_constraint(&metadata, Some("fabric")).required, 21);
+            assert!(classpath.contains("fabric-loader-0.19.3.jar"));
+            assert!(classpath.contains("official-lib-1.0.jar"));
+            assert!(classpath.contains("1.21.1.jar"));
+            assert!(jvm_args
+                .iter()
+                .any(|arg| arg == "-DFabricMcEmu= net.minecraft.client.main.Main "));
+            assert!(!jvm_args
+                .iter()
+                .any(|arg| arg.contains("local.unverified.arg")));
+            assert_eq!(fs::read(&vanilla_path).unwrap(), local_vanilla_bytes);
+            assert_eq!(fs::read(&fabric_path).unwrap(), fabric_bytes);
+
+            let scanned =
+                scan_versions_with_data_dir(&state.snapshot().unwrap().config, Some(&state.data_dir));
+            let fabric_entry = scanned
+                .iter()
+                .find(|item| item.id == "1.21.1-fabric-0.19.3")
+                .unwrap();
+            assert!(fabric_entry.installed && fabric_entry.launchable);
+            assert_eq!(fabric_entry.java_major, Some(21));
+
+            drop(server);
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_review_tampered_verified_cache_is_ignored() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("fb-review-tampered-cache");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let official = br#"{"id":"1.21.1","type":"release","mainClass":"net.minecraft.client.main.Main","javaVersion":{"majorVersion":21},"libraries":[]}"#;
+            // A syntactically valid profile planted in the launcher-owned cache
+            // whose SHA-1 is not in any allowed manifest.
+            let tampered = br#"{"id":"1.21.1","type":"snapshot","mainClass":"net.minecraft.client.main.Main","javaVersion":{"majorVersion":17},"libraries":[],"arguments":{"jvm":["-Dcached.tampered=1"]}}"#;
+            let local_bytes = br#"{"id":"1.21.1","type":"custom","mainClass":"net.minecraft.client.main.Main","javaVersion":{"majorVersion":8},"libraries":[]}"#;
+            let local_path = root.join("versions/1.21.1/1.21.1.json");
+            fs::create_dir_all(local_path.parent().unwrap()).unwrap();
+            fs::write(&local_path, local_bytes).unwrap();
+            fs::write(local_path.with_extension("jar"), b"client").unwrap();
+            let cache = verified_profile_path(&state.data_dir, "1.21.1").unwrap();
+            fs::create_dir_all(cache.parent().unwrap()).unwrap();
+            fs::write(&cache, tampered).unwrap();
+            let manifest = manifest_fixture(vec![json!({
+                "id": "1.21.1",
+                "type": "release",
+                "url": "https://piston-meta.mojang.com/v1/packages/1.21.1.json",
+                "sha1": format!("{:x}", Sha1::digest(official)),
+            })]);
+            cache_manifest(&state, &manifest, false).await;
+
+            let config = Config {
+                game_directory: root.to_string_lossy().into_owned(),
+                download_source: "official".into(),
+                ..Config::default()
+            };
+            let scanned = scan_versions_with_data_dir(&config, Some(&state.data_dir));
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].version_type, "custom", "the tampered cache is not a trusted profile");
+            assert_eq!(scanned[0].java_major, Some(8), "the local profile is still the only readable one");
+
+            // The production scan path (recorded active data directory) must
+            // ignore the same tampered copy.
+            record_active_data_dir(&state.data_dir);
+            let scanned = scan_versions(&config);
+            clear_test_active_data_dir();
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].version_type, "custom");
+
+            // The installer staging helper also refuses the tampered cache and
+            // never falls back to copying the unverified .minecraft JSON.
+            let staged = directory.join("stage/versions/1.21.1/1.21.1.json");
+            assert!(crate::loaders::stage_verified_base_profile(&state, &root, "1.21.1", &staged)
+                .await
+                .is_err());
+            assert!(!staged.exists());
+
+            assert_eq!(fs::read(&local_path).unwrap(), local_bytes);
+            assert_eq!(fs::read(&cache).unwrap(), tampered);
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_review_scan_verifies_cached_profiles_only_against_the_configured_source() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("fb-review-scan-source");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let local_value = json!({
+                "id": "1.21.1",
+                "type": "release",
+                "mainClass": "net.minecraft.client.main.Main",
+                "javaVersion": { "majorVersion": 8 },
+                "libraries": []
+            });
+            let local_path = root.join("versions/1.21.1/1.21.1.json");
+            fs::create_dir_all(local_path.parent().unwrap()).unwrap();
+            fs::write(&local_path, serde_json::to_vec_pretty(&local_value).unwrap()).unwrap();
+            fs::write(local_path.with_extension("jar"), b"client").unwrap();
+
+            // A profile verified only by the mirror's manifest.
+            let mirror_value = json!({
+                "id": "1.21.1",
+                "type": "snapshot",
+                "mainClass": "net.minecraft.client.main.Main",
+                "javaVersion": { "majorVersion": 17 },
+                "libraries": [],
+                "_mirror": "bmclapi"
+            });
+            let mirror_bytes = serde_json::to_vec(&mirror_value).unwrap();
+            let mirror_manifest = manifest_fixture(vec![json!({
+                "id": "1.21.1",
+                "type": "snapshot",
+                "url": "https://piston-meta.mojang.com/v1/packages/mirror-1.21.1.json",
+                "sha1": format!("{:x}", Sha1::digest(&mirror_bytes)),
+            })]);
+            cache_manifest(&state, &mirror_manifest, true).await;
+            let cache = verified_profile_path(&state.data_dir, "1.21.1").unwrap();
+            fs::create_dir_all(cache.parent().unwrap()).unwrap();
+            fs::write(&cache, &mirror_bytes).unwrap();
+
+            let official_config = Config {
+                game_directory: root.to_string_lossy().into_owned(),
+                download_source: "official".into(),
+                ..Config::default()
+            };
+            let scanned = scan_versions_with_data_dir(&official_config, Some(&state.data_dir));
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(
+                scanned[0].version_type, "release",
+                "a profile verified only against the mirror must be ignored for the official source"
+            );
+            assert_eq!(scanned[0].java_major, Some(8));
+
+            // The production scan_versions data-dir path behaves the same.
+            record_active_data_dir(&state.data_dir);
+            let scanned = scan_versions(&official_config);
+            clear_test_active_data_dir();
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].version_type, "release");
+            assert_eq!(scanned[0].java_major, Some(8));
+
+            // Sanity check: the same cached copy is trusted when the mirror is
+            // the configured source, so the assertion above is about the source.
+            let mirror_config = Config {
+                download_source: "bmclapi".into(),
+                ..official_config
+            };
+            let scanned = scan_versions_with_data_dir(&mirror_config, Some(&state.data_dir));
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].version_type, "snapshot");
+            assert_eq!(scanned[0].java_major, Some(17));
+
+            assert_eq!(fs::read(&local_path).unwrap(), serde_json::to_vec_pretty(&local_value).unwrap());
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_review_explicit_artifact_path_does_not_require_a_maven_library_name() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("fb-review-library-path");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            fs::create_dir_all(&root).unwrap();
+            let digest = "0123456789abcdef0123456789abcdef01234567";
+            let relative = "com/example/custom-library/1.0/custom-library-1.0.jar";
+            let url = "https://libraries.minecraft.net/com/example/custom-library/1.0/custom-library-1.0.jar";
+
+            // A valid artifact hash: the explicit path is used directly and the
+            // unusual library name must not be parsed as Maven coordinates.
+            let library = json!({
+                "name": "not a maven coordinate at all",
+                "downloads": {"artifact": {
+                    "path": relative,
+                    "url": url,
+                    "sha1": digest,
+                    "size": 4,
+                }}
+            });
+            let download = library_download_with_source(&state, &library, &root, "official")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(download.path, root.join(relative));
+            assert_eq!(download.sha1, digest);
+
+            // The legacy sidecar-checksum branch must not derive a Maven path
+            // either when the artifact path is explicit.
+            let server = TestServer::new(&[(
+                "/libraries.minecraft.net/com/example/custom-library/1.0/custom-library-1.0.jar.sha1",
+                200,
+                digest.as_bytes(),
+            )]);
+            let resolver = server.resolver();
+            let library = json!({
+                "name": "also not a maven coordinate",
+                "downloads": {"artifact": {
+                    "path": relative,
+                    "url": url,
+                    "size": 4,
+                }}
+            });
+            let download =
+                library_download_with_source_resolved(&state, &library, &root, "official", &resolver)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(download.path, root.join(relative));
+            assert_eq!(download.sha1, digest);
+
+            // Without an explicit path the fallback is still required and still
+            // rejects a name that is not a Maven coordinate.
+            let library = json!({
+                "name": "also not a maven coordinate",
+                "downloads": {"artifact": {
+                    "url": url,
+                    "sha1": digest,
+                    "size": 4,
+                }}
+            });
+            assert!(
+                library_download_with_source(&state, &library, &root, "official")
+                    .await
+                    .is_err()
+            );
+
+            drop(resolver);
+            drop(server);
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_launch_offline_unverified_profile_gives_offline_code_and_unlisted_id_keeps_behavior() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("fb-launch-offline");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+            let local_bytes = serde_json::to_vec_pretty(&json!({
+                "id": "1.21.1",
+                "mainClass": "net.minecraft.client.main.Main",
+                "libraries": [],
+                "_otherLauncher": "pcl2"
+            }))
+            .unwrap();
+            let path = root.join("versions/1.21.1/1.21.1.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, &local_bytes).unwrap();
+
+            // Closed loopback server simulates offline mode.
+            let server = TestServer::new(&[]);
+            let address = server.address.clone();
+            drop(server);
+            let offline = |url: &str| TestServer::resolve(&address, url);
+
+            // Offline with no cached manifest -> version.offlineUnverified (never profileConflict).
+            let error = resolve_metadata_resolved(&state, "1.21.1", &root, "official", &offline)
+                .await
+                .unwrap_err();
+            let localized = crate::errors::expected(error);
+            assert_eq!(localized.code, "version.offlineUnverified");
+            assert_eq!(localized.params["id"], "1.21.1");
+            assert_eq!(fs::read(&path).unwrap(), local_bytes);
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+
+            // Offline with a cached manifest listing 1.21.1, but no verified profile copy yet ->
+            // still version.offlineUnverified.
+            let manifest = manifest_fixture(vec![json!({
+                "id": "1.21.1",
+                "url": "https://piston-meta.mojang.com/v1/packages/1.21.1.json",
+                "sha1": "0123456789abcdef0123456789abcdef01234567",
+            })]);
+            cache_manifest(&state, &manifest, false).await;
+            let error = resolve_metadata_resolved(&state, "1.21.1", &root, "official", &offline)
+                .await
+                .unwrap_err();
+            let localized = crate::errors::expected(error);
+            assert_eq!(localized.code, "version.offlineUnverified");
+            assert_eq!(localized.params["id"], "1.21.1");
+
+            // Offline with a cached allowed manifest that lists other IDs but
+            // not this standalone custom ID keeps the pre-existing error. The
+            // offline code is only for an unknown listing or a listed vanilla ID.
+            let custom_path = root.join("versions/custom-standalone/custom-standalone.json");
+            fs::create_dir_all(custom_path.parent().unwrap()).unwrap();
+            let custom_bytes =
+                br#"{"id":"custom-standalone","mainClass":"com.example.CustomMain","libraries":[]}"#;
+            fs::write(&custom_path, custom_bytes).unwrap();
+            let error =
+                resolve_metadata_resolved(&state, "custom-standalone", &root, "official", &offline)
+                    .await
+                    .unwrap_err();
+            let localized = crate::errors::expected(error);
+            assert_eq!(localized.code, "internal.unexpected");
+            assert_ne!(localized.code, "version.offlineUnverified");
+            assert!(
+                localized
+                    .detail
+                    .as_deref()
+                    .unwrap()
+                    .contains("原版元数据候选均失败"),
+                "{:?}",
+                localized.detail
+            );
+            assert_eq!(fs::read(&custom_path).unwrap(), custom_bytes);
+
+            // Online with an ID that is in no Mojang manifest and has no inheritsFrom ->
+            // keeps existing behaviour (not offlineUnverified, not profileConflict).
+            let online_server = TestServer::new(&[(
+                "/piston-meta.mojang.com/mc/game/version_manifest_v2.json",
+                200,
+                &manifest,
+            )]);
+            let online = online_server.resolver();
+            let error = resolve_metadata_resolved(&state, "custom-standalone", &root, "official", &online)
+                .await
+                .unwrap_err();
+            assert!(error.contains("此版本不在 Mojang 官方原版清单中"), "{error}");
+            let localized = crate::errors::expected(error);
+            assert_ne!(localized.code, "version.offlineUnverified");
+            assert_ne!(localized.code, "version.profileConflict");
+            assert_eq!(fs::read(&custom_path).unwrap(), custom_bytes);
+            let scanned = scan_versions_with_data_dir(
+                &Config {
+                    game_directory: root.to_string_lossy().into_owned(),
+                    ..Config::default()
+                },
+                Some(&state.data_dir),
+            );
+            let custom_entry = scanned.iter().find(|v| v.id == "custom-standalone").unwrap();
+            assert!(!custom_entry.launchable);
+            assert!(custom_entry
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("独立第三方版本缺少可验证的原版继承关系"));
+
+            drop(online);
+            drop(online_server);
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_launch_other_launcher_damaged_loader_and_missing_generated_artifact_return_coded_errors() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("fb-launch-loader-errors");
+            let state = source_test_state(&directory.join("data"));
+            let root = directory.join("game");
+
+            // Corrupt PCL/HMCL-named Fabric profile gets version.loaderReinstall without network calls.
+            let fabric_path =
+                root.join("versions/1.21.1-fabric-0.19.3/1.21.1-fabric-0.19.3.json");
+            fs::create_dir_all(fabric_path.parent().unwrap()).unwrap();
+            let damaged = br#"{"id":"1.21.1-fabric-0.19.3","inheritsFrom":"#;
+            fs::write(&fabric_path, damaged).unwrap();
+            let server = TestServer::new(&[]);
+            let resolver = server.resolver();
+            let error = resolve_metadata_resolved(
+                &state,
+                "1.21.1-fabric-0.19.3",
+                &root,
+                "official",
+                &resolver,
+            )
+            .await
+            .unwrap_err();
+            let localized = crate::errors::expected(error);
+            assert_eq!(localized.code, "version.loaderReinstall");
+            assert_eq!(localized.params["id"], "1.21.1-fabric-0.19.3");
+            assert_eq!(fs::read(&fabric_path).unwrap(), damaged);
+            assert!(server.requests().is_empty());
+
+            // Valid JSON with inheritsFrom but invalid mainClass on a known loader profile
+            // also gets version.loaderReinstall.
+            let invalid_main = br#"{"id":"1.21.1-fabric-0.19.3","inheritsFrom":"1.21.1","mainClass":"bad class!"}"#;
+            fs::write(&fabric_path, invalid_main).unwrap();
+            let error = resolve_metadata_resolved(
+                &state,
+                "1.21.1-fabric-0.19.3",
+                &root,
+                "official",
+                &resolver,
+            )
+            .await
+            .unwrap_err();
+            let localized = crate::errors::expected(error);
+            assert_eq!(localized.code, "version.loaderReinstall");
+            assert_eq!(localized.params["id"], "1.21.1-fabric-0.19.3");
+
+            // Missing installer-generated artifact (empty URL) gets version.loaderArtifactMissing.
+            let generated = Download {
+                path: root.join("libraries/net/minecraft/client/1.21.1-srg.jar"),
+                url: String::new(),
+                sha1: "0123456789abcdef0123456789abcdef01234567".into(),
+                size: Some(12),
+            };
+            let error = ensure_download_with_source_and_control_resolved(
+                state.client().unwrap(),
+                Ok(None),
+                &generated,
+                "official",
+                None,
+                &resolver,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                crate::errors::expected(error).code,
+                "version.loaderArtifactMissing"
+            );
+
             drop(resolver);
             drop(server);
             drop(state);
@@ -4382,6 +6162,174 @@ mod tests {
             }).await;
             assert!(result.is_err(), "a second launch must not prepare the active game directory");
             assert!(!prepared.load(std::sync::atomic::Ordering::SeqCst));
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn fb_adopt_2_an_unlaunchable_folder_is_blocked_before_launch_preparation() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("blocked-launch");
+            let state = source_test_state(&directory);
+            let root = PathBuf::from(state.snapshot().unwrap().config.game_directory.clone());
+            let folder = root.join("versions/v");
+            fs::create_dir_all(&folder).unwrap();
+            state
+                .update(|data| {
+                    data.instances.push(Instance {
+                        id: "blocked".into(),
+                        name: "Blocked".into(),
+                        version_id: "v".into(),
+                        game_directory: folder.to_string_lossy().into_owned(),
+                        game_folder: root.to_string_lossy().into_owned(),
+                        kind: "version".into(),
+                        isolated: true,
+                        issue: Some("invalidMainClass".into()),
+                        ..Default::default()
+                    });
+                    Ok(())
+                })
+                .unwrap();
+            let task = state.control.reserve_launch("v", Some("blocked".to_string())).unwrap();
+            let prepared = std::sync::atomic::AtomicBool::new(false);
+            let result = with_launch_preparation(
+                &state,
+                &task,
+                "v",
+                Some("blocked"),
+                |_| async {
+                    prepared.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                crate::errors::expected(result).code,
+                "instance.launchBlocked"
+            );
+            assert!(!prepared.load(std::sync::atomic::Ordering::SeqCst));
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn n6_repairable_missing_base_and_client_jar_states_still_prepare_launch() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("repairable-launch");
+            let state = source_test_state(&directory);
+            let root = PathBuf::from(state.snapshot().unwrap().config.game_directory.clone());
+            for issue in ["baseMissing", "clientJarMissing"] {
+                let folder = root.join(format!("versions/{issue}"));
+                fs::create_dir_all(&folder).unwrap();
+                state
+                    .update(|data| {
+                        data.instances.push(Instance {
+                            id: issue.into(),
+                            name: issue.into(),
+                            version_id: issue.into(),
+                            game_directory: folder.to_string_lossy().into_owned(),
+                            game_folder: root.to_string_lossy().into_owned(),
+                            kind: "version".into(),
+                            isolated: true,
+                            issue: Some(issue.into()),
+                            ..Instance::default()
+                        });
+                        Ok(())
+                    })
+                    .unwrap();
+                let task = state.control.reserve_launch(issue, Some(issue.into())).unwrap();
+                let prepared = std::sync::atomic::AtomicBool::new(false);
+                with_launch_preparation(&state, &task, issue, Some(issue), |_| async {
+                    prepared.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{issue} must still repair: {error}"));
+                assert!(prepared.load(std::sync::atomic::Ordering::SeqCst), "{issue}");
+            }
+            drop(state);
+            fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn n6_the_scan_reports_a_missing_vanilla_base_as_repairable() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let directory = source_test_directory("scan-base-missing");
+            let state = source_test_state(&directory);
+            let root = PathBuf::from(state.snapshot().unwrap().config.game_directory.clone());
+            let write = |id: &str, profile: Value, jar: bool| {
+                let folder = root.join(format!("versions/{id}"));
+                fs::create_dir_all(&folder).unwrap();
+                fs::write(folder.join(format!("{id}.json")), profile.to_string()).unwrap();
+                if jar {
+                    fs::write(folder.join(format!("{id}.jar")), b"client").unwrap();
+                }
+            };
+            // A PCL/HMCL instance whose vanilla base folder is not there.
+            write("MyPack", json!({ "id": "MyPack", "inheritsFrom": "1.20.1" }), false);
+            // A child whose base is present but has no client jar yet.
+            write("1.21.1", json!({
+                "id": "1.21.1", "mainClass": "net.minecraft.client.main.Main", "libraries": []
+            }), false);
+            write("Child", json!({ "id": "Child", "inheritsFrom": "1.21.1" }), false);
+            // A standalone vanilla folder missing its own jar.
+            write("Lonely", json!({
+                "id": "Lonely", "mainClass": "net.minecraft.client.main.Main", "libraries": []
+            }), false);
+            // A profile that cannot be read stays blocked.
+            let broken = root.join("versions/Broken");
+            fs::create_dir_all(&broken).unwrap();
+            fs::write(broken.join("Broken.json"), b"{ not json").unwrap();
+
+            let scanned = scan_versions_at_root(&root, "official", None);
+            let code = |id: &str| {
+                scanned
+                    .iter()
+                    .find(|version| version.id == id)
+                    .and_then(|version| version.reason_code.clone())
+            };
+            assert_eq!(code("MyPack").as_deref(), Some("baseMissing"));
+            assert_eq!(code("Child").as_deref(), Some("baseMissing"));
+            assert_eq!(code("Lonely").as_deref(), Some("clientJarMissing"));
+            assert_eq!(code("Broken").as_deref(), Some("metadataInvalid"));
+
+            // The instance records built from the same scan carry the codes,
+            // and a launch of the PCL/HMCL instance is not blocked: launch
+            // preparation installs the base, as it did before.
+            crate::instances::sync_version_instances(&state).unwrap();
+            let snapshot = state.snapshot().unwrap();
+            let record = |id: &str| {
+                snapshot
+                    .instances
+                    .iter()
+                    .find(|instance| instance.version_id == id)
+                    .cloned()
+                    .unwrap()
+            };
+            let pack = record("MyPack");
+            assert_eq!(pack.issue.as_deref(), Some("baseMissing"));
+            assert_eq!(record("Broken").issue.as_deref(), Some("metadataInvalid"));
+            let task = state.control.reserve_launch("MyPack", Some(pack.id.clone())).unwrap();
+            let prepared = std::sync::atomic::AtomicBool::new(false);
+            with_launch_preparation(&state, &task, "MyPack", Some(&pack.id), |_| async {
+                prepared.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert!(prepared.load(std::sync::atomic::Ordering::SeqCst));
+            let broken = record("Broken");
+            let task = state.control.reserve_launch("Broken", Some(broken.id.clone())).unwrap();
+            let blocked = with_launch_preparation(&state, &task, "Broken", Some(&broken.id), |_| async {
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(blocked, format!("{}metadataInvalid", crate::errors::INSTANCE_LAUNCH_BLOCKED_PREFIX));
             drop(state);
             fs::remove_dir_all(directory).unwrap();
         });
@@ -5726,6 +7674,79 @@ mod tests {
             base.join("instances/test")
         );
         assert!(game_directory(&config, "1.20.1", Some(&instance)).is_err());
+    }
+
+    #[test]
+    fn version_folder_instances_launch_from_their_stored_isolation_layout() {
+        let base = std::env::temp_dir().join("launcher-version-folder-instance-test");
+        let mut config = Config {
+            game_directory: base.to_string_lossy().into_owned(),
+            game_proxy_mode: "system".into(),
+            ..Config::default()
+        };
+        let isolated = Instance {
+            id: "version-instance".into(),
+            name: "Survival".into(),
+            version_id: "1.21.1-Survival".into(),
+            game_directory: base.join("versions/1.21.1-Survival").to_string_lossy().into_owned(),
+            kind: "version".into(),
+            isolated: true,
+            game_folder: config.game_directory.clone(),
+            game_proxy_mode: Some("off".into()),
+            ..Instance::default()
+        };
+        assert_eq!(
+            game_directory(&config, "1.21.1-Survival", Some(&isolated)).unwrap(),
+            base.join("versions/1.21.1-Survival")
+        );
+        // The instance's own proxy setting wins over the global setting.
+        assert!(launch_proxy_args(&config, Some(&isolated), &[]).unwrap().is_empty());
+        let shared = Instance {
+            game_directory: base.to_string_lossy().into_owned(),
+            isolated: false,
+            game_proxy_mode: None,
+            ..isolated.clone()
+        };
+        assert_eq!(
+            game_directory(&config, "1.21.1-Survival", Some(&shared)).unwrap(),
+            base
+        );
+        config.version_isolation = false;
+        assert_eq!(
+            game_directory(&config, "1.21.1-Survival", Some(&shared)).unwrap(),
+            base
+        );
+    }
+
+    #[test]
+    fn a_version_only_backend_launch_resolves_the_matching_instance() {
+        let config = Config {
+            game_directory: "C:/Games/.minecraft".into(),
+            ..Config::default()
+        };
+        let instance = Instance {
+            id: "vx-1".into(),
+            name: "Survival".into(),
+            version_id: "1.21.1".into(),
+            game_directory: "C:/Games/.minecraft/versions/1.21.1".into(),
+            kind: "version".into(),
+            game_folder: config.game_directory.clone(),
+            isolated: true,
+            ..Instance::default()
+        };
+        let mut data = Persisted { config, instances: vec![instance.clone()], ..Persisted::default() };
+        assert_eq!(
+            version_instance_for_launch(&data, "1.21.1").as_deref(),
+            Some("vx-1")
+        );
+        data.instances[0].hidden = true;
+        assert_eq!(version_instance_for_launch(&data, "1.21.1"), None);
+        data.instances[0].hidden = false;
+        data.instances[0].game_folder = "D:/Other/.minecraft".into();
+        assert_eq!(version_instance_for_launch(&data, "1.21.1"), None);
+        data.instances[0].game_folder = data.config.game_directory.clone();
+        data.instances[0].kind = "managed".into();
+        assert_eq!(version_instance_for_launch(&data, "1.21.1"), None);
     }
 
     #[test]

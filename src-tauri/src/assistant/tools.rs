@@ -1071,7 +1071,30 @@ fn redact_strings(value: &mut Value) {
 
 /// Runs a tool for Lumen or an MCP client. Its result and its error text go to the chat
 /// provider or the client, so secret-looking text in them is masked.
-pub async fn execute_tool(
+///
+/// The returned future is boxed: the dispatcher's state is large, and every
+/// caller that awaits it (the chat loop, MCP, tests) would otherwise keep a
+/// copy in its own stack frame. A few such calls in one async block can
+/// exhaust a thread's stack before the first tool is even entered.
+pub fn execute_tool<'a>(
+    ctx: &'a ToolContext,
+    name: &'a str,
+    arguments: &'a Value,
+    permission: PermissionTier,
+    explicitly_approved: bool,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Value, ToolExecError>> + Send + 'a>,
+> {
+    Box::pin(execute_tool_inner(
+        ctx,
+        name,
+        arguments,
+        permission,
+        explicitly_approved,
+    ))
+}
+
+async fn execute_tool_inner(
     ctx: &ToolContext,
     name: &str,
     arguments: &Value,
@@ -1128,7 +1151,8 @@ async fn run_tool(
     match name {
         "list_instances" => {
             let data = ctx.state.snapshot().map_err(ToolExecError::Failed)?;
-            let instances: Vec<Value> = data.instances.iter().map(instance_summary).collect();
+            let visible = crate::commands::active_folder_instances(&data);
+            let instances: Vec<Value> = visible.iter().map(instance_summary).collect();
             Ok(json!({ "count": instances.len(), "instances": instances }))
         }
         "list_installed_versions" => {
@@ -1578,7 +1602,7 @@ async fn run_tool(
             let _operation = ctx.state.operation.lock().await;
             recheck_write(ctx, name, admitted)?;
             let created =
-                crate::commands::create_instance_inner(&ctx.state, instance_name, version_id)
+                crate::commands::create_instance_locked(&ctx.state, instance_name, version_id)
                     .map_err(ToolExecError::Failed)?;
             Ok(instance_summary(&created))
         }
@@ -1649,9 +1673,16 @@ async fn run_tool(
             let instance_id = require_string(args, "instanceId")?;
             let clone_name = require_string(args, "name")?;
             let cloned = run_waiting_write(ctx, name, admitted, async {
-                crate::instances::clone_instance_for_state(&ctx.state, instance_id, clone_name)
-                    .await
-                    .map_err(ToolExecError::Failed)
+                // A version-folder instance is copied as a version folder; the
+                // managed clone below would keep kind "version" in an
+                // instances/<uuid> record and be purged by the next scan.
+                crate::commands::copy_instance_inner(
+                    &ctx.state,
+                    &instance_id,
+                    Some(&clone_name),
+                )
+                .await
+                .map_err(ToolExecError::Failed)
             })
             .await?;
             Ok(instance_summary(&cloned))

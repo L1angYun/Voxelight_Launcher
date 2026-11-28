@@ -27,9 +27,6 @@ nativeTest.afterEach(async ({ page }, info) => {
 async function prepare(page: Page, width = 1440, stress = false, overrides: { language?: "en-US"; firstInstanceName?: string } = {}) {
   await page.setViewportSize({ width, height: width <= 1150 ? 720 : width === 1920 ? 1080 : 930 });
   await installLauncherFixture(page, { theme: "dark", instanceCount: 2, stress, ...overrides });
-  await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({
-    contentType: "application/json", body: JSON.stringify({ hits: [] }),
-  }));
   await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
@@ -153,9 +150,11 @@ nativeTest("R2-14 server entity h2 uses 20px while R2-16 sections use 16px", asy
     rows.push(await page.locator(`[data-page-stage="${destination}"]`).evaluate((stage, pageId) => {
       const shown = (element: Element) => element.checkVisibility({ opacityProperty: true, visibilityProperty: true })
         && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+      // ui-language-spec §4.6.2 demotes the LAN worlds title below the saved
+      // server list to --type-label (14px) after a rule; it is no longer a section.
       const h2 = [...stage.querySelectorAll("h2")].filter(shown).map(element => ({
         text: element.textContent, size: parseFloat(getComputedStyle(element).fontSize),
-        role: element.matches(".vx-server-row__copy h2") ? "entity" : "section",
+        role: (element.matches(".vx-server-row__copy h2") ? "entity" : element.matches(".vx-lan-section > header > h2") ? "label" : "section") as "entity" | "label" | "section",
       }));
       const large = [...stage.querySelectorAll("*")].filter(element => shown(element)
         && [...element.childNodes].some(node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())
@@ -166,19 +165,23 @@ nativeTest("R2-14 server entity h2 uses 20px while R2-16 sections use 16px", asy
   await navigate(page, "library");
   await page.locator('.vx-instance-card[data-instance-id="long-instance"] .vx-instance-card__select').click();
   await expect(page.locator(".vx-detail-workspace")).toHaveCSS("opacity", "1");
-  const detail = await page.locator(".vx-detail-section h2").evaluateAll(elements => elements.map(element => ({
+  // Section titles take the section type token, whose line height is --leading-snug.
+  const detail = await page.locator(".vx-detail-section > h2, .vx-detail-section > .vx-section-heading > h2").evaluateAll(elements => elements.map(element => ({
     text: element.textContent, size: parseFloat(getComputedStyle(element).fontSize), lineHeight: parseFloat(getComputedStyle(element).lineHeight),
+    leading: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--leading-snug")),
   })));
   await writeFile(info.outputPath("heading-scale.json"), JSON.stringify({ server, managed, rows, detail }, null, 2));
   for (const row of rows) {
     expect.soft(row.large, `${row.page} 28px text`).toHaveLength(1);
     expect.soft(row.large[0]?.tag, row.page).toBe("H1");
-    for (const heading of row.h2) expect.soft(heading.size, `${row.page}/${heading.text}`).toBe(heading.role === "entity" ? 20 : 16);
+    for (const heading of row.h2) expect.soft(heading.size, `${row.page}/${heading.text}`).toBe({ entity: 20, label: 14, section: 16 }[heading.role]);
+    if (row.page === "multiplayer") expect.soft(row.h2.filter(heading => heading.role === "label"), "multiplayer LAN label title").toHaveLength(1);
   }
   expect(detail.length).toBeGreaterThan(0);
   for (const heading of detail) {
     expect.soft(heading.size, `detail/${heading.text}`).toBe(16);
-    expect.soft(heading.lineHeight, `detail/${heading.text}`).toBeCloseTo(16 * 1.35, 2);
+    expect.soft(heading.leading, "the section line height token").toBe(1.4);
+    expect.soft(heading.lineHeight, `detail/${heading.text}`).toBeCloseTo(16 * heading.leading, 2);
   }
 });
 

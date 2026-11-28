@@ -4,6 +4,7 @@ import {
   useRef,
   type CSSProperties,
 } from "react";
+import { DEFAULT_ACCENT } from "../../design/accent";
 import { cn } from "../../lib/utils";
 import {
   LatticeProgressField,
@@ -32,14 +33,14 @@ function queueMeasurement(canvas: HTMLCanvasElement, apply: (width: number) => v
 
 function readPalette(): ProgressPalette {
   if (typeof window === "undefined") {
-    return { gas: "rgba(255,255,255,0.38)", solid: "#84f068", flash: "#ffffff" };
+    return { gas: "rgba(255,255,255,0.38)", solid: DEFAULT_ACCENT, flash: "#ffffff" };
   }
   const style = getComputedStyle(document.documentElement);
   const get = (name: string, fallback: string) =>
     style.getPropertyValue(name).trim() || fallback;
   return {
     gas: get("--text-tertiary", "rgba(255,255,255,0.38)"),
-    solid: get("--accent-indicator", get("--accent", "#b4f17a")),
+    solid: get("--accent-indicator", get("--accent", DEFAULT_ACCENT)),
     flash: get("--text-primary", "#ece7da"),
   };
 }

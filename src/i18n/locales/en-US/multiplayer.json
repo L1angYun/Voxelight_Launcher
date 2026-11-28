@@ -8,7 +8,7 @@
     "network": "Network check"
   },
   "environment": "Game environment",
-  "chooseEnvironment": "Choose an installed version",
+  "chooseEnvironment": "Choose an instance",
   "environmentRequired": "Choose a game environment before saving or joining a server.",
   "refresh": "Refresh",
   "addServer": "Add server",
@@ -96,6 +96,7 @@
   "sendCommand": "Send command",
   "playerAction": "Player action",
   "playerName": "Player name",
+  "playerNamePlaceholder": "e.g. Steve",
   "managePlayer": "Manage player",
   "playerActions": {
     "whitelist add": "Add to whitelist",

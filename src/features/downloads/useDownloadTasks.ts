@@ -95,6 +95,16 @@ function clearUnfinishedResult(value: unknown): ClearUnfinishedResult {
 const liveStatuses = new Set(["queued", "running", "paused"]);
 const activeOrder: Record<string, number> = { running: 0, queued: 1, paused: 2 };
 
+/**
+ * Character previews are passive and never belong in download history. The
+ * backend migrates old empty `default-skin` rows away and stops writing new
+ * ones; this keeps an older in-flight snapshot from briefly showing them too.
+ * A row that recorded files is kept, so real history is never hidden.
+ */
+export function visibleDownloadTasks(tasks: DownloadTask[]): DownloadTask[] {
+  return tasks.filter(task => !(task.kind === "default-skin" && task.completed === 0 && task.total === 0));
+}
+
 export function taskActions(status: string, retryable = false): DownloadTaskAction[] {
   if (["failed", "interrupted", "cancelled"].includes(status)) {
     return retryable ? ["retry"] : [];
@@ -123,17 +133,18 @@ export function useDownloadTasks(): DownloadTasksModel {
   const applyTasks = useCallback(({ revision, tasks: next }: DownloadTaskSnapshot) => {
     if (!mounted.current || revision <= appliedRevision.current) return;
     appliedRevision.current = revision;
+    const visible = visibleDownloadTasks(next);
     const previous = new Map(previousTasks.current.map((task) => [task.id, task]));
     const nextRates: Record<string, number> = {};
-    for (const task of next) {
+    for (const task of visible) {
       const before = previous.get(task.id);
       if (!before || task.status !== "running" || before.status !== "running") continue;
       const elapsed = (Date.parse(task.updatedAt) - Date.parse(before.updatedAt)) / 1000;
       const bytes = task.bytesCompleted - before.bytesCompleted;
       if (elapsed > 0 && bytes > 0) nextRates[task.id] = bytes / elapsed;
     }
-    previousTasks.current = next;
-    setTasks(next);
+    previousTasks.current = visible;
+    setTasks(visible);
     setRates(nextRates);
   }, []);
 

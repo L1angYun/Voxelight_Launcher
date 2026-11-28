@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "../../components/ui/ExternalLink";
-import { command, desktop, type Config } from "../../lib/launcher";
+import { command, desktop, type Account, type Config } from "../../lib/launcher";
 import { LauncherError } from "../../lib/errors";
 import {
   cancelled,
@@ -28,12 +28,15 @@ export function LoginDialog({
   config,
   builtinClientId,
   onChanged,
+  onSignedIn,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   config: Config;
   builtinClientId: boolean;
   onChanged: () => Promise<void>;
+  /** Called once a sign-in has been saved, with the id of the account it produced or replaced. */
+  onSignedIn?: (accountId: string) => void;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<LoginTab>("microsoft");
@@ -53,8 +56,8 @@ export function LoginDialog({
   const active = useRef<ActiveLogin | null>(null);
   const mounted = useRef(true);
   const deadline = useRef(0);
-  const callbacks = useRef({ onChanged, onOpenChange });
-  callbacks.current = { onChanged, onOpenChange };
+  const callbacks = useRef({ onChanged, onOpenChange, onSignedIn });
+  callbacks.current = { onChanged, onOpenChange, onSignedIn };
 
   function cancelActive() {
     const previous = active.current;
@@ -120,8 +123,10 @@ export function LoginDialog({
     return mounted.current && active.current === attempt && !attempt.controller.signal.aborted;
   }
 
-  async function finished(attempt: ActiveLogin) {
+  async function finished(attempt: ActiveLogin, accountId?: string) {
     if (!isCurrent(attempt)) return;
+    // The launcher has already saved the account, even if the reload below fails.
+    if (accountId) callbacks.current.onSignedIn?.(accountId);
     active.current = null;
     setDevice(null);
     setProfiles([]);
@@ -209,7 +214,7 @@ export function LoginDialog({
       }
       deadline.current = Date.now() + result.expiresIn * 1000;
       setDevice(result);
-      await waitForMicrosoftLogin(
+      const account = await waitForMicrosoftLogin(
         result,
         (sessionId) => command<DevicePoll>("poll_microsoft_login", { sessionId }),
         attempt.controller.signal,
@@ -220,7 +225,7 @@ export function LoginDialog({
           },
         },
       );
-      await finished(attempt);
+      await finished(attempt, account.id);
     } catch (cause) {
       fail(attempt, cause);
     }
@@ -258,7 +263,7 @@ export function LoginDialog({
         return;
       }
       if (result.status === "complete" && result.account) {
-        await finished(attempt);
+        await finished(attempt, result.account.id);
       } else if (result.status === "selectProfile" && result.sessionId && result.profiles.length) {
         setProfiles(result.profiles);
         setBusy(false);
@@ -276,8 +281,8 @@ export function LoginDialog({
     setBusy(true);
     setError("");
     try {
-      await command("select_authlib_profile", { sessionId: attempt.sessionId, profileId });
-      await finished(attempt);
+      const account = await command<Pick<Account, "id"> | null>("select_authlib_profile", { sessionId: attempt.sessionId, profileId });
+      await finished(attempt, account?.id);
     } catch (cause) {
       fail(attempt, cause);
     }

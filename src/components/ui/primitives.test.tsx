@@ -56,6 +56,20 @@ describe("UI primitives", () => {
     expect(container.textContent).toContain("No instances");
   });
 
+  it("supports panel and inline EmptyState variants with pixel corner tile on panel icons", () => {
+    render(createElement(EmptyState, { title: "Empty panel", icon: createElement("span", null, "icon") }));
+    const panel = container.querySelector<HTMLElement>(".vx-empty")!;
+    expect(panel.dataset.variant).toBe("panel");
+    expect(panel.classList.contains("vx-empty--panel")).toBe(true);
+    expect(panel.querySelector(".vx-empty__icon.vx-icon-tile")).not.toBeNull();
+
+    render(createElement(EmptyState, { title: "Empty inline", variant: "inline", icon: createElement("span", null, "icon") }));
+    const inline = container.querySelector<HTMLElement>(".vx-empty")!;
+    expect(inline.dataset.variant).toBe("inline");
+    expect(inline.classList.contains("vx-empty--inline")).toBe(true);
+    expect(inline.querySelector(".vx-icon-tile")).toBeNull();
+  });
+
   it("connects field descriptions and errors to the control", () => {
     render(
       createElement(
@@ -114,8 +128,17 @@ describe("UI primitives", () => {
     expect(document.activeElement?.id).toBe("trigger");
   });
 
-  it("uses an alert for an error toast", () => {
-    render(createElement(ToastRegion, { message: "Failed", kind: "error", onDismiss: vi.fn(), closeLabel: "关闭" }));
-    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  it("uses an alert for an error toast and renders semantic icons for all four kinds", () => {
+    for (const kind of ["info", "success", "warning", "error"] as const) {
+      render(createElement(ToastRegion, { message: `Toast ${kind}`, kind, onDismiss: vi.fn(), closeLabel: "关闭" }));
+      const toast = container.querySelector<HTMLElement>(".vx-toast")!;
+      expect(toast.dataset.kind).toBe(kind);
+      expect(toast.classList.contains(`vx-toast--${kind}`)).toBe(true);
+      expect(toast.getAttribute("role")).toBe(kind === "error" ? "alert" : "status");
+      const icon = toast.querySelector(".vx-toast__icon");
+      expect(icon).not.toBeNull();
+      expect(icon?.getAttribute("width")).toBe("16");
+      expect(icon?.getAttribute("height")).toBe("16");
+    }
   });
 });

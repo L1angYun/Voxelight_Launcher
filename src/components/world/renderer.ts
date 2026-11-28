@@ -77,7 +77,7 @@ const SUN: RGB = [.72 / SUN_LENGTH, .4 / SUN_LENGTH, .16 / SUN_LENGTH];
 const SUN_XZ_LENGTH = Math.hypot(SUN[0], SUN[2]);
 const DEFAULT_PALETTE: WorldPalette = {
   ink: [7 / 255, 8 / 255, 11 / 255], point: [236 / 255, 231 / 255, 218 / 255],
-  accent: [180 / 255, 241 / 255, 122 / 255], haze: [.25, .27, .32], light: false,
+  accent: [0, 120 / 255, 212 / 255], haze: [.25, .27, .32], light: false,
 };
 const DEFAULT_TIER: Tier = { kind: "animated", particleSide: 256, grid: 160, dprCap: 1.5, forceSolid: false };
 
@@ -96,7 +96,7 @@ function cubeVertices(): Float32Array {
 
 export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callbacks): WorldRenderer | null {
   let context: WebGL2RenderingContext | null;
-  try { context = canvas.getContext("webgl2", { alpha: false, antialias: false, preserveDrawingBuffer: false, powerPreference: "high-performance" }); }
+  try { context = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: false, preserveDrawingBuffer: false, powerPreference: "high-performance" }); }
   catch { return null; }
   if (!context) return null;
   const gl = context;
@@ -118,6 +118,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
   let pendingQueries: WebGLQuery[] = [];
   let frameFence: WebGLSync | null = null;
   let pendingSimulationDt = 0;
+  let paletteDirty = false;
 
   function ownTexture(scope: ResourceScope) { return scope.own(gl.createTexture(), value => gl.deleteTexture(value)); }
   function ownFramebuffer(scope: ResourceScope) { return scope.own(gl.createFramebuffer(), value => gl.deleteFramebuffer(value)); }
@@ -226,11 +227,16 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     } catch (error) { scope.dispose(); throw error; }
     finally { gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
   }
-  function clearInteraction(clearPointer = true) {
+  function clearPointerInteraction(clearPointer = true) {
     holding = false; holdTime = 0; meltAmount = 0;
     if (clearPointer) pointerStrength = 0;
-    lastHit = null; pendingShock = null; shockTime = -9;
-    meltAt = [99999, 99999]; shockAt = [99999, 99999];
+    lastHit = null;
+    meltAt = [99999, 99999];
+  }
+  function clearInteraction(clearPointer = true) {
+    clearPointerInteraction(clearPointer);
+    pendingShock = null; shockTime = -9;
+    shockAt = [99999, 99999];
   }
   function releaseParticles() {
     particles?.scope.dispose(); particles = null; actualMaterial = "solid";
@@ -326,7 +332,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     } catch { fail(); return false; }
   }
   function releaseResources() {
-    clearFrameFence(); pendingSimulationDt = 0;
+    clearFrameFence(); pendingSimulationDt = 0; paletteDirty = false;
     lastSubmittedMaterial = "solid";
     clearQueries(); releaseParticles(); releaseBloom(); clearInteraction(); surface?.scope.dispose(); field?.scope.dispose(); core?.scope.dispose();
     surface = null; field = null; core = null;
@@ -430,9 +436,12 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     if (frame.page === "home" || islandOrigin === null)
       islandOrigin = groundHit(camera, aspect, anchor[0], anchor[1]) ?? [16, 6];
     const origin = islandOrigin;
-    const hit = animated && pointer ? groundHit(camera, aspect, pointer[0], pointer[1]) : null;
+    const pointerInteractive = animated && frame.page === "home";
+    const hit = pointerInteractive && pointer ? groundHit(camera, aspect, pointer[0], pointer[1]) : null;
     const pointerGoal = hit && performance.now() - pointerMovedAt < 260 ? 1 : 0;
-    pointerStrength = animated ? pointerStrength + (pointerGoal - pointerStrength) * (1 - Math.exp(-dt * 8)) : 0;
+    pointerStrength = pointerInteractive ? pointerStrength + (pointerGoal - pointerStrength) * (1 - Math.exp(-dt * 8)) : 0;
+    if (!animated) clearInteraction(true);
+    else if (!pointerInteractive) clearPointerInteraction(true);
     let lat = particleMaterialAllowed() && frame.lat > LATTICE_EPSILON ? Math.min(1, frame.lat) : 0;
     if (lat > 0 && !particles) {
       try { particles = createParticles(tier.particleSide); }
@@ -440,15 +449,17 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     } else if (lat === 0 && particles) releaseParticles();
     actualMaterial = lat > 0 ? "lattice" : "solid";
     if (lat > 0) {
-      if (holding) { holdTime += dt; if (hit) meltAt = hit; }
-      const goal = holding && holdTime > .22 ? Math.min(1, (holdTime - .22) / .9) : 0;
-      meltAmount += (goal - meltAmount) * Math.min(1, dt * (goal > meltAmount ? 5 : 3));
+      if (pointerInteractive) {
+        if (holding) { holdTime += dt; if (hit) meltAt = hit; }
+        const goal = holding && holdTime > .22 ? Math.min(1, (holdTime - .22) / .9) : 0;
+        meltAmount += (goal - meltAmount) * Math.min(1, dt * (goal > meltAmount ? 5 : 3));
+      }
       if (pendingShock) {
         const at = groundHit(camera, aspect, pendingShock[0], pendingShock[1]);
         if (at) { shockAt = at; shockTime = frame.simTime; }
         pendingShock = null;
       }
-    } else clearInteraction(!animated);
+    } else clearInteraction(!pointerInteractive);
     const velocity: [number, number] = hit && lastHit && dt > 0 ? [(hit[0] - lastHit[0]) / Math.max(dt, .008), (hit[1] - lastHit[1]) / Math.max(dt, .008)] : [0, 0];
     const speed = Math.hypot(...velocity);
     if (speed > 60) { velocity[0] *= 60 / speed; velocity[1] *= 60 / speed; }
@@ -461,7 +472,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     bind(c.terrain, "uPrev", from.texture);
     scalar(c.terrain, "uT", terrainTime); scalar(c.terrain, "uProfile", frame.profile);
     scalar(c.terrain, "uFront", animated ? frame.ring : 0); scalar(c.terrain, "uPtrOn", pointerStrength);
-    scalar(c.terrain, "uDecay", Math.pow(.16, dt)); scalar(c.terrain, "uN", f.grid); scalar(c.terrain, "uSpan", SPAN);
+    scalar(c.terrain, "uDecay", pointerInteractive ? Math.pow(.16, dt) : 0); scalar(c.terrain, "uN", f.grid); scalar(c.terrain, "uSpan", SPAN);
     vector2(c.terrain, "uPtr", hit ?? [99999, 99999]); vector2(c.terrain, "uOrigin", origin as [number, number]);
     vector2(c.terrain, "uOffset", OFFSET); vector2(c.terrain, "uSunXZ", [SUN[0] / SUN_XZ_LENGTH, SUN[2] / SUN_XZ_LENGTH]);
     gl.drawArrays(gl.TRIANGLES, 0, 3); f.read = 1 - f.read;
@@ -469,10 +480,11 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     if (lat > 0) simulate(frame, dt, to.texture, camera, aspect, hit, velocity, origin);
 
     fullscreen(c.sky, s.drawFramebuffer, s.width, s.height);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     vector3(c.sky, "uHaze", haze); vector3(c.sky, "uInk", palette.ink); vector3(c.sky, "uPoint", palette.point);
     scalar(c.sky, "uHorizon", frame.horizon); scalar(c.sky, "uDots", lat * frame.runDim); scalar(c.sky, "uDotPx", Math.max(1, Math.round(s.width / 62)));
     scalar(c.sky, "uLight", Number(palette.light));
-    gl.drawArrays(gl.TRIANGLES, 0, 3); gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
     gl.bindVertexArray(c.cubes); gl.useProgram(c.voxel.program);
     bind(c.voxel, "uField", to.texture); gl.uniformMatrix4fv(uniform(c.voxel, "uVP"), false, camera.viewProj);
@@ -489,7 +501,11 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
     if (lat > 0 && particles) {
       const p = particles, points = p.points, state = p.targets[p.read];
       gl.bindVertexArray(c.empty); gl.disable(gl.CULL_FACE); gl.depthMask(false); gl.enable(gl.BLEND);
-      gl.blendFunc(palette.light ? gl.SRC_ALPHA : gl.ONE, palette.light ? gl.ONE_MINUS_SRC_ALPHA : gl.ONE);
+      // Paper points are straight-alpha ink over a premultiplied, partly transparent
+      // sky: blend colour by source alpha but alpha with ONE, so the page under the
+      // canvas is covered exactly as much as the ink is opaque.
+      if (palette.light) gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      else gl.blendFunc(gl.ONE, gl.ONE);
       gl.useProgram(points.program);
       bind(points, "uPos", state.position); bind(points, "uVel", state.velocity, 1); bind(points, "uField", to.texture, 2);
       gl.uniformMatrix4fv(uniform(points, "uVP"), false, camera.viewProj);
@@ -524,6 +540,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       releaseBloom();
     }
     fullscreen(c.composite, null, s.width, s.height);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
     bind(c.composite, "uTex", s.scene.texture); bind(c.composite, "uBloom", activeBloom ? activeBloom.targets[0].texture : s.scene.texture, 1);
     scalar(c.composite, "uAmt", bloomAmount); scalar(c.composite, "uFlash", animated && !palette.light ? frame.flash : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -546,7 +563,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
       if (!particleMaterialAllowed()) clearInteraction();
       if (!lost && !terminal && !disposed) try { replaceTargets(); } catch { fail(); }
     },
-    setPalette(next) { palette = next; },
+    setPalette(next) { palette = next; paletteDirty = true; },
     setAnchor(ndc) { anchor = [...ndc]; },
     setPointer(ndc) { pointer = ndc ? [...ndc] : null; pointerMovedAt = performance.now(); },
     press(ndc) {
@@ -566,14 +583,15 @@ export function createWorldRenderer(canvas: HTMLCanvasElement, callbacks: Callba
         ? Math.min(.05, pendingSimulationDt + (Number.isFinite(dtSeconds) ? Math.max(0, Math.min(.05, dtSeconds)) : 0)) : 0;
       try {
         if (frameFence) {
-          if (tier.kind === "animated") {
+          if (tier.kind === "animated" && !paletteDirty) {
             if (!pollFrameComplete()) return { cpuMs: Math.max(0, performance.now() - started), gpuMs: null, submitted: false, pointsSubmitted: false };
           } else {
-            // Static paints are mandatory one-shot updates. Their new fence
-            // also covers older queued commands without blocking the UI.
+            // Static paints and live palette updates are mandatory immediate
+            // draws so a stale theme never flashes while waiting on a fence.
             clearFrameFence();
           }
         }
+        paletteDirty = false;
         gpuMs = pollGpu();
         if (timer && pendingQueries.length < 4) {
           query = gl.createQuery();

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useConfirm } from "../../components/ui/ConfirmDialog";
 import { command, desktop } from "../../lib/launcher";
 import { pickLauncherPaths } from "../../lib/nativePaths";
 import { normalizeError } from "../../lib/errors";
@@ -14,6 +15,7 @@ export interface WorldDatapack {
 }
 
 export function useWorldDatapacks(versionId: string, instanceId: string | undefined, worldFolder: string | null) {
+  const confirm = useConfirm();
   const [datapacks, setDatapacks] = useState<WorldDatapack[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -109,7 +111,8 @@ export function useWorldDatapacks(versionId: string, instanceId: string | undefi
   }, [busy, instanceId, refresh, versionId, worldFolder]);
 
   const deleteDatapack = useCallback(async (pack: WorldDatapack, confirmation: string) => {
-    if (!versionId || !worldFolder || !desktop || busy || !window.confirm(confirmation)) return;
+    if (!versionId || !worldFolder || !desktop || busy
+      || !await confirm(confirmation, { tone: "danger" })) return;
     const request = ++generation.current;
     setBusy(`delete:${pack.fileName}`);
     setError("");
@@ -129,7 +132,7 @@ export function useWorldDatapacks(versionId: string, instanceId: string | undefi
     } finally {
       if (request === generation.current) setBusy("");
     }
-  }, [busy, instanceId, refresh, versionId, worldFolder]);
+  }, [busy, confirm, instanceId, refresh, versionId, worldFolder]);
 
   return { datapacks, busy, error, notice, refresh, importDatapacks, toggleDatapack, deleteDatapack };
 }

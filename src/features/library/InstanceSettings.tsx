@@ -5,6 +5,7 @@ import { command, type Instance } from "../../lib/launcher";
 import { normalizeError } from "../../lib/errors";
 import { useLauncher } from "../../app/controller/LauncherProvider";
 import { Button } from "../../components/ui/Button";
+import { useConfirm } from "../../components/ui/ConfirmDialog";
 import { Field } from "../../components/ui/Field";
 import { Segmented } from "../../components/ui/Segmented";
 import { MemoryOverviewHint } from "../settings/MemoryOverviewHint";
@@ -19,12 +20,22 @@ function normalizeLoader(value?: string): Loader {
   return "vanilla";
 }
 
+type MemoryMode = "auto" | "manual" | "inherit";
+const fromInstance = (row: Instance): MemoryMode => row.memoryMode ?? (row.maxMemoryMb != null ? "manual" : "inherit");
+/** The saved values of the instance as the form holds them, for reset and the unsaved-changes check. */
+const formOf = (row: Instance) => ({
+  name: row.name, category: row.category, notes: row.notes, iconPath: row.iconPath ?? "",
+  memoryMode: fromInstance(row), maxMemoryMb: row.maxMemoryMb?.toString() ?? "", minMemoryMb: row.minMemoryMb?.toString() ?? "",
+  javaPath: row.javaPath ?? "", jvmArguments: row.jvmArguments ?? "", gameProxyMode: row.gameProxyMode ?? "default",
+  screenWidth: row.screenWidth?.toString() ?? "", screenHeight: row.screenHeight?.toString() ?? "",
+});
+
 export function InstanceSettings({ instance, onChanged }: { instance: Instance; onChanged: () => Promise<void> }) {
   const { t } = useTranslation();
-  const { run, busy } = useLauncher();
-  const fromInstance = (row: Instance) => row.memoryMode ?? (row.maxMemoryMb != null ? "manual" : "inherit");
+  const confirm = useConfirm();
+  const { run, busy, config } = useLauncher();
   const currentLoader = normalizeLoader(instance.loader);
-  const [memoryMode, setMemoryMode] = useState<"auto" | "manual" | "inherit">(fromInstance(instance));
+  const [memoryMode, setMemoryMode] = useState<MemoryMode>(fromInstance(instance));
   const [name, setName] = useState(instance.name);
   const [category, setCategory] = useState(instance.category);
   const [notes, setNotes] = useState(instance.notes);
@@ -47,22 +58,36 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
   const [loaderAttempt, retryLoader] = useState(0);
   const loaderGen = useRef(0);
 
+  const loadForm = (row: Instance) => {
+    const form = formOf(row);
+    setName(form.name);
+    setCategory(form.category);
+    setNotes(form.notes);
+    setIconPath(form.iconPath);
+    setMaxMemoryMb(form.maxMemoryMb);
+    setMemoryMode(form.memoryMode);
+    setMinMemoryMb(form.minMemoryMb);
+    setJavaPath(form.javaPath);
+    setJvmArguments(form.jvmArguments);
+    setGameProxyMode(form.gameProxyMode);
+    setScreenWidth(form.screenWidth);
+    setScreenHeight(form.screenHeight);
+  };
   useEffect(() => {
-    setName(instance.name);
-    setCategory(instance.category);
-    setNotes(instance.notes);
-    setIconPath(instance.iconPath ?? "");
-    setMaxMemoryMb(instance.maxMemoryMb?.toString() ?? "");
-    setMemoryMode(fromInstance(instance));
-    setMinMemoryMb(instance.minMemoryMb?.toString() ?? "");
-    setJavaPath(instance.javaPath ?? "");
-    setJvmArguments(instance.jvmArguments ?? "");
-    setGameProxyMode(instance.gameProxyMode ?? "default");
-    setScreenWidth(instance.screenWidth?.toString() ?? "");
-    setScreenHeight(instance.screenHeight?.toString() ?? "");
+    loadForm(instance);
     setTargetLoader(normalizeLoader(instance.loader));
     setTargetLoaderVersion(instance.loaderVersion ?? "");
   }, [instance]);
+  const current = { name, category, notes, iconPath, memoryMode, maxMemoryMb, minMemoryMb, javaPath, jvmArguments, gameProxyMode, screenWidth, screenHeight };
+  const saved = formOf(instance);
+  const dirty = (Object.keys(saved) as (keyof typeof saved)[]).some((key) => current[key] !== saved[key]);
+  const discard = () => { loadForm(instance); setNotice(""); };
+  // An empty override shows what the instance inherits from the global settings.
+  const inherited = (value: string | number | null | undefined) => value === undefined || value === null || value === "" || value === 0
+    ? t("library:inheritsGlobal") : t("library:inheritsValue", { value });
+  const autoMemory = t("settings:memory.auto");
+  const maxMemoryPlaceholder = memoryMode === "auto" ? autoMemory
+    : inherited(config?.memoryMode === "auto" ? autoMemory : config?.maxMemoryMb);
 
   useEffect(() => {
     let active = true;
@@ -138,19 +163,19 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
       const refused = normalizeError(error);
       if (!refused.code.startsWith("loader.switchBackup")) throw error;
       const reason = errorText(refused.code, t, refused.params);
-      if (!window.confirm(t("library:loaderChange.skipBackupConfirm", { reason }))) throw error;
+      if (!await confirm(t("library:loaderChange.skipBackupConfirm", { reason }), { tone: "danger" })) throw error;
       return attempt(true);
     }
   };
 
   // The backend takes the Minecraft version from the JAR and refuses one for
   // another version than this instance's.
-  const importOptifineForInstance = () => {
+  const importOptifineForInstance = async () => {
     if (busy || !baseGameVersion) return;
-    if (currentLoader !== "optifine" && !window.confirm(t("library:loaderChange.confirm", {
+    if (currentLoader !== "optifine" && !await confirm(t("library:loaderChange.confirm", {
       name: instance.name,
       loader: loaderNames.optifine,
-    }))) {
+    }), { tone: "danger" })) {
       return;
     }
     void run("instance.loader", async () => {
@@ -166,12 +191,12 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
     });
   };
 
-  const applyLoaderChange = () => {
+  const applyLoaderChange = async () => {
     if (!canApplyLoader) return;
-    if (targetLoader !== currentLoader && !window.confirm(t("library:loaderChange.confirm", {
+    if (targetLoader !== currentLoader && !await confirm(t("library:loaderChange.confirm", {
       name: instance.name,
       loader: loaderNames[targetLoader],
-    }))) {
+    }), { tone: "danger" })) {
       return;
     }
     void run("instance.loader", async () => {
@@ -272,7 +297,8 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
                 options={loaderVersions.length > 0
                   ? loaderVersions.map((item) => ({
                     value: item.id,
-                    label: item.recommended ? `${item.id} · ${t("library:recommended")}` : item.id,
+                    label: item.id,
+                    metadata: item.recommended ? t("library:recommended") : undefined,
                   }))
                   : [{ value: "", label: loaderLoading ? t("common:status.loading") : t("library:noLoaderVersions") }]}
               />
@@ -293,7 +319,10 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
         </div>
       </section>
       <section className="vx-detail-section">
-        <h2>{t("library:runtimeOverrides")}</h2>
+        <div className="vx-section-heading">
+          <h2>{t("library:runtimeOverrides")}</h2>
+          <Button variant="ghost" onClick={resetRuntime}>{t("library:resetRuntime")}</Button>
+        </div>
         <Segmented semantic="toggle" label={t("settings:memory.mode")} value={memoryMode}
           options={[
             { value: "inherit", label: t("settings:memory.inherit") },
@@ -302,24 +331,30 @@ export function InstanceSettings({ instance, onChanged }: { instance: Instance; 
           ]} onChange={setMemoryMode} />
         <MemoryOverviewHint instanceId={instance.id} />
         <div className="vx-form-two-columns">
-          <Field label={t("library:maxMemory")} htmlFor="instance-memory"><input id="instance-memory" type="number" min={512} max={65536} disabled={memoryMode !== "manual"} value={maxMemoryMb} onChange={(event) => setMaxMemoryMb(event.target.value)} /></Field>
-          <Field label={t("settings:memory.initial")} htmlFor="instance-min-memory"><input id="instance-min-memory" type="number" min={256} max={65536} value={minMemoryMb} onChange={(event) => setMinMemoryMb(event.target.value)} /></Field>
-          <Field label={t("library:javaPath")} htmlFor="instance-java"><input id="instance-java" value={javaPath} onChange={(event) => setJavaPath(event.target.value)} /></Field>
-          <Field label={t("library:windowWidth")} htmlFor="instance-width"><input id="instance-width" type="number" min={320} max={16384} value={screenWidth} onChange={(event) => setScreenWidth(event.target.value)} /></Field>
-          <Field label={t("library:windowHeight")} htmlFor="instance-height"><input id="instance-height" type="number" min={240} max={16384} value={screenHeight} onChange={(event) => setScreenHeight(event.target.value)} /></Field>
+          <Field label={t("library:maxMemory")} htmlFor="instance-memory"><input id="instance-memory" type="number" min={512} max={65536} disabled={memoryMode !== "manual"} placeholder={maxMemoryPlaceholder} value={maxMemoryMb} onChange={(event) => setMaxMemoryMb(event.target.value)} /></Field>
+          <Field label={t("settings:memory.initial")} htmlFor="instance-min-memory"><input id="instance-min-memory" type="number" min={256} max={65536} placeholder={inherited(config?.minMemoryMb)} value={minMemoryMb} onChange={(event) => setMinMemoryMb(event.target.value)} /></Field>
+          <Field label={t("library:windowWidth")} htmlFor="instance-width"><input id="instance-width" type="number" min={320} max={16384} placeholder={inherited(config?.screenWidth)} value={screenWidth} onChange={(event) => setScreenWidth(event.target.value)} /></Field>
+          <Field label={t("library:windowHeight")} htmlFor="instance-height"><input id="instance-height" type="number" min={240} max={16384} placeholder={inherited(config?.screenHeight)} value={screenHeight} onChange={(event) => setScreenHeight(event.target.value)} /></Field>
         </div>
-        <Field label={t("library:jvmArguments")} htmlFor="instance-jvm"><input id="instance-jvm" value={jvmArguments} onChange={(event) => setJvmArguments(event.target.value)} /></Field>
+        <Field label={t("library:javaPath")} htmlFor="instance-java">
+          <div className="vx-detail-input-action">
+            <input id="instance-java" placeholder={inherited(config?.javaPath)} value={javaPath} onChange={(event) => setJavaPath(event.target.value)} />
+            <Button variant="secondary" onClick={() => void run("instance.settings", () => pickLauncherPath("java").then((path) => { if (typeof path === "string") setJavaPath(path); }))}>{t("library:chooseJava")}</Button>
+          </div>
+        </Field>
+        <Field label={t("library:jvmArguments")} htmlFor="instance-jvm"><input id="instance-jvm" placeholder={inherited(config?.jvmArguments)} value={jvmArguments} onChange={(event) => setJvmArguments(event.target.value)} /></Field>
         <Field label={t("settings:proxy.gameMode")} htmlFor="instance-game-proxy">
           <Select id="instance-game-proxy" aria-label={t("settings:proxy.gameMode")} value={gameProxyMode} onChange={setGameProxyMode}
             options={["default", "system", "off", "launcher"].map((value) => ({ value, label: t(`settings:proxy.gameModes.${value}`) }))} />
         </Field>
-        <div className="vx-action-row">
-          <Button variant="secondary" onClick={() => void run("instance.settings", () => pickLauncherPath("java").then((path) => { if (typeof path === "string") setJavaPath(path); }))}>{t("library:chooseJava")}</Button>
-          <Button variant="ghost" onClick={resetRuntime}>{t("library:resetRuntime")}</Button>
-        </div>
       </section>
       {notice ? <p className="vx-inline-notice">{t(`library:notice.${notice}`)}</p> : null}
-      <Button variant="primary" type="submit">{t("common:actions.save")}</Button>
+      {/* One right-aligned save action that stays in reach, with discard and an unsaved mark. */}
+      <div className="vx-detail-savebar">
+        <span className="vx-detail-savebar__status" role="status">{dirty ? t("library:unsavedChanges") : ""}</span>
+        <Button variant="ghost" disabled={!dirty} onClick={discard}>{t("library:discardChanges")}</Button>
+        <Button variant="primary" type="submit">{t("common:actions.save")}</Button>
+      </div>
     </form>
   );
 }

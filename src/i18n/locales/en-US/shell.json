@@ -8,6 +8,11 @@
   "shortcuts": {
     "title": "Keyboard shortcuts",
     "description": "These shortcuts work anywhere in the launcher.",
+    "or": "or",
+    "groups": {
+      "navigation": "Navigation",
+      "general": "General"
+    },
     "actions": {
       "goTo": "Go to {{page}}",
       "assistant": "Open Lumen",
@@ -53,7 +58,7 @@
         "javaNone": "No local Java detected yet — Voxelight can prepare the matching official runtime automatically.",
         "redetect": "Re-scan",
         "memoryTitle": "Memory allocation",
-        "memorySummary": "{{total}} GiB RAM detected · automatic recommendation: {{recommended}} MB.",
+        "memorySummary": "{{total}} GiB RAM detected, automatic recommendation: {{recommended}} MB.",
         "memoryAuto": "Automatic memory allocation is active and adapts to your system RAM.",
         "proxyTitle": "Network proxy",
         "proxySystem": "Following Windows system proxy ({{url}}).",
@@ -69,16 +74,37 @@
           "bmclapi": "BMCLAPI"
         }
       },
+      "lumen": {
+        "title": "Meet Lumen, your optional assistant",
+        "body": "Lumen is Voxelight's optional AI assistant. It can help you understand crashes, downloads and instances, and it is never required to play.",
+        "ownKey": "You bring your own API key from an AI provider.",
+        "readOnly": "It is read-only by default and cannot change anything until you allow it.",
+        "asksFirst": "It always asks before making a change.",
+        "setUp": "Set up now",
+        "later": "Later"
+      },
       "ready": {
         "title": "Everything is ready",
         "body": "Here is where everything lives in Voxelight. You can reopen this welcome setup anytime from F1."
       }
     },
     "steps": {
-      "library": { "title": "Library", "body": "Your instances and versions." },
-      "discover": { "title": "Discover", "body": "Find mods, modpacks and more." },
-      "downloads": { "title": "Downloads", "body": "Download progress and history." },
-      "settings": { "title": "Settings", "body": "Java, memory and appearance." }
+      "library": {
+        "title": "Library",
+        "body": "Your instances and versions."
+      },
+      "discover": {
+        "title": "Discover",
+        "body": "Find mods, modpacks and more."
+      },
+      "downloads": {
+        "title": "Downloads",
+        "body": "Download progress and history."
+      },
+      "settings": {
+        "title": "Settings",
+        "body": "Java, memory and appearance."
+      }
     }
   },
   "notifications": {
@@ -121,7 +147,27 @@
     "resource.versionMissing": "Install Minecraft or create a compatible instance first.",
     "resource.installAfterCreate": "The instance was created, but the resource installation failed. Retry installing the resource.",
     "resource.sourceUnsupported": "Automatic target selection is not supported for this source yet. Create a compatible instance first.",
+    "discover.requestInvalid": "The search request is not valid. Change the filters and try again.",
+    "discover.pageLimit": "Search results are limited to the first 10,000. Narrow the search to see other results.",
+    "discover.versionPageLimit": "Older versions must be viewed on the project page.",
+    "discover.projectNotFound": "This project or version no longer exists.",
+    "discover.modrinthUnreachable": "Could not reach Modrinth. Check your network and try again.",
+    "discover.modrinthRateLimited": "Modrinth is receiving too many requests. Try again later.",
+    "discover.modrinthFailed": "Modrinth could not complete the request. Try again.",
+    "discover.curseforgeUnreachable": "Could not reach CurseForge. Check your network and try again.",
+    "discover.curseforgeRateLimited": "CurseForge is receiving too many requests. Try again later.",
+    "discover.curseforgeRefused": "CurseForge refused the request. Check your own API key and its permissions.",
+    "discover.curseforgeFailed": "CurseForge could not complete the request. Try again.",
     "resource.loaderUnavailable": "No loader versions are available for this game version. Choose another game version.",
+    "resource.manualDownload": "The launcher cannot download this CurseForge file. Download it from its CurseForge page and put it in the resource folder yourself.",
+    "resource.dependencyIncompatible": "The incompatible project {{project}} is enabled in this instance. Disable it before installing this resource. Nothing was changed.",
+    "resource.dependencyLimit": "The required dependency graph is too large or too deeply nested to install safely. Nothing was changed.",
+    "resource.dependencyCycle": "Required dependencies form a cycle involving {{project}}, so installation cannot continue. Nothing was changed.",
+    "resource.dependencyUnavailable": "The required dependency «{{name}}» has no compatible file for this game version and loader, or could not be verified. Nothing was changed.",
+    "resource.dependencyConflict": "Required dependencies conflict on versions or filenames, so installation cannot continue safely. Nothing was changed.",
+    "resource.dependencyInvalid": "A required dependency could not be verified or is not compatible with this client instance. Nothing was changed.",
+    "resource.dependencyInstallFirst": "This resource requires «{{name}}» from another category. Install «{{name}}» into this instance first, then retry. Nothing was changed.",
+    "resource.dependencyManualDownload": "The required dependency «{{name}}» ({{file}}) cannot be downloaded automatically: its author does not allow launcher downloads, or CurseForge provides no download URL. Download {{file}} from {{url}}, put it in the instance's {{folder}} folder, and retry. Nothing was changed.",
     "loader.optifineInvalid": "The selected file is not a valid OptiFine installer JAR.",
     "loader.optifineVersionMismatch": "The selected OptiFine installer is for Minecraft {{installer}}, but the target version is {{expected}}.",
     "loader.optifineOnlineUnavailable": "OptiFine cannot be installed online: its downloads have no checksum Voxelight could verify. Download the installer from optifine.net and import the JAR.",
@@ -132,10 +178,26 @@
     "loader.switchBackupNoSpace": "The instance could not be backed up: the drive that holds launcher backups has {{available}} MB free, and the backup needs about {{needed}} MB. Its loader was not changed.",
     "loader.switchBackupChanged": "The instance could not be backed up because its files changed during the backup. Close any program using them and try again. Its loader was not changed.",
     "instance.baseVersionUnknown": "The base Minecraft version of this instance cannot be determined. Make sure its version profile exists.",
+    "gameFolder.notFound": "That game folder is no longer in the list. Add it again in Settings.",
+    "gameFolder.unsupported": "This folder does not contain versions and is not empty, so it cannot be added as a game folder.",
+    "gameFolder.unavailable": "The game folder could not be opened: {{reason}}",
+    "instance.sharedRootRequired": "This instance shares the game folder's game directory. Backups, restores, exports, loader switches and modpack updates need a dedicated game directory, so give this instance one first.",
+    "instance.deleteConfirmRequired": "Deleting an instance folder needs explicit confirmation.",
+    "instance.folderUnsafe": "This folder is not a launcher-managed instance folder, so it was not deleted.",
+    "instance.folderNameInvalid": "Use 1 to 64 displayable characters. The name cannot contain path separators, Windows reserved names, or end with a dot or space.",
+    "instance.folderNameTaken": "An instance folder with this name already exists in the game folder. Choose another name.",
+    "instance.createUnsupportedLoader": "This loader cannot be used when creating an instance. Import its installer instead.",
+    "instance.isolationUnsupported": "Only a standard version-folder instance can switch its game directory.",
+    "instance.isolationCopyOnly": "Worlds can only be copied while switching to a dedicated game directory.",
+    "instance.convertUnsupported": "Only a launcher-managed instance folder can be converted.",
+    "instance.convertNotNeeded": "This instance is already a standard version folder.",
+    "instance.conversionNotPending": "There is no interrupted instance conversion to recover.",
     "server.importArgsFileMismatch": "The selected arguments file is not part of the imported server content.",
     "resource.manifestUnavailable": "Unable to load the Minecraft version list. Check your connection and try again.",
     "version.loaderReinstall": "The version profile for {{id}} is damaged. Reinstall the same game version and loader in the Launcher. Your worlds and mods are not replaced.",
-    "version.profileConflict": "Voxelight kept the existing profile for {{id}} because it could not verify its source. Back up its JSON under versions first, then move that JSON aside before reinstalling the original version or loader.",
+    "version.loaderArtifactMissing": "A file generated by the loader installer is missing or damaged. Reinstall that loader in the Launcher (for example from the instance page). Your worlds and mods are not replaced.",
+    "version.profileConflict": "The version profile for {{id}} changed while Voxelight was updating it, so the existing file was kept. Close other launchers using this game directory and try again.",
+    "version.offlineUnverified": "Voxelight kept the existing profile for {{id}}, but needs an internet connection once to fetch and verify Mojang's official metadata before launching offline.",
     "download.cancelled": "Installation cancelled.",
     "instance.running": "This instance is already running. Do not launch it twice.",
     "install.gameRunning": "A game from the same game directory is running. Exit the game before installing a version or loader.",
@@ -214,7 +276,34 @@
     "assistant.modelRequired": "Enter a model name in Settings → Lumen & MCP first.",
     "assistant.invalidBaseUrl": "The Lumen API base URL must use HTTPS, or loopback HTTP (127.0.0.1 / localhost).",
     "assistant.providerError": "The configured AI service returned an error.",
-    "assistant.emptyMessage": "Enter a message before sending."
+    "assistant.emptyMessage": "Enter a message before sending.",
+    "instance.deleteDependants": "This version folder cannot be deleted because these instances inherit from it: {{instances}}. Delete those instances first, or keep this one.",
+    "instance.officialVersionName": "That name is an official Minecraft version. A version folder with an official id but a different base cannot launch; choose another name.",
+    "instance.loaderSwitchShared": "This instance's version folder is shared: it is an official Minecraft version, a complete standalone version, or other instances inherit from it. Switching its loader in place would change them too, so the instance was not changed. Create a new instance with the loader you want instead.",
+    "instance.loaderSwitchInstallerFolder": "This instance is the version folder a loader installer created (it is named after that loader version). The next install of the same loader, for example when you create or import another instance with it, overwrites its version profile, so its loader cannot be switched in place. The instance was not changed. Use Copy instance and switch the loader on the copy, or create a new instance with the loader you want.",
+    "backup.kindMismatch": "This backup was made of the instance in another form (for example before it was converted to a standard version folder), so it cannot be restored in place. The instance was not changed; you can import the backup ZIP as a new instance.",
+    "instance.recycleFailed": "The folder could not be moved to the Recycle Bin: {{reason}}. Nothing was deleted.",
+    "instance.recycleUnavailable": "This folder cannot be moved to the Recycle Bin: {{reason}}. Nothing was deleted. Use the separately confirmed permanent delete if you want to remove the folder.",
+    "instance.launchBlocked": "This instance cannot be launched. {{reason}}",
+    "gameFolder.nested": "A game folder cannot be inside another configured game folder. Choose a separate folder.",
+    "gameFolder.dataDirectory": "The launcher's own data directory cannot be used as a game folder. Choose another folder."
+  },
+  "errorReasons": {
+    "recycle": {
+      "networkShare": "it is on a network share",
+      "noRecycleBin": "this drive has no Recycle Bin",
+      "unknownDrive": "the drive it is on could not be identified",
+      "pathTooLong": "its path is too long for the Recycle Bin",
+      "unsupportedPath": "its path cannot be handed to the Recycle Bin safely",
+      "unsupportedSystem": "this system does not support the Recycle Bin",
+      "shellError": "Windows reported error {{code}}",
+      "aborted": "the operation was cancelled",
+      "unknown": "an unexpected error occurred"
+    },
+    "gameFolder": {
+      "invalidPath": "its path cannot be used",
+      "openFailed": "the system could not open it"
+    }
   },
   "assistant": {
     "title": "Lumen",
@@ -222,6 +311,47 @@
     "notConfigured": "Model not configured",
     "configure": "Configure",
     "toolCount": "{{count}} tools",
+    "tools": {
+      "list_instances": "List instances",
+      "list_installed_versions": "List installed versions",
+      "list_accounts": "List accounts",
+      "get_launcher_config": "Read launcher settings",
+      "get_memory_overview": "Read memory overview",
+      "detect_java_runtimes": "Detect Java runtimes",
+      "list_remote_versions": "List remote versions",
+      "list_loader_versions": "List loader versions",
+      "list_download_tasks": "List download tasks",
+      "list_running_games": "List running games",
+      "list_instance_resources": "List instance resources",
+      "list_instance_worlds": "List instance worlds",
+      "list_world_datapacks": "List world data packs",
+      "list_instance_backups": "List instance backups",
+      "read_instance_log": "Read instance log",
+      "diagnose_instance": "Diagnose instance",
+      "search_modrinth": "Search Modrinth",
+      "list_multiplayer_servers": "List multiplayer servers",
+      "list_managed_servers": "List managed servers",
+      "read_managed_server_logs": "Read managed server logs",
+      "check_network_environment": "Check network environment",
+      "detect_local_proxies": "Detect local proxies",
+      "toggle_instance_resource": "Toggle instance resource",
+      "toggle_world_datapack": "Toggle world data pack",
+      "create_instance": "Create instance",
+      "update_instance_notes": "Update instance notes",
+      "update_instance_settings": "Update instance settings",
+      "backup_instance": "Back up instance",
+      "clone_instance": "Clone instance",
+      "change_instance_loader": "Change instance loader",
+      "install_minecraft_version": "Install Minecraft version",
+      "install_modrinth_resource": "Install Modrinth resource",
+      "launch_instance": "Launch instance",
+      "stop_running_game": "Stop game",
+      "retry_failed_downloads": "Retry failed downloads",
+      "clear_unfinished_downloads": "Clear unfinished downloads",
+      "save_multiplayer_server": "Save multiplayer server",
+      "start_managed_server": "Start managed server",
+      "stop_managed_server": "Stop managed server"
+    },
     "emptyReady": "Ask Lumen about your launcher setup, or pick a starter prompt below.",
     "emptyUnconfigured": "Configure a provider, model, and API key (or a local loopback endpoint) in Settings → Lumen & MCP to enable Lumen.",
     "prompts": {

@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Download, Image, Package, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { Image, Package, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { Button, IconButton } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/Feedback";
+import { Field } from "../../components/ui/Field";
 import { LoadingStatus } from "../../components/ui/LoadingStatus";
+import { ICON } from "../../design/icons";
+import { ResourceSwitch } from "./InstanceContent";
 import { useWorlds } from "./useInstanceContent";
 import { useWorldDatapacks } from "./useWorldDatapacks";
 import { errorText, noticeText, sizeText } from "./utils";
@@ -13,6 +16,7 @@ export function InstanceWorlds({ versionId, instanceId }: { versionId: string; i
   const manager = useWorlds(versionId, instanceId);
   const { worlds, screenshots, preview, worldName, setWorldName, busy, error, notice } = manager;
   const [datapackWorldFolder, setDatapackWorldFolder] = useState<string | null>(null);
+  const importNameId = useId();
 
   useEffect(() => {
     setDatapackWorldFolder(null);
@@ -29,27 +33,30 @@ export function InstanceWorlds({ versionId, instanceId }: { versionId: string; i
 
   return (
     <div className="vx-detail-stack">
-      <div className="vx-toolbar">
-        <div className="vx-action-row">
-          <input aria-label={t("library:worldName")} value={worldName} onChange={(event) => setWorldName(event.target.value)} placeholder={t("library:worldNamePlaceholder")} maxLength={80} />
-          <Button variant="secondary" icon={<Upload size={15} />} onClick={() => void manager.importWorld()}>{t("library:importWorld")}</Button>
-          <Button variant="ghost" icon={<Download size={15} />} onClick={() => void manager.refresh()}>{t("common:actions.retry")}</Button>
-        </div>
-      </div>
-      <LoadingStatus active={Boolean(busy)}>{t("common:status.loading")}</LoadingStatus>
-      {error ? <p role="alert">{errorText(error, t)}</p> : null}
-      {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}
       <section className="vx-detail-section">
-        <h2>{t("library:worlds")}</h2>
+        <div className="vx-section-heading">
+          <h2>{t("library:worlds")}</h2>
+          <IconButton label={t("library:refresh")} icon={<RefreshCw />} disabled={Boolean(busy)} onClick={() => void manager.refresh()} />
+        </div>
+        {/* The optional name belongs to the import, so the two share one labelled control. */}
+        <Field className="vx-world-import" label={t("library:worldName")} htmlFor={importNameId}>
+          <div className="vx-detail-input-action">
+            <input id={importNameId} value={worldName} onChange={(event) => setWorldName(event.target.value)} placeholder={t("library:worldNamePlaceholder")} maxLength={80} />
+            <Button variant="secondary" icon={<Upload />} onClick={() => void manager.importWorld()}>{t("library:importWorld")}</Button>
+          </div>
+        </Field>
+        <LoadingStatus active={Boolean(busy)}>{t("common:status.loading")}</LoadingStatus>
+        {error ? <p role="alert">{errorText(error, t)}</p> : null}
+        {notice ? <p className="vx-inline-notice">{noticeText(notice, t)}</p> : null}
         {worlds.length ? <div className="vx-resource-list">{worlds.map((world) => {
           const open = activeWorld?.folderName === world.folderName;
           return (
             <div className="vx-resource-row" key={world.folderName}>
-              <div><strong>{world.name}</strong><small>{world.folderName} · {sizeText(world.sizeBytes, i18n.language)}</small></div>
+              <div><strong>{world.name}</strong><small className="vx-resource-meta"><span>{world.folderName}</span>{" "}<span>{sizeText(world.sizeBytes, i18n.language)}</span></small></div>
               <div className="vx-action-row">
                 <Button
-                  variant={open ? "primary" : "secondary"}
-                  icon={<Package size={15} />}
+                  variant="secondary"
+                  icon={<Package />}
                   aria-expanded={open}
                   onClick={() => setDatapackWorldFolder(open ? null : world.folderName)}
                 >
@@ -59,20 +66,18 @@ export function InstanceWorlds({ versionId, instanceId }: { versionId: string; i
               </div>
             </div>
           );
-        })}</div> : !busy && !error ? <EmptyState title={t("library:noWorlds")} description={t("library:noWorldsDescription")} /> : null}
+        })}</div> : !busy && !error ? <EmptyState variant="inline" title={t("library:noWorlds")} description={t("library:noWorldsDescription")} /> : null}
       </section>
       {activeWorld ? (
         <section className="vx-detail-section" aria-label={t("library:datapacksForWorld", { world: activeWorld.name })}>
-          <div className="vx-toolbar">
+          <div className="vx-section-heading">
             <h2>{t("library:datapacksForWorld", { world: activeWorld.name })}</h2>
             <div className="vx-action-row">
-              <Button variant="secondary" icon={<Upload size={15} />} disabled={Boolean(datapackManager.busy)} onClick={() => void datapackManager.importDatapacks()}>
+              <Button variant="secondary" icon={<Upload />} disabled={Boolean(datapackManager.busy)} onClick={() => void datapackManager.importDatapacks()}>
                 {t("library:importDatapacks")}
               </Button>
-              <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={Boolean(datapackManager.busy)} onClick={() => void datapackManager.refresh()}>
-                {t("common:actions.retry")}
-              </Button>
-              <IconButton label={t("common:actions.close")} icon={<X size={16} />} onClick={() => setDatapackWorldFolder(null)} />
+              <IconButton label={t("library:refresh")} icon={<RefreshCw />} disabled={Boolean(datapackManager.busy)} onClick={() => void datapackManager.refresh()} />
+              <IconButton label={t("common:actions.close")} icon={<X />} onClick={() => setDatapackWorldFolder(null)} />
             </div>
           </div>
           <LoadingStatus active={Boolean(datapackManager.busy)}>{t("common:status.loading")}</LoadingStatus>
@@ -86,27 +91,21 @@ export function InstanceWorlds({ versionId, instanceId }: { versionId: string; i
                   pack.isDirectory ? t("library:datapackFolder") : null,
                   sizeText(pack.sizeBytes, i18n.language),
                   pack.packFormat != null ? t("library:datapackFormat", { format: pack.packFormat }) : null,
-                ].filter(Boolean).join(" · ");
+                ].filter((item): item is string => Boolean(item));
                 return (
                   <div className="vx-resource-row" key={pack.fileName}>
                     <div>
                       <strong>{pack.name}</strong>
-                      <small>{meta}</small>
+                      <small className="vx-resource-meta">{meta.map((item, index) => <span key={`${item}:${index}`}>{index > 0 ? " " : ""}{item}</span>)}</small>
                       {pack.description ? <small>{pack.description}</small> : null}
                     </div>
                     <div className="vx-action-row">
-                      <Button
-                        variant={pack.enabled ? "secondary" : "ghost"}
-                        aria-pressed={pack.enabled}
-                        disabled={Boolean(datapackManager.busy)}
-                        onClick={() => void datapackManager.toggleDatapack(pack)}
-                      >
-                        {pack.enabled ? t("library:enabled") : t("library:disabled")}
-                      </Button>
+                      <ResourceSwitch checked={pack.enabled} disabled={Boolean(datapackManager.busy)}
+                        onToggle={() => void datapackManager.toggleDatapack(pack)} />
                       <Button
                         variant="ghost"
                         tone="danger"
-                        icon={<Trash2 size={15} />}
+                        icon={<Trash2 />}
                         disabled={Boolean(datapackManager.busy)}
                         onClick={() => void datapackManager.deleteDatapack(pack, t("library:deleteDatapackConfirm", { name: pack.name }))}
                       >
@@ -118,7 +117,7 @@ export function InstanceWorlds({ versionId, instanceId }: { versionId: string; i
               })}
             </div>
           ) : !datapackManager.busy && !datapackManager.error ? (
-            <EmptyState title={t("library:noDatapacks")} description={t("library:noDatapacksDescription")} />
+            <EmptyState variant="inline" title={t("library:noDatapacks")} description={t("library:noDatapacksDescription")} />
           ) : null}
         </section>
       ) : null}
@@ -126,11 +125,11 @@ export function InstanceWorlds({ versionId, instanceId }: { versionId: string; i
         <h2>{t("library:screenshots")}</h2>
         {screenshots.length ? <div className="vx-screenshot-grid">{screenshots.map((screenshot) => (
           <button key={screenshot.fileName} className="vx-screenshot" onClick={() => void manager.readScreenshot(screenshot.fileName)} title={screenshot.fileName}>
-            <Image size={20} /><span>{screenshot.fileName}</span><small>{sizeText(screenshot.sizeBytes, i18n.language)}</small>
+            <Image size={ICON.lg} aria-hidden="true" /><span>{screenshot.fileName}</span><small>{sizeText(screenshot.sizeBytes, i18n.language)}</small>
           </button>
-        ))}</div> : !busy && !error ? <EmptyState title={t("library:noScreenshots")} /> : null}
+        ))}</div> : !busy && !error ? <EmptyState variant="inline" title={t("library:noScreenshots")} /> : null}
       </section>
-      {preview ? <div className="vx-screenshot-preview"><IconButton label={t("common:actions.close")} icon={<X size={16} />} onClick={manager.clearPreview} /><img src={preview.dataUrl} alt={preview.fileName} /></div> : null}
+      {preview ? <div className="vx-screenshot-preview"><IconButton label={t("common:actions.close")} icon={<X />} onClick={manager.clearPreview} /><img src={preview.dataUrl} alt={preview.fileName} /></div> : null}
     </div>
   );
 }

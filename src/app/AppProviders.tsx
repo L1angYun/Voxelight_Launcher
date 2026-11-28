@@ -8,7 +8,6 @@ import { LauncherProvider, useLauncher } from "./controller/LauncherProvider";
 import { AppearanceProvider, defaultSystemAppearance, useAppearance } from "./AppearanceProvider";
 import { OvertureProvider } from "../visual/overture/OvertureProvider";
 import { GlassProvider } from "../visual/glass/GlassSystem";
-import { paintVoxelBackdrop } from "../visual/glass/backdrop";
 import { mountCursorHalo } from "../visual/lattice/cursor";
 
 function useSystemAppearance(): SystemAppearance {
@@ -29,28 +28,6 @@ function useSystemAppearance(): SystemAppearance {
     };
   }, []);
   return system;
-}
-
-// The glass refracts one procedural landscape. It is repainted only when the resolved theme or accent actually changes.
-function useGlassBackdrop(): HTMLCanvasElement | null {
-  const [backdrop, setBackdrop] = useState<HTMLCanvasElement | null>(null);
-  const painted = useRef("");
-  useEffect(() => {
-    const root = document.documentElement;
-    const repaint = () => {
-      const light = root.dataset.theme === "light";
-      const accent = getComputedStyle(root).getPropertyValue("--accent").trim();
-      const key = `${light}|${accent}`;
-      if (key === painted.current) return;
-      painted.current = key;
-      setBackdrop(paintVoxelBackdrop({ light, accent }));
-    };
-    repaint();
-    const observer = new MutationObserver(repaint);
-    observer.observe(root, { attributes: true, attributeFilter: ["data-theme", "style"] });
-    return () => observer.disconnect();
-  }, []);
-  return backdrop;
 }
 
 export function useCursorHalo(effects: string, reducedMotion: boolean, highContrast = false) {
@@ -87,7 +64,6 @@ export function useCursorHalo(effects: string, reducedMotion: boolean, highContr
 
 function VisualProviders({ children }: { children?: ReactNode }) {
   const { config } = useLauncher();
-  const glassBackdrop = useGlassBackdrop();
   const { effects, reducedMotion, reducedTransparency, highContrast, systemLocale } = useAppearance();
   const { tier } = useMotionTier();
   useCursorHalo(effects, reducedMotion, highContrast);
@@ -108,7 +84,6 @@ function VisualProviders({ children }: { children?: ReactNode }) {
           reducedMotion={reducedMotion}
           reducedTransparency={reducedTransparency}
           highContrast={highContrast}
-          background={glassBackdrop}
           className="vx-app"
         >
           {children}

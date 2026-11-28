@@ -25,8 +25,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     activeAccount,
     accountAppearance,
     selectedInstance,
-    selectedVersion,
-    selectedVersionId,
     selectedRunningGame,
     running: runningGames,
     progress,
@@ -34,7 +32,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     busy,
     gamePid,
     selectInstance,
-    selectVersion,
     launch,
     stop,
     cancelPreparation,
@@ -46,7 +43,6 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   const { play } = useOverture();
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [useVersionDirectory, setUseVersionDirectory] = useState(false);
   const [launchRequested, setLaunchRequested] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [manualAnimation, setManualAnimation] = useState<CharacterAnimation | null>(null);
@@ -91,13 +87,12 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   }, [data.instances.length > 1, activeAccount?.type]);
 
   const currentInstance = useMemo(
-    () =>
-      useVersionDirectory
-        ? undefined
-        : (selectedInstance ??
-          data.instances.find((i) => i.versionId === selectedVersionId) ??
-          data.instances[0]),
-    [data.instances, selectedInstance, selectedVersionId, useVersionDirectory],
+    () => selectedInstance ?? data.instances[0],
+    [data.instances, selectedInstance],
+  );
+  const currentVersion = useMemo(
+    () => data.installedVersions.find((version) => version.id === currentInstance?.versionId),
+    [currentInstance?.versionId, data.installedVersions],
   );
 
   const onlineAccount =
@@ -109,7 +104,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     refresh: refreshDefault,
   } = useDefaultSkin(
     data.config.defaultSkin,
-    selectedVersionId,
+    currentInstance?.versionId ?? "",
     !onlineAccount,
   );
 
@@ -131,9 +126,9 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
       selectInstance(currentInstance.id);
   }, [currentInstance, selectInstance, selectedInstance]);
 
-  const versionLabel = currentInstance?.versionId ?? selectedVersionId;
-  const javaLabel = selectedVersion?.javaMajor
-    ? t("home:javaVersion", { major: selectedVersion.javaMajor })
+  const versionLabel = currentInstance?.versionId ?? "";
+  const javaLabel = currentVersion?.javaMajor
+    ? t("home:javaVersion", { major: currentVersion.javaMajor })
     : t("home:javaUnknown");
 
   const previewLabel = onlineAccount
@@ -141,7 +136,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     : t("home:defaultPreview");
 
   const currentProgress =
-    preparing && progress?.versionId === selectedVersionId ? progress : null;
+    preparing && progress?.versionId === currentInstance?.versionId ? progress : null;
 
   // Animation: running/preparing take priority; then manual choice; then idle
   const currentAnimation: CharacterAnimation =
@@ -160,17 +155,14 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
   }
 
   function chooseInstance(id?: string) {
-    setUseVersionDirectory(!id);
     selectInstance(id);
   }
 
-  async function installed(versionId: string, instanceId?: string) {
+  async function installed(_versionId: string, instanceId?: string) {
     await reload();
-    setUseVersionDirectory(!instanceId);
     if (instanceId) selectInstance(instanceId);
-    else selectVersion(versionId);
     play({
-      id: `instance-installed-${instanceId ?? versionId}-${Date.now()}`,
+      id: `instance-installed-${instanceId ?? Date.now()}`,
       kind: "instance-installed",
     });
   }
@@ -213,7 +205,7 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
     ? "running"
     : preparing
       ? "preparing"
-      : currentInstance || useVersionDirectory
+      : currentInstance
         ? "ready"
         : "empty";
 
@@ -232,27 +224,28 @@ export function HomePage({ returning = false }: { returning?: boolean }) {
             layout={tier === "full" ? "position" : false} layoutDependency={selectedLaunchPhase}
             transition={{ duration: motionDuration(tier, "content"), ease: MOTION.ease }}>
             <h1 id="home-instance-title" className="vx-home__console-name" title={stageTitle}>
-              {currentInstance || useVersionDirectory ? stageTitle : t("home:noInstance")}
+              {currentInstance ? stageTitle : t("home:noInstance")}
             </h1>
-            {(currentInstance || useVersionDirectory) && versionLabel ? (
+            {currentInstance && versionLabel ? (
               <ul className="vx-home__meta" aria-label={`${t("home:instance")} ${stageTitle}`}>
                 <li>{javaLabel}</li>
               </ul>
             ) : null}
           </motion.div>
           <div className="vx-home__console-wrap">
-            {currentInstance || useVersionDirectory ? (
+            {currentInstance ? (
               <LaunchConsole
                 instance={currentInstance}
                 instances={data.instances}
-                version={selectedVersion}
                 onSelectInstance={chooseInstance}
                 pickerOpen={pickerOpen}
                 onPickerOpenChange={setPickerOpen}
                 onLaunch={beginLaunch}
                 onStop={stop}
                 onCancel={cancelPreparation}
-                onOpenFolder={() => void run("folder.open", () => command("open_folder", { kind: "game" }))}
+                onOpenFolder={() => void run("folder.open", () => command("open_folder", currentInstance
+                  ? { kind: "instance", instanceId: currentInstance.id }
+                  : { kind: "game" }))}
                 busy={busy}
                 preparing={preparing}
                 running={running}

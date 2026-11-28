@@ -32,7 +32,7 @@
   },
   "search": {
     "label": "Search settings",
-    "placeholder": "Search settings, e.g. memory",
+    "placeholder": "Search, e.g. memory",
     "noMatch": "No setting matches.",
     "results": "Matching settings",
     "resultCount_one": "1 matching setting",
@@ -101,6 +101,7 @@
     "clientIdBuiltinPlaceholder": "Leave empty to use the built-in app",
     "builtinActive": "A built-in Microsoft app is available. Leave this field empty to use it.",
     "curseforgeKey": "CurseForge API Key",
+    "keySeparateHint": "This key is encrypted and saved separately; Save settings does not affect it.",
     "keyPlaceholder": "Enter your own API key",
     "curseforgeBuiltinPlaceholder": "Leave empty to use the built-in key",
     "keyConfiguredPlaceholder": "Encrypted key saved; leave blank to keep it",
@@ -159,8 +160,8 @@
     "system": "Follow system"
   },
   "effects": {
-    "lite": "Lite · essential motion",
-    "full": "Full · all effects"
+    "lite": "Lite (essential motion)",
+    "full": "Full (all effects)"
   },
   "worldScene": {
     "horizon": "Horizon",
@@ -173,24 +174,55 @@
     "cssFallback": "The 3D world is unavailable. A static dot background is being used; launching games is unaffected.",
     "liteUnloaded": "The 3D world is unloaded in Lite effects to save memory. Switch back to Full effects to restore it."
   },
+  "worldPreview": {
+    "replayIntro": "Replay entrance animation"
+  },
   "accent": {
-    "voxelight": "Voxelight green",
-    "system": "System accent",
-    "custom": "Custom accent",
+    "system": "Follow system",
+    "custom": "Custom",
     "systemCurrent": "Current system accent: {{color}}",
-    "presets": "Accent presets",
-    "preset": "Accent color {{color}}"
+    "names": {
+      "dianqing": "Indigo",
+      "kongquelan": "Peacock blue",
+      "biqing": "Jade blue",
+      "zhulv": "Bamboo green",
+      "luweilv": "Reed green",
+      "zhuhong": "Vermilion",
+      "haitanghong": "Begonia red",
+      "meiguihong": "Rose red",
+      "qinglian": "Blue lotus",
+      "hupohuang": "Amber yellow",
+      "yanyuhui": "Swallow grey"
+    }
   },
   "soundDescription": "Off by default. Used only for important transitions.",
   "background": {
-    "title": "Home background",
-    "description": "Choose a local PNG, JPEG, or WebP image. Content above it keeps a stable contrast layer.",
+    "title": "Background and ambient light",
+    "description": "Show soft ambient light behind every page and optionally pick a local PNG, JPEG, or WebP full-page background with stable contrast.",
     "choose": "Choose background",
-    "reset": "Reset background"
+    "reset": "Reset background",
+    "ambientEnabled": "Ambient light",
+    "ambientDescription": "Soft colour fields flow behind every page so liquid glass refracts visibly. Lite and reduced motion keep the colour still.",
+    "ambientIntensity": "Ambient light intensity",
+    "blur": "Background blur",
+    "dim": "Background dim",
+    "drift": "Slow background drift",
+    "driftDescription": "Gently shifts the background image in Full effects when reduced motion is off.",
+    "percent": "{{value}}%",
+    "blurPixels": "{{value}} px"
   },
-  "gameDescription": "Shared game files and window defaults. Instance overrides stay in instance settings.",
+  "gameDescription": "Game folders, shared libraries, isolation and window defaults. Per-instance overrides live in instance settings.",
   "game": {
-    "browse": "Browse",
+    "foldersDescription": "Add any folder that contains versions. Voxelight, PCL and HMCL can use the same .minecraft at the same time.",
+    "active": "Active",
+    "makeActive": "Use {{name}}",
+    "folderLabel": "Folder label",
+    "openFolder": "Open {{name}}",
+    "removeFolder": "Remove {{name}} from the list",
+    "addFolder": "Add game folder",
+    "lastFolder": "The last game folder cannot be removed",
+    "lastFolderHint": "Removing a folder from the list never deletes its files. The last game folder cannot be removed.",
+    "sharedFilesHint": "Libraries and assets are shared inside each game folder. With isolation, saves, mods and configs stay in the instance folder.",
     "isolationDescription": "Keep saves, mods, and settings separate for each game version."
   },
   "javaDescription": "Choose the shared runtime and launch defaults for new instances.",
@@ -202,8 +234,8 @@
   "downloadDescription": "Control official downloads, mirrors, and task throughput.",
   "downloadSource": {
     "official": "Official only",
-    "auto": "Automatic · official first unless clearly slower",
-    "bmclapi": "BMCLAPI first · official fallback",
+    "auto": "Automatic",
+    "bmclapi": "BMCLAPI first",
     "officialDescription": "Use the official publishers for game files, loader files, and metadata. File verification still applies.",
     "autoDescription": "Measures the official source and BMCLAPI the first time this session fetches the version list or a file. Official goes first unless it does not answer or is clearly slower; the other stays as a fallback. The result lasts for this session only. It is never written to your settings or uploaded; one summary line goes to the local launcher log.",
     "bmclapiDescription": "Try BMCLAPI first for supported game and loader files, then fall back to official addresses.",
@@ -225,7 +257,7 @@
     "dataNotice": "Uninstall keeps launcher data by default. Removing an account or instance registration does not delete game files.",
     "secretNotice": "Presets exclude accounts, login tokens, and service keys. Service credentials are configured in General.",
     "typeface": "Typeface",
-    "typefaceCredit": "MiSans · Xiaomi"
+    "typefaceCredit": "MiSans by Xiaomi"
   },
   "proxy": {
     "title": "Network proxy",
@@ -261,6 +293,8 @@
     "credentialStorage": "Credentials are stored separately in the system credential store.",
     "httpWarning": "With an HTTP proxy, proxy credentials are unencrypted on the connection to the proxy.",
     "saveEndpointFirst": "Save the proxy address before changing credentials.",
+    "leaveEndpointUnsaved": "The proxy username and password were not saved because the proxy address is not saved yet. Save the address first, or discard the credentials.",
+    "leaveUsernameRequired": "The proxy password was not saved because no username is entered. Enter the username, or discard the credentials.",
     "username": "Proxy username",
     "password": "Proxy password",
     "saveCredentials": "Save proxy credentials",
@@ -280,8 +314,8 @@
     "presetExported": "Preset exported without accounts or service keys.",
     "presetImported": "Preset imported.",
     "presetImportedHeapRemoved": "Preset imported. Its -Xms/-Xmx JVM arguments were ignored; set memory in the memory fields.",
-    "backgroundUpdated": "Home background updated.",
-    "backgroundCleared": "Default home background restored.",
+    "backgroundUpdated": "Background updated.",
+    "backgroundCleared": "Default background restored.",
     "javaDetected_one": "Found {{count}} Java environment.",
     "javaDetected_other": "Found {{count}} Java environments.",
     "javaNotFound": "No Java environment found. Install one or enter its path.",
@@ -303,7 +337,7 @@
       "anthropic": "Anthropic"
     },
     "model": "Model",
-    "modelPlaceholder": "e.g. gpt-4o-mini, claude-sonnet-4-20250514, deepseek-chat",
+    "modelPlaceholder": "e.g. gpt-4o-mini",
     "baseUrl": "API base URL (optional)",
     "baseUrlHint": "Leave empty for the provider's default HTTPS endpoint. Use HTTPS for remote endpoints, or http://127.0.0.1 / http://localhost for local servers such as Ollama or LM Studio.",
     "apiKey": "Lumen API key",
@@ -327,7 +361,7 @@
     "mcpTitle": "Local MCP server",
     "mcpDescription": "Off by default on every start. Binds strictly to 127.0.0.1 and requires a per-session Bearer token with loopback Host/Origin checks.",
     "mcpPort": "MCP port (1024–65535)",
-    "mcpRunning": "Running on 127.0.0.1:{{port}} (localhost only).",
+    "mcpRunningShort": "Running.",
     "mcpStopped": "Stopped.",
     "mcpEndpoint": "Endpoint",
     "mcpToken": "Session token",

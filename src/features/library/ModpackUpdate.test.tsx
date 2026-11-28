@@ -7,9 +7,12 @@ import { createLauncherI18n } from "../../i18n";
 import { formatDate } from "../../i18n/format";
 import { command, type Instance } from "../../lib/launcher";
 import type { ModpackUpdateCheck, ModpackVersion, PackUpdatePlan } from "./types";
+import { ConfirmContext, type ConfirmFn } from "../../components/ui/ConfirmDialog";
 import { ModpackUpdate } from "./ModpackUpdate";
 
 const commandMock = vi.mocked(command);
+// Stands in for the awaited dialog; an unanswered confirmation declines.
+const confirmMock = vi.fn<ConfirmFn>(async () => false);
 let root: Root;
 let container: HTMLDivElement;
 
@@ -113,7 +116,8 @@ function planCalls() {
 async function render(node: ReactNode, language = "en-US") {
   const i18n = createLauncherI18n(language, language);
   await i18n.initPromise;
-  await act(async () => root.render(createElement(I18nextProvider, { i18n }, node)));
+  await act(async () => root.render(createElement(I18nextProvider, { i18n },
+    createElement(ConfirmContext.Provider, { value: confirmMock }, node))));
 }
 
 async function openPlan(callbacks = makeCallbacks()) {
@@ -126,6 +130,8 @@ async function openPlan(callbacks = makeCallbacks()) {
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   commandMock.mockReset();
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(false);
   commandMock.mockImplementation(async (name) => {
     if (name === "check_modpack_update") return makeCheck();
     if (name === "plan_modpack_update") return plan;
@@ -144,6 +150,18 @@ afterEach(() => {
 });
 
 describe("modpack update", () => {
+  it("stays one muted line with its check button in the heading until a check runs", async () => {
+    await render(updateElement());
+    const heading = container.querySelector(".vx-section-heading")!;
+    expect(heading.querySelector("h2")?.textContent).toBe("Modpack update");
+    expect(heading.contains(button("Check for modpack update")!)).toBe(true);
+    const hint = container.querySelector(".vx-modpack-update__hint");
+    expect(hint?.textContent).toBe("Only instances created from a modpack can check for updates.");
+    expect(container.querySelector(".vx-inline-notice")).toBeNull();
+    await act(async () => button("Check for modpack update")!.click());
+    expect(container.querySelector(".vx-modpack-update__hint")).toBeNull();
+  });
+
   it("does not request a check before the button is pressed", async () => {
     await render(updateElement());
     expect(commandMock).not.toHaveBeenCalled();
@@ -261,7 +279,7 @@ describe("modpack update", () => {
   it("shows plan counts, dependency changes, dropped intents, skipped paths, and unchecked conflicts", async () => {
     await openPlan();
     expect(container.textContent).toContain("1.0.0 → 2.0.0");
-    expect(container.textContent).toContain("Added: 3 · Replaced: 2 · Removed: 1 · Unchanged: 7");
+    expect(container.textContent).toContain("Added: 3, Replaced: 2, Removed: 1, Unchanged: 7");
     expect(container.textContent).toContain("Download size: 2 KiB");
     expect(container.textContent).toContain("Dependency changes");
     expect(container.textContent).toContain("fabric: 0.16.9 → 0.17.0");
@@ -389,7 +407,7 @@ describe("modpack update", () => {
       if (name === "apply_modpack_update") throw failure;
       return null;
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    confirmMock.mockResolvedValue(true);
     await act(async () => button("Check for modpack update")!.click());
     await act(async () => button("Show update plan")!.click());
     await act(async () => button("Apply update")!.click());
@@ -397,11 +415,12 @@ describe("modpack update", () => {
   });
 
   it("applies with the plan fingerprint and per-conflict choices, then reports success and refreshes", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = confirmMock.mockResolvedValue(true);
     const { onChanged, onBackupsChanged } = await openPlan();
     await act(async () => container.querySelector<HTMLInputElement>('[data-conflict-path="mods/b.jar"]')!.click());
     await act(async () => button("Apply update")!.click());
     expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith("Apply this modpack update? An automatic backup is made first.", { tone: "danger" });
     expect(commandMock).toHaveBeenCalledWith("apply_modpack_update", {
       instanceId: instance.id,
       newVersionId: "pack-2",
@@ -422,7 +441,7 @@ describe("modpack update", () => {
   });
 
   it("re-checks after a successful apply and keeps the applied notice", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    confirmMock.mockResolvedValue(true);
     let checks = 0;
     commandMock.mockImplementation(async (name) => {
       if (name === "check_modpack_update") {
@@ -462,7 +481,7 @@ describe("modpack update", () => {
         if (name === "apply_modpack_update") throw failure;
         return null;
       });
-      vi.spyOn(window, "confirm").mockReturnValue(true);
+      confirmMock.mockResolvedValue(true);
       const { onChanged, onBackupsChanged, onRecoveryFault } = await openPlan();
       await act(async () => button("Apply update")!.click());
       expect(onRecoveryFault).toHaveBeenCalledWith(failure);
@@ -484,7 +503,7 @@ describe("modpack update", () => {
       "The backup restore could not finish. The original directory was restored.",
     ],
   ])("uses modpack update wording for a %s failure and shell wording without a kind", async (code, packText, backupText) => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    confirmMock.mockResolvedValue(true);
     let kind: "packUpdate" | undefined = "packUpdate";
     commandMock.mockImplementation(async (name) => {
       if (name === "check_modpack_update") return makeCheck();
@@ -508,7 +527,7 @@ describe("modpack update", () => {
   });
 
   it("names the old folder when the update kept it", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    confirmMock.mockResolvedValue(true);
     commandMock.mockImplementation(async (name) => {
       if (name === "check_modpack_update") return makeCheck();
       if (name === "plan_modpack_update") return plan;
@@ -532,7 +551,7 @@ describe("modpack update", () => {
       if (name === "apply_modpack_update") throw { code: "modpack.planChanged", params: {} };
       return null;
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    confirmMock.mockResolvedValue(true);
     const { onBackupsChanged, onRecoveryFault } = await openPlan();
     await act(async () => button("Apply update")!.click());
     const applyCalls = commandMock.mock.calls.filter(([name]) => name === "apply_modpack_update");
@@ -553,7 +572,7 @@ describe("modpack update", () => {
   });
 
   it("sends nothing when the apply confirmation is declined", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const confirm = confirmMock.mockResolvedValue(false);
     await openPlan();
     const before = commandMock.mock.calls.length;
     await act(async () => button("Apply update")!.click());

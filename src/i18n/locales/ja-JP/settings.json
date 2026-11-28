@@ -100,6 +100,7 @@
     "clientIdBuiltinPlaceholder": "空欄で内蔵アプリを使用",
     "builtinActive": "内蔵 Microsoft アプリが利用可能です。空欄のままにすると使用されます。",
     "curseforgeKey": "CurseForge API キー",
+    "keySeparateHint": "このキーは個別に暗号化して保存されます。ページの「設定を保存」は影響しません。",
     "keyPlaceholder": "ご自身の API キーを入力",
     "curseforgeBuiltinPlaceholder": "空欄で内蔵キーを使用",
     "keyConfiguredPlaceholder": "暗号化キーを保存済み（空欄で現状維持）",
@@ -158,8 +159,8 @@
     "system": "システムに従う"
   },
   "effects": {
-    "lite": "ライト · 必要最小限のモーション",
-    "full": "フル · すべてのエフェクト"
+    "lite": "ライト（必要最小限のモーション）",
+    "full": "フル（すべてのエフェクト）"
   },
   "worldScene": {
     "horizon": "地平線",
@@ -172,24 +173,55 @@
     "cssFallback": "3D ワールドを利用できないため、静的なドット背景を使用しています。ゲームの起動には影響しません。",
     "liteUnloaded": "メモリ節約のため、ライトエフェクトでは 3D ワールドを読み込みません。フルエフェクトに戻すと復元されます。"
   },
+  "worldPreview": {
+    "replayIntro": "入場アニメーションをもう一度再生"
+  },
   "accent": {
-    "voxelight": "Voxelight グリーン",
-    "system": "システムのアクセント",
-    "custom": "カスタムアクセント",
+    "system": "システムに従う",
+    "custom": "カスタム",
     "systemCurrent": "現在のシステムアクセント：{{color}}",
-    "presets": "アクセントプリセット",
-    "preset": "アクセントカラー {{color}}"
+    "names": {
+      "dianqing": "インディゴ",
+      "kongquelan": "ピーコックブルー",
+      "biqing": "青碧",
+      "zhulv": "竹緑",
+      "luweilv": "葦の緑",
+      "zhuhong": "朱色",
+      "haitanghong": "海棠色",
+      "meiguihong": "ローズレッド",
+      "qinglian": "青蓮",
+      "hupohuang": "琥珀色",
+      "yanyuhui": "燕羽の灰"
+    }
   },
   "soundDescription": "初期設定ではオフです。重要な画面遷移のみに使用されます。",
   "background": {
-    "title": "ホーム背景",
-    "description": "ローカルの PNG、JPEG、または WebP 画像を選択します。前景のコンテンツは視認性を保つコントラスト層で保護されます。",
+    "title": "背景と環境光",
+    "description": "すべてのページの背面に柔らかな環境光を広げ、ローカルの PNG、JPEG、または WebP 画像を全画面の背景として設定できます。前景の視認性を保つコントラストは維持されます。",
     "choose": "背景を選択",
-    "reset": "背景をリセット"
+    "reset": "背景をリセット",
+    "ambientEnabled": "環境光",
+    "ambientDescription": "すべてのページの背面に低彩度の柔らかな光を流し、リキッドグラスの自然な屈折を表現します。ライトエフェクトやモーション低減が有効な場合は静止表示になります。",
+    "ambientIntensity": "環境光の強さ",
+    "blur": "背景のぼかし",
+    "dim": "背景の暗さ",
+    "drift": "背景のゆっくりした動き",
+    "driftDescription": "フルエフェクトかつモーション低減がオフのときのみ、背景画像をゆっくり動かします。",
+    "percent": "{{value}}%",
+    "blurPixels": "{{value}} px"
   },
-  "gameDescription": "共有ゲームファイルとウィンドウの既定値です。インスタンス固有の上書き設定は各インスタンス設定にあります。",
+  "gameDescription": "ゲームフォルダー、共有ライブラリ、分離、ウィンドウの既定値です。インスタンスごとの上書き設定は各インスタンス設定にあります。",
   "game": {
-    "browse": "参照",
+    "foldersDescription": "バージョンを含むフォルダーを追加できます。Voxelight、PCL、HMCL は同じ .minecraft を同時に使用できます。",
+    "active": "使用中",
+    "makeActive": "{{name}} を使用",
+    "folderLabel": "フォルダーのラベル",
+    "openFolder": "{{name}} を開く",
+    "removeFolder": "{{name}} をリストから削除",
+    "addFolder": "ゲームフォルダーを追加",
+    "lastFolder": "最後のゲームフォルダーは削除できません",
+    "lastFolderHint": "リストからフォルダーを削除してもファイルは削除されません。最後のゲームフォルダーは削除できません。",
+    "sharedFilesHint": "ライブラリとアセットは各ゲームフォルダー内で共有されます。分離を有効にすると、セーブデータ、MOD、設定はインスタンスフォルダーに保持されます。",
     "isolationDescription": "ゲームバージョンごとにセーブデータ、MOD、設定を分けて保存します。"
   },
   "javaDescription": "新しいインスタンスで使用する共有ランタイムと起動の既定値を設定します。",
@@ -201,8 +233,8 @@
   "downloadDescription": "公式ダウンロード、ミラー、同時接続数を管理します。",
   "downloadSource": {
     "official": "公式のみ",
-    "auto": "自動 · 公式優先（明らかに遅い場合のみミラー）",
-    "bmclapi": "BMCLAPI 優先 · 公式フォールバック",
+    "auto": "自動",
+    "bmclapi": "BMCLAPI 優先",
     "officialDescription": "ゲームファイル、ローダーファイル、メタデータをすべて公式配信元から取得します。ファイル検証も通常どおり行われます。",
     "autoDescription": "このセッションで最初にバージョン一覧またはファイルを取得する際、公式ソースと BMCLAPI を計測します。公式が応答しないか明らかに遅い場合を除き公式を優先し、もう一方をフォールバックとして保持します。結果はこのセッション中のみ有効で設定保存や送信はされず、ローカルログに 1 行だけ記録されます。",
     "bmclapiDescription": "対応するゲーム・ローダーファイルでは BMCLAPI を優先し、失敗時は公式アドレスへフォールバックします。",
@@ -224,7 +256,7 @@
     "dataNotice": "アンインストール時も既定でランチャーデータは保持されます。アカウントやインスタンス登録を削除してもゲームファイルは消えません。",
     "secretNotice": "プリセットにはアカウント、ログイントークン、サービスキーは含まれません。サービス認証情報は「一般」で設定します。",
     "typeface": "フォント",
-    "typefaceCredit": "MiSans · Xiaomi"
+    "typefaceCredit": "MiSans（Xiaomi）"
   },
   "proxy": {
     "title": "ネットワークプロキシ",
@@ -260,6 +292,8 @@
     "credentialStorage": "認証情報はシステム資格情報ストアに別途保存されます。",
     "httpWarning": "HTTP プロキシを使用する場合、プロキシへの接続上で認証情報は暗号化されません。",
     "saveEndpointFirst": "認証情報を変更する前に、まずプロキシアドレスを保存してください。",
+    "leaveEndpointUnsaved": "プロキシアドレスがまだ保存されていないため、プロキシのユーザー名とパスワードは保存されませんでした。先にアドレスを保存するか、認証情報を破棄してください。",
+    "leaveUsernameRequired": "ユーザー名が入力されていないため、プロキシのパスワードは保存されませんでした。ユーザー名を入力するか、認証情報を破棄してください。",
     "username": "プロキシユーザー名",
     "password": "プロキシパスワード",
     "saveCredentials": "プロキシ認証情報を保存",
@@ -278,8 +312,8 @@
     "presetExported": "アカウントやサービスキーを除いてプリセットをエクスポートしました。",
     "presetImported": "プリセットをインポートしました。",
     "presetImportedHeapRemoved": "プリセットをインポートしました。JVM 引数内の -Xms / -Xmx は無視されたため、メモリ欄で設定してください。",
-    "backgroundUpdated": "ホーム背景を更新しました。",
-    "backgroundCleared": "既定のホーム背景に戻しました。",
+    "backgroundUpdated": "背景を更新しました。",
+    "backgroundCleared": "既定の背景に戻しました。",
     "javaDetected": "{{count}} 件の Java 環境を検出しました。",
     "javaNotFound": "Java 環境が見つかりませんでした。インストールするかパスを指定してください。",
     "assistantKeySaved": "Lumen API キーをシステム暗号化で保存しました。",
@@ -300,7 +334,7 @@
       "anthropic": "Anthropic"
     },
     "model": "モデル",
-    "modelPlaceholder": "例：gpt-4o-mini、claude-sonnet-4-20250514、deepseek-chat",
+    "modelPlaceholder": "例：gpt-4o-mini",
     "baseUrl": "API ベース URL（任意）",
     "baseUrlHint": "空欄でプロバイダー既定の HTTPS エンドポイントを使用します。リモート接続は HTTPS を使用し、Ollama や LM Studio などのローカルサーバーでは http://127.0.0.1 または http://localhost を使用できます。",
     "apiKey": "Lumen API キー",
@@ -324,7 +358,7 @@
     "mcpTitle": "ローカル MCP サーバー",
     "mcpDescription": "起動時は毎回デフォルトでオフです。127.0.0.1 のみにバインドされ、ループバック Host/Origin 検証とセッションごとの Bearer トークンを必須とします。",
     "mcpPort": "MCP ポート（1024〜65535）",
-    "mcpRunning": "127.0.0.1:{{port}} で稼働中（localhost 限定）。",
+    "mcpRunningShort": "稼働中。",
     "mcpStopped": "停止済み。",
     "mcpEndpoint": "エンドポイント",
     "mcpToken": "セッショントークン",

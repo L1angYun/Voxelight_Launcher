@@ -1,7 +1,7 @@
 //! Reversible instance metadata changes, cloning, personal backups and restoration.
 use crate::path_grants::{PathGrants, PathUse};
 use crate::{
-    errors::{AppError, AppResult},
+    errors::{AppError, AppResult, PROFILE_CONFLICT_PREFIX},
     models::{Instance, Persisted},
     storage::{safe_join, validate_id, LauncherState},
 };
@@ -242,6 +242,34 @@ pub(crate) fn rename_owned_directory(_source: &Path, _target: &Path) -> std::io:
     Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
+/// A staged publish must contain exactly the files the plan or import
+/// inventoried. A cleanup, a failed write or an external deletion between the
+/// inventory and the rename must abort before the folder is published.
+pub(crate) fn verify_staged_files(stage: &Path, expected: &[FileRecord]) -> Result<(), String> {
+    let actual = collect_files_controlled(stage, None)?;
+    let actual: BTreeMap<String, &FileRecord> = actual
+        .iter()
+        .map(|record| (record.relative.to_lowercase(), record))
+        .collect();
+    for wanted in expected {
+        match actual.get(&wanted.relative.to_lowercase()) {
+            Some(found) if found.size == wanted.size && found.sha256.eq_ignore_ascii_case(&wanted.sha256) => {}
+            Some(_) => return Err("暂存目录中的文件已改变，未发布".into()),
+            None => return Err(format!("暂存目录缺少文件 {}，未发布", wanted.relative)),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn require_staged_file(stage: &Path, relative: &str) -> Result<(), String> {
+    let path = safe_join(stage, relative)?;
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("暂存目录缺少文件 {relative}，未发布"))
+    }
+}
+
 // Own only a directory we created exclusively. Recursive removal on Drop skips
 // a replaced root link and never guesses ownership of old leftover directories.
 pub(crate) struct StagingDirectory(PathBuf, bool);
@@ -293,6 +321,1053 @@ pub(crate) fn instance_root(state: &LauncherState) -> Result<PathBuf, String> {
     let instances = safe_join(&root, "instances")?;
     fs::create_dir_all(&instances).map_err(|e| format!("无法创建实例目录：{e}"))?;
     checked_absolute(&instances)
+}
+
+/// Names inside a version folder that mean the user (or another launcher)
+/// already keeps game data there. This is the PCL/HMCL isolation marker.
+const VERSION_DATA_DIRECTORIES: [&str; 4] = ["saves", "mods", "config", "resourcepacks"];
+const VERSION_DATA_FILES: [&str; 1] = ["options.txt"];
+
+fn has_version_game_data(directory: &Path) -> bool {
+    VERSION_DATA_DIRECTORIES
+        .iter()
+        .any(|name| directory.join(name).is_dir())
+        || VERSION_DATA_FILES
+            .iter()
+            .any(|name| directory.join(name).is_file())
+}
+
+/// The isolation decision for a version folder that does not have a stored
+/// record yet. Existing records keep their stored game directory forever.
+pub(crate) fn decide_version_isolation(
+    root: &Path,
+    version: &str,
+    global_isolation: bool,
+) -> Result<(bool, PathBuf), String> {
+    validate_id(version)?;
+    let directory = safe_join(root, &format!("versions/{version}"))?;
+    let own_data = has_version_game_data(&directory);
+    let shared_data = has_version_game_data(root);
+    if own_data || (!shared_data && global_isolation) {
+        Ok((true, directory))
+    } else {
+        Ok((false, root.to_path_buf()))
+    }
+}
+
+/// One game folder the launcher may read. `game_directory` mirrors the path of
+/// the active entry so the rest of the code keeps one authoritative root.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversionJournal {
+    instance_id: String,
+    source: String,
+    target: String,
+    name: String,
+    game_version: String,
+    installed_id: String,
+    loader: String,
+    loader_version: String,
+    phase: String,
+    #[serde(default)]
+    backup_id: String,
+    /// The configured game-folder spelling that owns `target`. Recovery must
+    /// keep it even when another folder became active in the meantime.
+    #[serde(default)]
+    game_folder: String,
+    /// Set by conversions that checked their game folder and target before
+    /// writing anything. A journal without it comes from an earlier version,
+    /// which could journal a conversion and then fail that check on every
+    /// start without moving anything.
+    #[serde(default)]
+    validated: bool,
+}
+
+fn conversion_folder(state: &LauncherState) -> Result<PathBuf, String> {
+    let folder = checked_absolute(&state.data_dir.join("instance-conversions"))?;
+    fs::create_dir_all(&folder).map_err(|error| format!("无法创建实例转换记录目录：{error}"))?;
+    checked_absolute(&folder)
+}
+
+fn conversion_journal_path(state: &LauncherState, instance_id: &str) -> Result<PathBuf, String> {
+    validate_id(instance_id)?;
+    safe_join(&conversion_folder(state)?, &format!("{instance_id}.json"))
+}
+
+fn write_conversion_journal(state: &LauncherState, journal: &ConversionJournal) -> Result<(), String> {
+    let path = conversion_journal_path(state, &journal.instance_id)?;
+    let bytes = serde_json::to_vec_pretty(journal).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("json-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|error| format!("无法写入实例转换记录：{error}"))?;
+    let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("无法写入实例转换记录：{}", written.unwrap_err()));
+    }
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("无法保存实例转换记录：{error}"));
+    }
+    Ok(())
+}
+
+fn read_conversion_journal(
+    state: &LauncherState,
+    instance_id: &str,
+) -> Result<Option<ConversionJournal>, String> {
+    let path = conversion_journal_path(state, instance_id)?;
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<ConversionJournal>(&bytes)
+            .map(Some)
+            .map_err(|error| format!("实例转换记录无效：{error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("无法读取实例转换记录：{error}")),
+    }
+}
+
+fn clear_conversion_journal(state: &LauncherState, instance_id: &str) -> Result<(), String> {
+    match fs::remove_file(conversion_journal_path(state, instance_id)?) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法清理实例转换记录：{error}")),
+    }
+}
+
+/// Move every entry that is not launcher runtime scratch into the new version
+/// folder. Re-running is safe: entries already moved are simply gone, and a
+/// directory left half-moved by a crash is merged.
+fn move_conversion_data(source: &Path, target: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(source).map_err(|error| format!("无法读取实例目录：{error}"))? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        if name
+            .to_string_lossy()
+            .eq_ignore_ascii_case(".launcher-temp")
+            || name.to_string_lossy() == ".launcher-temp"
+        {
+            continue;
+        }
+        let relative = name.to_string_lossy();
+        let destination = safe_join(target, &relative)?;
+        move_conversion_entry(&entry.path(), &destination).map_err(|error| {
+            format!(
+                "无法移动实例文件 {}：{error}",
+                relative
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn move_conversion_entry(source: &Path, destination: &Path) -> Result<(), String> {
+    if !destination.exists() {
+        return fs::rename(source, destination).map_err(|error| error.to_string());
+    }
+    if destination.is_dir() && source.is_dir() {
+        for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let relative = entry.file_name().to_string_lossy().into_owned();
+            let child = safe_join(destination, &relative)?;
+            move_conversion_entry(&entry.path(), &child)?;
+        }
+        let _ = fs::remove_dir(source);
+        return Ok(());
+    }
+    Err(format!("目标中已存在同名文件：{}", destination.display()))
+}
+
+fn conversion_target_name(
+    root: &Path,
+    current: &Instance,
+    game_version: &str,
+    requested: Option<&str>,
+) -> Result<String, String> {
+    if let Some(name) = requested.filter(|name| !name.trim().is_empty()) {
+        let name = crate::commands::validate_version_folder_name(name)?;
+        if crate::commands::folder_name_taken(root, &name) {
+            return Err("实例文件夹名已存在，请换一个名称".into());
+        }
+        return Ok(name);
+    }
+    let display = current.name.trim();
+    if let Ok(name) = crate::commands::validate_version_folder_name(display) {
+        if !crate::commands::folder_name_taken(root, &name) {
+            return Ok(name);
+        }
+        for suffix in 2..=999 {
+            let candidate = format!("{name}-{suffix}");
+            if !crate::commands::folder_name_taken(root, &candidate) {
+                return Ok(candidate);
+            }
+        }
+    }
+    Ok(crate::commands::default_instance_name(
+        root,
+        game_version,
+        &current.loader,
+    ))
+}
+
+/// The game folder a journal's target belongs to. `target` is authoritative:
+/// recovery must never rebuild it from whichever folder is active now.
+fn conversion_target_root(journal: &ConversionJournal) -> Result<PathBuf, String> {
+    let target = checked_absolute(Path::new(&journal.target))?;
+    let versions = target.parent().ok_or("实例转换目标无效")?;
+    if !versions
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("versions"))
+    {
+        return Err("实例转换目标不在 versions 文件夹中".into());
+    }
+    let root = versions.parent().ok_or("实例转换目标无效")?;
+    let expected = safe_join(root, &format!("versions/{}", journal.name))?;
+    if normalized_folder_identity(&expected.to_string_lossy())
+        != normalized_folder_identity(&target.to_string_lossy())
+    {
+        return Err("实例转换目标与记录不一致".into());
+    }
+    Ok(root.to_path_buf())
+}
+
+fn conversion_target(journal: &ConversionJournal) -> Result<PathBuf, String> {
+    conversion_target_root(journal)?;
+    checked_absolute(Path::new(&journal.target))
+}
+
+/// The configured spelling of the folder that owns `root`, exactly as it is
+/// saved in `gameFolders`. A record must use that string, not the resolved
+/// canonical path, or the next scan cannot match it.
+fn configured_folder_for_root(config: &crate::models::Config, root: &Path) -> String {
+    let identity = normalized_folder_identity(&root.to_string_lossy());
+    for folder in config.game_folder_roots() {
+        if let Ok(configured) = crate::processes::configured_game_root(Path::new(&folder)) {
+            if normalized_folder_identity(&configured.to_string_lossy()) == identity {
+                return folder;
+            }
+        }
+    }
+    crate::storage::display_profile_path(root)
+}
+
+/// Whether a configured game-folder spelling names `root`: the same spelling
+/// under the one shared normalisation, or the same directory once links are
+/// resolved. The configured folder itself may be a junction or symlink (the
+/// rest of the launcher accepts that through `configured_game_root`), so the
+/// spelling is never refused for being a link.
+fn conversion_folder_matches(folder: &str, root: &Path) -> bool {
+    let folder = folder.trim();
+    if folder.is_empty() {
+        return false;
+    }
+    if normalized_folder_identity(folder) == normalized_folder_identity(&root.to_string_lossy()) {
+        return true;
+    }
+    let (Ok(configured), Ok(root)) = (
+        configured_game_root(Path::new(folder)),
+        configured_game_root(root),
+    ) else {
+        return false;
+    };
+    normalized_folder_identity(&configured.to_string_lossy())
+        == normalized_folder_identity(&root.to_string_lossy())
+}
+
+/// The folder spelling a converted record carries. The journal's own spelling
+/// wins when it still names the target's root; otherwise the target is
+/// authoritative and the configured folder that resolves to it is used. Either
+/// way recovery finishes instead of failing on every start.
+fn conversion_journal_root(state: &LauncherState, journal: &ConversionJournal) -> Result<String, String> {
+    let target_root = conversion_target_root(journal)?;
+    if conversion_folder_matches(&journal.game_folder, &target_root) {
+        return Ok(journal.game_folder.trim().to_owned());
+    }
+    let config = state.snapshot()?.config;
+    Ok(configured_folder_for_root(&config, &target_root))
+}
+
+/// The target of an unvalidated journal still holds nothing but the profile
+/// this launcher wrote (and possibly its jar): no game data was moved yet.
+fn conversion_nothing_moved(state: &LauncherState, journal: &ConversionJournal) -> Result<bool, String> {
+    let target = conversion_target(journal)?;
+    if !target.is_dir() || !checked_absolute(Path::new(&journal.source))?.is_dir() {
+        return Ok(false);
+    }
+    let profile = conversion_profile_path(journal, &target)?;
+    if !profile_is_owned(&state.snapshot()?, &profile) {
+        return Ok(false);
+    }
+    let allowed = [
+        format!("{}.json", journal.name),
+        format!("{}.jar", journal.name),
+    ];
+    for entry in fs::read_dir(&target).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !allowed.iter().any(|value| value.eq_ignore_ascii_case(&name)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Other version records for the conversion's target folder. A scan that ran
+/// while the folder existed registers it as an instance of its own; the
+/// converted record is the one record for that folder.
+fn drop_conversion_placeholders(data: &mut Persisted, journal: &ConversionJournal, root: &Path) {
+    data.instances.retain(|record| {
+        record.id == journal.instance_id
+            || !record.is_version_folder()
+            || !record.version_id.eq_ignore_ascii_case(&journal.name)
+            || !conversion_folder_matches(&record.game_folder, root)
+    });
+}
+
+/// A converted record must stay visible: its folder joins the configured list
+/// when the journal's own spelling is no longer there.
+fn list_game_folder(config: &mut crate::models::Config, folder: &str) {
+    if config
+        .game_folder_roots()
+        .iter()
+        .any(|configured| crate::models::same_game_folder_path(configured, folder))
+    {
+        return;
+    }
+    config.game_folders.push(crate::models::GameFolder {
+        path: folder.to_owned(),
+        label: String::new(),
+        active: false,
+    });
+    config.normalize_game_folders();
+}
+
+fn configured_game_root(path: &Path) -> Result<PathBuf, String> {
+    crate::processes::configured_game_root(path)
+}
+
+fn conversion_profile_path(journal: &ConversionJournal, target: &Path) -> Result<PathBuf, String> {
+    safe_join(target, &format!("{}.json", journal.name))
+}
+
+/// A prepared target is only rolled back when it is provably ours: its profile
+/// hash is recorded and it holds nothing but the profile (and possibly an
+/// identical jar copy). Anything else is left untouched and the journal kept.
+fn rollback_prepared_conversion(
+    state: &LauncherState,
+    journal: &ConversionJournal,
+) -> Result<(), String> {
+    let target = conversion_target(journal)?;
+    if target.exists() {
+        if !target.is_dir() {
+            return Err("实例转换目标已存在且不是文件夹，已保留原内容".into());
+        }
+        let profile = conversion_profile_path(journal, &target)?;
+        let owned = profile_is_owned(&state.snapshot()?, &profile);
+        let entries = fs::read_dir(&target)
+            .map_err(|error| error.to_string())?
+            .count();
+        if !owned && entries > 0 {
+            return Err(format!(
+                "{PROFILE_CONFLICT_PREFIX}{}",
+                profile.display()
+            ));
+        }
+        // A crash between creating the folder and writing its profile leaves an
+        // empty folder we just made. Anything else must be provably ours.
+        if owned {
+            let allowed = [
+                format!("{}.json", journal.name),
+                format!("{}.jar", journal.name),
+            ];
+            for entry in fs::read_dir(&target).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !allowed.iter().any(|value| value.eq_ignore_ascii_case(&name)) {
+                    return Err("实例转换目标含有非启动器创建的文件，已保留原文件夹".into());
+                }
+            }
+        }
+        fs::remove_dir_all(&target).map_err(|error| format!("无法回滚实例转换：{error}"))?;
+        // The folder is gone: a record a scan made for it goes too.
+        let root = conversion_target_root(journal)?;
+        state.update(|data| {
+            drop_conversion_placeholders(data, journal, &root);
+            Ok(())
+        })?;
+    }
+    clear_conversion_journal(state, &journal.instance_id)
+}
+
+/// Finish or resume one conversion described by its journal. Idempotent.
+fn apply_conversion_journal(
+    state: &LauncherState,
+    journal: &ConversionJournal,
+) -> Result<Instance, String> {
+    // "prepared" means the profile may not be complete: roll it back instead of
+    // treating a folder without `<name>.json` as a finished conversion.
+    if journal.phase == "prepared" {
+        rollback_prepared_conversion(state, journal)?;
+        return instance(&state.snapshot()?, &journal.instance_id)
+            .map_err(|_| "实例不存在，请刷新实例列表".to_owned());
+    }
+    if journal.phase != "moving" {
+        return Err(format!("未知的实例转换阶段：{}", journal.phase));
+    }
+    if !journal.validated && conversion_nothing_moved(state, journal)? {
+        // An earlier version journaled this conversion and then refused its
+        // own (junctioned) game folder before moving anything, on every
+        // start. Nothing was moved, so undo it exactly like a prepared
+        // conversion; the instance stays as it was and can be converted again.
+        rollback_prepared_conversion(state, journal)?;
+        return instance(&state.snapshot()?, &journal.instance_id)
+            .map_err(|_| "实例不存在，请刷新实例列表".to_owned());
+    }
+    let target = conversion_target(journal)?;
+    if !target.is_dir() {
+        return Err("实例转换目标文件夹已不存在，已保留转换记录".into());
+    }
+    let profile = conversion_profile_path(journal, &target)?;
+    if !profile_is_owned(&state.snapshot()?, &profile) {
+        return Err(format!(
+            "{PROFILE_CONFLICT_PREFIX}{}",
+            profile.display()
+        ));
+    }
+    let game_folder = conversion_journal_root(state, journal)?;
+    let target_root = conversion_target_root(journal)?;
+    let source = checked_absolute(Path::new(&journal.source))?;
+    if source.exists() {
+        move_conversion_data(&source, &target)?;
+        let _ = fs::remove_dir_all(&source);
+    }
+    let updated = state.update(|data| {
+        list_game_folder(&mut data.config, &game_folder);
+        drop_conversion_placeholders(data, journal, &target_root);
+        let record = data
+            .instances
+            .iter_mut()
+            .find(|item| item.id == journal.instance_id)
+            .ok_or_else(|| "实例不存在，请刷新实例列表".to_owned())?;
+        record.kind = "version".into();
+        record.game_folder = game_folder;
+        record.version_id = journal.name.clone();
+        if record.name.trim().is_empty() {
+            record.name = journal.name.clone();
+        }
+        record.game_directory = crate::storage::display_profile_path(&target);
+        record.isolated = true;
+        record.loader = journal.loader.clone();
+        record.loader_version = journal.loader_version.clone();
+        record.hidden = false;
+        record.folder_missing_since = None;
+        record.issue = None;
+        Ok(record.clone())
+    })?;
+    clear_conversion_journal(state, &journal.instance_id)?;
+    Ok(updated)
+}
+
+pub(crate) fn recover_conversion_inner(
+    state: &LauncherState,
+    instance_id: &str,
+) -> Result<Instance, String> {
+    let journal = read_conversion_journal(state, instance_id)?
+        .ok_or_else(|| "没有待恢复的实例转换".to_owned())?;
+    let _guard = state
+        .operation
+        .try_lock()
+        .map_err(|_| "已有安装或启动准备任务运行，请等待完成".to_owned())?;
+    state
+        .games
+        .require_instance_stopped(instance_id)?;
+    apply_conversion_journal(state, &journal)
+}
+
+#[tauri::command]
+pub fn recover_instance_conversion(
+    state: State<'_, Arc<LauncherState>>,
+    instance_id: String,
+) -> AppResult<Instance> {
+    recover_conversion_inner(&state, &instance_id).map_err(crate::errors::expected)
+}
+
+/// Recover conversions interrupted by a crash. Called before the version scan
+/// so a half-converted folder is either completed or keeps its journal.
+pub(crate) fn recover_pending_conversions(state: &LauncherState) {
+    let Ok(folder) = conversion_folder(state) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if validate_id(id).is_err() {
+            continue;
+        }
+        let _ = recover_conversion_inner(state, id);
+    }
+}
+
+/// Convert a launcher-managed `<root>/instances/<uuid>` into a standard
+/// version folder. A backup is written first and every step is journaled.
+pub(crate) fn convert_managed_instance_inner(
+    state: &LauncherState,
+    instance_id: &str,
+    requested_name: Option<&str>,
+) -> Result<Instance, String> {
+    let _guard = state
+        .operation
+        .try_lock()
+        .map_err(|_| "已有安装或启动准备任务运行，请等待完成".to_owned())?;
+    let data = state.snapshot()?;
+    let current = instance(&data, instance_id)?;
+    if current.is_version_folder() {
+        return Err("此实例已经是标准版本文件夹，无需转换".into());
+    }
+    require_no_pending_restore(state, instance_id)?;
+    let root = crate::processes::configured_game_root(Path::new(&data.config.game_directory))?;
+    // A record may spell its folder through the configured, junctioned or
+    // symlinked game folder. game_directory rebases it onto the canonical
+    // root, so only that root follows a link, never a folder below it.
+    let source = crate::minecraft::game_directory(&data.config, &current.version_id, Some(&current))?;
+    // Only launcher-managed folders are converted automatically.
+    let instances_dir = crate::processes::canonical_game_directory(&safe_join(&root, "instances")?)?;
+    let identity = crate::processes::canonical_game_directory(&source)?;
+    let relative = crate::processes::directory_tail(&identity, &instances_dir)
+        .ok_or_else(|| crate::errors::INSTANCE_CONVERT_UNSUPPORTED.to_owned())?;
+    let mut parts = relative.components();
+    if !matches!(parts.next(), Some(std::path::Component::Normal(_))) || parts.next().is_some() {
+        return Err(crate::errors::INSTANCE_CONVERT_UNSUPPORTED.to_owned());
+    }
+    state
+        .games
+        .require_directory_stopped(&source, Some(instance_id), false)?;
+    let game_version = resolve_instance_game_version(state, &current)?;
+    let name = conversion_target_name(&root, &current, &game_version, requested_name)?;
+    crate::commands::require_non_official_folder_name(state, &data.config, &name)?;
+    let target = safe_join(&root, &format!("versions/{name}"))?;
+    if target.exists() {
+        return Err("实例文件夹名已存在，请换一个名称".into());
+    }
+    // 0. Check everything recovery will rely on before anything is written or
+    //    journaled: the target must lie in this root's versions folder and the
+    //    recorded folder spelling must name the same root (a junctioned or
+    //    symlinked game folder does).
+    let game_folder = configured_folder_for_root(&data.config, &root);
+    let target_text = target.to_string_lossy().into_owned();
+    {
+        let probe = ConversionJournal {
+            instance_id: current.id.clone(),
+            source: source.to_string_lossy().into_owned(),
+            target: target_text.clone(),
+            name: name.clone(),
+            game_version: game_version.clone(),
+            installed_id: current.version_id.clone(),
+            loader: String::new(),
+            loader_version: String::new(),
+            phase: "prepared".into(),
+            backup_id: String::new(),
+            game_folder: game_folder.clone(),
+            validated: true,
+        };
+        let target_root = conversion_target_root(&probe)?;
+        conversion_target(&probe)?;
+        if !conversion_folder_matches(&game_folder, &target_root) {
+            return Err(crate::errors::INSTANCE_CONVERT_UNSUPPORTED.into());
+        }
+    }
+    // 1. Back up first. A failed backup stops the conversion before any move.
+    let backup = write_backup(state, &current, false, &|_| None)?;
+    let journal = ConversionJournal {
+        instance_id: current.id.clone(),
+        source: source.to_string_lossy().into_owned(),
+        target: target_text,
+        name: name.clone(),
+        game_version: game_version.clone(),
+        installed_id: current.version_id.clone(),
+        loader: if current.loader.is_empty() {
+            "vanilla".into()
+        } else {
+            current.loader.clone()
+        },
+        loader_version: current.loader_version.clone(),
+        phase: "prepared".into(),
+        backup_id: backup.id.clone(),
+        game_folder,
+        validated: true,
+    };
+    write_conversion_journal(state, &journal)?;
+    // 2. Create versions/<name>/ with its own profile. A failure here rolls the
+    //    prepared folder back, so no journal claims a folder without a profile.
+    let mut moving = journal.clone();
+    moving.phase = "moving".into();
+    let prepared = crate::commands::write_instance_profile(
+        state,
+        &root,
+        &name,
+        &game_version,
+        &current.version_id,
+        &journal.loader,
+    )
+    .and_then(|()| {
+        // Only after the profile and its ownership hash exist may recovery
+        // resume by moving game data into this folder.
+        write_conversion_journal(state, &moving)
+    });
+    if let Err(error) = prepared {
+        let rollback = rollback_prepared_conversion(state, &journal);
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(rollback) => format!("{error}；回滚未完成：{rollback}"),
+        });
+    }
+    // 3. Move the game data, then 4. switch the record and 5. remove the old
+    //    folder. A crash after this point is finished by the moving journal.
+    apply_conversion_journal(state, &moving)
+}
+
+#[tauri::command]
+pub async fn convert_managed_instance(
+    state: State<'_, Arc<LauncherState>>,
+    instance_id: String,
+    name: Option<String>,
+) -> AppResult<Instance> {
+    let arc = state.inner().clone();
+    let id = instance_id.clone();
+    let value = tokio::task::spawn_blocking(move || {
+        convert_managed_instance_inner(&arc, &id, name.as_deref())
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("实例转换任务异常：{error}")));
+    value.map_err(crate::errors::expected)
+}
+
+/// Stable ID for a version-folder instance. It is derived from the folder and
+/// version name so a scan can merge the stored settings without a sidecar file.
+/// The folder half matches the frontend's `sameGameFolderPath`: separators are
+/// forward slashes, a trailing slash is dropped and the spelling is lowercased.
+pub(crate) fn version_instance_id(folder: &str, version: &str) -> String {
+    let mut hasher = Sha256::new();
+    let folder = normalized_folder_identity(folder);
+    hasher.update(folder.as_bytes());
+    hasher.update([0]);
+    hasher.update(version.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("vx-{}", &digest[..32])
+}
+
+/// The path spelling used for identity. Existing records keep the id they were
+/// written with; a scan matches them by (game folder, version) first.
+pub(crate) fn normalized_folder_identity(folder: &str) -> String {
+    crate::models::normalized_game_folder_path(folder)
+}
+
+/// Profile ownership hash lookup key: the path spelling is normalized, the
+/// file content is not.
+pub(crate) fn owned_profile_key(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        text.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        text
+    }
+}
+
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Record a version profile Voxelight wrote so a later scan and launch can
+/// trust it even when the id is not one of Mojang's.
+pub(crate) fn remember_owned_profile(
+    state: &LauncherState,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let key = owned_profile_key(path);
+    let hash = sha256_bytes(bytes);
+    state.update(|data| {
+        data.owned_profiles.insert(key, hash);
+        Ok(())
+    })
+}
+
+pub(crate) fn profile_is_owned(data: &Persisted, path: &Path) -> bool {
+    fs::read(path)
+        .map(|bytes| profile_hash_matches(&data.owned_profiles, path, &bytes))
+        .unwrap_or(false)
+}
+
+/// Whether these bytes are exactly the profile Voxelight wrote at this path.
+/// Used by the launch resolver to trust its own named instance profiles.
+pub(crate) fn profile_hash_matches(
+    owned: &std::collections::BTreeMap<String, String>,
+    path: &Path,
+    bytes: &[u8],
+) -> bool {
+    owned
+        .get(&owned_profile_key(path))
+        .is_some_and(|expected| *expected == sha256_bytes(bytes))
+}
+
+fn loader_of(root: &Path, version: &str) -> (String, String) {
+    let loader = crate::resources::version_context(root, version)
+        .ok()
+        .and_then(|(_, loader)| loader)
+        .unwrap_or_else(|| "vanilla".into());
+    let loader_version = safe_join(root, &format!("versions/{version}/{version}.json"))
+        .ok()
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|metadata| {
+            metadata["launcherMetadata"]["loaderVersion"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
+    (loader, loader_version)
+}
+
+/// The instances the library shows: never a hidden record, and never one whose
+/// version folder is currently missing.
+pub(crate) fn visible_instances(data: &Persisted) -> Vec<Instance> {
+    data.instances
+        .iter()
+        .filter(|instance| !instance.hidden && instance.folder_missing_since.is_none())
+        .cloned()
+        .collect()
+}
+
+/// Every version folder in `root` whose profile inherits from `target` through
+/// `inheritsFrom` or `jar`, directly or through another dependant. Deleting
+/// the target would break all of them, so it must be refused.
+pub(crate) fn version_dependants(root: &Path, target: &str) -> Result<Vec<String>, String> {
+    let versions = safe_join(root, "versions")?;
+    let mut profiles: Vec<(String, Vec<String>)> = Vec::new();
+    let mut walked = 0usize;
+    let entries = match fs::read_dir(&versions) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("无法读取版本文件夹：{error}")),
+    };
+    for entry in entries {
+        walked += 1;
+        if walked > 20_000 {
+            break;
+        }
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if validate_id(&name).is_err() || name.eq_ignore_ascii_case(target) {
+            continue;
+        }
+        let Ok(path) = safe_join(root, &format!("versions/{name}/{name}.json")) else {
+            continue;
+        };
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let mut parents = Vec::new();
+        for key in ["inheritsFrom", "jar"] {
+            if let Some(parent) = metadata[key].as_str().filter(|parent| !parent.is_empty()) {
+                if !parents.iter().any(|value: &String| value.eq_ignore_ascii_case(parent)) {
+                    parents.push(parent.to_owned());
+                }
+            }
+        }
+        if !parents.is_empty() {
+            profiles.push((name, parents));
+        }
+    }
+    let mut broken: Vec<String> = Vec::new();
+    let mut affected: Vec<String> = vec![target.to_owned()];
+    loop {
+        let mut grew = false;
+        for (name, parents) in &profiles {
+            if broken.iter().any(|value| value.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            if parents
+                .iter()
+                .any(|parent| affected.iter().any(|value| value.eq_ignore_ascii_case(parent)))
+            {
+                broken.push(name.clone());
+                affected.push(name.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    broken.sort_by_key(|name| name.to_ascii_lowercase());
+    Ok(broken)
+}
+
+/// Restore one hidden version instance to the library. Showing a loader parent
+/// also detaches the named instances that caused it to be hidden, otherwise the
+/// next scan would hide it again.
+pub(crate) fn restore_instance_inner(
+    state: &LauncherState,
+    instance_id: &str,
+) -> Result<Instance, String> {
+    state.update(|data| {
+        let index = data
+            .instances
+            .iter()
+            .position(|instance| instance.id == instance_id)
+            .ok_or_else(|| "实例不存在，请刷新实例列表".to_owned())?;
+        let (version_id, game_folder) = {
+            let record = &mut data.instances[index];
+            if !record.is_version_folder() {
+                return Ok(record.clone());
+            }
+            record.hidden = false;
+            record.folder_missing_since = None;
+            (record.version_id.clone(), record.game_folder.clone())
+        };
+        for other in &mut data.instances {
+            if other.derived_from.as_deref() == Some(version_id.as_str())
+                && crate::models::same_game_folder_path(&other.game_folder, &game_folder)
+            {
+                other.derived_from = None;
+            }
+        }
+        Ok(data.instances[index].clone())
+    })
+}
+
+/// The version scan of one game folder, returned so bootstrap can list the
+/// installed versions without scanning the active folder a second time.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InstanceScanReport {
+    pub active_versions: Vec<crate::models::InstalledVersion>,
+}
+
+/// Bring `state.instances` in line with the version folders that exist on disk.
+///
+/// This is the only place that creates version-folder records. It is
+/// read-only for the game folders themselves: it lists `versions/*`, reads
+/// their profiles and keeps the per-instance settings in `state.json`. A folder
+/// that disappeared hides its instance immediately and its settings are kept
+/// for 30 days in case it comes back. A folder that exists but cannot launch
+/// stays listed: only a missing `<name>.json` counts as missing.
+pub(crate) fn sync_version_instances(state: &LauncherState) -> Result<(), String> {
+    sync_version_instances_reporting(state).map(|_| ())
+}
+
+pub(crate) fn sync_version_instances_reporting(
+    state: &LauncherState,
+) -> Result<InstanceScanReport, String> {
+    let snapshot = state.snapshot()?;
+    let mut config = snapshot.config;
+    let config_changed = config.normalize_game_folders();
+    let folders = config.game_folder_roots();
+    struct FolderScan {
+        configured: String,
+        root: Option<PathBuf>,
+        versions: Vec<crate::models::InstalledVersion>,
+    }
+    let mut scans = Vec::new();
+    for folder in folders {
+        match crate::processes::configured_game_root(Path::new(&folder)) {
+            Ok(root) => {
+                let versions = crate::minecraft::scan_versions_at_root(
+                    &root,
+                    &config.download_source,
+                    Some(&state.data_dir),
+                );
+                scans.push(FolderScan {
+                    configured: folder,
+                    root: Some(root),
+                    versions,
+                });
+            }
+            Err(_) => scans.push(FolderScan {
+                configured: folder,
+                root: None,
+                versions: Vec::new(),
+            }),
+        }
+    }
+    let now = chrono::Utc::now();
+    let missing_grace = chrono::Duration::days(30);
+    let active_versions = scans
+        .iter()
+        .find(|scan| {
+            crate::models::same_game_folder_path(&scan.configured, &config.game_directory)
+        })
+        .map(|scan| scan.versions.clone())
+        .unwrap_or_default();
+    state.update(|data| {
+        if config_changed {
+            data.config = config.clone();
+        }
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut changed = config_changed;
+        for scan in &scans {
+            let Some(root) = scan.root.as_deref() else {
+                continue;
+            };
+            // Every folder with its own `<name>.json` is an instance, even when
+            // its parent or client jar is missing: its worlds and settings must
+            // not disappear. Only a deleted profile counts as a missing folder.
+            for version in &scan.versions {
+                let name = version.id.clone();
+                let existing = data.instances.iter().position(|instance| {
+                    instance.is_version_folder()
+                        && instance.version_id == name
+                        && crate::models::same_game_folder_path(
+                            &instance.game_folder,
+                            &scan.configured,
+                        )
+                });
+                let index = if let Some(index) = existing {
+                    index
+                } else {
+                    let id = version_instance_id(&scan.configured, &name);
+                    if let Some(index) = data.instances.iter().position(|instance| {
+                        instance.is_version_folder() && instance.id == id
+                    }) {
+                        index
+                    } else {
+                        let (isolated, directory) =
+                            decide_version_isolation(root, &name, data.config.version_isolation)?;
+                        let (loader, loader_version) = loader_of(root, &name);
+                        let instance = Instance {
+                            id,
+                            name: name.clone(),
+                            version_id: name.clone(),
+                            game_directory: crate::storage::display_profile_path(&directory),
+                            created_at: now.to_rfc3339(),
+                            last_played: None,
+                            category: "normal".into(),
+                            loader,
+                            loader_version,
+                            kind: "version".into(),
+                            game_folder: scan.configured.clone(),
+                            isolated,
+                            hidden: false,
+                            folder_missing_since: None,
+                            issue: version.reason_code.clone(),
+                            derived_from: None,
+                            ..Default::default()
+                        };
+                        data.instances.push(instance);
+                        changed = true;
+                        data.instances.len() - 1
+                    }
+                };
+                let record = &mut data.instances[index];
+                seen.insert(record.id.clone());
+                if record.folder_missing_since.take().is_some() {
+                    changed = true;
+                }
+                if !crate::models::same_game_folder_path(&record.game_folder, &scan.configured) {
+                    // The configured spelling changed; keep the same record and
+                    // re-root its stored game directory under the new spelling.
+                    if let Some(relative) = crate::processes::directory_tail(
+                        Path::new(&record.game_directory),
+                        Path::new(&record.game_folder),
+                    ) {
+                        if let Ok(rebased) = checked_absolute(&root.join(relative)) {
+                            record.game_directory =
+                                crate::storage::display_profile_path(&rebased);
+                        }
+                    }
+                    record.game_folder = scan.configured.clone();
+                    changed = true;
+                }
+                if record.loader.is_empty() {
+                    let (loader, loader_version) = loader_of(root, &name);
+                    record.loader = loader;
+                    record.loader_version = loader_version;
+                    changed = true;
+                }
+                if record.issue != version.reason_code {
+                    record.issue = version.reason_code.clone();
+                    changed = true;
+                }
+            }
+        }
+        // 1. Version records that were not found at this scan disappear from
+        //    the list immediately, keeping their settings for 30 days.
+        let mut expired = Vec::new();
+        for (index, instance) in data.instances.iter_mut().enumerate() {
+            if !instance.is_version_folder() || seen.contains(&instance.id) {
+                continue;
+            }
+            if instance.folder_missing_since.is_none() {
+                instance.folder_missing_since = Some(now.to_rfc3339());
+                instance.issue = None;
+                changed = true;
+            }
+            let expired_at = instance
+                .folder_missing_since
+                .as_deref()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .is_some_and(|value| now.signed_duration_since(value) > missing_grace);
+            if expired_at {
+                expired.push(index);
+            }
+        }
+        for index in expired.into_iter().rev() {
+            data.instances.remove(index);
+            changed = true;
+        }
+        // 2. Records written before this model have no kind; they are managed
+        //    instances and must keep working unchanged.
+        for instance in &mut data.instances {
+            if !instance.is_version_folder() && instance.kind.is_empty() {
+                instance.kind = "managed".into();
+                changed = true;
+            }
+        }
+        // 3. A loader profile that only exists because a named instance was
+        //    published from it is kept on disk but hidden. Restoring it clears
+        //    the reference, so the user's choice survives the next scan.
+        let parent_keys: std::collections::HashSet<(String, String)> = data
+            .instances
+            .iter()
+            .filter(|instance| !instance.hidden && instance.folder_missing_since.is_none())
+            .filter_map(|instance| {
+                instance
+                    .derived_from
+                    .as_ref()
+                    .map(|parent| (normalized_folder_identity(&instance.game_folder), parent.clone()))
+            })
+            .collect();
+        for instance in &mut data.instances {
+            if !instance.is_version_folder()
+                || instance.hidden
+                || !parent_keys.contains(&(
+                    normalized_folder_identity(&instance.game_folder),
+                    instance.version_id.clone(),
+                ))
+            {
+                continue;
+            }
+            instance.hidden = true;
+            changed = true;
+        }
+        Ok(changed)
+    })?;
+    Ok(InstanceScanReport { active_versions })
 }
 
 pub(crate) fn sha256(path: &Path) -> Result<String, String> {
@@ -440,6 +1515,21 @@ pub(crate) fn copy_snapshot_controlled(
     copy_into_snapshot(source, destination, files, InventoryScope::All, control)
 }
 
+/// Copy into a directory that already exists (an exclusively owned staging
+/// directory). The caller owns that directory and must publish or remove it.
+pub(crate) fn copy_into_owned_directory(
+    source: &Path,
+    destination: &Path,
+    files: &[FileRecord],
+) -> Result<(), String> {
+    checked_absolute(source)?;
+    checked_absolute(destination)?;
+    if !destination.is_dir() {
+        return Err("实例暂存目录不存在".into());
+    }
+    copy_into_snapshot(source, destination, files, InventoryScope::Instance, None)
+}
+
 fn copy_into_snapshot(
     source: &Path,
     destination: &Path,
@@ -487,6 +1577,74 @@ pub(crate) fn build_instance(
         "loader":loader, "loaderVersion":loader_version, "totalPlayTime":0
     }))
     .map_err(|e| e.to_string())
+}
+
+/// A record for an imported `versions/<folder>/` instance.
+pub(crate) fn build_version_instance(
+    display_name: &str,
+    folder: &str,
+    directory: &Path,
+    game_folder: &str,
+    loader: &str,
+    loader_version: &str,
+) -> Result<Instance, String> {
+    validate_name(display_name)?;
+    validate_id(folder)?;
+    Ok(Instance {
+        id: version_instance_id(game_folder, folder),
+        name: display_name.trim().to_owned(),
+        version_id: folder.to_owned(),
+        game_directory: crate::storage::display_profile_path(directory),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        last_played: None,
+        category: "整合包".into(),
+        loader: loader.into(),
+        loader_version: loader_version.into(),
+        kind: "version".into(),
+        game_folder: game_folder.into(),
+        isolated: true,
+        hidden: false,
+        folder_missing_since: None,
+        ..Default::default()
+    })
+}
+
+/// Register an imported version-folder instance. A hidden record for the same
+/// folder (kept while its folder was missing) is revived with the new files.
+pub(crate) fn register_version_instance(
+    state: &LauncherState,
+    value: Instance,
+) -> Result<Instance, String> {
+    state.update(|data| {
+        if let Some(existing) = data.instances.iter_mut().find(|item| {
+            item.id == value.id
+                || (item.is_version_folder()
+                    && item.version_id == value.version_id
+                    && crate::models::same_game_folder_path(&item.game_folder, &value.game_folder))
+        }) {
+            existing.hidden = false;
+            existing.folder_missing_since = None;
+            existing.game_directory.clone_from(&value.game_directory);
+            existing.version_id.clone_from(&value.version_id);
+            existing.name.clone_from(&value.name);
+            existing.loader.clone_from(&value.loader);
+            existing.loader_version.clone_from(&value.loader_version);
+            existing.kind = "version".into();
+            existing.game_folder.clone_from(&value.game_folder);
+            existing.isolated = true;
+            existing.derived_from.clone_from(&value.derived_from);
+            return Ok(existing.clone());
+        }
+        if data
+            .instances
+            .iter()
+            .any(|item| item.game_directory == value.game_directory)
+        {
+            return Err("实例已经登记，已保留其目录".into());
+        }
+        data.instances.push(value.clone());
+        Ok(value)
+    })
 }
 
 pub(crate) fn register(state: &LauncherState, value: Instance) -> Result<Instance, String> {
@@ -794,14 +1952,43 @@ fn apply_instance_loader_update(
     new_version_id: &str,
     new_loader: &str,
     new_loader_version: &str,
+    parents: &crate::commands::LoaderParents,
 ) -> Result<Instance, String> {
     validate_id(new_version_id)?;
     let normalized_loader = normalize_target_loader(new_loader)?;
     if normalized_loader != "vanilla" {
         validate_id(new_loader_version)?;
     }
+    let current = instance(&state.snapshot()?, instance_id)?;
+    // A version-folder instance hides the loader folder its switch installed,
+    // as a create does, but only one this switch created. Reinstalling the
+    // parent it already hides keeps that link.
+    let derived_from = if !current.is_version_folder()
+        || current
+            .derived_from
+            .as_deref()
+            .is_some_and(|parent| parent.eq_ignore_ascii_case(new_version_id))
+    {
+        current.derived_from.clone()
+    } else {
+        parents.derived_from(new_version_id, &current.version_id)
+    };
+    let effective_version_id = if current.is_version_folder() {
+        // Keep <game folder>/versions/<name>/ launchable: its profile now
+        // inherits the vanilla base and the new loader instead of pointing at
+        // the generated loader folder. The folder itself never changes name.
+        crate::commands::rewrite_version_folder_profile(
+            state,
+            &current,
+            new_version_id,
+            &normalized_loader,
+        )?
+    } else {
+        new_version_id.to_owned()
+    };
+    validate_id(&effective_version_id)?;
     let changes = vec![
-        ("versionId".into(), json!(new_version_id)),
+        ("versionId".into(), json!(effective_version_id)),
         ("loader".into(), json!(normalized_loader)),
         (
             "loaderVersion".into(),
@@ -809,14 +1996,45 @@ fn apply_instance_loader_update(
         ),
     ];
     state.update(|data| {
-        let value = data
+        let index = data
             .instances
-            .iter_mut()
-            .find(|i| i.id == instance_id)
+            .iter()
+            .position(|i| i.id == instance_id)
             .ok_or("实例不存在")?;
-        replace_metadata(value, &changes)?;
-        Ok(value.clone())
+        replace_metadata(&mut data.instances[index], &changes)?;
+        let value = &mut data.instances[index];
+        if value.derived_from != derived_from {
+            let released = std::mem::replace(&mut value.derived_from, derived_from.clone());
+            let game_folder = value.game_folder.clone();
+            if let Some(parent) = released {
+                release_loader_parent(data, &parent, &game_folder);
+            }
+        }
+        Ok(data.instances[index].clone())
     })
+}
+
+/// The loader folder a named instance hid becomes a normal version again once
+/// no visible instance in its game folder derives from it any more.
+fn release_loader_parent(data: &mut Persisted, parent: &str, game_folder: &str) {
+    let still_derived = data.instances.iter().any(|other| {
+        !other.hidden
+            && other
+                .derived_from
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(parent))
+            && crate::models::same_game_folder_path(&other.game_folder, game_folder)
+    });
+    if still_derived {
+        return;
+    }
+    if let Some(record) = data.instances.iter_mut().find(|other| {
+        other.is_version_folder()
+            && other.version_id.eq_ignore_ascii_case(parent)
+            && crate::models::same_game_folder_path(&other.game_folder, game_folder)
+    }) {
+        record.hidden = false;
+    }
 }
 
 /// Files are kept during a loader switch, but worlds opened with a different
@@ -892,6 +2110,7 @@ async fn record_loader_change(
     state: &Arc<LauncherState>,
     current: &Instance,
     backup: Option<InstanceBackup>,
+    parents: &crate::commands::LoaderParents,
     installed: Result<(String, String, String), String>,
 ) -> Result<InstanceLoaderChange, String> {
     let result = installed.and_then(|(new_version_id, new_loader, new_loader_version)| {
@@ -901,6 +2120,7 @@ async fn record_loader_change(
             &new_version_id,
             &new_loader,
             &new_loader_version,
+            parents,
         )
     });
     let changed = matches!(&result, Ok(updated) if installed_loader(updated) != installed_loader(current));
@@ -945,7 +2165,10 @@ pub(crate) async fn run_loader_switch(
     } else {
         None
     };
-    record_loader_change(state, current, snapshot, install.await).await
+    // What versions/ holds before the install, to tell a loader folder this
+    // switch creates from one that was already there.
+    let parents = crate::commands::LoaderParents::before_active_install(state);
+    record_loader_change(state, current, snapshot, &parents, install.await).await
 }
 
 /// What a loader switch was asked to do, checked before anything starts.
@@ -969,9 +2192,11 @@ pub(crate) fn plan_loader_switch(
     crate::loaders::refuse_online_optifine(&target_loader)?;
     require_no_pending_restore(state, instance_id)?;
     let current = instance(&state.snapshot()?, instance_id)?;
+    crate::commands::require_isolated_instance(&current)?;
     crate::resources::require_target_stopped(state, &current.version_id, Some(instance_id))?;
     crate::minecraft::require_install_root_stopped(state, &state.snapshot()?.config)?;
     let game_version = resolve_instance_game_version(state, &current)?;
+    crate::commands::require_switchable_instance(state, &current, &game_version)?;
     let requested_version = loader_version.unwrap_or_default().trim().to_owned();
     if target_loader != "vanilla" && !requested_version.is_empty() && requested_version != "latest" {
         validate_id(&requested_version)?;
@@ -1209,25 +2434,6 @@ pub async fn change_instance_loader(
         .map_err(crate::errors::expected)
 }
 
-#[tauri::command]
-pub async fn clone_instance(
-    state: State<'_, Arc<LauncherState>>,
-    instance_id: String,
-    name: String,
-) -> Result<Instance, String> {
-    validate_name(&name)?;
-    let _operation = state.operation.lock().await;
-    let task = state.control.begin_with_display("clone", &instance_id, &name, &name)?;
-    let arc = state.inner().clone();
-    let result = tokio::task::spawn_blocking(move || clone_inner(&arc, &instance_id, &name))
-        .await
-        .unwrap_or_else(|e| Err(format!("克隆任务异常：{e}")));
-    state
-        .control
-        .finish(&task, result.as_ref().err().map(String::as_str));
-    result
-}
-
 fn stopped_instance_directory(state: &LauncherState, value: &Instance) -> Result<PathBuf, String> {
     let config = state.snapshot()?.config;
     let directory = crate::minecraft::game_directory(&config, &value.version_id, Some(value))?;
@@ -1411,6 +2617,7 @@ fn write_backup(
     loader_switch: bool,
     free_space: &dyn Fn(&Path) -> Option<u64>,
 ) -> Result<InstanceBackup, String> {
+    crate::commands::require_isolated_instance(value)?;
     let source = stopped_instance_directory(state, value)?;
     let files = collect_instance_files_controlled(&source, Some(state))?;
     validate_id(&value.id)?;
@@ -1735,11 +2942,42 @@ impl RestorePaths {
     fn new(live: &Path, token: Uuid) -> Result<Self, String> {
         checked_absolute(live)?;
         let parent = live.parent().ok_or("实例目录无效")?;
+        // A version instance lives inside versions/, where PCL and HMCL list
+        // every folder. Keep its recovery copies in the launcher's own staging
+        // area beside versions/ instead. Managed instances keep the old layout.
+        let staging_parent = if parent
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("versions"))
+        {
+            let root = parent.parent().ok_or("实例目录无效")?;
+            safe_join(root, crate::modpacks::PACK_STAGING_DIRECTORY)?
+        } else {
+            parent.to_owned()
+        };
         Ok(Self {
+            live: live.to_owned(),
+            stage: safe_join(&staging_parent, &format!(".restore-{token}"))?,
+            previous: safe_join(&staging_parent, &format!(".before-restore-{token}"))?,
+        })
+    }
+
+    /// Recover with the new staging layout, or the old sibling layout if a
+    /// pre-upgrade intent left its durable copy in versions/.
+    fn resolve(live: &Path, token: Uuid) -> Result<Self, String> {
+        let current = Self::new(live, token)?;
+        if directory_present(&current.stage)? || directory_present(&current.previous)? {
+            return Ok(current);
+        }
+        let parent = live.parent().ok_or("实例目录无效")?;
+        let legacy = Self {
             live: live.to_owned(),
             stage: safe_join(parent, &format!(".restore-{token}"))?,
             previous: safe_join(parent, &format!(".before-restore-{token}"))?,
-        })
+        };
+        if directory_present(&legacy.stage)? || directory_present(&legacy.previous)? {
+            return Ok(legacy);
+        }
+        Ok(current)
     }
 
     fn locations(&self, intent: &RestoreIntent) -> RecoveryPaths {
@@ -1880,7 +3118,7 @@ fn intent_paths(intent: &RestoreIntent, current: &Instance, live: &Path) -> Resu
     {
         return Err("恢复记录与当前实例不一致".into());
     }
-    RestorePaths::new(live, intent.token)
+    RestorePaths::resolve(live, intent.token)
 }
 
 fn read_intent(folder: &Path) -> Result<Option<RestoreIntent>, String> {
@@ -2029,6 +3267,8 @@ pub(crate) fn require_no_pending_restore(state: &LauncherState, instance_id: &st
 
 fn restore_target(state: &LauncherState, current: &Instance) -> AppResult<PathBuf> {
     // Not `require_resource_stopped`: recovery runs while its record is pending.
+    crate::commands::require_isolated_instance(current)
+        .map_err(crate::errors::expected)?;
     crate::resources::require_target_stopped(state, &current.version_id, Some(&current.id))?;
     let config = state.snapshot()?.config;
     let directory = crate::minecraft::game_directory(&config, &current.version_id, Some(current))?;
@@ -2364,6 +3604,17 @@ fn restore_inner_using(
     if metadata.instance.id != instance_id {
         return Err(AppError::new("backup.notFound"));
     }
+    // A backup of another kind of instance keeps the id but not the layout:
+    // the backup a conversion takes first is of the managed instance, without
+    // `<name>.json`. Restoring it in place would delete the version profile
+    // and turn the record back into a managed one inside versions/. It can
+    // still be imported as a new instance.
+    if metadata.instance.is_version_folder() != current.is_version_folder()
+        || (current.is_version_folder()
+            && !metadata.instance.version_id.eq_ignore_ascii_case(&current.version_id))
+    {
+        return Err(AppError::new(crate::errors::BACKUP_KIND_MISMATCH));
+    }
     let mut restored = metadata.instance.clone();
     validate_id(&restored.version_id)?;
     restored.game_directory = current.game_directory.clone();
@@ -2496,7 +3747,9 @@ pub(crate) struct PackUpdateDone {
 /// (stopped, not a shared root), and no unfinished restore or update.
 pub(crate) fn pack_update_target(state: &LauncherState, current: &Instance) -> AppResult<PathBuf> {
     let directory = restore_target(state, current).map_err(|error| {
-        if error.detail.as_deref() == Some(SHARED_ROOT_RESTORE) {
+        if error.detail.as_deref() == Some(SHARED_ROOT_RESTORE)
+            || error.code == crate::errors::INSTANCE_SHARED_ROOT
+        {
             crate::errors::expected(crate::modpacks::pack_update::SHARED_ROOT)
         } else {
             error
@@ -2666,12 +3919,13 @@ pub async fn export_instance_zip(
     result.map_err(crate::errors::expected)
 }
 
-fn export_zip_inner(
+pub(crate) fn export_zip_inner(
     state: &LauncherState,
     instance_id: &str,
     output_path: &str,
 ) -> Result<String, String> {
     let value = instance(&state.snapshot()?, instance_id)?;
+    crate::commands::require_isolated_instance(&value)?;
     let source = stopped_instance_directory(state, &value)?;
     let output = checked_absolute(&crate::storage::to_process_path(Path::new(output_path))?)?;
     if output
@@ -3075,6 +4329,37 @@ mod backup_recovery_tests {
     }
 
     #[test]
+    fn low_version_restore_staging_lives_outside_versions() {
+        let root = fixture_folder("restore-staging-location");
+        let live = root.path().join("versions/Pack");
+        fs::create_dir_all(&live).unwrap();
+        let paths = RestorePaths::new(&live, Uuid::new_v4()).unwrap();
+        assert!(paths.stage.starts_with(root.path().join(".voxelight-staging")));
+        assert!(paths.previous.starts_with(root.path().join(".voxelight-staging")));
+        assert!(!paths.stage.starts_with(root.path().join("versions")));
+        assert!(!paths.previous.starts_with(root.path().join("versions")));
+    }
+
+    #[test]
+    fn n2_a_staged_publish_rejects_a_missing_or_changed_expected_file() {
+        let root = fixture_folder("verify-staged");
+        let stage = root.path().join("stage");
+        fs::create_dir_all(stage.join("mods")).unwrap();
+        fs::write(stage.join("mods/a.jar"), b"a").unwrap();
+        fs::write(stage.join("mods/b.jar"), b"b").unwrap();
+        let expected = collect_files(&stage).unwrap();
+        verify_staged_files(&stage, &expected).unwrap();
+        fs::remove_file(stage.join("mods/b.jar")).unwrap();
+        let error = verify_staged_files(&stage, &expected).unwrap_err();
+        assert!(error.contains("mods/b.jar"), "{error}");
+        fs::write(stage.join("mods/b.jar"), b"changed").unwrap();
+        assert!(verify_staged_files(&stage, &expected).is_err(), "changed bytes are refused too");
+        fs::write(stage.join("mods/b.jar"), b"b").unwrap();
+        require_staged_file(&stage, "mods/a.jar").unwrap();
+        assert!(require_staged_file(&stage, "mods/missing.jar").is_err());
+    }
+
+    #[test]
     fn staging_owns_only_its_exclusive_directory_and_can_preserve_verified_copies() {
         let root = fixture_folder("staging");
         let existing = root.path().join("existing");
@@ -3106,6 +4391,18 @@ mod backup_recovery_tests {
         }
         assert_eq!(fs::read(published_from.join("data")).unwrap(), b"new owner");
         assert_eq!(fs::read(published_to.join("data")).unwrap(), b"published");
+
+        // A failed publish keeps the named staging folder the error message
+        // points at, with every completed file still in it.
+        let kept_stage = root.path().join("kept-stage");
+        let occupied = root.path().join("occupied");
+        fs::create_dir(&occupied).unwrap();
+        {
+            let mut stage = StagingDirectory::create(kept_stage.clone()).unwrap();
+            fs::write(stage.path().join("data"), b"completed").unwrap();
+            assert!(stage.publish(&occupied).is_err());
+        }
+        assert_eq!(fs::read(kept_stage.join("data")).unwrap(), b"completed");
     }
 
     #[test]
@@ -4336,6 +5633,7 @@ mod backup_recovery_tests {
             (include_str!("instances.rs"), "pub async fn change_instance_loader(", "let _operation = state", "plan_loader_switch(", "switch_instance_loader("),
             (include_str!("instances.rs"), "pub(crate) async fn change_instance_loader_for_state(", "let _operation = state", "plan_loader_switch(", "switch_instance_loader("),
             (include_str!("instances.rs"), "pub(crate) fn plan_loader_switch(", "normalize_target_loader(", pending, "Ok(LoaderSwitchPlan {"),
+            (include_str!("commands.rs"), "pub(crate) fn set_instance_isolation_inner(", "let _guard = state", pending, "state.update(|data| {"),
             (include_str!("content.rs"), "pub async fn import_world(", "let _guard = state.operation.lock().await;", pending, "tokio::task::spawn_blocking"),
             (include_str!("content.rs"), "pub async fn import_local_resources(", "let _guard = state.operation.lock().await;", pending, "tokio::task::spawn_blocking"),
             (include_str!("resources.rs"), "fn recover_resource_update_inner(", "let data = state.snapshot()?;", pending, "resource_transactions::recover_one("),
@@ -4387,6 +5685,7 @@ mod backup_recovery_tests {
             "1.21.1-forge-52.0.10",
             "forge",
             "52.0.10",
+            &crate::commands::LoaderParents::default(),
         )
         .unwrap();
         assert_eq!(switched.version_id, "1.21.1-forge-52.0.10");
@@ -4397,16 +5696,243 @@ mod backup_recovery_tests {
         assert_eq!(switched.game_directory, registered.game_directory);
         assert!(inst_dir.join("saves/world/level.dat").is_file());
 
-        let vanilla = apply_instance_loader_update(&state, &registered.id, "1.21.1", "vanilla", "").unwrap();
+        let vanilla = apply_instance_loader_update(&state, &registered.id, "1.21.1", "vanilla", "", &crate::commands::LoaderParents::default()).unwrap();
         assert_eq!(vanilla.version_id, "1.21.1");
         assert_eq!(vanilla.loader, "vanilla");
         assert_eq!(vanilla.loader_version, "");
         assert_eq!(resolve_instance_game_version(&state, &vanilla).unwrap(), "1.21.1");
 
-        assert!(apply_instance_loader_update(&state, &registered.id, "1.21.1", "unknown", "1.0").is_err());
+        assert!(apply_instance_loader_update(&state, &registered.id, "1.21.1", "unknown", "1.0", &crate::commands::LoaderParents::default()).is_err());
 
         drop(state);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_loader_switch_never_rewrites_a_shared_version_profile() {
+        let holder = StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/instance-tests")
+                .join(format!("shared-profile-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let root = holder.path().join("game");
+        let fabric = json!({
+            "id": "fabric-loader-0.16.9-1.21.1", "inheritsFrom": "1.21.1",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "launcherMetadata": { "loader": "fabric", "loaderVersion": "0.16.9" },
+            "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16.9" }]
+        });
+        for (id, metadata) in [
+            ("1.21.1", json!({
+                "id": "1.21.1", "type": "release", "mainClass": "net.minecraft.client.main.Main",
+                "libraries": [], "arguments": { "game": ["--username", "${auth_player_name}"] }
+            })),
+            ("fabric-loader-0.16.9-1.21.1", fabric.clone()),
+            // Another launcher's folder named like an official version.
+            ("1.20.1", json!({ "id": "1.20.1", "inheritsFrom": "1.21.1" })),
+            ("Survival", json!({ "id": "Survival", "inheritsFrom": "1.21.1" })),
+            ("Survival-Child", json!({ "id": "Survival-Child", "inheritsFrom": "Survival" })),
+            ("Lonely", json!({ "id": "Lonely", "inheritsFrom": "1.21.1" })),
+        ] {
+            let directory = root.join("versions").join(id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(format!("{id}.json")), serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
+        }
+        fs::write(root.join("versions/1.21.1/1.21.1.jar"), b"client jar").unwrap();
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            download_source: "official".into(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = Arc::new(LauncherState::test_fixture(
+            holder.path().join("data"),
+            Persisted {
+                config,
+                instances: vec![Instance {
+                    // A legacy managed instance that launches through the loader folder.
+                    id: "legacy".into(),
+                    name: "Legacy".into(),
+                    version_id: "fabric-loader-0.16.9-1.21.1".into(),
+                    game_directory: root.join("instances/legacy").to_string_lossy().into_owned(),
+                    kind: "managed".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        ));
+        fs::write(
+            state.data_dir.join("version-manifest-mojang.json"),
+            serde_json::to_vec(&json!({
+                "latest": { "release": "1.21.1", "snapshot": "1.21.1" },
+                "versions": [
+                    { "id": "1.21.1", "type": "release", "url": "https://piston-meta.mojang.com/v1/packages/a/1.21.1.json", "sha1": "a".repeat(40) },
+                    { "id": "1.20.1", "type": "release", "url": "https://piston-meta.mojang.com/v1/packages/b/1.20.1.json", "sha1": "b".repeat(40) }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // The scan gives every folder its own isolated version instance.
+        sync_version_instances(&state).unwrap();
+        state
+            .update(|data| {
+                for record in data.instances.iter_mut().filter(|record| record.is_version_folder()) {
+                    record.isolated = true;
+                    record.game_directory = root.join("versions").join(&record.version_id).to_string_lossy().into_owned();
+                }
+                Ok(())
+            })
+            .unwrap();
+        let id_of = |version: &str| {
+            state
+                .snapshot()
+                .unwrap()
+                .instances
+                .into_iter()
+                .find(|record| record.is_version_folder() && record.version_id == version)
+                .unwrap()
+                .id
+        };
+        let profiles = || {
+            ["1.21.1", "fabric-loader-0.16.9-1.21.1", "1.20.1", "Survival"]
+                .map(|id| fs::read(root.join(format!("versions/{id}/{id}.json"))).unwrap())
+        };
+        let before = profiles();
+        let records = state.snapshot().unwrap().instances;
+
+        // The official profile, an official name, a loader folder a managed
+        // instance launches through and a folder another profile inherits from
+        // are all refused before any backup or install.
+        for version in ["1.21.1", "1.20.1", "fabric-loader-0.16.9-1.21.1", "Survival"] {
+            let error = plan_loader_switch(&state, &id_of(version), "forge", None).err().unwrap();
+            assert_eq!(error.code, "instance.loaderSwitchShared", "{version}");
+        }
+        // The rewrite refuses as well; an OptiFine import reaches it only after
+        // its install.
+        let rewrite = apply_instance_loader_update(
+            &state,
+            &id_of("1.21.1"),
+            "fabric-loader-0.16.9-1.21.1",
+            "fabric",
+            "0.16.9",
+            &crate::commands::LoaderParents::default(),
+        )
+        .unwrap_err();
+        assert_eq!(crate::errors::expected(rewrite).code, "instance.loaderSwitchShared");
+        assert_eq!(profiles(), before, "no shared profile was rewritten");
+        let snapshot = state.snapshot().unwrap();
+        assert!(!snapshot
+            .owned_profiles
+            .contains_key(&owned_profile_key(&root.join("versions/1.21.1/1.21.1.json"))));
+        assert_eq!(serde_json::to_value(&snapshot.instances).unwrap(), serde_json::to_value(&records).unwrap());
+        assert!(backup_files(&state, &id_of("1.21.1")).is_empty(), "no backup was taken");
+
+        // An instance's own profile still switches.
+        assert!(plan_loader_switch(&state, &id_of("Lonely"), "forge", None).is_ok());
+        let switched = apply_instance_loader_update(
+            &state,
+            &id_of("Lonely"),
+            "fabric-loader-0.16.9-1.21.1",
+            "fabric",
+            "0.16.9",
+            &crate::commands::LoaderParents::default(),
+        )
+        .unwrap();
+        assert_eq!(switched.loader, "fabric");
+        let lonely: Value =
+            serde_json::from_slice(&fs::read(root.join("versions/Lonely/Lonely.json")).unwrap()).unwrap();
+        assert_eq!(lonely["inheritsFrom"], "1.21.1");
+        assert_eq!(lonely["mainClass"], fabric["mainClass"]);
+    }
+
+    #[test]
+    fn a_loader_switch_hides_the_loader_folder_it_created_and_releases_the_old_one() {
+        const FABRIC: &str = "fabric-loader-0.16.9-1.21.1";
+        const FORGE: &str = "1.21.1-forge-52.0.10";
+        let holder = StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/instance-tests")
+                .join(format!("switch-parent-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let root = holder.path().join("game");
+        let write = |id: &str, metadata: Value| {
+            let directory = root.join("versions").join(id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+        };
+        write("1.21.1", json!({ "id": "1.21.1", "type": "release", "mainClass": "net.minecraft.client.main.Main" }));
+        write(FABRIC, json!({
+            "id": FABRIC, "inheritsFrom": "1.21.1",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16.9" }]
+        }));
+        write("Survival", json!({ "id": "Survival", "inheritsFrom": "1.21.1" }));
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let game_folder = config.game_directory.clone();
+        // Survival was created with Fabric, which hid the loader folder.
+        let survival = Instance {
+            loader: "fabric".into(),
+            loader_version: "0.16.9".into(),
+            derived_from: Some(FABRIC.into()),
+            ..build_version_instance("Survival", "Survival", &root.join("versions/Survival"), &game_folder, "fabric", "0.16.9").unwrap()
+        };
+        let state = Arc::new(LauncherState::test_fixture(
+            holder.path().join("data"),
+            Persisted { config, instances: vec![survival.clone()], ..Default::default() },
+            crate::storage::test_client(),
+        ));
+        let visible = || {
+            sync_version_instances(&state).unwrap();
+            let mut versions: Vec<String> =
+                visible_instances(&state.snapshot().unwrap()).into_iter().map(|record| record.version_id).collect();
+            versions.sort();
+            versions
+        };
+        assert_eq!(visible(), ["1.21.1", "Survival"]);
+        let runtime = runtime();
+        let switch = |loader: &'static str, version: &'static str, installed: &'static str| {
+            let current = instance(&state.snapshot().unwrap(), &survival.id).unwrap();
+            let install_root = root.clone();
+            runtime
+                .block_on(run_loader_switch(&state, &current, LoaderSwitchBackup::SkippedByUser, loader, version, async move {
+                    // The install creates its loader folder only when missing.
+                    let directory = install_root.join("versions").join(installed);
+                    if !directory.exists() {
+                        fs::create_dir_all(&directory).unwrap();
+                        fs::write(
+                            directory.join(format!("{installed}.json")),
+                            json!({ "id": installed, "inheritsFrom": "1.21.1", "mainClass": "net.minecraftforge.bootstrap.ForgeBootstrap" }).to_string(),
+                        )
+                        .unwrap();
+                    }
+                    Ok::<_, String>((installed.to_owned(), loader.to_owned(), version.to_owned()))
+                }))
+                .unwrap()
+                .instance
+        };
+
+        // Switching to Forge installs its folder: it is hidden behind
+        // Survival, and the Fabric folder Survival no longer uses is shown.
+        let forge = switch("forge", "52.0.10", FORGE);
+        assert_eq!(forge.derived_from.as_deref(), Some(FORGE));
+        assert_eq!(visible(), ["1.21.1", "Survival", FABRIC]);
+        // Reinstalling the same Forge keeps that link.
+        let again = switch("forge", "52.0.10", FORGE);
+        assert_eq!(again.derived_from.as_deref(), Some(FORGE));
+        assert_eq!(visible(), ["1.21.1", "Survival", FABRIC]);
+        // Back to the Fabric folder that is already there: nothing new is
+        // hidden and the Forge folder is shown again.
+        let fabric = switch("fabric", "0.16.9", FABRIC);
+        assert_eq!(fabric.derived_from, None);
+        assert_eq!(visible(), ["1.21.1", FORGE, "Survival", FABRIC]);
     }
 
     /// A registered Fabric 1.21.1 instance with a world and a mod, in a state
@@ -4556,7 +6082,7 @@ mod backup_recovery_tests {
         }
 
         let change = runtime
-            .block_on(record_loader_change(&state, &registered, Some(backup.clone()), forge_install()))
+            .block_on(record_loader_change(&state, &registered, Some(backup.clone()), &crate::commands::LoaderParents::default(), forge_install()))
             .unwrap();
         assert_eq!(change.instance.version_id, "1.21.1-forge-52.0.10");
         assert_eq!(change.instance.loader, "forge");
@@ -4582,6 +6108,7 @@ mod backup_recovery_tests {
                 &state,
                 &registered,
                 Some(backup.clone()),
+                &crate::commands::LoaderParents::default(),
                 Err("加载器安装失败".into()),
             ))
             .unwrap_err();
@@ -4596,7 +6123,7 @@ mod backup_recovery_tests {
         // A switch without a backup (same loader, or skipped by the user) is
         // recorded with no backup id.
         let change = runtime
-            .block_on(record_loader_change(&state, &registered, None, forge_install()))
+            .block_on(record_loader_change(&state, &registered, None, &crate::commands::LoaderParents::default(), forge_install()))
             .unwrap();
         assert_eq!(change.backup_id, None);
         assert_eq!(change.instance.loader, "forge");
@@ -4616,7 +6143,7 @@ mod backup_recovery_tests {
                 .unwrap();
             switches.push(format!("{}.zip", backup.id));
             let change = runtime
-                .block_on(record_loader_change(&state, &before, Some(backup), other_install(&before)))
+                .block_on(record_loader_change(&state, &before, Some(backup), &crate::commands::LoaderParents::default(), other_install(&before)))
                 .unwrap();
             assert_ne!(change.instance.loader, before.loader, "each switch changes the loader");
         }
@@ -4640,7 +6167,7 @@ mod backup_recovery_tests {
             .block_on(backup_before_loader_change(&state, &before))
             .unwrap();
         runtime
-            .block_on(record_loader_change(&state, &before, Some(backup), other_install(&before)))
+            .block_on(record_loader_change(&state, &before, Some(backup), &crate::commands::LoaderParents::default(), other_install(&before)))
             .unwrap();
         let zips = backup_files(&state, &registered.id)
             .into_iter()
@@ -5044,5 +6571,599 @@ mod backup_recovery_tests {
         let awaits = import.match_indices("install.await").map(|(at, _)| at).collect::<Vec<_>>();
         assert_eq!(awaits.len(), 2, "{awaits:?}");
         assert!(patch < no_instance && no_instance < awaits[0] && awaits[0] < switch && switch < awaits[1]);
+    }
+
+    fn conversion_fixture(name: &str, version: &str) -> (StagingDirectory, PathBuf, PathBuf, LauncherState) {
+        let holder = StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/conversion-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let root = holder.path().join("game");
+        std::fs::create_dir_all(root.join("versions").join(version)).unwrap();
+        std::fs::write(
+            root.join("versions").join(version).join(format!("{version}.json")),
+            json!({ "id": version, "type": "release", "mainClass": "net.minecraft.client.main.Main" }).to_string(),
+        ).unwrap();
+        std::fs::write(
+            root.join("versions").join(version).join(format!("{version}.jar")),
+            b"client jar",
+        ).unwrap();
+        let source = root.join("instances").join(name);
+        std::fs::create_dir_all(source.join("mods")).unwrap();
+        std::fs::create_dir_all(source.join("saves/World")).unwrap();
+        std::fs::write(source.join("mods/sodium.jar"), b"mod").unwrap();
+        std::fs::write(source.join("saves/World/level.dat"), b"level").unwrap();
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = LauncherState::test_fixture(
+            holder.path().join("data"),
+            Persisted {
+                config,
+                instances: vec![Instance {
+                    id: name.into(),
+                    name: "Legacy Pack".into(),
+                    version_id: version.into(),
+                    game_directory: source.to_string_lossy().into_owned(),
+                    kind: "managed".into(),
+                    loader: "vanilla".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        (holder, root, source, state)
+    }
+
+    fn conversion_journal(
+        instance_id: &str,
+        source: &Path,
+        target: &Path,
+        name: &str,
+        phase: &str,
+    ) -> ConversionJournal {
+        ConversionJournal {
+            instance_id: instance_id.into(),
+            source: source.to_string_lossy().into_owned(),
+            target: target.to_string_lossy().into_owned(),
+            name: name.into(),
+            game_version: "1.21.1".into(),
+            installed_id: "1.21.1".into(),
+            loader: "vanilla".into(),
+            loader_version: String::new(),
+            phase: phase.into(),
+            backup_id: String::new(),
+            game_folder: String::new(),
+            validated: false,
+        }
+    }
+
+    #[test]
+    fn a_prepared_conversion_without_a_folder_only_clears_its_journal() {
+        let (_holder, root, source, state) = conversion_fixture("prepared-empty", "1.21.1");
+        let name = "Prepared Empty";
+        let target = root.join("versions").join(name);
+        let journal = conversion_journal("prepared-empty", &source, &target, name, "prepared");
+        write_conversion_journal(&state, &journal).unwrap();
+        let recovered = recover_conversion_inner(&state, "prepared-empty").unwrap();
+        assert_eq!(recovered.kind, "managed");
+        assert!(source.join("mods/sodium.jar").is_file());
+        assert!(!target.exists());
+        assert!(read_conversion_journal(&state, "prepared-empty").unwrap().is_none());
+
+        // A crash after creating the folder but before writing its profile
+        // leaves an empty folder; the prepared phase removes it.
+        std::fs::create_dir_all(&target).unwrap();
+        write_conversion_journal(&state, &journal).unwrap();
+        let recovered = recover_conversion_inner(&state, "prepared-empty").unwrap();
+        assert_eq!(recovered.kind, "managed");
+        assert!(!target.exists());
+        assert!(source.join("mods/sodium.jar").is_file());
+        assert!(read_conversion_journal(&state, "prepared-empty").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_prepared_conversion_rolls_back_the_empty_folder_it_created() {
+        let (_holder, root, source, state) = conversion_fixture("prepared-created", "1.21.1");
+        let name = "Prepared Created";
+        let target = root.join("versions").join(name);
+        crate::commands::write_instance_profile(
+            &state, &root, name, "1.21.1", "1.21.1", "vanilla",
+        )
+        .unwrap();
+        assert!(target.join(format!("{name}.json")).is_file());
+        let journal =
+            conversion_journal("prepared-created", &source, &target, name, "prepared");
+        write_conversion_journal(&state, &journal).unwrap();
+        let recovered = recover_conversion_inner(&state, "prepared-created").unwrap();
+        assert_eq!(recovered.kind, "managed", "the record never switched");
+        assert!(!target.exists(), "the folder the prepared phase created is removed");
+        assert!(source.join("mods/sodium.jar").is_file());
+        assert!(read_conversion_journal(&state, "prepared-created").unwrap().is_none());
+    }
+
+    #[test]
+    fn conversion_recovery_uses_the_journal_target_after_a_folder_switch() {
+        let (holder, root, source, state) = conversion_fixture("switched", "1.21.1");
+        let name = "Switched Pack";
+        let target = root.join("versions").join(name);
+        crate::commands::write_instance_profile(
+            &state, &root, name, "1.21.1", "1.21.1", "vanilla",
+        )
+        .unwrap();
+        std::fs::create_dir_all(target.join("mods")).unwrap();
+        std::fs::rename(source.join("mods/sodium.jar"), target.join("mods/sodium.jar")).unwrap();
+        // The user switches to another configured folder before the next start.
+        let other = holder.path().join("other-game");
+        std::fs::create_dir_all(other.join("versions")).unwrap();
+        state
+            .update(|data| {
+                data.config.game_folders.push(crate::models::GameFolder {
+                    path: other.to_string_lossy().into_owned(),
+                    label: "Other".into(),
+                    active: true,
+                });
+                data.config.game_directory = other.to_string_lossy().into_owned();
+                data.config.normalize_game_folders();
+                Ok(())
+            })
+            .unwrap();
+        let journal = conversion_journal("switched", &source, &target, name, "moving");
+        write_conversion_journal(&state, &journal).unwrap();
+        let recovered = recover_conversion_inner(&state, "switched").unwrap();
+        let expected_root = crate::instances::normalized_folder_identity(&root.to_string_lossy());
+        assert_eq!(
+            crate::instances::normalized_folder_identity(&recovered.game_folder),
+            expected_root,
+            "the record follows the journal target, not the now-active folder"
+        );
+        assert!(!source.exists());
+        assert!(target.join("mods/sodium.jar").is_file());
+        assert!(target.join("saves/World/level.dat").is_file());
+        assert!(read_conversion_journal(&state, "switched").unwrap().is_none());
+        assert_eq!(
+            crate::instances::normalized_folder_identity(
+                &state.snapshot().unwrap().config.game_directory
+            ),
+            crate::instances::normalized_folder_identity(&other.to_string_lossy()),
+            "the active folder is untouched"
+        );
+    }
+
+    #[test]
+    fn conversion_recovery_refuses_a_foreign_folder_with_the_same_name() {
+        let (_holder, root, source, state) = conversion_fixture("foreign", "1.21.1");
+        let name = "Foreign Pack";
+        let target = root.join("versions").join(name);
+        std::fs::create_dir_all(&target).unwrap();
+        let foreign = serde_json::json!({ "id": name, "inheritsFrom": "1.21.1" }).to_string();
+        std::fs::write(target.join(format!("{name}.json")), &foreign).unwrap();
+        let journal = conversion_journal("foreign", &source, &target, name, "moving");
+        write_conversion_journal(&state, &journal).unwrap();
+        let error = recover_conversion_inner(&state, "foreign").unwrap_err();
+        assert!(error.starts_with(crate::errors::PROFILE_CONFLICT_PREFIX), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(target.join(format!("{name}.json"))).unwrap(),
+            foreign,
+            "the foreign profile is untouched"
+        );
+        assert!(source.join("mods/sodium.jar").is_file());
+        assert!(read_conversion_journal(&state, "foreign").unwrap().is_some());
+
+        // Even a prepared journal may not delete a folder that is not ours.
+        let mut prepared = journal.clone();
+        prepared.phase = "prepared".into();
+        write_conversion_journal(&state, &prepared).unwrap();
+        let error = recover_conversion_inner(&state, "foreign").unwrap_err();
+        assert!(error.starts_with(crate::errors::PROFILE_CONFLICT_PREFIX), "{error}");
+        assert!(target.join(format!("{name}.json")).is_file());
+        assert!(source.exists());
+        assert!(read_conversion_journal(&state, "foreign").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_managed_instance_converts_with_a_backup_and_moves_its_game_data() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (_holder, root, source, state) = conversion_fixture("managed", "1.21.1");
+        let state = Arc::new(state);
+        let converted = runtime.block_on(async {
+            let worker = state.clone();
+            tokio::task::spawn_blocking(move || {
+                convert_managed_instance_inner(&worker, "managed", None)
+            })
+            .await
+            .unwrap()
+            .unwrap()
+        });
+        assert_eq!(converted.kind, "version");
+        assert_eq!(converted.version_id, "Legacy Pack");
+        assert!(converted.isolated);
+        let target = root.join("versions/Legacy Pack");
+        assert_eq!(
+            crate::processes::canonical_game_directory(Path::new(&converted.game_directory)).unwrap(),
+            crate::processes::canonical_game_directory(&target).unwrap()
+        );
+        assert!(!source.exists(), "the old managed folder is removed after the move");
+        assert!(target.join("mods/sodium.jar").is_file());
+        assert!(target.join("saves/World/level.dat").is_file());
+        let profile: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(target.join("Legacy Pack.json")).unwrap()).unwrap();
+        assert_eq!(profile["id"], "Legacy Pack");
+        assert_eq!(profile["inheritsFrom"], "1.21.1");
+        let backups = std::fs::read_dir(state.data_dir.join("instance-backups/managed")).unwrap().count();
+        assert_eq!(backups, 1, "a backup was written before the conversion");
+        assert!(read_conversion_journal(&state, "managed").unwrap().is_none());
+        assert_eq!(state.snapshot().unwrap().instances.len(), 1);
+    }
+
+    #[test]
+    fn the_backup_taken_before_a_conversion_is_not_restored_in_place() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (_holder, root, _source, state) = conversion_fixture("managed", "1.21.1");
+        let state = Arc::new(state);
+        let worker = state.clone();
+        let converted = blocking(&runtime, move || convert_managed_instance_inner(&worker, "managed", None)).unwrap();
+        let folder = backup_folder(&state, "managed").unwrap();
+        let history = backup_history(&folder, "managed").unwrap();
+        assert_eq!(history.backups.len(), 1);
+        let conversion_backup = history.backups[0].id.clone();
+        let target = root.join("versions/Legacy Pack");
+        let profile = fs::read(target.join("Legacy Pack.json")).unwrap();
+        let files = collect_files(&target).unwrap();
+
+        let worker = state.clone();
+        let error = blocking(&runtime, move || restore_inner(&worker, "managed", &conversion_backup).err().unwrap());
+        assert_eq!(error.code, "backup.kindMismatch");
+        let current = instance(&state.snapshot().unwrap(), "managed").unwrap();
+        assert!(same_instance(&current, &converted).unwrap(), "the record is unchanged");
+        assert_eq!(fs::read(target.join("Legacy Pack.json")).unwrap(), profile);
+        assert_eq!(collect_files(&target).unwrap(), files, "the folder is unchanged");
+        assert!(read_intent(&folder).unwrap().is_none(), "no restore was started");
+        assert_eq!(backup_history(&folder, "managed").unwrap().backups.len(), 1, "no pre-restore backup");
+
+        // A backup of the converted instance itself still restores in place.
+        let (worker, record) = (state.clone(), current.clone());
+        let own = blocking(&runtime, move || backup_inner(&worker, &record).unwrap());
+        fs::write(target.join("mods/added.jar"), b"added later").unwrap();
+        let worker = state.clone();
+        let restored = blocking(&runtime, move || restore_inner(&worker, "managed", &own.id).ok().unwrap());
+        assert_eq!((restored.instance.kind.as_str(), restored.instance.version_id.as_str()), ("version", "Legacy Pack"));
+        assert!(!target.join("mods/added.jar").exists());
+        assert_eq!(fs::read(target.join("Legacy Pack.json")).unwrap(), profile);
+    }
+
+    #[test]
+    fn n5_conversion_keeps_the_configured_slash_variant_in_the_record() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (_holder, root, _source, state) = conversion_fixture("slash", "1.21.1");
+        let configured = root.to_string_lossy().replace('\\', "/");
+        state
+            .update(|data| {
+                data.config.game_directory = configured.clone();
+                for folder in &mut data.config.game_folders {
+                    folder.path = configured.clone();
+                }
+                data.config.normalize_game_folders();
+                Ok(())
+            })
+            .unwrap();
+        let state = Arc::new(state);
+        let converted = runtime.block_on(async {
+            let worker = state.clone();
+            tokio::task::spawn_blocking(move || {
+                convert_managed_instance_inner(&worker, "slash", None)
+            })
+            .await
+            .unwrap()
+            .unwrap()
+        });
+        assert_eq!(
+            converted.game_folder, configured,
+            "the record stores the exact configured spelling the scan compares"
+        );
+        sync_version_instances(&state).unwrap();
+        let matches: Vec<_> = state
+            .snapshot()
+            .unwrap()
+            .instances
+            .into_iter()
+            .filter(|instance| instance.version_id == "Legacy Pack")
+            .collect();
+        assert_eq!(matches.len(), 1, "the slash variant is the same game folder, not a duplicate");
+        assert_eq!(matches[0].game_folder, configured);
+    }
+
+    /// A directory junction like the common `%APPDATA%\.minecraft` -> `D:\mc`.
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) {
+        let text = |path: &Path| path.to_string_lossy().replace('/', "\\");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", &text(link), &text(target)])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+    }
+
+    /// Configure the junction spelling as the only game folder, exactly as a
+    /// user who picked `%APPDATA%\.minecraft` would have it.
+    #[cfg(windows)]
+    fn use_junction_spelling(holder: &StagingDirectory, root: &Path, state: &LauncherState) -> String {
+        let link = holder.path().join("linked-minecraft");
+        junction(&link, root);
+        let spelling = link.to_string_lossy().replace('/', "\\");
+        state
+            .update(|data| {
+                data.config.game_directory = spelling.clone();
+                data.config.game_folders = vec![crate::models::GameFolder {
+                    path: spelling.clone(),
+                    label: String::new(),
+                    active: true,
+                }];
+                data.config.normalize_game_folders();
+                Ok(())
+            })
+            .unwrap();
+        spelling
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn m3_a_junctioned_game_folder_converts_and_keeps_its_configured_spelling() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (holder, root, source, state) = conversion_fixture("junction", "1.21.1");
+        let spelling = use_junction_spelling(&holder, &root, &state);
+        let state = Arc::new(state);
+        let converted = runtime.block_on(async {
+            let worker = state.clone();
+            tokio::task::spawn_blocking(move || convert_managed_instance_inner(&worker, "junction", None))
+                .await
+                .unwrap()
+        })
+        .unwrap();
+        assert_eq!(converted.kind, "version");
+        assert_eq!(converted.game_folder, spelling, "the record keeps the configured junction spelling");
+        let target = root.join("versions/Legacy Pack");
+        assert!(target.join("mods/sodium.jar").is_file());
+        assert!(target.join("saves/World/level.dat").is_file());
+        assert!(!source.exists());
+        assert!(read_conversion_journal(&state, "junction").unwrap().is_none(), "nothing is left to retry");
+        sync_version_instances(&state).unwrap();
+        let snapshot = state.snapshot().unwrap();
+        let records: Vec<_> = snapshot
+            .instances
+            .iter()
+            .filter(|instance| instance.version_id == "Legacy Pack")
+            .collect();
+        assert_eq!(records.len(), 1, "the scan finds the converted record, not a second one");
+        assert_eq!(records[0].id, "junction");
+        assert!(crate::commands::active_folder_instances(&snapshot)
+            .iter()
+            .any(|instance| instance.id == "junction"));
+
+        // A record that spells its own folder through the junction converts
+        // too: only the configured root follows the link.
+        let second = root.join("instances/second");
+        std::fs::create_dir_all(second.join("saves/Other")).unwrap();
+        std::fs::write(second.join("saves/Other/level.dat"), b"other level").unwrap();
+        state
+            .update(|data| {
+                data.instances.push(Instance {
+                    id: "second".into(),
+                    name: "Second Pack".into(),
+                    version_id: "1.21.1".into(),
+                    game_directory: format!(r"{spelling}\instances\second"),
+                    kind: "managed".into(),
+                    loader: "vanilla".into(),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+        let converted = runtime
+            .block_on(async {
+                let worker = state.clone();
+                tokio::task::spawn_blocking(move || convert_managed_instance_inner(&worker, "second", None))
+                    .await
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(converted.game_folder, spelling);
+        assert!(root.join("versions/Second Pack/saves/Other/level.dat").is_file());
+        assert!(!second.exists());
+        assert!(read_conversion_journal(&state, "second").unwrap().is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn m3_an_earlier_half_done_junction_conversion_is_cleaned_up_once() {
+        let (holder, root, source, state) = conversion_fixture("stuck", "1.21.1");
+        let spelling = use_junction_spelling(&holder, &root, &state);
+        // What an earlier version left: the profile and a "moving" journal
+        // that names the junction, then a refused folder check before any
+        // data moved. Its next scan registered the profile-only folder.
+        let name = "Legacy Pack";
+        let target = root.join("versions").join(name);
+        crate::commands::write_instance_profile(&state, &root, name, "1.21.1", "1.21.1", "vanilla").unwrap();
+        let mut journal = conversion_journal("stuck", &source, &target, name, "moving");
+        journal.game_folder = spelling.clone();
+        write_conversion_journal(&state, &journal).unwrap();
+        sync_version_instances(&state).unwrap();
+        assert!(state
+            .snapshot()
+            .unwrap()
+            .instances
+            .iter()
+            .any(|instance| instance.id != "stuck" && instance.version_id == name));
+
+        recover_pending_conversions(&state);
+        assert!(read_conversion_journal(&state, "stuck").unwrap().is_none(), "recovery stops retrying");
+        assert!(!target.exists(), "the profile-only folder is removed");
+        assert!(source.join("mods/sodium.jar").is_file(), "the game data never moved");
+        let snapshot = state.snapshot().unwrap();
+        assert!(
+            !snapshot.instances.iter().any(|instance| instance.version_id == name),
+            "the placeholder record is gone"
+        );
+        let managed = snapshot.instances.iter().find(|instance| instance.id == "stuck").unwrap();
+        assert_eq!(managed.kind, "managed");
+        // A second start has nothing left to do, and the conversion now works.
+        recover_pending_conversions(&state);
+        let state = Arc::new(state);
+        let converted = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                let worker = state.clone();
+                tokio::task::spawn_blocking(move || convert_managed_instance_inner(&worker, "stuck", None))
+                    .await
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(converted.game_folder, spelling);
+        assert!(target.join("mods/sodium.jar").is_file());
+    }
+
+    #[test]
+    fn n9_conversion_refuses_an_official_name_and_conversion_is_not_attempted() {
+        let (_holder, root, source, state) = conversion_fixture("official", "1.21.1");
+        let manifest = serde_json::json!({
+            "latest": { "release": "1.19.4", "snapshot": "1.19.4" },
+            "versions": [{
+                "id": "1.19.4", "type": "release",
+                "url": "https://piston-meta.mojang.com/v1/packages/a/1.19.4.json",
+                "sha1": "a".repeat(40)
+            }]
+        });
+        std::fs::write(state.data_dir.join("version-manifest-mojang.json"), manifest.to_string()).unwrap();
+        let error = convert_managed_instance_inner(&state, "official", Some("1.19.4")).unwrap_err();
+        assert_eq!(crate::errors::expected(error).code, "instance.officialVersionName");
+        assert!(source.exists(), "nothing was moved");
+        assert!(!root.join("versions/1.19.4").exists());
+        assert!(read_conversion_journal(&state, "official").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_conversion_interrupted_mid_move_is_finished_from_its_journal() {
+        let (_holder, root, source, state) = conversion_fixture("crashed", "1.21.1");
+        let name = "Crash Pack";
+        let target = root.join("versions").join(name);
+        crate::commands::write_instance_profile(&state, &root, name, "1.21.1", "1.21.1", "vanilla").unwrap();
+        std::fs::create_dir_all(target.join("mods")).unwrap();
+        std::fs::rename(source.join("mods/sodium.jar"), target.join("mods/sodium.jar")).unwrap();
+        let journal = ConversionJournal {
+            instance_id: "crashed".into(),
+            source: source.to_string_lossy().into_owned(),
+            target: target.to_string_lossy().into_owned(),
+            name: name.into(),
+            game_version: "1.21.1".into(),
+            installed_id: "1.21.1".into(),
+            loader: "vanilla".into(),
+            loader_version: String::new(),
+            phase: "moving".into(),
+            backup_id: String::new(),
+            game_folder: root.to_string_lossy().into_owned(),
+            validated: true,
+        };
+        write_conversion_journal(&state, &journal).unwrap();
+        let recovered = recover_conversion_inner(&state, "crashed").unwrap();
+        assert_eq!(recovered.kind, "version");
+        assert!(!source.exists());
+        assert!(target.join("mods/sodium.jar").is_file());
+        assert!(target.join("saves/World/level.dat").is_file());
+        assert!(read_conversion_journal(&state, "crashed").unwrap().is_none());
+        // Replaying the same recovery is harmless after the record was switched.
+        write_conversion_journal(&state, &journal).unwrap();
+        let again = recover_conversion_inner(&state, "crashed").unwrap();
+        assert_eq!((again.kind.as_str(), again.version_id.as_str()), ("version", name));
+        assert!(read_conversion_journal(&state, "crashed").unwrap().is_none());
+    }
+
+    #[test]
+    fn conversion_refuses_folders_the_launcher_does_not_manage() {
+        let (_holder, _root, _source, state) = conversion_fixture("external", "1.21.1");
+        let external = _holder.path().join("external");
+        std::fs::create_dir_all(&external).unwrap();
+        state.update(|data| {
+            data.instances[0].game_directory = external.to_string_lossy().into_owned();
+            Ok(())
+        }).unwrap();
+        let error = convert_managed_instance_inner(&state, "external", None).unwrap_err();
+        assert_eq!(error, crate::errors::INSTANCE_CONVERT_UNSUPPORTED);
+        assert!(external.is_dir(), "the refused folder is untouched");
+    }
+
+    #[test]
+    fn a_loader_switch_rewrites_a_version_folder_instance_profile() {
+        let holder = StagingDirectory::create(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/conversion-tests")
+                .join(uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let root = holder.path().join("game");
+        for (id, metadata) in [
+            ("1.21.1", json!({ "id": "1.21.1", "mainClass": "net.minecraft.client.main.Main" })),
+            ("fabric-loader-0.16.9-1.21.1", json!({
+                "id": "fabric-loader-0.16.9-1.21.1", "inheritsFrom": "1.21.1",
+                "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+                "libraries": [{ "name": "net.fabricmc:fabric-loader:0.16.9" }]
+            })),
+        ] {
+            let directory = root.join("versions").join(id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+        }
+        fs::write(root.join("versions/1.21.1/1.21.1.jar"), b"jar").unwrap();
+        let folder = root.join("versions/Survival");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("Survival.json"), json!({ "id": "Survival", "inheritsFrom": "1.21.1" }).to_string()).unwrap();
+        let mut config = crate::models::Config {
+            game_directory: root.to_string_lossy().into_owned(),
+            ..crate::models::Config::default()
+        };
+        config.normalize_game_folders();
+        let state = LauncherState::test_fixture(
+            holder.path().join("data"),
+            Persisted {
+                config,
+                instances: vec![Instance {
+                    id: "vx-survival".into(),
+                    name: "Survival".into(),
+                    version_id: "Survival".into(),
+                    game_directory: folder.to_string_lossy().into_owned(),
+                    kind: "version".into(),
+                    game_folder: root.to_string_lossy().into_owned(),
+                    isolated: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        let switched = apply_instance_loader_update(
+            &state,
+            "vx-survival",
+            "fabric-loader-0.16.9-1.21.1",
+            "fabric",
+            "0.16.9",
+            &crate::commands::LoaderParents::default(),
+        )
+        .unwrap();
+        assert_eq!(switched.version_id, "Survival", "the folder name stays the instance id");
+        assert_eq!(switched.loader, "fabric");
+        let profile: serde_json::Value =
+            serde_json::from_slice(&fs::read(folder.join("Survival.json")).unwrap()).unwrap();
+        assert_eq!(profile["id"], "Survival");
+        assert_eq!(profile["inheritsFrom"], "1.21.1");
+        assert_eq!(profile["libraries"][0]["name"], "net.fabricmc:fabric-loader:0.16.9");
+        assert!(crate::instances::profile_is_owned(
+            &state.snapshot().unwrap(),
+            &folder.join("Survival.json")
+        ));
     }
 }

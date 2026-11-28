@@ -5,9 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InstanceIdentity, InstanceIdentityProvider } from "./InstanceIdentity";
 import { InstanceCard } from "./InstanceCard";
 import { InstanceDetailPage } from "./InstanceDetailPage";
-import { VersionDirectoryCard } from "./LibraryPage";
-import { VersionDirectoryDetailPage } from "./VersionDirectoryDetailPage";
-import type { Instance, InstalledVersion } from "../../lib/launcher";
+import type { Instance } from "../../lib/launcher";
 import type { MotionTier } from "../../design/motion";
 
 type LayoutEvents = { onLayoutAnimationStart?: () => void; onLayoutAnimationComplete?: () => void };
@@ -99,12 +97,24 @@ const glyphInstance: Instance = {
   loader: "fabric",
   loaderVersion: "0.16.10",
 };
-const loaderVersion: InstalledVersion = {
+const loaderVersion: Instance = {
   id: "fabric-loader-0.16.10-24w14a",
-  type: "release",
-  installed: true,
-  launchable: true,
-  javaMajor: 21,
+  name: "Fabric 24w14a",
+  versionId: "fabric-loader-0.16.10-24w14a",
+  gameDirectory: "C:\\Loader",
+  createdAt: "2026-01-01T00:00:00Z",
+  category: "",
+  iconPath: null,
+  notes: "",
+  maxMemoryMb: null,
+  javaPath: null,
+  jvmArguments: null,
+  screenWidth: null,
+  screenHeight: null,
+  totalPlayTime: 0,
+  loader: "fabric",
+  loaderVersion: "0.16.10",
+  kind: "version",
 };
 
 beforeEach(() => {
@@ -219,11 +229,81 @@ describe("default instance glyph", () => {
     expect(card().querySelector(".vx-instance-glyph")).toBeNull();
   });
 
+  it("marks the glyph face so the decorative tile and corner mark stay hidden", () => {
+    render({ loader: "fabric", versionId: "24w14a" });
+    const identity = card().querySelector(".vx-instance-identity")!;
+    expect(identity.getAttribute("data-identity-face")).toBe("glyph");
+
+    render();
+    expect(card().querySelector(".vx-instance-identity")?.hasAttribute("data-identity-face")).toBe(false);
+  });
+
   it("keeps the fallback letter hidden when the glyph is shown", () => {
     render({ loader: "fabric", versionId: "24w14a" });
     const identity = card().querySelector(".vx-instance-identity")!;
     expect(identity.querySelector(".vx-instance-glyph")).not.toBeNull();
     expect(identity.querySelector(".vx-instance-identity__letter")?.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("keeps the icon decorative because the card text names version and loader", () => {
+    render({ loader: "forge", versionId: "1.21.1" });
+    const glyph = card().querySelector(".vx-instance-glyph")!;
+    expect(glyph.getAttribute("aria-hidden")).toBe("true");
+    expect(card().querySelector(".vx-instance-identity")?.getAttribute("aria-hidden")).toBe("true");
+    expect(glyph.querySelector("title")).toBeNull();
+  });
+
+  it.each([
+    ["vanilla", "1.21.1"],
+    ["fabric", "1.21.1"],
+    ["quilt", "1.21.1"],
+    ["forge", "1.21.1"],
+    ["neoforge", "1.21.1"],
+    ["optifine", "1.21.1"],
+    ["unknown", "1.21.1"],
+  ] as const)("passes the %s loader to the glyph for its colour token", (loader, versionId) => {
+    render({ loader, versionId });
+    expect(card().querySelector(".vx-instance-glyph")?.getAttribute("data-glyph-loader")).toBe(loader);
+  });
+
+  it.each([
+    ["1.21.1", "release"],
+    ["24w14a", "snapshot"],
+    ["b1.7.3", "old"],
+  ] as const)("renders the %s version kind as a %s cube", (versionId, version) => {
+    render({ loader: "vanilla", versionId });
+    const glyph = card().querySelector(".vx-instance-glyph")!;
+    expect(glyph.getAttribute("data-glyph-version")).toBe(version);
+    const hasNotch = Boolean(glyph.querySelector(".vx-instance-glyph__notch"));
+    expect(hasNotch).toBe(version === "snapshot");
+  });
+});
+
+describe("loader recognition from version-folder ids", () => {
+  it.each([
+    { id: "26.2-fabric-0.19.3", loader: "fabric", version: "release" },
+    { id: "1.21.1-fabric-0.19.3", loader: "fabric", version: "release" },
+    { id: "fabric-loader-0.19.3-26.2", loader: "fabric", version: "release" },
+    { id: "quilt-loader-0.26.4-1.21.1", loader: "quilt", version: "release" },
+    { id: "1.21.1-quilt-0.26.4", loader: "quilt", version: "release" },
+    { id: "1.20.1-forge-47.2.0", loader: "forge", version: "release" },
+    { id: "1.21.1-neoforge-21.1.77", loader: "neoforge", version: "release" },
+    { id: "neoforge-21.1.77", loader: "neoforge", version: "release" },
+    { id: "1.20.4-OptiFine_HD_U_I7", loader: "optifine", version: "release" },
+    { id: "1.21.1", loader: "vanilla", version: "release" },
+  ])("shows $id as a $loader cube on an instance card", ({ id, loader, version }) => {
+    render({ loader: null, versionId: id });
+    expect(glyphAttributes(card())).toEqual({ loader, version });
+  });
+
+  it("uses the version id when a caller does not supply a loader family", () => {
+    render({ loader: null, versionId: "26.2-fabric-0.19.3" });
+    expect(glyphAttributes(card())).toEqual({ loader: "fabric", version: "release" });
+  });
+
+  it("recovers a known loader from the version id even when the family is unknown", () => {
+    render({ loader: "liteloader", versionId: "1.21.1-fabric-0.19.3" });
+    expect(glyphAttributes(card())).toEqual({ loader: "fabric", version: "release" });
   });
 });
 
@@ -239,29 +319,14 @@ describe("glyph caller props", () => {
     expect(glyphAttributes(container.querySelector(".vx-instance-card__select"))).toEqual(expected);
   });
 
-  it("keeps the same loader-profile directory glyph on the card, detail page and back", () => {
+  it("keeps the same loader-profile instance glyph on the card, detail page and back", () => {
     const expected = { loader: "fabric", version: "snapshot" };
-    const directoryCard = <VersionDirectoryCard version={loaderVersion} selected={false} onOpen={() => {}} onLaunch={() => {}} />;
-    renderNode(directoryCard);
-    expect(glyphAttributes(container.querySelector("[data-version-directory]"))).toEqual(expected);
-    renderNode(<VersionDirectoryDetailPage version={loaderVersion} onBack={() => {}} onLaunch={() => {}} />);
+    const instanceCard = <InstanceCard instance={loaderVersion} onOpen={() => {}} onLaunch={() => {}} />;
+    renderNode(instanceCard);
+    expect(glyphAttributes(container.querySelector(".vx-instance-card__select"))).toEqual(expected);
+    renderNode(<InstanceDetailPage instance={loaderVersion} onBack={() => {}} onChanged={async () => {}} onLaunch={() => {}} />);
     expect(glyphAttributes(container.querySelector(".vx-detail-header"))).toEqual(expected);
-    renderNode(directoryCard);
-    expect(glyphAttributes(container.querySelector("[data-version-directory]"))).toEqual(expected);
-  });
-
-  it("still uses the manifest type for a vanilla version directory", () => {
-    const vanillaVersion: InstalledVersion = {
-      id: "1.21.1",
-      type: "snapshot",
-      installed: true,
-      launchable: true,
-      javaMajor: 21,
-    };
-    const expected = { loader: "vanilla", version: "snapshot" };
-    renderNode(<VersionDirectoryCard version={vanillaVersion} selected={false} onOpen={() => {}} onLaunch={() => {}} />);
-    expect(glyphAttributes(container.querySelector("[data-version-directory]"))).toEqual(expected);
-    renderNode(<VersionDirectoryDetailPage version={vanillaVersion} onBack={() => {}} onLaunch={() => {}} />);
-    expect(glyphAttributes(container.querySelector(".vx-detail-header"))).toEqual(expected);
+    renderNode(instanceCard);
+    expect(glyphAttributes(container.querySelector(".vx-instance-card__select"))).toEqual(expected);
   });
 });

@@ -8,6 +8,7 @@ import {
   events,
   type Bootstrap,
   type Config,
+  type Instance,
   type RunningGame,
 } from "../../lib/launcher";
 import { LauncherError } from "../../lib/errors";
@@ -91,6 +92,21 @@ function fixtureBootstrap(): Bootstrap {
     ],
     capabilities: {},
   };
+}
+
+function instanceFixture(id: string, versionId: string, overrides: Partial<Instance> = {}): Instance {
+  return {
+    ...fixtureBootstrap().instances[0],
+    id,
+    name: id,
+    versionId,
+    kind: "version",
+    ...overrides,
+  };
+}
+
+function installedFixture(id: string) {
+  return { id, type: "release", installed: true, launchable: true, reason: undefined, javaMajor: 21 };
 }
 
 function Harness() {
@@ -267,6 +283,23 @@ describe("launcher controller", () => {
     expect(current.notice?.code).toBe("desktop.required");
   });
 
+  it("reads a snapshot without a memory mode as manual memory, as the backend does, and fills the other missing fields", async () => {
+    const legacy: Partial<Config> = { ...defaults, maxMemoryMb: 6144 };
+    delete legacy.memoryMode;
+    delete legacy.ambientLightIntensity;
+    bootstrap = { ...bootstrap, config: legacy as Config };
+    await render();
+    expect(current.bootstrapped).toBe(true);
+    expect(current.config.memoryMode).toBe("manual");
+    expect(current.data.config.memoryMode).toBe("manual");
+    expect(current.config.maxMemoryMb).toBe(6144);
+    expect(current.config.ambientLightIntensity).toBe(defaults.ambientLightIntensity);
+    // A snapshot that names its mode keeps it.
+    bootstrap = { ...bootstrap, config: { ...defaults, memoryMode: "auto" } };
+    await act(async () => { await current.reload(); });
+    expect(current.config.memoryMode).toBe("auto");
+  });
+
   it("cancels the exact launch reservation before a delayed reservation can start anything", async () => {
     const normal = commandMock.getMockImplementation()!;
     let reserve!: (id: string) => void;
@@ -371,9 +404,10 @@ describe("launcher controller", () => {
 
   it("passes a direct multiplayer address to the native launch boundary", async () => {
     await render();
-    await act(async () => current.launchMultiplayer("1.21.1", "play.example.invalid:25565"));
+    await act(async () => current.launchMultiplayer("fixture-world", "play.example.invalid:25565"));
     expect(commandMock).toHaveBeenCalledWith("launch_game", {
       versionId: "1.21.1",
+      instanceId: "fixture-world",
       accountId: "fixture-classic",
       serverAddress: "play.example.invalid:25565",
       taskId: "reserved-fixture-task",
@@ -394,6 +428,101 @@ describe("launcher controller", () => {
     await act(async () => current.reload());
     expect(current.selectedInstance).toBeUndefined();
     expect(current.selectedVersionId).toBe("1.21.1");
+  });
+
+  it("selects the first instance when the launcher starts without a choice", async () => {
+    await render();
+    expect(current.selectedInstance?.id).toBe("fixture-world");
+  });
+
+  it("keeps the selected version on the instance the launcher selects at start", async () => {
+    // The loader instance's own version is not the first installed version, so
+    // a selection that kept the first version would pair this instance with
+    // the wrong version (Discover would then resolve and install against it).
+    bootstrap.instances = [{
+      ...bootstrap.instances[0],
+      versionId: "fabric-loader-0.16.9-1.21.1",
+      loader: "fabric",
+      loaderVersion: "0.16.9",
+    }];
+    bootstrap.installedVersions = [
+      ...bootstrap.installedVersions,
+      { ...bootstrap.installedVersions[0], id: "fabric-loader-0.16.9-1.21.1" },
+    ];
+    await render();
+    expect(current.selectedInstance?.id).toBe("fixture-world");
+    expect(current.selectedVersionId).toBe("fabric-loader-0.16.9-1.21.1");
+    expect(current.selectedVersion?.id).toBe("fabric-loader-0.16.9-1.21.1");
+    act(() => current.selectVersion("1.21.1"));
+    expect(current.selectedInstance).toBeUndefined();
+    expect(current.selectedVersionId).toBe("1.21.1");
+  });
+
+  it("pairs the startup instance with its own version even when the version list sorts differently", async () => {
+    // state.json order differs from the backend's descending id sort.
+    bootstrap.instances = [instanceFixture("world-old", "1.20.1"), instanceFixture("world-new", "1.21.1")];
+    bootstrap.installedVersions = [installedFixture("1.21.1"), installedFixture("1.20.1")];
+    await render();
+    expect(current.selectedInstance?.id).toBe("world-old");
+    expect(current.selectedVersionId).toBe("1.20.1");
+    expect(current.selectedVersion?.id).toBe("1.20.1");
+
+    await act(async () => current.reload());
+    expect(current.selectedVersionId).toBe(current.selectedInstance?.versionId);
+  });
+
+  it("moves to another instance together with its version when the selected one disappears", async () => {
+    bootstrap.instances = [instanceFixture("world-old", "1.20.1"), instanceFixture("world-new", "1.21.1")];
+    bootstrap.installedVersions = [installedFixture("1.21.1"), installedFixture("1.20.1")];
+    await render();
+    act(() => current.selectInstance("world-new"));
+    expect(current.selectedVersionId).toBe("1.21.1");
+    bootstrap.instances = [instanceFixture("world-old", "1.20.1")];
+    bootstrap.installedVersions = [installedFixture("1.20.1")];
+    await act(async () => current.reload());
+    expect(current.selectedInstance?.id).toBe("world-old");
+    expect(current.selectedVersionId).toBe("1.20.1");
+  });
+
+  it("keeps an explicit version-only choice across reloads instead of pairing it with the first instance", async () => {
+    bootstrap.instances = [instanceFixture("world-old", "1.20.1")];
+    bootstrap.installedVersions = [installedFixture("1.21.1"), installedFixture("1.20.1")];
+    await render();
+    act(() => current.selectVersion("1.21.1"));
+    await act(async () => current.reload());
+    expect(current.selectedInstance).toBeUndefined();
+    expect(current.selectedVersionId).toBe("1.21.1");
+
+    act(() => current.selectInstance("world-old"));
+    await act(async () => current.reload());
+    expect(current.selectedInstance?.id).toBe("world-old");
+    expect(current.selectedVersionId).toBe("1.20.1");
+  });
+
+  it("joins a server with exactly the instance it names when another record shares its version", async () => {
+    const versionId = "fabric-loader-0.16.9-1.21.1";
+    bootstrap.instances = [
+      instanceFixture("managed-modded", versionId, { kind: "managed" }),
+      instanceFixture("version-folder", versionId),
+    ];
+    bootstrap.installedVersions = [installedFixture(versionId)];
+    await render();
+    await act(async () => current.launchMultiplayer("version-folder", "play.example.invalid:25565"));
+    expect(commandMock).toHaveBeenCalledWith("launch_game", {
+      versionId,
+      instanceId: "version-folder",
+      accountId: "fixture-classic",
+      serverAddress: "play.example.invalid:25565",
+      taskId: "reserved-fixture-task",
+    });
+    expect(commandMock).not.toHaveBeenCalledWith("launch_game", expect.objectContaining({ instanceId: "managed-modded" }));
+  });
+
+  it("refuses a multiplayer join for an instance that is not in the library", async () => {
+    await render();
+    await act(async () => current.launchMultiplayer("1.21.1", "play.example.invalid:25565"));
+    expect(commandMock).not.toHaveBeenCalledWith("launch_game", expect.anything());
+    expect(current.notice?.code).toBe("instance.required");
   });
 
   it("applies running events and exposes normalized busy errors", async () => {

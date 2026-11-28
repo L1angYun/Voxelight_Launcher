@@ -1,9 +1,15 @@
 //! CurseForge integration uses only the user's own encrypted service key.
 //! API contract: https://docs.curseforge.com/rest-api/
 use crate::{
-    errors::{expected, AppResult},
+    errors::{discover_error, discover_failure, expected, AppResult, DiscoverSource},
     models::{ResourceDependency, ResourceProject, ResourceProjectDetails, ResourceVersion},
-    resources::{ResourceInstall, ResourceKind},
+    resources::{
+        resource_transactions::{
+            self, DependencySource, InstallEntry, InstallSource, RequiredResolution, StagedFile,
+        },
+        Dependency as PlanDependency, FileHashes, ResourceFile, ResourceInstall, ResourceKind,
+        Version,
+    },
     storage::{safe_join, validate_id, LauncherState},
 };
 use futures_util::StreamExt;
@@ -14,7 +20,7 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tauri::State;
@@ -32,6 +38,14 @@ const MAX_FILE: u64 = 1024 * 1024 * 1024;
 #[derive(Deserialize)]
 struct Response<T> {
     data: T,
+    #[serde(default)]
+    pagination: Option<Pagination>,
+}
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Pagination {
+    #[serde(default)]
+    total_count: u64,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +71,46 @@ struct Project {
     links: Links,
 }
 
+fn curseforge_version(file: &CfFile, minecraft: &str) -> ResourceVersion {
+    let compatible =
+        !minecraft.is_empty() && file.game_versions.iter().any(|game| game == minecraft);
+    let loaders = file
+        .game_versions
+        .iter()
+        .filter_map(|tag| match tag.to_ascii_lowercase().as_str() {
+            "fabric" => Some("fabric".into()),
+            "quilt" => Some("quilt".into()),
+            "forge" => Some("forge".into()),
+            "neoforge" => Some("neoforge".into()),
+            _ => None,
+        })
+        .collect();
+    ResourceVersion {
+        id: file.id.to_string(),
+        name: file.file_name.clone(),
+        version_number: file.file_name.clone(),
+        date_published: file.file_date.clone(),
+        game_versions: file.game_versions.clone(),
+        loaders,
+        compatible,
+    }
+}
+
+/// A mod version also has to declare the target instance's loader.
+fn apply_loader_compatibility(
+    versions: &mut [ResourceVersion],
+    target: Option<&crate::resources::ResourceContext>,
+    resource_type: &str,
+) {
+    if resource_type == "mod" {
+        for version in versions {
+            version.compatible &= target
+                .and_then(|target| target.loader.as_deref())
+                .is_some_and(|loader| version.loaders.iter().any(|tag| tag == loader));
+        }
+    }
+}
+
 fn curseforge_details(
     project: Project,
     files: Vec<CfFile>,
@@ -68,7 +122,7 @@ fn curseforge_details(
     let versions = files
         .into_iter()
         .filter(|file| file.is_available)
-        .take(30)
+        .take(crate::resources::PROJECT_VERSION_PAGE)
         .map(|file| {
             for dependency in &file.dependencies {
                 let kind = match dependency.relation_type {
@@ -86,28 +140,7 @@ fn curseforge_details(
                     });
                 }
             }
-            let compatible =
-                !minecraft.is_empty() && file.game_versions.iter().any(|game| game == minecraft);
-            let loaders = file
-                .game_versions
-                .iter()
-                .filter_map(|tag| match tag.to_ascii_lowercase().as_str() {
-                    "fabric" => Some("fabric".into()),
-                    "quilt" => Some("quilt".into()),
-                    "forge" => Some("forge".into()),
-                    "neoforge" => Some("neoforge".into()),
-                    _ => None,
-                })
-                .collect();
-            ResourceVersion {
-                id: file.id.to_string(),
-                name: file.file_name.clone(),
-                version_number: file.file_name,
-                date_published: file.file_date,
-                game_versions: file.game_versions,
-                loaders,
-                compatible,
-            }
+            curseforge_version(&file, minecraft)
         })
         .collect();
     ResourceProjectDetails {
@@ -143,6 +176,188 @@ fn curseforge_details(
     }
 }
 
+struct CurseforgeSource {
+    id: u64,
+    target: Option<crate::resources::ResourceContext>,
+    key: String,
+    client: reqwest::Client,
+    /// The game version and loader used to filter the files endpoint.
+    game: String,
+    loader: Option<String>,
+}
+
+async fn curseforge_source(
+    state: &LauncherState,
+    project: &str,
+    version_id: Option<&str>,
+    instance_id: Option<&str>,
+    resource_type: &str,
+) -> AppResult<CurseforgeSource> {
+    let kind = if resource_type == "modpack" {
+        ResourceKind::Mod
+    } else {
+        ResourceKind::parse(resource_type)
+            .map_err(|error| expected(crate::resources::invalid_request(error)))?
+    };
+    let id = project_id(project).map_err(|error| expected(crate::resources::invalid_request(error)))?;
+    let target = version_id
+        .filter(|version| !version.is_empty())
+        .and_then(|version| crate::resources::resource_context(state, version, instance_id).ok());
+    let key = service_key(state).map_err(expected)?;
+    let client = api_client(state).map_err(expected)?;
+    let filter = target.as_ref().filter(|target| {
+        resource_type != "modpack" && (kind != ResourceKind::Mod || target.loader.is_some())
+    });
+    let game = filter
+        .map(|target| target.game_version.clone())
+        .unwrap_or_default();
+    let loader = filter
+        .and_then(|target| target.loader.clone())
+        .filter(|_| kind == ResourceKind::Mod);
+    Ok(CurseforgeSource {
+        id,
+        target,
+        key,
+        client,
+        game,
+        loader,
+    })
+}
+
+pub(crate) async fn curseforge_details_for_state(
+    state: &LauncherState,
+    project_id: String,
+    version_id: Option<String>,
+    instance_id: Option<String>,
+    resource_type: String,
+) -> AppResult<crate::resources::ProjectDetailsPage> {
+    let refused = |error| discover_error(DiscoverSource::CurseForge, error);
+    let source = curseforge_source(
+        state,
+        &project_id,
+        version_id.as_deref(),
+        instance_id.as_deref(),
+        &resource_type,
+    )
+    .await
+    .map_err(refused)?;
+    let project: Response<Project> = api(
+        &source.client,
+        &source.key,
+        &format!("mods/{}", source.id),
+        &[],
+    )
+    .await
+    .map_err(|error| refused(expected(error)))?;
+    let (files, raw_total) = files_page_with_total(
+        &source.client,
+        &source.key,
+        source.id,
+        &source.game,
+        source.loader.as_deref(),
+        0,
+        50,
+    )
+    .await
+    .map_err(|error| refused(expected(error)))?;
+    let available = files.iter().filter(|file| file.is_available).count();
+    let has_more_versions = available > crate::resources::PROJECT_VERSION_PAGE
+        || (files.len() == 50 && raw_total.is_none_or(|total| total > 50));
+    let minecraft = source
+        .target
+        .as_ref()
+        .map(|target| target.game_version.as_str())
+        .unwrap_or("");
+    let mut details = curseforge_details(project.data, files, &resource_type, minecraft);
+    apply_loader_compatibility(&mut details.versions, source.target.as_ref(), &resource_type);
+    Ok(crate::resources::ProjectDetailsPage {
+        details,
+        has_more_versions,
+    })
+}
+
+fn version_scan_exhausted(
+    fetched: usize,
+    raw_index: u64,
+    raw_total: Option<u64>,
+    needed: usize,
+    mapped: usize,
+) -> bool {
+    mapped > needed
+        || fetched < 50
+        || raw_total.is_some_and(|total| raw_index >= total)
+        || raw_index >= 500
+}
+
+pub(crate) async fn curseforge_versions_page(
+    state: &LauncherState,
+    project_id: String,
+    version_id: Option<String>,
+    instance_id: Option<String>,
+    resource_type: String,
+    offset: Option<u32>,
+) -> AppResult<crate::resources::ResourceVersionPage> {
+    let refused = |error| discover_error(DiscoverSource::CurseForge, error);
+    let offset = crate::resources::version_offset(offset).map_err(refused)?;
+    let source = curseforge_source(
+        state,
+        &project_id,
+        version_id.as_deref(),
+        instance_id.as_deref(),
+        &resource_type,
+    )
+    .await
+    .map_err(refused)?;
+    let needed = offset + crate::resources::PROJECT_VERSION_PAGE;
+    let mut mapped: Vec<ResourceVersion> = Vec::new();
+    let mut raw_index = 0_u64;
+    let mut raw_total = None;
+    loop {
+        let (files, total) = files_page_with_total(
+            &source.client,
+            &source.key,
+            source.id,
+            &source.game,
+            source.loader.as_deref(),
+            raw_index as usize,
+            50,
+        )
+        .await
+        .map_err(|error| refused(expected(error)))?;
+        if total.is_some() {
+            raw_total = total;
+        }
+        let fetched = files.len();
+        let minecraft = source
+            .target
+            .as_ref()
+            .map(|target| target.game_version.as_str())
+            .unwrap_or("");
+        mapped.extend(
+            files
+                .into_iter()
+                .filter(|file| file.is_available)
+                .map(|file| curseforge_version(&file, minecraft)),
+        );
+        raw_index += fetched as u64;
+        if version_scan_exhausted(fetched, raw_index, raw_total, needed, mapped.len()) {
+            break;
+        }
+    }
+    let total = mapped.len();
+    let mut versions: Vec<ResourceVersion> = mapped
+        .into_iter()
+        .skip(offset)
+        .take(crate::resources::PROJECT_VERSION_PAGE)
+        .collect();
+    apply_loader_compatibility(&mut versions, source.target.as_ref(), &resource_type);
+    let next = offset + versions.len();
+    Ok(crate::resources::ResourceVersionPage {
+        has_more: next < total && next <= crate::resources::MAX_PROJECT_VERSION_OFFSET,
+        versions,
+    })
+}
+
 #[tauri::command]
 pub async fn get_curseforge_project_details(
     state: State<'_, Arc<LauncherState>>,
@@ -150,54 +365,28 @@ pub async fn get_curseforge_project_details(
     version_id: Option<String>,
     instance_id: Option<String>,
     resource_type: String,
-) -> AppResult<ResourceProjectDetails> {
-    let kind = if resource_type == "modpack" {
-        ResourceKind::Mod
-    } else {
-        ResourceKind::parse(&resource_type).map_err(expected)?
-    };
-    let id = crate::curseforge::project_id(&project_id).map_err(expected)?;
-    let target = version_id
-        .as_deref()
-        .filter(|version| !version.is_empty())
-        .and_then(|version| {
-            crate::resources::resource_context(&state, version, instance_id.as_deref()).ok()
-        });
-    let key = service_key(&state).map_err(expected)?;
-    let client = api_client(&state).map_err(expected)?;
-    let project: Response<Project> = api(&client, &key, &format!("mods/{id}"), &[])
-        .await
-        .map_err(expected)?;
-    let filter = target.as_ref().filter(|target| {
-        resource_type != "modpack" && (kind != ResourceKind::Mod || target.loader.is_some())
-    });
-    let game = filter
-        .map(|target| target.game_version.as_str())
-        .unwrap_or("");
-    let loader = filter
-        .and_then(|target| target.loader.as_deref())
-        .filter(|_| kind == ResourceKind::Mod);
-    let files = files_page(&client, &key, id, game, loader, 0)
-        .await
-        .map_err(expected)?;
-    let mut details = curseforge_details(
-        project.data,
-        files,
-        &resource_type,
-        target
-            .as_ref()
-            .map(|target| target.game_version.as_str())
-            .unwrap_or(""),
-    );
-    if resource_type == "mod" {
-        for version in &mut details.versions {
-            version.compatible &= target
-                .as_ref()
-                .and_then(|target| target.loader.as_deref())
-                .is_some_and(|loader| version.loaders.iter().any(|tag| tag == loader));
-        }
-    }
-    Ok(details)
+) -> AppResult<crate::resources::ProjectDetailsPage> {
+    curseforge_details_for_state(&state, project_id, version_id, instance_id, resource_type).await
+}
+
+#[tauri::command]
+pub async fn get_curseforge_project_versions(
+    state: State<'_, Arc<LauncherState>>,
+    project_id: String,
+    version_id: Option<String>,
+    instance_id: Option<String>,
+    resource_type: String,
+    offset: Option<u32>,
+) -> AppResult<crate::resources::ResourceVersionPage> {
+    curseforge_versions_page(
+        &state,
+        project_id,
+        version_id,
+        instance_id,
+        resource_type,
+        offset,
+    )
+    .await
 }
 #[derive(Clone, Deserialize)]
 struct Author {
@@ -271,9 +460,15 @@ pub struct SearchProject {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_url: Option<String>,
 }
+/// One Discover page. `next_offset` counts the projects CurseForge returned,
+/// including any the launcher left out, so paging stays aligned with its index.
 #[derive(Serialize)]
 pub struct SearchResult {
     pub hits: Vec<SearchProject>,
+    #[serde(rename = "totalHits", skip_serializing_if = "Option::is_none")]
+    pub total_hits: Option<u64>,
+    #[serde(rename = "nextOffset")]
+    pub next_offset: u32,
 }
 
 pub(crate) fn project_id(value: &str) -> Result<u64, String> {
@@ -295,6 +490,14 @@ fn class_id(kind: &str) -> Result<u64, String> {
         "shader" => Ok(6552),
         "modpack" => Ok(4471),
         _ => Err("不支持的 CurseForge 资源类型".into()),
+    }
+}
+fn kind_for_class(class: u64) -> Option<ResourceKind> {
+    match class {
+        6 => Some(ResourceKind::Mod),
+        12 => Some(ResourceKind::ResourcePack),
+        6552 => Some(ResourceKind::Shader),
+        _ => None,
     }
 }
 fn loader_code(loader: &str) -> Result<u32, String> {
@@ -459,6 +662,9 @@ async fn send_json<T: DeserializeOwned>(
 async fn read_answer(response: reqwest::Response) -> Attempt {
     let status = response.status().as_u16();
     match status {
+        407 => {
+            return Attempt::Fail(crate::network::Error::Authentication.code().into())
+        }
         401 | 403 => {
             return Attempt::Fail(
                 CF_REFUSED.into(),
@@ -518,28 +724,84 @@ fn download_url(value: &str) -> Result<reqwest::Url, String> {
     }
     Ok(url)
 }
-/// The project's CurseForge page: its own link when that is HTTPS on
-/// curseforge.com without credentials, otherwise the page for its id (both
-/// inside the opener's scope).
+/// Whether `value` is a trusted HTTPS link on `www.curseforge.com` (default
+/// port, no credentials).
+fn trusted_curseforge_page(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("www.curseforge.com")
+            && url.port_or_known_default() == Some(443)
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
+}
+/// The project's CurseForge page: its own API link when that is HTTPS on
+/// `www.curseforge.com` without credentials, otherwise the page for its id.
 fn project_page(project: &Project) -> String {
     project
         .links
         .website_url
         .as_deref()
-        .filter(|value| {
-            reqwest::Url::parse(value).is_ok_and(|url| {
-                url.scheme() == "https"
-                    && ["curseforge.com", "www.curseforge.com"].contains(&url.host_str().unwrap_or(""))
-                    && url.username().is_empty()
-                    && url.password().is_none()
-            })
-        })
+        .filter(|value| trusted_curseforge_page(value))
         .map(str::to_owned)
         .unwrap_or_else(|| format!("https://www.curseforge.com/projects/{}", project.id))
 }
+/// Starts the refusal of a CurseForge file the launcher must not download:
+/// the file id follows, then a line break and the explanation.
+pub(crate) const MANUAL_DOWNLOAD: &str = "CurseForge 文件需要手动下载：";
+/// Single restricted-file predicate shared by dependency resolution, pinned
+/// validation, downloads, installs and update checks: third-party distribution
+/// disabled, missing/empty download URL, or URL outside the official CDN hosts.
+fn is_restricted_file(project: &Project, file: &CfFile) -> bool {
+    manual_reason(project, file).is_some()
+}
 fn distribution_error(project: &Project, file: &CfFile) -> String {
     let page = project_page(project);
-    format!("「{}」文件 {} 禁止第三方分发或未提供可用下载地址。请在项目页面手动下载授权文件并放入目标资源目录：{}。启动器不会拼接下载地址绕过限制。", project.name, file.id, page)
+    format!("{MANUAL_DOWNLOAD}{}\n「{}」文件 {} 禁止第三方分发或未提供可用下载地址。请在项目页面手动下载授权文件并放入目标资源目录：{}。启动器不会拼接下载地址绕过限制。", file.id, project.name, file.id, page)
+}
+
+/// A required dependency cannot be fetched by the launcher. The JSON part is
+/// split off by `errors::expected` into `resource.dependencyManualDownload`.
+pub(crate) const DEPENDENCY_MANUAL_DOWNLOAD: &str = "CurseForge 必需前置需要手动下载：";
+fn dependency_manual_error(project: &Project, file: &CfFile, kind: ResourceKind) -> String {
+    let page = project_page(project);
+    let folder = kind.folder();
+    format!(
+        "{DEPENDENCY_MANUAL_DOWNLOAD}「{}」文件 {}（{}）禁止第三方分发或未提供可用下载地址。请从 {} 手动下载并放入实例的 {} 目录。\t{}",
+        project.name,
+        file.file_name,
+        file.id,
+        page,
+        folder,
+        serde_json::json!({
+            "name": project.name,
+            "file": file.file_name,
+            "url": page,
+            "folder": folder,
+        })
+    )
+}
+
+/// A cross-category required dependency (e.g. a mod needed by a resource pack
+/// or shader) is not enabled in its own folder and must be installed first.
+pub(crate) const DEPENDENCY_INSTALL_FIRST: &str = "需要先安装跨分类必需前置：";
+fn dependency_install_first_error(project: &Project, dep_kind: Option<ResourceKind>) -> String {
+    let folder = dep_kind.map(ResourceKind::folder).unwrap_or("");
+    format!(
+        "{DEPENDENCY_INSTALL_FIRST}「{}」属于其他资源分类，请先在实例中安装此依赖，再重试；当前资源尚未写入。\t{}",
+        project.name,
+        serde_json::json!({
+            "name": project.name,
+            "folder": folder,
+        })
+    )
+}
+
+fn dependency_unavailable_error(name: &str, reason: &str) -> String {
+    format!(
+        "{}{name}\t{reason}",
+        crate::errors::RESOURCE_DEPENDENCY_UNAVAILABLE_PREFIX
+    )
 }
 fn compatible(file: &CfFile, minecraft: &str, loader: Option<&str>) -> bool {
     file.is_available
@@ -597,16 +859,17 @@ fn matches(values: &(String, String, u64), size: u64, expected: &[(u32, String)]
             .iter()
             .all(|(algo, hash)| hash == if *algo == 1 { &values.0 } else { &values.1 })
 }
-async fn files_page(
+async fn files_page_with_total(
     client: &reqwest::Client,
     key: &str,
     project: u64,
     minecraft: &str,
     loader: Option<&str>,
     offset: usize,
-) -> Result<Vec<CfFile>, String> {
+    page_size: u32,
+) -> Result<(Vec<CfFile>, Option<u64>), String> {
     let mut query = vec![
-        ("pageSize".into(), "50".into()),
+        ("pageSize".into(), page_size.to_string()),
         ("index".into(), offset.to_string()),
     ];
     if !minecraft.is_empty() {
@@ -620,48 +883,467 @@ async fn files_page(
     if result.data.iter().any(|file| file.mod_id != project) {
         return Err("CurseForge 文件列表项目身份不一致".into());
     }
-    Ok(result.data)
+    Ok((result.data, result.pagination.map(|page| page.total_count)))
 }
 
-#[tauri::command]
-pub async fn search_curseforge(
-    state: State<'_, Arc<LauncherState>>,
+async fn files_page(
+    client: &reqwest::Client,
+    key: &str,
+    project: u64,
+    minecraft: &str,
+    loader: Option<&str>,
+    offset: usize,
+) -> Result<Vec<CfFile>, String> {
+    Ok(files_page_with_total(client, key, project, minecraft, loader, offset, 50)
+        .await?
+        .0)
+}
+
+/// The loader tags a CurseForge file declares.
+fn loader_tags(file: &CfFile) -> Vec<String> {
+    let mut loaders: Vec<_> = file
+        .game_versions
+        .iter()
+        .filter_map(|tag| {
+            let tag = tag.to_ascii_lowercase();
+            matches!(
+                tag.as_str(),
+                "fabric" | "quilt" | "forge" | "neoforge" | "iris" | "optifine" | "vanilla"
+            )
+            .then_some(tag)
+        })
+        .collect();
+    loaders.dedup();
+    loaders
+}
+
+/// A CurseForge file in the shape the shared dependency planner and resource
+/// transaction expect. Downloading still uses the original `CfFile` (SHA-1,
+/// MD5, file id and the exact download URL).
+fn plan_version(file: &CfFile) -> Version {
+    Version {
+        id: file.id.to_string(),
+        project_id: file.mod_id.to_string(),
+        version_type: match file.release_type {
+            1 => "release",
+            2 => "beta",
+            3 => "alpha",
+            _ => "unknown",
+        }
+        .into(),
+        name: version_label(file),
+        version_number: file.file_name.clone(),
+        date_published: file.file_date.clone(),
+        game_versions: file.game_versions.clone(),
+        loaders: loader_tags(file),
+        dependencies: file
+            .dependencies
+            .iter()
+            .map(|dependency| PlanDependency {
+                dependency_type: match dependency.relation_type {
+                    3 => "required",
+                    5 => "incompatible",
+                    2 => "optional",
+                    // Embedded library, tool and include are not installable
+                    // dependencies; unknown relation types are treated the same
+                    // way so they never block a normal install.
+                    _ => "embedded",
+                }
+                .into(),
+                project_id: Some(dependency.mod_id.to_string()),
+                version_id: None,
+                file_name: None,
+            })
+            .collect(),
+        environment: String::new(),
+        files: vec![ResourceFile {
+            filename: file.file_name.clone(),
+            url: file.download_url.clone().unwrap_or_default(),
+            primary: true,
+            size: file.file_length,
+            hashes: FileHashes {
+                sha512: String::new(),
+            },
+        }],
+    }
+}
+
+/// CurseForge dependency lookup for the shared planner. Project and file
+/// answers are cached for the duration of one install, so every project is
+/// requested at most once. `installed` holds the enabled local files the
+/// fingerprint service identified in the target folder (project id → sorted
+/// `(file name, file)` entries). `other_installed` lazily caches scans of
+/// sibling class folders (e.g. `mods/` when installing a resource pack or
+/// shader) for check-only cross-category dependencies.
+struct CurseforgeDependencySource<'a> {
+    state: &'a LauncherState,
+    client: &'a reqwest::Client,
+    key: &'a str,
+    minecraft: &'a str,
+    loader: Option<&'a str>,
+    detected_loader: Option<&'a str>,
+    game_dir: Option<&'a Path>,
+    kind: ResourceKind,
+    resource_type: &'a str,
+    installed: HashMap<u64, Vec<(String, CfFile)>>,
+    other_installed: Mutex<HashMap<u64, HashMap<u64, Vec<(String, CfFile)>>>>,
+    projects: Mutex<HashMap<u64, Project>>,
+    files: Mutex<HashMap<u64, CfFile>>,
+}
+
+impl CurseforgeDependencySource<'_> {
+    fn remember(&self, project: Project, file: CfFile) {
+        if let Ok(mut projects) = self.projects.lock() {
+            projects.insert(project.id, project);
+        }
+        if let Ok(mut files) = self.files.lock() {
+            files.insert(file.id, file);
+        }
+    }
+
+    fn file(&self, id: &str) -> Option<CfFile> {
+        let id = id.parse::<u64>().ok()?;
+        if let Some(file) = self.files.lock().ok()?.get(&id).cloned() {
+            return Some(file);
+        }
+        self.installed
+            .values()
+            .flatten()
+            .find(|(_, file)| file.id == id)
+            .map(|(_, file)| file.clone())
+    }
+
+    async fn project(&self, id: u64) -> Result<Project, String> {
+        if let Some(project) = self.projects.lock().ok().and_then(|projects| projects.get(&id).cloned()) {
+            return Ok(project);
+        }
+        self.state.control.checkpoint().await?;
+        let answer: Response<Project> = in_task(
+            self.state,
+            api(self.client, self.key, &format!("mods/{id}"), &[]),
+        )
+        .await?;
+        if answer.data.id != id || answer.data.game_id != 432 {
+            let label = if answer.data.name.trim().is_empty() {
+                id.to_string()
+            } else {
+                answer.data.name
+            };
+            return Err(dependency_unavailable_error(
+                &label,
+                "CurseForge 必需前置的项目身份或游戏不一致",
+            ));
+        }
+        if let Ok(mut projects) = self.projects.lock() {
+            projects.insert(id, answer.data.clone());
+        }
+        Ok(answer.data)
+    }
+
+    /// Cross-category and unknown-class (`class_id: None`) dependencies are
+    /// check-only: never install them into a folder whose kind does not match.
+    /// Check the folder matching the dependency's class under `game_dir`,
+    /// counting enabled files only.
+    async fn check_cross_category(&self, project: &Project) -> Result<(), String> {
+        let dep_class = project.class_id.unwrap_or(0);
+        let Some(dep_kind) = kind_for_class(dep_class) else {
+            return Err(dependency_install_first_error(project, None));
+        };
+        let Some(game_dir) = self.game_dir else {
+            return Err(dependency_install_first_error(project, Some(dep_kind)));
+        };
+        let dep_loader = (dep_kind == ResourceKind::Mod)
+            .then_some(self.detected_loader)
+            .flatten();
+        if dep_kind == ResourceKind::Mod && dep_loader.is_none() {
+            return Err(dependency_install_first_error(project, Some(dep_kind)));
+        }
+        let cached = self
+            .other_installed
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&dep_class).cloned());
+        let found = match cached {
+            Some(found) => found,
+            None => {
+                let dep_dir = safe_join(game_dir, dep_kind.folder())?;
+                let scanned = if dep_dir.exists() {
+                    installed_dependencies(self.state, self.client, self.key, &dep_dir, dep_kind, None)
+                        .await?
+                } else {
+                    HashMap::new()
+                };
+                if let Ok(mut map) = self.other_installed.lock() {
+                    map.insert(dep_class, scanned.clone());
+                }
+                scanned
+            }
+        };
+        let present = found.get(&project.id).is_some_and(|files| {
+            files
+                .iter()
+                .any(|(_, file)| compatible(file, self.minecraft, dep_loader))
+        });
+        if present {
+            Ok(())
+        } else {
+            Err(dependency_install_first_error(project, Some(dep_kind)))
+        }
+    }
+
+    /// Newest compatible release first, then the newest beta, and only then
+    /// another release type (an alpha or a file whose type is unset).
+    async fn selected_file(&self, project: &Project) -> Result<CfFile, String> {
+        let loader = (self.kind == ResourceKind::Mod)
+            .then_some(self.loader)
+            .flatten();
+        let mut release: Option<CfFile> = None;
+        let mut beta: Option<CfFile> = None;
+        let mut other: Option<CfFile> = None;
+        for page in 0..10 {
+            self.state.control.checkpoint().await?;
+            let files = in_task(
+                self.state,
+                files_page(self.client, self.key, project.id, self.minecraft, loader, page * 50),
+            )
+            .await?;
+            let short = files.len() < 50;
+            for file in files {
+                if !compatible(&file, self.minecraft, loader) {
+                    continue;
+                }
+                let is_newer =
+                    |best: &Option<CfFile>| best.as_ref().is_none_or(|best| newer(&file, best));
+                match file.release_type {
+                    1 if is_newer(&release) => release = Some(file),
+                    2 if is_newer(&beta) => beta = Some(file),
+                    _ if is_newer(&other) => other = Some(file),
+                    _ => {}
+                }
+            }
+            // Pages are newest first: the first release found is the newest.
+            if release.is_some() || short {
+                break;
+            }
+        }
+        let file = release.or(beta).or(other).ok_or_else(|| {
+            dependency_unavailable_error(
+                &project.name,
+                &format!(
+                    "CurseForge 必需前置「{}」没有适用于当前游戏版本和加载器的文件",
+                    project.name
+                ),
+            )
+        })?;
+        validate_id(&file.file_name)
+            .map_err(|reason| dependency_unavailable_error(&project.name, &reason))?;
+        if !self.kind.accepts(&file.file_name) {
+            return Err(dependency_unavailable_error(
+                &project.name,
+                "CurseForge 必需前置文件类型与资源分类不匹配",
+            ));
+        }
+        if file.file_length == 0 || file.file_length > MAX_FILE {
+            return Err(dependency_unavailable_error(
+                &project.name,
+                "CurseForge 必需前置文件大小无效或超过 1 GiB",
+            ));
+        }
+        if is_restricted_file(project, &file) {
+            return Err(dependency_manual_error(project, &file, self.kind));
+        }
+        expected_hashes(&file)
+            .map_err(|reason| dependency_unavailable_error(&project.name, &reason))?;
+        if let Ok(mut files) = self.files.lock() {
+            files.insert(file.id, file.clone());
+        }
+        Ok(file)
+    }
+}
+
+impl DependencySource for CurseforgeDependencySource<'_> {
+    async fn resolve_required(&self, project: &str) -> Result<RequiredResolution, String> {
+        let id = project_id(project)?;
+        let project = self.project(id).await?;
+        let expected_class = class_id(self.resource_type)?;
+        if project.class_id != Some(expected_class) {
+            self.check_cross_category(&project).await?;
+            return Ok(RequiredResolution::SatisfiedExternal);
+        }
+        let file = self.selected_file(&project).await?;
+        Ok(RequiredResolution::Versions(vec![plan_version(&file)]))
+    }
+
+    async fn pinned_version(
+        &self,
+        _project: Option<&str>,
+        _version: &str,
+    ) -> Result<Version, String> {
+        // CurseForge dependencies name a project, never a pinned file.
+        Err("CurseForge 必需前置不支持固定文件版本".into())
+    }
+
+    fn installed(&self, project: &str) -> Vec<Version> {
+        let Ok(id) = project_id(project) else {
+            return Vec::new();
+        };
+        self.installed
+            .get(&id)
+            .map(|files| files.iter().map(|(_, file)| plan_version(file)).collect())
+            .unwrap_or_default()
+    }
+
+    async fn project_label(&self, project: &str) -> String {
+        let Ok(id) = project_id(project) else {
+            return project.to_owned();
+        };
+        let local_name = self
+            .installed
+            .get(&id)
+            .and_then(|files| files.first())
+            .map(|(name, _)| name.clone());
+        let project_name = if let Some(cached) = self
+            .projects
+            .lock()
+            .ok()
+            .and_then(|projects| projects.get(&id).map(|project| project.name.clone()))
+        {
+            Some(cached)
+        } else {
+            self.project(id).await.ok().map(|project| project.name)
+        };
+        match (project_name, local_name) {
+            (Some(name), Some(file)) => format!("{name} ({file})"),
+            (Some(name), None) => name,
+            (None, Some(file)) => file,
+            (None, None) => project.to_owned(),
+        }
+    }
+}
+
+/// Groups identified local files by project id in deterministic order:
+/// preferring `preferred` `(mod_id, file_id)` first, then sorted by filename
+/// and file id.
+fn group_installed(
+    identified: HashMap<String, (u64, CfFile)>,
+    preferred: Option<(u64, u64)>,
+) -> HashMap<u64, Vec<(String, CfFile)>> {
+    let mut entries: Vec<(String, CfFile)> = identified
+        .into_iter()
+        .map(|(name, (_, file))| (name, file))
+        .collect();
+    entries.sort_by(|(left_name, left_file), (right_name, right_file)| {
+        let left_pref = preferred == Some((left_file.mod_id, left_file.id));
+        let right_pref = preferred == Some((right_file.mod_id, right_file.id));
+        right_pref
+            .cmp(&left_pref)
+            .then_with(|| left_name.cmp(right_name))
+            .then_with(|| left_file.id.cmp(&right_file.id))
+    });
+    let mut found: HashMap<u64, Vec<(String, CfFile)>> = HashMap::new();
+    for (name, file) in entries {
+        found.entry(file.mod_id).or_default().push((name, file));
+    }
+    found
+}
+
+/// The enabled local files CurseForge identifies, keyed by project id, in
+/// deterministic order: preferring `preferred` `(mod_id, file_id)` first, then
+/// sorted by filename and file id. Disabled `.disabled` files are excluded.
+async fn installed_dependencies(
+    state: &LauncherState,
+    client: &reqwest::Client,
+    key: &str,
+    directory: &Path,
+    kind: ResourceKind,
+    preferred: Option<(u64, u64)>,
+) -> Result<HashMap<u64, Vec<(String, CfFile)>>, String> {
+    let mut names = candidate_names(directory, kind, &HashSet::new());
+    names.retain(|(_, enabled)| *enabled);
+    if names.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let locals = local_files(state, directory, names).await?;
+    if locals.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let identified = in_task(state, identify(client, key, &locals)).await?;
+    Ok(group_installed(identified, preferred))
+}
+
+/// Validates a Discover search and builds its `mods/search` parameters, with
+/// the class the hits must belong to. Building it sends nothing.
+pub(crate) fn curseforge_search_query(
+    query: String,
+    resource_type: &str,
+    game_version: Option<String>,
+    loader: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<&str>,
+) -> Result<(u64, crate::resources::SearchQuery), String> {
+    use crate::resources::invalid_request;
+    if query.len() > 500 || query.chars().any(char::is_control) {
+        return Err(invalid_request("搜索内容过长或包含无效字符"));
+    }
+    let class = class_id(resource_type).map_err(invalid_request)?;
+    let limit = crate::resources::search_limit(limit)?;
+    let offset = crate::resources::search_offset(offset, limit)?;
+    let (sort_field, sort_order) = crate::resources::curseforge_sort(sort)?;
+    let mut params = vec![
+        ("gameId".into(), "432".into()),
+        ("classId".into(), class.to_string()),
+        ("searchFilter".into(), query),
+        ("pageSize".into(), limit.to_string()),
+        ("index".into(), offset.to_string()),
+        ("sortField".into(), sort_field.to_string()),
+        ("sortOrder".into(), sort_order.into()),
+    ];
+    if let Some(game) = game_version.filter(|v| !v.is_empty()) {
+        validate_id(&game).map_err(invalid_request)?;
+        params.push(("gameVersion".into(), game));
+    }
+    if let Some(loader) = loader.filter(|v| !v.is_empty()) {
+        let code = loader_code(&loader).map_err(invalid_request)?;
+        if code != 0 {
+            params.push(("modLoaderType".into(), code.to_string()));
+        }
+    }
+    Ok((
+        class,
+        crate::resources::SearchQuery {
+            params,
+            offset,
+            limit,
+        },
+    ))
+}
+
+pub(crate) async fn search_curseforge_inner(
+    state: &LauncherState,
     query: String,
     resource_type: String,
     game_version: Option<String>,
     loader: Option<String>,
     offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<String>,
 ) -> Result<SearchResult, String> {
-    if query.len() > 500 || query.chars().any(char::is_control) {
-        return Err("搜索内容过长或包含无效字符".into());
-    }
-    let class = class_id(&resource_type)?;
-    let offset = offset.unwrap_or(0);
-    if offset > 9976 {
-        return Err("搜索分页超过 CurseForge 的 10000 项限制".into());
-    }
-    let key = service_key(&state)?;
-    let client = api_client(&state)?;
-    let mut filters = vec![
-        ("gameId".into(), "432".into()),
-        ("classId".into(), class.to_string()),
-        ("searchFilter".into(), query),
-        ("pageSize".into(), "24".into()),
-        ("index".into(), offset.to_string()),
-        ("sortField".into(), "6".into()),
-        ("sortOrder".into(), "desc".into()),
-    ];
-    if let Some(game) = game_version.filter(|v| !v.is_empty()) {
-        validate_id(&game)?;
-        filters.push(("gameVersion".into(), game));
-    }
-    if let Some(loader) = loader.filter(|v| !v.is_empty()) {
-        let code = loader_code(&loader)?;
-        if code != 0 {
-            filters.push(("modLoaderType".into(), code.to_string()));
-        }
-    }
-    let result: Response<Vec<Project>> = api(&client, &key, "mods/search", &filters).await?;
+    let (class, request) = curseforge_search_query(
+        query,
+        &resource_type,
+        game_version,
+        loader,
+        offset,
+        limit,
+        sort.as_deref(),
+    )?;
+    let key = service_key(state)?;
+    let client = api_client(state)?;
+    let result: Response<Vec<Project>> = api(&client, &key, "mods/search", &request.params).await?;
+    let total_hits = result.pagination.map(|page| page.total_count);
+    let next_offset =
+        crate::resources::next_search_offset(request.offset, request.limit, result.data.len());
     let hits = result
         .data
         .into_iter()
@@ -708,7 +1390,60 @@ pub async fn search_curseforge(
             }
         })
         .collect();
-    Ok(SearchResult { hits })
+    Ok(SearchResult {
+        hits,
+        total_hits,
+        next_offset,
+    })
+}
+
+/// What the Discover command runs: the page, or a failure with a Discover code.
+pub(crate) async fn search_curseforge_for_discover(
+    state: &LauncherState,
+    query: String,
+    resource_type: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<String>,
+) -> AppResult<SearchResult> {
+    search_curseforge_inner(
+        state,
+        query,
+        resource_type,
+        game_version,
+        loader,
+        offset,
+        limit,
+        sort,
+    )
+    .await
+    .map_err(|error| discover_failure(DiscoverSource::CurseForge, error))
+}
+
+#[tauri::command]
+pub async fn search_curseforge(
+    state: State<'_, Arc<LauncherState>>,
+    query: String,
+    resource_type: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    sort: Option<String>,
+) -> AppResult<SearchResult> {
+    search_curseforge_for_discover(
+        &state,
+        query,
+        resource_type,
+        game_version,
+        loader,
+        offset,
+        limit,
+        sort,
+    )
+    .await
 }
 
 fn local_enabled_hashes(game_dir: &Path) -> Result<HashMap<u64, HashSet<String>>, String> {
@@ -857,6 +1592,7 @@ async fn check_dependencies(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download(
     state: &LauncherState,
     project: &Project,
@@ -865,17 +1601,13 @@ async fn download(
     kind: ResourceKind,
     duplicates: Duplicates<'_>,
     reuse: Option<&crate::parts::Reuse>,
-) -> Result<PathBuf, String> {
+    progress: Option<&crate::resources::ResourceProgress>,
+) -> Result<StagedFile, String> {
     validate_id(&file.file_name)?;
     if !kind.accepts(&file.file_name) {
         return Err("CurseForge 文件类型与资源分类不匹配".into());
     }
-    if project.allow_mod_distribution == Some(false)
-        || file
-            .download_url
-            .as_deref()
-            .is_none_or(|url| url.is_empty())
-    {
+    if is_restricted_file(project, file) {
         return Err(distribution_error(project, file));
     }
     let expected = expected_hashes(file)?;
@@ -883,6 +1615,17 @@ async fn download(
         return Err("CurseForge 文件大小无效或超过 1 GiB".into());
     }
     let url = download_url(file.download_url.as_deref().ok_or("资源缺少下载地址")?)?;
+    if let Some(progress) = progress {
+        progress.emit(
+            state,
+            "resource-download",
+            0,
+            1,
+            0,
+            file.file_length,
+            &format!("下载 {}", file.file_name),
+        );
+    }
     crate::instances::checked_absolute(directory)?;
     fs::create_dir_all(directory).map_err(|_| "无法创建资源目录")?;
     let target = safe_join(directory, &file.file_name)?;
@@ -899,7 +1642,21 @@ async fn download(
                     }
                 }
             }
-            return Ok(target);
+            if let Some(progress) = progress {
+                progress.emit(
+                    state,
+                    "resource-download",
+                    1,
+                    1,
+                    file.file_length,
+                    file.file_length,
+                    &format!("复用已校验文件 {}", file.file_name),
+                );
+            }
+            return Ok(StagedFile {
+                path: target,
+                written: false,
+            });
         }
         // In a staged replace a same-named enabled copy of this mod is set aside
         // below; any other same-named file is still refused there.
@@ -942,7 +1699,7 @@ async fn download(
         &format!(".curseforge-{}.part", uuid::Uuid::new_v4()),
     )?;
     let result = async {
-        if !download_part(state, &client, &url, file, &expected, reuse, &temporary).await? {
+        if !download_part(state, &client, &url, file, &expected, reuse, &temporary, progress).await? {
             let _connection = state.control.connection().await?;
             // Downloads run inside a task: a cancel drops a stalled connection at once.
             let response = state
@@ -987,6 +1744,17 @@ async fn download(
                     .write_all(&chunk)
                     .await
                     .map_err(|_| "资源写入失败，请检查磁盘空间")?;
+                if let Some(progress) = progress {
+                    progress.emit(
+                        state,
+                        "resource-download",
+                        0,
+                        1,
+                        count,
+                        file.file_length,
+                        &format!("下载 {}", file.file_name),
+                    );
+                }
             }
             output.sync_all().await.map_err(|_| "无法保存资源文件")?;
             drop(output);
@@ -1019,7 +1787,21 @@ async fn download(
         if let Some(reuse) = reuse {
             reuse.moved(&temporary, &target);
         }
-        Ok(target)
+        if let Some(progress) = progress {
+            progress.emit(
+                state,
+                "resource-download",
+                1,
+                1,
+                file.file_length,
+                file.file_length,
+                &format!("已校验 {}", file.file_name),
+            );
+        }
+        Ok(StagedFile {
+            path: target,
+            written: true,
+        })
     }
     .await;
     if result.is_err() {
@@ -1038,6 +1820,7 @@ async fn download(
 /// when there is no part (a small file, no SHA-1, a folder elsewhere, a part
 /// held by another download, or an unusable parts folder): the caller
 /// downloads in one go.
+#[allow(clippy::too_many_arguments)]
 async fn download_part(
     state: &LauncherState,
     client: &reqwest::Client,
@@ -1046,6 +1829,7 @@ async fn download_part(
     expected: &[(u32, String)],
     reuse: Option<&crate::parts::Reuse>,
     temporary: &Path,
+    progress: Option<&crate::resources::ResourceProgress>,
 ) -> Result<bool, String> {
     let key = expected
         .iter()
@@ -1061,12 +1845,29 @@ async fn download_part(
     let mut sha1 = Sha1::new();
     let mut md5 = md5::Context::new();
     let control = &state.control;
+    let report = |done: u64| {
+        if let Some(progress) = progress {
+            progress.emit(
+                state,
+                "resource-download",
+                0,
+                1,
+                done,
+                file.file_length,
+                &format!("下载 {}", file.file_name),
+            );
+        }
+    };
+    let reporting = crate::parts::Reporting {
+        hooks: &control,
+        report: &report,
+    };
     let transferred = crate::parts::transfer(
         client.get(url.clone()),
         url,
         &mut slot,
         file.file_length,
-        &control,
+        &reporting,
         &|response| download_url(response.url().as_str()).map(|_| ()),
         &mut |bytes| {
             sha1.update(bytes);
@@ -1112,7 +1913,9 @@ fn publish_disabled(downloaded: &Path, next: &Path, file_name: &str, reuse: Opti
 /// What a download does about other enabled copies of the same mod.
 #[derive(Clone, Copy)]
 enum Duplicates<'a> {
-    /// A new instance: refuse to add a second enabled copy.
+    /// A new instance: refuse to add a second enabled copy. Kept for the
+    /// download-level tests; installs now stage every copy through SetAside.
+    #[allow(dead_code)]
     Refuse,
     /// A staged copy: move them into this folder (journaled, can be rolled back).
     SetAside(&'a Path),
@@ -1151,15 +1954,14 @@ fn refuse_duplicate_mod(downloaded: &Path, directory: &Path, target: &Path) -> R
     }
 }
 
-use crate::resource_targets::{ResourceTargetPlan, VersionLite};
+use crate::resource_targets::{ManualDownload, ManualReason, ResourceTargetPlan, TargetCandidate, VersionLite};
 
-async fn get_pinned_file(
+async fn fetch_pinned_file(
     client: &reqwest::Client,
     key: &str,
     project_id: &str,
     resource_type: &str,
     file_id: u64,
-    kind: ResourceKind,
 ) -> AppResult<(Project, CfFile)> {
     let id = self::project_id(project_id)?;
     if !(1..=u64::from(u32::MAX)).contains(&file_id) {
@@ -1170,11 +1972,44 @@ async fn get_pinned_file(
         return Err("CurseForge 项目身份、游戏或分类不一致".into());
     }
     let file: Response<CfFile> = api(client, key, &format!("mods/{id}/files/{file_id}"), &[]).await?;
-    validate_pinned_file(&project.data, &file.data, file_id, kind)?;
     Ok((project.data, file.data))
 }
 
-fn validate_pinned_file(project: &Project, file: &CfFile, file_id: u64, kind: ResourceKind) -> Result<(), String> {
+async fn get_pinned_file(
+    client: &reqwest::Client,
+    key: &str,
+    project_id: &str,
+    resource_type: &str,
+    file_id: u64,
+    kind: ResourceKind,
+) -> AppResult<(Project, CfFile)> {
+    let (project, file) = fetch_pinned_file(client, key, project_id, resource_type, file_id).await?;
+    validate_pinned_file(&project, &file, file_id, kind)?;
+    Ok((project, file))
+}
+
+/// Planning only needs the file's identity and compatibility. A manual-only
+/// file is not an error at this point: the picker explains it and the install
+/// command still refuses it.
+async fn get_pinned_file_for_plan(
+    client: &reqwest::Client,
+    key: &str,
+    project_id: &str,
+    resource_type: &str,
+    file_id: u64,
+    kind: ResourceKind,
+) -> AppResult<(Project, CfFile)> {
+    let (project, file) = fetch_pinned_file(client, key, project_id, resource_type, file_id).await?;
+    // A file the launcher may download must still pass every install check.
+    if manual_reason(&project, &file).is_some() {
+        validate_pinned_file_metadata(&project, &file, file_id, kind)?;
+    } else {
+        validate_pinned_file(&project, &file, file_id, kind)?;
+    }
+    Ok((project, file))
+}
+
+fn validate_pinned_file_metadata(project: &Project, file: &CfFile, file_id: u64, kind: ResourceKind) -> Result<(), String> {
     if file.id != file_id || file.mod_id != project.id {
         return Err("CurseForge 文件不属于所选项目".into());
     }
@@ -1188,22 +2023,82 @@ fn validate_pinned_file(project: &Project, file: &CfFile, file_id: u64, kind: Re
     if file.file_length == 0 || file.file_length > MAX_FILE {
         return Err("CurseForge 文件大小无效或超过 1 GiB".into());
     }
-    if project.allow_mod_distribution == Some(false) {
+    Ok(())
+}
+
+fn validate_pinned_file(project: &Project, file: &CfFile, file_id: u64, kind: ResourceKind) -> Result<(), String> {
+    validate_pinned_file_metadata(project, file, file_id, kind)?;
+    if is_restricted_file(project, file) {
         return Err(distribution_error(project, file));
     }
-    let url = file.download_url.as_deref().filter(|url| !url.is_empty())
-        .ok_or_else(|| distribution_error(project, file))?;
-    download_url(url)?;
     expected_hashes(file)?;
     Ok(())
 }
 
+/// The install refuses every file the plan marks manual-only, with the stable
+/// prefix the picker uses to show the manual-download section.
+fn manual_install_refusal(project: &Project, file: &CfFile) -> Option<String> {
+    manual_reason(project, file).map(|_| distribution_error(project, file))
+}
+
+/// Why the launcher must not download `file`, if it must not, in the order
+/// the install checks refuse it.
+fn manual_reason(project: &Project, file: &CfFile) -> Option<ManualReason> {
+    if project.allow_mod_distribution == Some(false) {
+        return Some(ManualReason::DistributionForbidden);
+    }
+    match file.download_url.as_deref().filter(|url| !url.is_empty()) {
+        None => Some(ManualReason::NoDownloadUrl),
+        Some(url) if download_url(url).is_err() => Some(ManualReason::UntrustedUrl),
+        Some(_) => None,
+    }
+}
+
+/// The file's CurseForge page. It is built only from the project's own
+/// `https://www.curseforge.com/minecraft/{section}/{slug}` link and the file
+/// id, both inside the opener's scope; any other link gives the project page.
+fn file_page(project: &Project, file: &CfFile) -> String {
+    project
+        .links
+        .website_url
+        .as_deref()
+        .and_then(|value| reqwest::Url::parse(value).ok())
+        .filter(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some("www.curseforge.com")
+                && url.port().is_none()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
+        .and_then(|url| {
+            let segments: Vec<String> = url.path_segments()?.filter(|part| !part.is_empty()).map(str::to_owned).collect();
+            match segments.as_slice() {
+                [game, section, slug]
+                    if game == "minecraft"
+                        && ["mc-mods", "shaders", "texture-packs"].contains(&section.as_str())
+                        && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') =>
+                {
+                    Some(format!("https://www.curseforge.com/minecraft/{section}/{slug}/files/{}", file.id))
+                }
+                _ => None,
+            }
+        })
+        .unwrap_or_else(|| format!("https://www.curseforge.com/projects/{}", project.id))
+}
+
+fn manual_download(project: &Project, file: &CfFile) -> Option<ManualDownload> {
+    manual_reason(project, file).map(|reason| ManualDownload {
+        reason,
+        url: file_page(project, file),
+        display_name: version_label(file),
+        file_name: file.file_name.clone(),
+    })
+}
+
 fn pinned_metadata(file: &CfFile, kind: ResourceKind) -> VersionLite {
-    let mut loaders: Vec<_> = file.game_versions.iter().filter_map(|tag| {
-        let tag = tag.to_ascii_lowercase();
-        matches!(tag.as_str(), "fabric" | "quilt" | "forge" | "neoforge" | "iris" | "optifine" | "vanilla")
-            .then_some(tag)
-    }).collect();
+    let mut loaders = loader_tags(file);
     // A CurseForge resource-pack ZIP with no loader/renderer tags uses the
     // vanilla resource-pack format. Do not apply that inference to mods/shaders.
     if kind == ResourceKind::ResourcePack && loaders.is_empty() {
@@ -1213,10 +2108,20 @@ fn pinned_metadata(file: &CfFile, kind: ResourceKind) -> VersionLite {
         version_type: "release".into(), date_published: file.file_date.clone() }
 }
 
-fn can_create_pinned(file: &CfFile) -> bool {
-    // CurseForge's current install command checks installed dependencies; it
-    // does not install them. A blank instance cannot satisfy a required file.
-    !file.dependencies.iter().any(|dep| dep.relation_type == 3)
+fn pinned_target_plan(
+    project_id: &str,
+    resource_type: &str,
+    kind: ResourceKind,
+    project: &Project,
+    file: &CfFile,
+    targets: &[TargetCandidate],
+    manifest: &[(String, String)],
+) -> ResourceTargetPlan {
+    let mut plan = crate::resource_targets::build_pinned_plan(
+        project_id, &project.name, resource_type, kind, targets, &pinned_metadata(file, kind), manifest,
+    );
+    plan.mark_manual_download(manual_download(project, file));
+    plan
 }
 
 pub(crate) async fn resolve_pinned_targets(
@@ -1225,22 +2130,28 @@ pub(crate) async fn resolve_pinned_targets(
     resource_type: &str,
     file_id: u64,
 ) -> AppResult<ResourceTargetPlan> {
-    let kind = ResourceKind::parse(resource_type)?;
+    ResourceKind::parse(resource_type)?;
     let key = service_key(state)?;
     let client = api_client(state)?;
-    let (project, file) = get_pinned_file(&client, &key, project_id, resource_type, file_id, kind).await?;
-    let manifest = crate::resources::manifest_releases(crate::minecraft::manifest(state).await);
+    pinned_targets(state, &client, &key, project_id, resource_type, file_id, crate::minecraft::manifest(state)).await
+}
+
+/// The plan for one CurseForge file. A file the launcher must not download
+/// is planned with its manual-download details rather than refused.
+async fn pinned_targets(
+    state: &LauncherState,
+    client: &reqwest::Client,
+    key: &str,
+    project_id: &str,
+    resource_type: &str,
+    file_id: u64,
+    manifest: impl std::future::Future<Output = Result<serde_json::Value, String>>,
+) -> AppResult<ResourceTargetPlan> {
+    let kind = ResourceKind::parse(resource_type)?;
+    let (project, file) = get_pinned_file_for_plan(client, key, project_id, resource_type, file_id, kind).await?;
+    let manifest = crate::resources::manifest_releases(manifest.await);
     let targets = crate::resources::target_candidates(state)?;
-    let mut plan = crate::resource_targets::build_pinned_plan(
-        project_id, &project.name, resource_type, kind, &targets, &pinned_metadata(&file, kind), &manifest,
-    );
-    if !can_create_pinned(&file) {
-        plan.suggestion = None;
-        if !plan.targets.iter().any(|row| row.compatible) {
-            plan.unsupported_reason = Some("curseforgeRequiredDependencies".into());
-        }
-    }
-    Ok(plan)
+    Ok(pinned_target_plan(project_id, resource_type, kind, &project, &file, &targets, &manifest))
 }
 
 pub(crate) async fn create_with_pinned_file(
@@ -1269,11 +2180,27 @@ pub(crate) async fn create_with_pinned_file(
             .during_cancellable_io(get_pinned_file(&client, &key, project_id, resource_type, file_id, kind))
             .await??;
         crate::resource_targets::validate_pinned_creation_pair(&pinned_metadata(&file, kind), kind, loader, game_version)?;
-        if !can_create_pinned(&file) {
-            return Err(expected("请先为兼容实例安装此 CurseForge 文件的必需前置，再选择同一个文件重试。"));
-        }
+        // A blank instance has nothing installed yet, so this preflight only
+        // resolves the dependency graph. It still refuses restricted, missing
+        // cross-category, or unavailable required dependencies before the
+        // loader or the instance is created.
+        prepare_install(
+            state,
+            &client,
+            &key,
+            &project,
+            &file,
+            None,
+            game_version,
+            (kind == ResourceKind::Mod).then_some(loader),
+            (loader != "vanilla").then_some(loader),
+            kind,
+            resource_type,
+        )
+        .await?;
         state.control.checkpoint().await?;
         progress.stage(state, "resource-loader", "安装 Minecraft 及加载器");
+        let parents = crate::commands::LoaderParents::before_active_install(state);
         let version_id = match crate::resources::prepared_version() {
             Some(version_id) => version_id,
             None => {
@@ -1287,25 +2214,246 @@ pub(crate) async fn create_with_pinned_file(
             }
         };
         progress.stage(state, "resource-create", "创建实例");
-        create_resource_instance_then_install(state, task_id, name, version_id.clone(), move |instance| async move {
+        let derived_from = parents.derived_from(&version_id, &name);
+        create_resource_instance_then_install(state, task_id, name, version_id.clone(), derived_from, move |instance| async move {
+            let version_id = instance.version_id.clone();
             require_resource_stopped(state, &version_id, Some(&instance.id))?;
             let target = resource_target(state, &version_id, Some(&instance.id), kind)?;
             crate::resources::resource_transactions::require_no_pending(&target.directory)?;
-            let reuse = crate::resources::resource_parts(state, &target.directory).map(crate::parts::Reuse::new);
-            let path = download(state, &project, &file, &target.directory, kind, Duplicates::Refuse, reuse.as_ref()).await?;
+            progress.stage(state, "resource-plan", "检查资源及必需前置");
+            // The instance may share a game root with other files: scan it now
+            // so an already-installed dependency is kept instead of downloaded.
+            let prepared = prepare_install(
+                state,
+                &client,
+                &key,
+                &project,
+                &file,
+                Some(&target.directory),
+                &target.minecraft,
+                target.loader.as_deref(),
+                target.detected_loader.as_deref(),
+                kind,
+                resource_type,
+            )
+            .await?;
+            let installed = install_prepared(
+                state,
+                &target.directory,
+                &project.name,
+                kind,
+                &progress,
+                prepared,
+            )
+            .await?;
             progress.stage(state, "complete", "实例及资源安装完成");
-            Ok(ResourceInstall {
-                name: project.name, file_name: file.file_name, path: path.to_string_lossy().into_owned(),
-                warning: (kind == ResourceKind::Shader).then(|| "光影文件已安装；游戏内仍需 Iris、OptiFine 或兼容加载器才能启用。".into()),
-                update_id: None,
-            })
+            Ok(installed)
         }).await
     }).await
 }
 
 
+/// The dependency-resolved files of one CurseForge install. A `None` project
+/// belongs to a dependency that is already installed and only kept.
+struct PreparedInstall {
+    entries: Vec<InstallEntry<(Option<Project>, CfFile)>>,
+    projects: Vec<String>,
+    root_destination: String,
+    root_mod_id: u64,
+}
+
+impl PreparedInstall {
+    /// True when every non-root dependency is already kept and needs no work.
+    fn all_dependencies_kept(&self) -> bool {
+        self.entries.iter().all(|entry| {
+            entry.source.1.mod_id == self.root_mod_id
+                || (entry.keep.is_some() && entry.remove.is_empty())
+        })
+    }
+}
+
+/// Resolves the required dependency graph and builds the staged transaction's
+/// entries. `local_directory` is `None` for the preflight before a new
+/// instance exists: nothing is installed then, so nothing can be skipped.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_install(
+    state: &LauncherState,
+    client: &reqwest::Client,
+    key: &str,
+    project: &Project,
+    file: &CfFile,
+    local_directory: Option<&Path>,
+    minecraft: &str,
+    loader: Option<&str>,
+    detected_loader: Option<&str>,
+    kind: ResourceKind,
+    resource_type: &str,
+) -> Result<PreparedInstall, String> {
+    // Only a file that declares required or incompatible dependencies needs
+    // the local fingerprint scan. A file without dependencies keeps the
+    // previous request count.
+    let needs_local_identity = file
+        .dependencies
+        .iter()
+        .any(|dependency| dependency.relation_type == 3 || dependency.relation_type == 5);
+    let installed = if needs_local_identity {
+        match local_directory {
+            Some(directory) => {
+                installed_dependencies(
+                    state,
+                    client,
+                    key,
+                    directory,
+                    kind,
+                    Some((file.mod_id, file.id)),
+                )
+                .await?
+            }
+            None => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+    let source = CurseforgeDependencySource {
+        state,
+        client,
+        key,
+        minecraft,
+        loader,
+        detected_loader,
+        game_dir: local_directory.and_then(Path::parent),
+        kind,
+        resource_type,
+        installed,
+        other_installed: Mutex::new(HashMap::new()),
+        projects: Mutex::new(HashMap::new()),
+        files: Mutex::new(HashMap::new()),
+    };
+    let root_file_id = file.id;
+    let root_mod_id = project.id;
+    source.remember(project.clone(), file.clone());
+    let nodes = resource_transactions::resolve_dependency_plan(
+        state,
+        &source,
+        plan_version(file),
+        true,
+        minecraft,
+        loader,
+        kind,
+    )
+    .await?;
+    let mut entries = Vec::new();
+    let mut projects = Vec::new();
+    let mut root_destination = None;
+    for node in &nodes {
+        let dependency_file = source
+            .file(&node.version.id)
+            .ok_or("CurseForge 安装计划缺少文件")?;
+        validate_id(&dependency_file.file_name)?;
+        if !kind.accepts(&dependency_file.file_name) {
+            return Err("CurseForge 安装计划包含错误的文件类型".into());
+        }
+        // Never mark the root file as keep: it always goes through download()
+        // with Duplicates::SetAside so other enabled copies of the same mod
+        // are moved aside inside the journaled stage.
+        let keep = if dependency_file.id == root_file_id || dependency_file.mod_id == root_mod_id {
+            None
+        } else {
+            source
+                .installed
+                .get(&dependency_file.mod_id)
+                .and_then(|files| {
+                    files
+                        .iter()
+                        .find(|(_, local)| local.id == dependency_file.id)
+                })
+                .map(|(name, _)| name.clone())
+        };
+        // A dependency already installed under this exact file is kept and
+        // needs no project lookup; its kept entry is never downloaded.
+        let dependency_project = if keep.is_none() {
+            Some(source.project(dependency_file.mod_id).await?)
+        } else {
+            None
+        };
+        let destination = keep
+            .clone()
+            .unwrap_or_else(|| dependency_file.file_name.clone());
+        if dependency_file.id == root_file_id {
+            root_destination = Some(destination.clone());
+        }
+        projects.push(format!("cf:{}", dependency_file.mod_id));
+        entries.push(InstallEntry {
+            source: (dependency_project, dependency_file),
+            destination,
+            keep,
+            remove: Vec::new(),
+        });
+    }
+    Ok(PreparedInstall {
+        entries,
+        projects,
+        root_destination: root_destination.ok_or("缺少根资源计划")?,
+        root_mod_id,
+    })
+}
+
+/// Commits a [`PreparedInstall`] in one staged transaction.
+async fn install_prepared(
+    state: &Arc<LauncherState>,
+    directory: &Path,
+    name: &str,
+    kind: ResourceKind,
+    progress: &crate::resources::ResourceProgress,
+    prepared: PreparedInstall,
+) -> Result<ResourceInstall, String> {
+    let PreparedInstall {
+        entries,
+        projects,
+        root_destination,
+        ..
+    } = prepared;
+    // Parts live beside the game folder, not in next/: they outlive a failed stage.
+    let parts = crate::resources::resource_parts(state, directory).map(crate::parts::Reuse::new);
+    let reuse = parts.as_ref();
+    let install_state = state.clone();
+    let progress_ref = progress;
+    let fetch = move |(dependency_project, dependency_file): (Option<Project>, CfFile), next: PathBuf, aside: PathBuf| {
+        let state = install_state.clone();
+        async move {
+            let project = dependency_project.ok_or("已安装的必需前置不应再次下载")?;
+            download(
+                &state,
+                &project,
+                &dependency_file,
+                &next,
+                kind,
+                Duplicates::SetAside(&aside),
+                reuse,
+                Some(progress_ref),
+            )
+            .await
+        }
+    };
+    resource_transactions::install_entries(
+        state,
+        directory,
+        name,
+        InstallSource::Curseforge,
+        root_destination,
+        projects,
+        entries,
+        kind,
+        Some(progress),
+        reuse,
+        fetch,
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn install_curseforge_resource(
+    app: tauri::AppHandle,
     state: State<'_, Arc<LauncherState>>,
     project_id: String,
     version_id: String,
@@ -1319,11 +2467,14 @@ pub async fn install_curseforge_resource(
         source: ResourceSource::Curseforge, project_id, resource_type,
         target: ResourceTarget::Existing { version_id, instance_id, file_id, resource_version_id: None },
     };
-    crate::resources::run_resource_request(state.inner(), None, &task_id, request).await?.installed()
+    crate::resources::run_resource_request(state.inner(), Some(&app), &task_id, request)
+        .await?
+        .installed()
 }
 
 pub(crate) async fn install_curseforge(
     state: &Arc<LauncherState>,
+    app: Option<&tauri::AppHandle>,
     task_id: &str,
     request: crate::downloads::ResourceRequest,
 ) -> AppResult<ResourceInstall> {
@@ -1339,13 +2490,14 @@ pub(crate) async fn install_curseforge(
         let target =
             crate::resources::resource_target(state, &version_id, instance_id.as_deref(), kind)?;
         crate::resources::resource_transactions::require_no_pending(&target.directory)?;
+        let progress = crate::resources::ResourceProgress::new(app, &version_id);
+        progress.stage(state, "resource-plan", "检查资源及必需前置");
         let key = service_key(state)?;
         let client = api_client(state)?;
         let directory = target.directory;
         let minecraft = target.minecraft;
-        let loader = target.loader.as_deref();
-        let detected =
-            crate::resources::resource_context(state, &version_id, instance_id.as_deref())?.loader;
+        let loader = target.loader;
+        let detected_loader = target.detected_loader;
         let project: Response<Project> = in_task(state, api(&client, &key, &format!("mods/{id}"), &[])).await?;
         if project.data.id != id
             || project.data.game_id != 432
@@ -1364,47 +2516,83 @@ pub(crate) async fn install_curseforge(
             }
             response.data
         } else {
-            let mut files = in_task(state, files_page(&client, &key, id, &minecraft, loader, 0)).await?;
-            files.retain(|file| compatible(file, &minecraft, loader));
+            let mut files = in_task(state, files_page(&client, &key, id, &minecraft, loader.as_deref(), 0)).await?;
+            files.retain(|file| compatible(file, &minecraft, loader.as_deref()));
             files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
             let file = files
                 .into_iter()
                 .next()
-                .ok_or_else(|| crate::resources::no_compatible_version(&minecraft, loader))?;
+                .ok_or_else(|| crate::resources::no_compatible_version(&minecraft, loader.as_deref()))?;
             crate::resources::pin_retry(state, task_id, &retry, crate::resources::Pin::Curseforge(file.id));
             file
         };
-        if !compatible(&file, &minecraft, loader) {
-            return Err(crate::resources::no_compatible_version(&minecraft, loader));
+        if !compatible(&file, &minecraft, loader.as_deref()) {
+            return Err(crate::resources::no_compatible_version(&minecraft, loader.as_deref()));
         }
-        if project.data.allow_mod_distribution == Some(false)
-            || file.download_url.as_deref().is_none_or(|s| s.is_empty())
-        {
-            return Err(distribution_error(&project.data, &file).into());
+        if let Some(refusal) = manual_install_refusal(&project.data, &file) {
+            return Err(refusal.into());
         }
-        // The exact file alone is already installed: nothing to write, so its
-        // dependencies are not checked again.
-        if installed_already(&directory, &file)? && !other_enabled_copies(&directory, &file, kind)? {
+        let exact_root = installed_already(&directory, &file)?
+            && !other_enabled_copies(&directory, &file, kind)?;
+        let needs_dependencies = file
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.relation_type == 3 || dependency.relation_type == 5);
+        // Only a dependency-free exact file short-circuits before planning; a
+        // present root with required/incompatible dependencies still resolves
+        // them so missing dependencies are installed in one transaction.
+        if exact_root && !needs_dependencies {
             return Ok(ResourceInstall {
                 name: project.data.name,
                 path: directory.join(&file.file_name).to_string_lossy().into_owned(),
                 file_name: file.file_name,
                 warning: Some("资源已是选定版本。".into()),
                 update_id: None,
+                dependency_count: 0,
+                changed_count: 0,
+                already_installed: true,
             });
         }
-        let game_dir = directory.parent().ok_or("目标游戏目录无效")?;
-        check_dependencies(
+        let prepared = prepare_install(
             state,
             &client,
             &key,
+            &project.data,
             &file,
-            game_dir,
+            Some(&directory),
             &minecraft,
-            detected.as_deref(),
+            loader.as_deref(),
+            detected_loader.as_deref(),
+            kind,
+            &resource_type,
         )
         .await?;
-        Ok(replace_with_file(state, &directory, kind, &project.data, &file, None, true).await?)
+        if exact_root && prepared.all_dependencies_kept() {
+            return Ok(ResourceInstall {
+                name: project.data.name,
+                path: directory
+                    .join(&prepared.root_destination)
+                    .to_string_lossy()
+                    .into_owned(),
+                file_name: prepared.root_destination,
+                warning: Some("资源及其必需前置已是选定版本。".into()),
+                update_id: None,
+                dependency_count: prepared.entries.len().saturating_sub(1),
+                changed_count: 0,
+                already_installed: true,
+            });
+        }
+        let installed = install_prepared(
+            state,
+            &directory,
+            &project.data.name,
+            kind,
+            &progress,
+            prepared,
+        )
+        .await?;
+        progress.emit(state, "complete", 1, 1, 0, 0, "资源安装完成");
+        Ok(installed)
     }).await
 }
 
@@ -1445,7 +2633,7 @@ async fn replace_with_file(
     // Parts live beside the game folder, not in next/: they outlive a failed stage.
     let parts = crate::resources::resource_parts(state, directory).map(crate::parts::Reuse::new);
     let reuse = parts.as_ref();
-    let (id, replaced) = crate::resources::resource_transactions::stage_commit(
+    let (id, (written, replaced)) = crate::resources::resource_transactions::stage_commit(
         state,
         directory,
         &project.name,
@@ -1464,9 +2652,9 @@ async fn replace_with_file(
                 return Err(format!("已存在同名文件 {}，停用的副本未更新，原目录未改变", file.file_name));
             }
             let duplicates = if enabled { Duplicates::SetAside(&aside) } else { Duplicates::Keep };
-            let downloaded = download(state, project, file, &next, kind, duplicates, reuse).await?;
+            let downloaded = download(state, project, file, &next, kind, duplicates, reuse, None).await?;
             if !enabled {
-                publish_disabled(&downloaded, &next, &file.file_name, reuse)?;
+                publish_disabled(&downloaded.path, &next, &file.file_name, reuse)?;
             }
             let mut replaced: Vec<String> = fs::read_dir(&aside)
                 .map_err(|e| e.to_string())?
@@ -1474,7 +2662,7 @@ async fn replace_with_file(
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect();
             replaced.sort();
-            Ok(replaced)
+            Ok((downloaded.written || !enabled, replaced))
         },
     )
     .await?;
@@ -1491,6 +2679,9 @@ async fn replace_with_file(
         file_name: installed_name,
         warning: (!notices.is_empty()).then(|| notices.join("；")),
         update_id: Some(id),
+        dependency_count: 0,
+        changed_count: usize::from(written),
+        already_installed: false,
     })
 }
 
@@ -1879,8 +3070,7 @@ pub(crate) async fn curseforge_updates(
         };
         // No usable download (forbidden, missing or not the official CDN): the
         // user downloads it from the project page.
-        let manual_only = project.allow_mod_distribution == Some(false)
-            || newest.download_url.as_deref().is_none_or(|url| download_url(url).is_err());
+        let manual_only = is_restricted_file(project, &newest);
         rows.push(ResourceUpdate {
             file_name: name.clone(),
             name: project.name.clone(),
@@ -2051,9 +3241,10 @@ mod tests {
             ResourceKind::Mod,
             Duplicates::Refuse,
             Some(&reuse),
+            None,
         ));
         crate::resources::TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
-        let error = result.unwrap_err();
+        let Err(error) = result else { panic!("the duplicate must be refused") };
         assert!(error.contains("other.jar"), "{error}");
         let names: Vec<_> = fs::read_dir(&mods).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| !crate::parts::scanner_copy(name)).collect();
@@ -2117,6 +3308,191 @@ mod tests {
             "gameVersions":["1.21.1","Fabric"],"dependencies":[{"modId":789,"relationType":3}]
         })).unwrap()
     }
+
+    fn u27_project(allow: Option<bool>, website: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "id":456,"gameId":432,"name":"Fixture","slug":"fixture","summary":"Fixture",
+            "classId":6,"downloadCount":0.0,"authors":[],"allowModDistribution":allow,
+            "links":{"websiteUrl":website}
+        })
+    }
+
+    fn u27_file(url: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "id":123,"modId":456,"gameId":432,"isAvailable":true,
+            "fileName":"fixture-1.0.jar","displayName":"Fixture 1.0","fileLength":3,"downloadUrl":url,
+            "hashes":[{"algo":1,"value":"a9993e364706816aba3e25717850c26c9cd0d89d"},{"algo":2,"value":"900150983cd24fb0d6963f7d28e17f72"}],
+            "gameVersions":["1.21.1","Fabric"],"dependencies":[]
+        })
+    }
+
+    const U27_CDN: &str = "https://mediafilez.forgecdn.net/files/fixture-1.0.jar";
+    const U27_PAGE: &str = "https://www.curseforge.com/minecraft/mc-mods/fixture";
+
+    /// A launcher whose only game folder is a fixture with a Fabric 1.21.1
+    /// profile and a vanilla 1.21.1 profile.
+    fn u27_state() -> (crate::instances::StagingDirectory, LauncherState) {
+        let folder = c9_folder();
+        let game = folder.path().join("game");
+        for (id, metadata) in [
+            ("fabric-test", serde_json::json!({"inheritsFrom":"1.21.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.9"}],"launcherMetadata":{"loaderVersion":"0.16.9"}})),
+            ("1.21.1", serde_json::json!({"id":"1.21.1"})),
+        ] {
+            let directory = game.join("versions").join(id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(format!("{id}.json")), metadata.to_string()).unwrap();
+        }
+        let state = LauncherState::test_fixture(
+            folder.path().join("data"),
+            crate::models::Persisted {
+                config: crate::models::Config {
+                    game_directory: game.to_string_lossy().into_owned(),
+                    proxy_mode: "none".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            crate::storage::test_client(),
+        );
+        (folder, state)
+    }
+
+    /// Plans file 123 of project 456 against a loopback CurseForge API that
+    /// answers with `project` and then `file`; returns the paths it was asked for.
+    fn u27_plan(state: &LauncherState, project: serde_json::Value, file: serde_json::Value) -> (AppResult<ResourceTargetPlan>, Vec<String>) {
+        use crate::parts::range_server::{RangeServer, Scripted};
+        let answer = |data: serde_json::Value| Scripted::ok(serde_json::json!({ "data": data }).to_string().as_bytes(), "\"j\"");
+        let api = RangeServer::new(vec![answer(project), answer(file)]);
+        crate::resources::TEST_ENDPOINTS.with(|endpoints| {
+            *endpoints.borrow_mut() = Some(crate::resources::TestEndpoints {
+                modrinth_api: String::new(),
+                curseforge_api: format!("http://{}", api.address),
+                cdn: api.address.parse().unwrap(),
+                prepared_version: None,
+            })
+        });
+        let client = api_client(state).unwrap();
+        let plan = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(pinned_targets(
+            state,
+            &client,
+            "fixture-key",
+            "456",
+            "mod",
+            123,
+            async { Err::<serde_json::Value, String>("offline".into()) },
+        ));
+        crate::resources::TEST_ENDPOINTS.with(|endpoints| *endpoints.borrow_mut() = None);
+        let paths = (0..api.count()).filter_map(|index| api.header(index, ":path")).collect();
+        (plan, paths)
+    }
+
+    #[test]
+    fn u27_pinned_plan_fetch_plans_a_manual_only_file_that_the_install_still_refuses() {
+        let (_folder, state) = u27_state();
+        let (plan, paths) = u27_plan(&state, u27_project(Some(true), Some(U27_PAGE)), u27_file(None));
+        let plan = plan.unwrap();
+        assert_eq!(paths, ["/mods/456", "/mods/456/files/123"]);
+        assert!(plan.manual_only);
+        let download = plan.manual_download.as_ref().unwrap();
+        assert_eq!(download.reason, ManualReason::NoDownloadUrl);
+        assert_eq!(download.url, "https://www.curseforge.com/minecraft/mc-mods/fixture/files/123");
+        assert_eq!(download.display_name, "Fixture 1.0");
+        assert_eq!(download.file_name, "fixture-1.0.jar");
+        let fabric = plan.targets.iter().find(|row| row.version_id == "fabric-test").unwrap();
+        assert!(fabric.compatible, "the targets are still planned for the file");
+        // The install keeps refusing the same file, with a stable code that
+        // names it so the picker can be shown for it.
+        let project: Project = serde_json::from_value(u27_project(Some(true), Some(U27_PAGE))).unwrap();
+        let file: CfFile = serde_json::from_value(u27_file(None)).unwrap();
+        let refusal = crate::errors::expected(validate_pinned_file(&project, &file, 123, ResourceKind::Mod).unwrap_err());
+        assert_eq!(refusal.code, "resource.manualDownload");
+        assert_eq!(refusal.params["fileId"], "123");
+
+        for (allow, url, reason) in [
+            (Some(false), Some(U27_CDN), ManualReason::DistributionForbidden),
+            (None, Some("https://downloads.example.test/fixture-1.0.jar"), ManualReason::UntrustedUrl),
+        ] {
+            let (plan, _) = u27_plan(&state, u27_project(allow, Some(U27_PAGE)), u27_file(url));
+            let plan = plan.unwrap();
+            assert!(plan.manual_only, "{reason:?}");
+            assert_eq!(plan.manual_download.unwrap().reason, reason);
+            // The install without a chosen file refuses the same files with the
+            // code that opens the manual section, never a generic error.
+            let project: Project = serde_json::from_value(u27_project(allow, Some(U27_PAGE))).unwrap();
+            let file: CfFile = serde_json::from_value(u27_file(url)).unwrap();
+            let refusal = crate::errors::expected(manual_install_refusal(&project, &file).expect("refused"));
+            assert_eq!(refusal.code, "resource.manualDownload", "{reason:?}");
+        }
+        let project: Project = serde_json::from_value(u27_project(Some(true), Some(U27_PAGE))).unwrap();
+        let file: CfFile = serde_json::from_value(u27_file(Some(U27_CDN))).unwrap();
+        assert!(manual_install_refusal(&project, &file).is_none(), "a downloadable file installs");
+
+        let (plan, _) = u27_plan(&state, u27_project(Some(true), Some(U27_PAGE)), u27_file(Some(U27_CDN)));
+        let plan = plan.unwrap();
+        assert!(!plan.manual_only && plan.manual_download.is_none(), "a downloadable file is planned as before");
+
+        // Planning still refuses what the install would refuse for other reasons.
+        let mut bad_hash = u27_file(Some(U27_CDN));
+        bad_hash["hashes"] = serde_json::json!([{"algo":1,"value":"not-a-sha1"}]);
+        let (plan, _) = u27_plan(&state, u27_project(Some(true), Some(U27_PAGE)), bad_hash);
+        assert!(plan.unwrap_err().detail.unwrap_or_default().contains("校验值"));
+        let mut wrong_type = u27_file(None);
+        wrong_type["fileName"] = "fixture-1.0.zip".into();
+        let (plan, _) = u27_plan(&state, u27_project(Some(true), Some(U27_PAGE)), wrong_type);
+        assert!(plan.unwrap_err().detail.unwrap_or_default().contains("文件类型"), "a manual-only file is still checked");
+    }
+
+    #[test]
+    fn u27_manual_reasons_follow_the_install_checks() {
+        let check = |allow: Option<bool>, url: Option<&str>| {
+            let project: Project = serde_json::from_value(u27_project(allow, None)).unwrap();
+            let file: CfFile = serde_json::from_value(u27_file(url)).unwrap();
+            manual_reason(&project, &file)
+        };
+        assert_eq!(check(Some(false), Some(U27_CDN)), Some(ManualReason::DistributionForbidden));
+        assert_eq!(check(Some(false), None), Some(ManualReason::DistributionForbidden));
+        assert_eq!(check(Some(true), None), Some(ManualReason::NoDownloadUrl));
+        assert_eq!(check(None, Some("")), Some(ManualReason::NoDownloadUrl));
+        assert_eq!(check(None, Some("http://mediafilez.forgecdn.net/files/fixture-1.0.jar")), Some(ManualReason::UntrustedUrl));
+        assert_eq!(check(None, Some("https://forgecdn.net.example.test/fixture-1.0.jar")), Some(ManualReason::UntrustedUrl));
+        assert_eq!(check(Some(true), Some(U27_CDN)), None);
+        assert_eq!(check(None, Some(U27_CDN)), None);
+    }
+
+    #[test]
+    fn u27_manual_file_links_name_the_file_and_stay_inside_the_opener_scope() {
+        let capabilities: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let scope: Vec<String> = capabilities["permissions"].as_array().unwrap().iter()
+            .find(|entry| entry["identifier"] == "opener:allow-open-url").unwrap()["allow"]
+            .as_array().unwrap().iter().filter_map(|entry| entry["url"].as_str().map(str::to_owned)).collect();
+        // The opener's glob patterns let a trailing `*` match `/` as well.
+        let allowed = |url: &str| scope.iter().any(|pattern| pattern.strip_suffix('*').map_or(pattern == url, |prefix| url.starts_with(prefix)));
+        let file: CfFile = serde_json::from_value(u27_file(None)).unwrap();
+        let project_page = "https://www.curseforge.com/projects/456";
+        for (website, expected) in [
+            (Some(U27_PAGE), "https://www.curseforge.com/minecraft/mc-mods/fixture/files/123"),
+            (Some("https://www.curseforge.com/minecraft/shaders/fixture-shader/"), "https://www.curseforge.com/minecraft/shaders/fixture-shader/files/123"),
+            (Some("https://www.curseforge.com/minecraft/texture-packs/fixture_pack"), "https://www.curseforge.com/minecraft/texture-packs/fixture_pack/files/123"),
+            (None, project_page),
+            (Some("not a link"), project_page),
+            (Some("http://www.curseforge.com/minecraft/mc-mods/fixture"), project_page),
+            (Some("https://curseforge.com/minecraft/mc-mods/fixture"), project_page),
+            (Some("https://www.curseforge.com.example.test/minecraft/mc-mods/fixture"), project_page),
+            (Some("https://user@www.curseforge.com/minecraft/mc-mods/fixture"), project_page),
+            (Some("https://www.curseforge.com:8443/minecraft/mc-mods/fixture"), project_page),
+            (Some("https://www.curseforge.com/minecraft/mc-mods/fixture?page=2"), project_page),
+            (Some("https://www.curseforge.com/minecraft/mc-mods/fixture#files"), project_page),
+            (Some("https://www.curseforge.com/minecraft/mc-mods/fixture/files/999"), project_page),
+            (Some("https://www.curseforge.com/minecraft/modpacks/fixture"), project_page),
+            (Some("https://www.curseforge.com/minecraft/mc-mods/fix%2Fture"), project_page),
+        ] {
+            let project: Project = serde_json::from_value(u27_project(Some(false), website)).unwrap();
+            let url = file_page(&project, &file);
+            assert_eq!(url, expected, "{website:?}");
+            assert!(allowed(&url), "{url} is outside the opener scope");
+        }
+    }
+
     #[test]
     fn u1264_curseforge_creation_uses_only_exact_eligible_file_metadata() {
         let mut project: Project = serde_json::from_value(serde_json::json!({
@@ -2128,9 +3504,6 @@ mod tests {
         validate_pinned_file(&project, &file, 123, kind).unwrap();
         assert!(validate_pinned_file(&project, &file, 124, kind).is_err());
         assert!(validate_pinned_file(&project, &file, 123, ResourceKind::Shader).is_err());
-        assert!(!can_create_pinned(&file));
-        file.dependencies[0].relation_type = 2;
-        assert!(can_create_pinned(&file));
         let metadata = pinned_metadata(&file, kind);
         crate::resource_targets::validate_pinned_creation_pair(&metadata, kind, "fabric", "1.21.1").unwrap();
         assert!(crate::resource_targets::validate_pinned_creation_pair(&metadata, kind, "quilt", "1.21.1").is_err());
@@ -2275,5 +3648,127 @@ mod tests {
                 "incompatible"
             ]
         );
+    }
+
+    #[test]
+    fn project_page_only_allows_https_www_curseforge_links() {
+        let make = |link: Option<&str>| Project {
+            id: 789,
+            game_id: 432,
+            name: "Dependency".into(),
+            slug: "dependency".into(),
+            summary: String::new(),
+            class_id: Some(6),
+            download_count: 0.0,
+            authors: vec![],
+            logo: None,
+            latest_files_indexes: vec![],
+            latest_files: vec![],
+            allow_mod_distribution: Some(true),
+            links: Links {
+                website_url: link.map(str::to_owned),
+            },
+        };
+        let fallback = "https://www.curseforge.com/projects/789";
+        assert_eq!(
+            project_page(&make(Some("https://www.curseforge.com/minecraft/mc-mods/dep"))),
+            "https://www.curseforge.com/minecraft/mc-mods/dep"
+        );
+        for untrusted in [
+            None,
+            Some("http://www.curseforge.com/minecraft/mc-mods/dep"),
+            Some("https://curseforge.com/minecraft/mc-mods/dep"),
+            Some("https://www.curseforge.com:8443/minecraft/mc-mods/dep"),
+            Some("https://user@www.curseforge.com/minecraft/mc-mods/dep"),
+            Some("https://evil.example/minecraft/mc-mods/dep"),
+        ] {
+            assert_eq!(project_page(&make(untrusted)), fallback, "{untrusted:?}");
+        }
+    }
+
+    #[test]
+    fn restricted_file_rule_and_pinned_plan_with_dependencies() {
+        let mut project: Project = serde_json::from_value(serde_json::json!({
+            "id": 456, "gameId": 432, "name": "Fixture", "slug": "fixture", "summary": "Fixture",
+            "classId": 6, "downloadCount": 0.0, "authors": [], "allowModDistribution": true
+        }))
+        .unwrap();
+        let mut file = example();
+        assert!(!is_restricted_file(&project, &file));
+        project.allow_mod_distribution = Some(false);
+        assert!(is_restricted_file(&project, &file));
+        project.allow_mod_distribution = Some(true);
+        file.download_url = None;
+        assert!(is_restricted_file(&project, &file));
+        file.download_url = Some("https://evil.example/a.jar".into());
+        assert!(is_restricted_file(&project, &file));
+        file.download_url = Some("https://mediafilez.forgecdn.net/files/example.jar".into());
+        assert!(!is_restricted_file(&project, &file));
+
+        // A pinned CurseForge file that declares required dependencies still
+        // offers new-instance creation (never gated by the removed can_create_pinned).
+        assert_eq!(file.dependencies[0].relation_type, 3);
+        let manifest = vec![("1.21.1".into(), "release".into())];
+        let plan = pinned_target_plan(
+            "456",
+            "mod",
+            ResourceKind::Mod,
+            &project,
+            &file,
+            &[],
+            &manifest,
+        );
+        assert!(plan.suggestion.is_some(), "{plan:?}");
+        assert!(plan.unsupported_reason.is_none(), "{plan:?}");
+        assert!(!plan.manual_only && plan.manual_download.is_none(), "{plan:?}");
+
+        // A restricted pinned root file that also declares required dependencies
+        // still produces d13's manual-only plan with its details and targets.
+        let (_folder, state) = u27_state();
+        let mut restricted_with_deps = u27_file(None);
+        restricted_with_deps["dependencies"] = serde_json::json!([{"modId": 789, "relationType": 3}]);
+        let (manual_plan, _) = u27_plan(
+            &state,
+            u27_project(Some(false), Some(U27_PAGE)),
+            restricted_with_deps,
+        );
+        let manual_plan = manual_plan.unwrap();
+        assert!(manual_plan.manual_only, "{manual_plan:?}");
+        assert!(manual_plan.unsupported_reason.is_none(), "{manual_plan:?}");
+        let download = manual_plan.manual_download.as_ref().unwrap();
+        assert_eq!(download.reason, ManualReason::DistributionForbidden);
+        assert_eq!(download.url, "https://www.curseforge.com/minecraft/mc-mods/fixture/files/123");
+        assert_eq!(download.file_name, "fixture-1.0.jar");
+        assert!(
+            manual_plan.targets.iter().any(|row| row.version_id == "fabric-test" && row.compatible),
+            "compatible targets stay planned for the manual-only folder hint"
+        );
+    }
+
+    #[test]
+    fn installed_dependencies_grouping_is_deterministic_and_prefers_resolved_file_id() {
+        let mut a = example();
+        a.id = 100;
+        a.file_name = "a-old.jar".into();
+        let mut b = example();
+        b.id = 200;
+        b.file_name = "z-selected.jar".into();
+        let mut c = example();
+        c.id = 150;
+        c.file_name = "m-mid.jar".into();
+
+        // Without preference: sorted alphabetically by filename.
+        let mut identified = HashMap::new();
+        identified.insert("z-selected.jar".into(), (456, b.clone()));
+        identified.insert("a-old.jar".into(), (456, a.clone()));
+        identified.insert("m-mid.jar".into(), (456, c.clone()));
+        let plain = group_installed(identified.clone(), None);
+        let names: Vec<_> = plain[&456].iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["a-old.jar", "m-mid.jar", "z-selected.jar"]);
+
+        // Preferring file id 200 puts z-selected.jar first, then remaining sorted.
+        let preferred = group_installed(identified, Some((456, 200)));
+        let names: Vec<_> = preferred[&456].iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["z-selected.jar", "a-old.jar", "m-mid.jar"]);
     }
 }

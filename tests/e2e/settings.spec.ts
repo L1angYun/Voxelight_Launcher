@@ -71,7 +71,9 @@ test("appearance and language preview immediately and persist only on explicit s
   await effects.press("Escape");
   await selectValue(page, "特效级别", "lite");
   await expect(page.locator("html")).toHaveAttribute("data-effects", "lite");
-  await selectValue(page, "强调色来源", "system");
+  const followSystem = page.getByRole("radio", { name: "跟随系统", exact: true });
+  await expect(followSystem).toHaveAttribute("aria-checked", "true");
+  await followSystem.click();
   await expect(page.locator("html")).toHaveAttribute("data-accent-source", "system");
   await selectValue(page, "主题", "light");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
@@ -92,7 +94,8 @@ test("game, Java and download drafts survive section switches and save together"
   await mockSettings(page);
   await openSettings(page);
   await page.locator(".vx-settings-nav").getByRole("button", { name: "游戏", exact: true }).click();
-  await page.getByRole("button", { name: "浏览", exact: true }).click();
+  await page.getByRole("button", { name: "添加游戏文件夹", exact: true }).click();
+  await page.getByRole("radio", { name: "使用 C:\\ChangedFixture", exact: true }).click();
   await page.getByRole("checkbox", { name: "版本隔离", exact: true }).uncheck();
   await page.getByRole("spinbutton", { name: "游戏窗口宽度", exact: true }).fill("1600");
   await page.getByRole("spinbutton", { name: "游戏窗口高度", exact: true }).fill("900");
@@ -117,6 +120,10 @@ test("game, Java and download drafts survive section switches and save together"
     maxMemoryMb: 8192,
     jvmArguments: "-XX:+UseG1GC",
     javaAutoDownload: false,
+    gameFolders: expect.arrayContaining([
+      expect.objectContaining({ path: "C:\\SyntheticFixture", active: false }),
+      expect.objectContaining({ path: "C:\\ChangedFixture", active: true }),
+    ]),
     downloadSource: "bmclapi",
     downloadConcurrency: 8,
     downloadLimitKib: 1024,
@@ -172,7 +179,8 @@ test("service secrets, presets and background stay in their owning groups", asyn
   await page.getByRole("button", { name: "导出设置预设", exact: true }).click();
   await page.getByRole("button", { name: "导入设置预设", exact: true }).click();
   await page.locator(".vx-settings-nav").getByRole("button", { name: "外观", exact: true }).click();
-  await page.getByRole("button", { name: "选择首页背景", exact: true }).click();
+  // The background now covers every page (spec §2.11.4), so its picker no longer says "home".
+  await page.getByRole("button", { name: "选择背景图片", exact: true }).click();
   await page.getByRole("button", { name: "恢复默认背景", exact: true }).click();
   await page.locator(".vx-settings-nav").getByRole("button", { name: "关于", exact: true }).click();
   await expect(page.getByText(packageJson.version, { exact: true })).toBeVisible();

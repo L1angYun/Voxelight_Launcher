@@ -235,7 +235,7 @@ export function ImportServerDialog({
         <div className="vx-action-row">
           <Button
             variant="secondary"
-            icon={kind === "jar" ? <FileArchive size={15} /> : <FolderOpen size={15} />}
+            icon={kind === "jar" ? <FileArchive /> : <FolderOpen />}
             loading={busy === "inspect-import"}
             disabled={Boolean(busy)}
             onClick={() => void choosePath()}

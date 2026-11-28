@@ -7,9 +7,9 @@
 // The installer is copied, never overwriting anything, under that fixed name
 // without spaces, next to update.json. Nothing is uploaded, signed or run.
 //
-// Usage: node scripts/release-metadata.mjs --installer "<final Voxelight Launcher_<x.y.z>_x64-setup.exe>" --out <new or empty directory>
+// Usage: node scripts/release-metadata.mjs --installer "<final VoxelightLauncher-<x.y.z>-x64-setup.exe>" --out <new or empty directory>
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,8 +18,21 @@ export const PRERELEASE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(?
 /** The launcher refuses larger installers (updates::MAX_INSTALLER_BYTES). */
 export const MAX_INSTALLER_BYTES = 512 * 1024 * 1024;
 export const installerName = (version) => `VoxelightLauncher-${version}-x64-setup.exe`;
-/** The name Tauri gives the NSIS installer (the product name contains a space). */
+/** Legacy Tauri raw NSIS name (kept for compatibility with tests and manual builds). */
 export const tauriOutputName = (version) => `Voxelight Launcher_${version}_x64-setup.exe`;
+/** Preserved raw NSIS payload artifact name (never published as the release installer). */
+export const rawNsisName = (version) => `Voxelight Launcher_${version}_x64-nsis.exe`;
+/**
+ * Literal compiled into Voxelight Setup by `setup/src-tauri/src/lib.rs`.
+ * Its presence proves the selected executable is Setup, not the raw NSIS
+ * installer that Tauri emits under a similar name. Keep both sides in sync.
+ */
+export const SETUP_BINARY_MARKER = "VOXELIGHT_SETUP_HOST_V1";
+
+/** True only when `bytes` carry the marker compiled into Voxelight Setup. */
+export function isSetupExecutable(bytes) {
+  return bytes.includes(Buffer.from(SETUP_BINARY_MARKER, "ascii"));
+}
 
 /** package.json, Cargo.toml and tauri.conf.json must name the same version. */
 export function projectVersion(root, { allowPrerelease = false } = {}) {
@@ -36,7 +49,15 @@ export function projectVersion(root, { allowPrerelease = false } = {}) {
   return pkg;
 }
 
-/** No existing component of `target` may be a symbolic link or junction. */
+/**
+ * No existing component of `target` may be a symbolic link or junction.
+ *
+ * Newer Node versions on Windows can report a junction through `lstat` as an
+ * ordinary directory, so each existing component is also compared with its
+ * native real path. A junction (and an 8.3 alias) resolves somewhere else and
+ * is rejected; a normal path resolves to itself (case-insensitively on
+ * Windows).
+ */
 export function assertNoLinks(target) {
   let current = path.resolve(target);
   for (;;) {
@@ -47,6 +68,22 @@ export function assertNoLinks(target) {
       // A missing component cannot redirect anything.
     }
     if (entry?.isSymbolicLink()) throw new Error(`Release paths must not contain links or junctions: ${current}`);
+    if (entry) {
+      let resolved = null;
+      try {
+        resolved = realpathSync.native(current);
+      } catch {
+        resolved = null;
+      }
+      if (resolved) {
+        const expected = path.resolve(current);
+        const actual = path.resolve(resolved);
+        const same = process.platform === "win32"
+          ? actual.toLowerCase() === expected.toLowerCase()
+          : actual === expected;
+        if (!same) throw new Error(`Release paths must not contain links or junctions: ${current}`);
+      }
+    }
     const parent = path.dirname(current);
     if (parent === current) return;
     current = parent;
@@ -84,8 +121,11 @@ export function writeMetadata({ root, installer, out, prerelease = false }) {
   const source = path.resolve(installer);
   const output = path.resolve(out);
   const base = path.basename(source);
+  if (base === rawNsisName(version) || /-nsis\.exe$/i.test(base)) {
+    throw new Error(`Refusing raw NSIS payload ${base}; select Voxelight Setup (${installerName(version)}) instead.`);
+  }
   if (base !== tauriOutputName(version) && base !== installerName(version)) {
-    throw new Error(`The installer must be the ${version} build (${tauriOutputName(version)}), not ${base}.`);
+    throw new Error(`The installer must be the ${version} build (${installerName(version)} or ${tauriOutputName(version)}), not ${base}.`);
   }
   assertNoLinks(source);
   const stat = statSync(source, { throwIfNoEntry: false });
@@ -94,6 +134,12 @@ export function writeMetadata({ root, installer, out, prerelease = false }) {
   const bytes = readFileSync(source);
   if (bytes.length !== stat.size) throw new Error("The installer changed while it was read.");
   if (bytes[0] !== 0x4d || bytes[1] !== 0x5a) throw new Error("The installer is not a Windows executable.");
+  if (!isSetupExecutable(bytes)) {
+    throw new Error(
+      `Refusing to publish ${base}: it does not carry the Voxelight Setup marker. ` +
+      `Build the release with scripts/build.ps1; a raw NSIS installer cannot be published as Setup.`,
+    );
+  }
   const digest = sha256(bytes);
 
   assertEmptyOutput(output);

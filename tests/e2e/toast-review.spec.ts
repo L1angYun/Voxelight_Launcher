@@ -35,7 +35,8 @@ async function traceClick(page: Page, trigger: string, duration = 360, activate?
           toasts: [...document.querySelectorAll<HTMLElement>(".vx-toast")].map(toast => {
             const style = getComputedStyle(toast), rect = toast.getBoundingClientRect();
             const translateY = style.transform === "none" ? 0 : new DOMMatrixReadOnly(style.transform).m42;
-            return { text: toast.querySelector("span")!.textContent!, opacity: Number(style.opacity),
+            // R9 WP-02 puts a 16px kind icon before the message, so read the message body itself.
+            return { text: toast.querySelector(".vx-toast__body")!.textContent!, opacity: Number(style.opacity),
               right: rect.right, bottom: rect.bottom, layoutBottom: rect.bottom - translateY,
               role: toast.getAttribute("role"), hidden: toast.getAttribute("aria-hidden") === "true", inert: toast.inert,
               closeEnabled: !toast.querySelector<HTMLButtonElement>("button")!.disabled,

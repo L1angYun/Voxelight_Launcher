@@ -1,3 +1,4 @@
+use crate::models::DEFAULT_ACCENT_COLOR;
 use serde::Serialize;
 use std::cell::RefCell;
 use tauri::{AppHandle, Emitter};
@@ -14,7 +15,7 @@ pub struct SystemAppearance {
 impl Default for SystemAppearance {
     fn default() -> Self {
         Self {
-            accent_color: "#b4f17a".into(),
+            accent_color: DEFAULT_ACCENT_COLOR.into(),
             animations_enabled: true,
             advanced_effects_enabled: true,
             locale: "en-US".into(),
@@ -243,6 +244,12 @@ mod tests {
     fn accent_channels_form_a_standard_hex_color() {
         assert_eq!(color_to_hex(0x11, 0x22, 0x33), "#112233");
         assert_eq!(color_to_hex(0x00, 0xff, 0x80), "#00ff80");
+    }
+
+    #[test]
+    fn unavailable_system_accent_falls_back_to_windows_blue() {
+        assert_eq!(SystemAppearance::default().accent_color, DEFAULT_ACCENT_COLOR);
+        assert_eq!(DEFAULT_ACCENT_COLOR, "#0078d4");
     }
 
     #[test]

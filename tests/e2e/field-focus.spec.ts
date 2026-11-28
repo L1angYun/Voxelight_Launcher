@@ -68,18 +68,31 @@ for (const mode of ["full", "lite", "reduced"] as const) test(`create ${mode}: c
   await expect(target).toBeFocused();
   await expect.poll(() => dialog.locator(".vx-create-loader-slot").evaluate(node => node.getAnimations().length)).toBe(0);
   const focus = await target.evaluate(node => {
+    // R9 spec §3.2 single focus ring: the flat select surface takes the
+    // indicator border plus a 1px --field-focus shadow; its transparent
+    // -2px outline is only the forced-colors fallback.
     const owner = node.closest(".vx-select")!, clip = node.closest(".vx-create-loader-slot__content")!;
-    const bounds = owner.getBoundingClientRect(), clipBounds = clip.getBoundingClientRect(), style = getComputedStyle(owner);
-    const ring = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+    const surface = owner.querySelector(".vx-select__surface")!;
+    const probe = document.createElement("span"); probe.style.color = "var(--accent-indicator)";
+    document.body.append(probe);
+    const indicator = getComputedStyle(probe).color; probe.remove();
+    const bounds = surface.getBoundingClientRect(), clipBounds = clip.getBoundingClientRect(), style = getComputedStyle(surface);
+    const shadow = /^(rgba?\([^)]*\)) 0px 0px 0px (\d+(?:\.\d+)?)px$/.exec(style.boxShadow);
+    const spread = shadow ? parseFloat(shadow[2]) : 0;
+    // Outer extent of whatever paints outside the surface box.
+    const ring = Math.max(spread, parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset));
     const clippingAncestors = [];
-    for (let parent = owner.parentElement; parent; parent = parent.parentElement) {
+    for (let parent = surface.parentElement; parent; parent = parent.parentElement) {
       const css = getComputedStyle(parent), rect = parent.getBoundingClientRect();
       const clearance = [];
       if (["hidden", "auto", "scroll", "clip"].includes(css.overflowX)) clearance.push(bounds.left - rect.left, rect.right - bounds.right);
       if (["hidden", "auto", "scroll", "clip"].includes(css.overflowY)) clearance.push(bounds.top - rect.top, rect.bottom - bounds.bottom);
       if (clearance.length) clippingAncestors.push({ className: parent.className, clearance });
     }
-    return { width: style.outlineWidth, style: style.outlineStyle, ring,
+    return { indicator, boxShadow: style.boxShadow, shadowColor: shadow?.[1] ?? null, spread,
+      borderStyle: style.borderTopStyle, borderWidth: style.borderTopWidth, borderColor: style.borderTopColor,
+      width: parseFloat(style.borderTopWidth) + spread + "px",
+      outline: { style: style.outlineStyle, width: style.outlineWidth, offset: style.outlineOffset, color: style.outlineColor }, ring,
       clippingAncestors,
       clearance: [bounds.left - clipBounds.left, clipBounds.right - bounds.right, bounds.top - clipBounds.top, clipBounds.bottom - bounds.bottom] };
   });
@@ -87,8 +100,15 @@ for (const mode of ["full", "lite", "reduced"] as const) test(`create ${mode}: c
   await writeFile(info.outputPath("field-focus.json"), JSON.stringify({ mode, collapsedGap, focus }, null, 2));
   expect.soft(collapsedGap).toBeGreaterThanOrEqual(18);
   expect.soft(collapsedGap).toBeLessThanOrEqual(22);
-  expect.soft(focus.style).toBe("solid");
+  expect.soft(focus.borderStyle).toBe("solid");
+  expect.soft(focus.borderWidth).toBe("1px");
+  expect.soft(focus.borderColor, "focused surface border resolves the indicator").toBe(focus.indicator);
+  expect.soft(focus.shadowColor, "focus ring shadow resolves the indicator").toBe(focus.indicator);
+  expect.soft(focus.spread).toBe(1);
+  // One visible 2px ring: the 1px indicator border and the 1px field shadow.
   expect.soft(focus.width).toBe("2px");
+  expect.soft(focus.outline).toEqual({ style: "solid", width: "2px", offset: "-2px", color: "rgba(0, 0, 0, 0)" });
+  expect.soft(focus.ring).toBe(1);
   for (const clearance of focus.clearance) expect.soft(clearance).toBeGreaterThanOrEqual(focus.ring);
   for (const ancestor of focus.clippingAncestors) for (const clearance of ancestor.clearance)
     expect.soft(clearance, `Focus ring clipped by ${ancestor.className}`).toBeGreaterThanOrEqual(focus.ring);

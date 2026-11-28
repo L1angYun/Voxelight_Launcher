@@ -231,6 +231,9 @@ export function prepare({ version, installer, source, out, prerelease = false })
   }
   const inputs = selected.map((input) => readInput(input, input.limit));
   const [installerFile, sourceFile, manifestFile] = inputs;
+  if (installerFile.bytes[0] !== 0x4d || installerFile.bytes[1] !== 0x5a) {
+    throw new Error("The installer is not a Windows executable.");
+  }
   checkManifest(strictJson(manifestFile.bytes), version, installerFile, { prerelease });
   checkZip(sourceFile.bytes, version);
 

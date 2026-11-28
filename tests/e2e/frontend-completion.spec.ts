@@ -26,7 +26,7 @@ const project = {
 };
 
 async function prepare(page: Page, options: { bootstrapFailure?: boolean; noAccount?: boolean } = {}) {
-  await installLauncherFixture(page, { noAccount: options.noAccount, effects: "full", instanceCount: 2 });
+  await installLauncherFixture(page, { noAccount: options.noAccount, effects: "full", instanceCount: 2, modrinthSearch: { hits: [project], totalHits: 1 } });
   await page.addInitScript(({ project, bootstrapFailure }) => {
     const fixtureWindow = window as unknown as {
       __frontendCompletion: { bootstrapFailure: boolean };
@@ -47,7 +47,6 @@ async function prepare(page: Page, options: { bootstrapFailure?: boolean; noAcco
       return original(name, args);
     };
   }, { project, bootstrapFailure: options.bootstrapFailure });
-  await page.route("https://api.modrinth.com/v2/search?**", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [project] }) }));
   await page.goto("/?next-ui");
   await expect(page.locator(".vx-home")).toBeVisible();
 }
@@ -146,35 +145,42 @@ test("completion: library launch failure has one global toast that follows a nat
   await expect(page.locator(".vx-toast-root .vx-toast[role=alert]")).toHaveCount(1);
 });
 
-test("completion: shared selection slides within its own group", async ({ page }, info) => {
+test("completion: shared selection slides within the library view toggle", async ({ page }, info) => {
   await prepare(page);
   await navigate(page, "library");
-  const source = await page.locator(".vx-library-scope [data-selection-mark]").boundingBox();
-  const independent = await page.locator(".vx-library-view [data-selection-mark]").boundingBox();
+  const view = page.locator(".vx-library-view");
+  const source = await view.locator("[data-selection-mark]").boundingBox();
+  const viewport = await view.boundingBox();
   expect(source).not.toBeNull();
+  expect(viewport).not.toBeNull();
   const sampled = page.evaluate(async () => {
-    const frames: { x: number; otherX: number }[] = [];
+    const frames: { x: number; y: number }[] = [];
     await new Promise<void>((resolve) => {
       let start: number;
       function tick() {
-        const mark = document.querySelector(".vx-library-scope [data-selection-mark]");
-        const other = document.querySelector(".vx-library-view [data-selection-mark]");
-        if (mark && other) frames.push({ x: mark.getBoundingClientRect().x, otherX: other.getBoundingClientRect().x });
+        const mark = document.querySelector(".vx-library-view [data-selection-mark]");
+        if (mark) {
+          const bounds = mark.getBoundingClientRect();
+          frames.push({ x: bounds.x, y: bounds.y });
+        }
         if (performance.now() - start < 650) requestAnimationFrame(tick); else resolve();
       }
       document.addEventListener("click", () => { start = performance.now(); requestAnimationFrame(tick); }, { once: true, capture: true });
     });
     return frames;
   });
-  await page.locator(".vx-library-scope").getByRole("button", { name: "版本目录", exact: true }).click();
+  await view.getByRole("button", { name: "列表视图", exact: true }).click();
   const frames = await sampled;
-  const destination = await page.locator(".vx-library-scope [data-selection-mark]").boundingBox();
+  const destination = await view.locator("[data-selection-mark]").boundingBox();
   const low = Math.min(source!.x, destination!.x), high = Math.max(source!.x, destination!.x);
-  await info.attach("selection-geometry", { body: JSON.stringify({ source, independent, destination, frames }), contentType: "application/json" });
-  await writeFile(info.outputPath("selection-geometry.json"), JSON.stringify({ source, independent, destination, frames }, null, 2));
+  await info.attach("selection-geometry", { body: JSON.stringify({ source, viewport, destination, frames }), contentType: "application/json" });
+  await writeFile(info.outputPath("selection-geometry.json"), JSON.stringify({ source, viewport, destination, frames }, null, 2));
+  await expect(view.getByRole("button", { name: "列表视图", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(high - low).toBeGreaterThan(20);
   expect(frames.filter((frame) => frame.x > low + 1 && frame.x < high - 1).length).toBeGreaterThan(1);
-  expect(frames.every((frame) => Math.abs(frame.otherX - independent!.x) < 1)).toBe(true);
+  // The shared mark crosses grid/list without leaving its own segmented control.
+  expect(frames.every((frame) => frame.x >= viewport!.x && frame.x <= viewport!.x + viewport!.width)).toBe(true);
+  expect(frames.every((frame) => Math.abs(frame.y - source!.y) < 1)).toBe(true);
 });
 
 for (const width of [1280, 1050]) {
@@ -205,8 +211,15 @@ test(`completion: create tabs preserve native focus order, compact height and ov
   expect(imported!.y).toBeGreaterThan(before!.y);
   await page.keyboard.press("Home");
   await dialog.getByRole("button", { name: "Fabric", exact: true }).click();
-  await expect(dialog.getByRole("combobox", { name: "加载器版本", exact: true })).toBeEnabled();
-  await expect.poll(async () => (await dialog.boundingBox())!.height - before!.height).toBeGreaterThan(60);
+  const loaderVersion = dialog.getByRole("combobox", { name: "加载器版本", exact: true });
+  await expect(loaderVersion).toBeEnabled();
+  // The version list already sizes the dialog to the window, so the loader's
+  // fields scroll inside the body while the install action stays in view.
+  const body = dialog.locator(".vx-dialog__body");
+  await expect.poll(() => body.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(0);
+  await loaderVersion.scrollIntoViewIfNeeded();
+  await expect(loaderVersion).toBeInViewport({ ratio: 1 });
+  await expect(dialog.locator(".vx-dialog__footer").getByRole("button", { name: "安装并准备游戏", exact: true })).toBeInViewport({ ratio: 1 });
   const expanded = await dialog.boundingBox();
   expect(expanded!.y).toBeGreaterThanOrEqual(24);
   expect(expanded!.y + expanded!.height).toBeLessThanOrEqual(696);

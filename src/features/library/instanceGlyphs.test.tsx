@@ -4,11 +4,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  GLYPH_VIEWBOX,
   InstanceGlyph,
+  glyphGeometry,
   glyphLoader,
   glyphLoaderForVersionDirectory,
   glyphVersion,
   type GlyphLoader,
+  type GlyphPoint,
   type GlyphVersion,
 } from "./instanceGlyphs";
 
@@ -28,15 +31,15 @@ function renderGlyph(loader: GlyphLoader, version: GlyphVersion) {
   return container.querySelector("svg")!;
 }
 
-function cells(svg: Element) {
-  return [...svg.querySelectorAll("rect")].map(rect => [
-    rect.getAttribute("x"),
-    rect.getAttribute("y"),
-    rect.getAttribute("width"),
-    rect.getAttribute("height"),
-    rect.getAttribute("fill"),
-  ].join(":"));
+function faceSignature(svg: Element) {
+  return [...svg.querySelectorAll(".vx-instance-glyph__face")].map(face => ({
+    tone: face.getAttribute("data-face"),
+    points: face.getAttribute("points"),
+    fill: face.getAttribute("fill"),
+  }));
 }
+
+const LOADERS: readonly GlyphLoader[] = ["vanilla", "fabric", "quilt", "forge", "neoforge", "optifine", "unknown"];
 
 describe("glyphLoader", () => {
   it.each([
@@ -59,6 +62,11 @@ describe("glyphLoader", () => {
     { input: "optifine", expected: "optifine" },
     { input: "OptiFine", expected: "optifine" },
     { input: "unknown", expected: "unknown" },
+    // A caller may hold the version-directory id rather than the family name.
+    { input: "fabric-loader-0.19.3-26.2", expected: "fabric" },
+    { input: "26.2-fabric-0.19.3", expected: "fabric" },
+    { input: "1.21.1-forge-47.2.0", expected: "forge" },
+    { input: "neoforge-21.1.77", expected: "neoforge" },
   ])("classifies $input as $expected", ({ input, expected }) => {
     expect(glyphLoader(input as string | null | undefined)).toBe(expected);
   });
@@ -67,15 +75,26 @@ describe("glyphLoader", () => {
 describe("glyphLoaderForVersionDirectory", () => {
   it.each([
     { id: "1.21.1", expected: "vanilla" },
+    { id: "26.2", expected: "vanilla" },
     { id: "fabric-loader-0.16.10-1.21.1", expected: "fabric" },
+    { id: "fabric-loader-0.19.3-26.2", expected: "fabric" },
     { id: "FABRIC-LOADER-0.16.10-1.21.1", expected: "fabric" },
+    { id: "26.2-fabric-0.19.3", expected: "fabric" },
+    { id: "1.21.1-fabric-0.19.3", expected: "fabric" },
+    { id: "26.2-FABRIC-0.19.3", expected: "fabric" },
     { id: "quilt-loader-0.26.4-1.21.1", expected: "quilt" },
+    { id: "1.21.1-quilt-0.26.4", expected: "quilt" },
     { id: "1.20.1-forge-47.2.0", expected: "forge" },
     { id: "forge-1.20.1-47.2.0", expected: "forge" },
+    { id: "1.21.1-FORGE-52.0.0", expected: "forge" },
     { id: "neoforge-21.1.77", expected: "neoforge" },
     { id: "1.21.1-neoforge-21.1.77", expected: "neoforge" },
+    { id: "1.21.1-NeoForge-21.1.77", expected: "neoforge" },
     { id: "1.20.4-OptiFine_HD_U_I7", expected: "optifine" },
+    { id: "1.20.4-optifine-1.0", expected: "optifine" },
+    { id: "1.20.4-OPTIFINE_HD_U_I7", expected: "optifine" },
     { id: "fabric-1.21.1", expected: "vanilla" },
+    { id: "quilt-1.21.1", expected: "vanilla" },
   ])("classifies version directory $id as $expected", ({ id, expected }) => {
     expect(glyphLoaderForVersionDirectory(id)).toBe(expected);
   });
@@ -128,142 +147,322 @@ describe("glyphVersion", () => {
   });
 });
 
-describe("InstanceGlyph", () => {
-  it("draws a hidden, crisp, inline 16x16 grid of rect cells", () => {
-    const svg = renderGlyph("forge", "snapshot");
-    expect(svg.getAttribute("viewBox")).toBe("0 0 16 16");
-    expect(svg.getAttribute("shape-rendering")).toBe("crispEdges");
-    expect(svg.getAttribute("aria-hidden")).toBe("true");
-    expect(svg.getAttribute("data-glyph-loader")).toBe("forge");
-    expect(svg.getAttribute("data-glyph-version")).toBe("snapshot");
-    expect([...svg.children].every(child => child.tagName.toLowerCase() === "rect")).toBe(true);
-    const rects = [...svg.querySelectorAll("rect")];
-    expect(rects.length).toBeGreaterThan(10);
-    for (const rect of rects) {
-      const x = Number(rect.getAttribute("x"));
-      const y = Number(rect.getAttribute("y"));
-      const width = Number(rect.getAttribute("width"));
-      const height = Number(rect.getAttribute("height"));
-      expect(Number.isInteger(x) && Number.isInteger(y) && Number.isInteger(width) && Number.isInteger(height)).toBe(true);
+describe("glyphGeometry", () => {
+  it("draws a centred, whole-pixel isometric cube on a 48-unit grid", () => {
+    const geometry = glyphGeometry("release");
+    expect(GLYPH_VIEWBOX).toBe(48);
+    expect(geometry.faces.map(face => face.tone)).toEqual(["top", "left", "right"]);
+    expect(geometry.faces.every(face => face.points.length === 4)).toBe(true);
+    expect(geometry.notch).toBeNull();
+    expect(geometry.notchEdge).toBeNull();
+    expect(geometry.highlights.map(highlight => highlight.tone)).toEqual(["top", "left"]);
+
+    const all = [...geometry.faces.flatMap(face => face.points), ...geometry.dots];
+    for (const [x, y] of all) {
+      expect(Number.isInteger(x) && Number.isInteger(y)).toBe(true);
       expect(x).toBeGreaterThanOrEqual(0);
       expect(y).toBeGreaterThanOrEqual(0);
-      expect(x + width).toBeLessThanOrEqual(16);
-      expect(y + height).toBeLessThanOrEqual(16);
-      expect(rect.getAttribute("fill")).toMatch(/^var\(--vx-glyph-/);
+      expect(x).toBeLessThanOrEqual(48);
+      expect(y).toBeLessThanOrEqual(48);
+    }
+    const box = bounds(geometry.faces.flatMap(face => face.points));
+    expect(box.width).toBe(36);
+    expect(box.height).toBe(32);
+    expect(box.left + box.width / 2).toBe(24);
+    expect(box.top + box.height / 2).toBe(24);
+  });
+
+  it("keeps the top face lightest, then left and right as the two side faces", () => {
+    const [top, left, right] = glyphGeometry("release").faces;
+    expect(top.tone).toBe("top");
+    expect(left.tone).toBe("left");
+    expect(right.tone).toBe("right");
+    expect(polygonArea(top.points)).toBe(288);
+    expect(polygonArea(left.points)).toBe(288);
+    expect(polygonArea(right.points)).toBe(288);
+    // The side faces meet only at the shared front vertical edge.
+    expect(left.points).toContainEqual([24, 24]);
+    expect(right.points).toContainEqual([24, 24]);
+  });
+
+  it("cuts an exact quarter-size voxel step from the top-front corner for snapshots", () => {
+    const release = glyphGeometry("release");
+    const snapshot = glyphGeometry("snapshot");
+    expect(snapshot.faces.map(face => face.tone)).toEqual(["top", "left", "right"]);
+    expect(snapshot.faces[1]).toEqual(release.faces[1]);
+    expect(snapshot.faces[2]).toEqual(release.faces[2]);
+
+    const top = snapshot.faces[0];
+    expect(top.points).toHaveLength(6);
+    expect(polygonArea(top.points)).toBe(polygonArea(release.faces[0].points) - polygonArea(snapshot.notch!));
+    expect(polygonArea(snapshot.notch!) * 4).toBe(polygonArea(release.faces[0].points));
+    // The quarter is cut from the front corner of the top face.
+    expect(bounds(snapshot.notch!).bottom).toBe(24);
+    expect(snapshot.notch).toContainEqual([24, 24]);
+    expect(snapshot.notchEdge).toEqual([[33, 20], [24, 16], [15, 20]]);
+    for (const [x, y] of snapshot.notch!) {
+      expect(Number.isInteger(x) && Number.isInteger(y)).toBe(true);
     }
   });
 
-  it.each([
-    ["vanilla", "fabric"],
-    ["fabric", "quilt"],
-    ["quilt", "forge"],
-    ["forge", "neoforge"],
-    ["neoforge", "unknown"],
-  ] as const)("draws a different motif for %s and %s", (left, right) => {
-    const leftCells = cells(renderGlyph(left, "release"));
-    const rightCells = cells(renderGlyph(right, "release"));
-    expect(leftCells).not.toEqual(rightCells);
+  it("keeps beta/alpha/classic geometry identical to a release; old is a colour treatment", () => {
+    expect(glyphGeometry("old")).toEqual(glyphGeometry("release"));
   });
 
-  it("draws a different motif for every loader", () => {
-    const loaders: GlyphLoader[] = ["vanilla", "fabric", "quilt", "forge", "neoforge", "unknown"];
-    const motifs = loaders.map(loader => JSON.stringify(cells(renderGlyph(loader, "release"))));
-    expect(new Set(motifs).size).toBe(loaders.length);
+  it("places a 3x3 lattice of dots on the top face in screen-aligned rows", () => {
+    const geometry = glyphGeometry("release");
+    expect(geometry.dots).toHaveLength(9);
+    expect(new Set(geometry.dots.map(([x, y]) => `${x},${y}`)).size).toBe(9);
+    for (const dot of geometry.dots) {
+      expect(insidePolygon(dot, geometry.faces[0].points)).toBe(true);
+    }
+    const rows = new Map<number, number[]>();
+    for (const [x, y] of geometry.dots) rows.set(y, [...(rows.get(y) ?? []), x].sort((a, b) => a - b));
+    expect([...rows.entries()]).toEqual([
+      [11, [24]],
+      [13, [18, 30]],
+      [16, [12, 24, 36]],
+      [19, [18, 30]],
+      [21, [24]],
+    ]);
+    expect(glyphGeometry("snapshot").dots).toEqual(geometry.dots);
   });
 
-  it("marks snapshots and old versions differently from a release", () => {
-    const release = cells(renderGlyph("vanilla", "release"));
-    const snapshot = cells(renderGlyph("vanilla", "snapshot"));
-    const old = cells(renderGlyph("vanilla", "old"));
-    expect(snapshot).not.toEqual(release);
-    expect(old).not.toEqual(release);
-    expect(old).not.toEqual(snapshot);
-    expect(snapshot.length).toBeGreaterThan(release.length);
-    expect(old.length).toBeGreaterThan(release.length);
+  it("insets the one-pixel highlights inside the top and left silhouettes", () => {
+    const geometry = glyphGeometry("release");
+    const [top, left] = geometry.highlights;
+    expect(top.points).toEqual([[7, 16], [24, 9], [41, 16]]);
+    expect(left.points).toEqual([[7, 17], [7, 31]]);
+    // Every highlight point sits one unit inside the corresponding face edge.
+    for (const [x, y] of [...top.points, ...left.points]) {
+      expect(Number.isInteger(x) && Number.isInteger(y)).toBe(true);
+    }
+    expect(insidePolygon([7, 16], geometry.faces[0].points)).toBe(true);
+    expect(insidePolygon([7, 17], geometry.faces[1].points)).toBe(true);
   });
-
-  it.each(["vanilla", "fabric", "quilt", "forge", "neoforge", "unknown"] as const)(
-    "keeps %s motif cells and version marks in separate pixels",
-    (loader) => {
-      const motifCells = occupiedCells(renderGlyph(loader, "release"));
-      for (let y = 0; y < 4; y++) {
-        for (let x = 12; x < 16; x++) {
-          expect(motifCells.has(`${x},${y}`)).toBe(false);
-        }
-      }
-      const snapshot = markSignature(renderGlyph(loader, "snapshot"));
-      const old = markSignature(renderGlyph(loader, "old"));
-      expect(snapshot.cells.size).toBeGreaterThan(0);
-      expect(old.cells.size).toBeGreaterThan(0);
-      for (const cell of [...snapshot.cells, ...old.cells]) {
-        expect(motifCells.has(cell)).toBe(false);
-      }
-      expect(snapshot).not.toEqual(old);
-      expect(snapshot.fills.has("var(--vx-glyph-mark)")).toBe(true);
-      expect(old.fills.has("var(--vx-glyph-mark-old)")).toBe(true);
-    },
-  );
 });
 
-function occupiedCells(svg: Element) {
-  const result = new Set<string>();
-  for (const rect of svg.querySelectorAll("rect")) {
-    const x = Number(rect.getAttribute("x")), y = Number(rect.getAttribute("y"));
-    const width = Number(rect.getAttribute("width")), height = Number(rect.getAttribute("height"));
-    for (let dx = 0; dx < width; dx++) {
-      for (let dy = 0; dy < height; dy++) result.add(`${x + dx},${y + dy}`);
+describe("InstanceGlyph", () => {
+  it("renders a hidden, crisp, 48-unit cube with a face polygon per tone", () => {
+    const svg = renderGlyph("forge", "release");
+    expect(svg.getAttribute("viewBox")).toBe("0 0 48 48");
+    expect(svg.getAttribute("shape-rendering")).toBe("crispEdges");
+    expect(svg.getAttribute("aria-hidden")).toBe("true");
+    expect(svg.getAttribute("focusable")).toBe("false");
+    expect(svg.getAttribute("data-glyph-loader")).toBe("forge");
+    expect(svg.getAttribute("data-glyph-version")).toBe("release");
+    expect(faceSignature(svg)).toEqual([
+      { tone: "top", points: "24,8 42,16 24,24 6,16", fill: "var(--vx-glyph-face-top)" },
+      { tone: "left", points: "6,16 24,24 24,40 6,32", fill: "var(--vx-glyph-face-left)" },
+      { tone: "right", points: "24,24 42,16 42,32 24,40", fill: "var(--vx-glyph-face-right)" },
+    ]);
+    for (const face of svg.querySelectorAll<SVGPolygonElement>(".vx-instance-glyph__face")) {
+      for (const pair of face.getAttribute("points")!.split(" ")) {
+        expect(pair.split(",").every(value => Number.isInteger(Number(value)))).toBe(true);
+      }
     }
-  }
-  return result;
-}
+  });
 
-function markSignature(svg: Element) {
-  const cells = new Set<string>();
-  const fills = new Set<string>();
-  for (const rect of svg.querySelectorAll("rect")) {
-    const fill = rect.getAttribute("fill") ?? "";
-    if (!/^var\(--vx-glyph-mark(?:-old)?\)$/.test(fill)) continue;
-    fills.add(fill);
-    const x = Number(rect.getAttribute("x")), y = Number(rect.getAttribute("y"));
-    const width = Number(rect.getAttribute("width")), height = Number(rect.getAttribute("height"));
-    for (let dx = 0; dx < width; dx++) {
-      for (let dy = 0; dy < height; dy++) cells.add(`${x + dx},${y + dy}`);
+  it("draws the 3x3 dotted lattice in the darkest face tone at 35% opacity", () => {
+    const svg = renderGlyph("fabric", "release");
+    const dots = [...svg.querySelectorAll<SVGRectElement>("rect.vx-instance-glyph__dot")];
+    expect(dots).toHaveLength(9);
+    for (const dot of dots) {
+      expect(dot.getAttribute("fill")).toBe("var(--vx-glyph-dot)");
+      expect(Number(dot.getAttribute("fill-opacity"))).toBeCloseTo(0.35);
+      expect(Number(dot.getAttribute("width"))).toBe(2);
+      expect(Number(dot.getAttribute("height"))).toBe(2);
     }
-  }
-  return { cells, fills };
-}
+  });
+
+  it("paints the dotted lattice above the faces but below the snapshot notch", () => {
+    const release = [...renderGlyph("vanilla", "release").children];
+    const firstDot = release.findIndex(child => child.classList.contains("vx-instance-glyph__dot"));
+    const lastFace = release.reduce((last, child, index) =>
+      child.classList.contains("vx-instance-glyph__face") ? index : last, -1);
+    expect(firstDot).toBeGreaterThan(lastFace);
+
+    const snapshot = [...renderGlyph("vanilla", "snapshot").children];
+    const notch = snapshot.findIndex(child => child.classList.contains("vx-instance-glyph__notch"));
+    const lastSnapshotDot = snapshot.reduce((last, child, index) =>
+      child.classList.contains("vx-instance-glyph__dot") ? index : last, -1);
+    expect(notch).toBeGreaterThan(lastSnapshotDot);
+  });
+
+  it("gives the top and left faces a one-pixel inner highlight", () => {
+    const svg = renderGlyph("vanilla", "release");
+    const highlights = [...svg.querySelectorAll<SVGPolylineElement>(".vx-instance-glyph__highlight")];
+    expect(highlights.map(line => line.getAttribute("data-highlight"))).toEqual(["top", "left"]);
+    for (const line of highlights) {
+      expect(line.getAttribute("stroke-width")).toBe("1");
+      expect(line.getAttribute("stroke")).toMatch(/^var\(--vx-glyph-highlight-(?:top|left)\)$/);
+      expect(line.getAttribute("vector-effect")).toBe("non-scaling-stroke");
+      expect(line.getAttribute("fill")).toBe("none");
+    }
+  });
+
+  it("renders the snapshot notch and the release cube without one", () => {
+    const release = renderGlyph("quilt", "release");
+    expect(release.querySelector(".vx-instance-glyph__notch")).toBeNull();
+    const snapshot = renderGlyph("quilt", "snapshot");
+    const notch = snapshot.querySelector<SVGPolygonElement>(".vx-instance-glyph__notch");
+    expect(notch).not.toBeNull();
+    expect(notch!.getAttribute("points")).toBe("24,24 33,20 24,16 15,20");
+    expect(notch!.getAttribute("fill")).toBe("var(--vx-glyph-notch)");
+    expect(snapshot.querySelector(".vx-instance-glyph__notch-edge")).not.toBeNull();
+  });
+
+  it("keeps old versions geometrically identical to releases", () => {
+    expect(faceSignature(renderGlyph("optifine", "old"))).toEqual(faceSignature(renderGlyph("optifine", "release")));
+    expect(renderGlyph("optifine", "old").querySelector(".vx-instance-glyph__notch")).toBeNull();
+  });
+
+  it("keeps one cube identity for every loader; the loader only selects a colour token", () => {
+    const signatures = LOADERS.map(loader => ({
+      loader: renderGlyph(loader, "release").getAttribute("data-glyph-loader"),
+      faces: faceSignature(renderGlyph(loader, "release")),
+    }));
+    expect(new Set(signatures.map(entry => JSON.stringify(entry.faces))).size).toBe(1);
+    expect(signatures.map(entry => entry.loader)).toEqual(LOADERS);
+  });
+});
 
 describe("glyph styles", () => {
   const gridCss = readFileSync("src/features/library/library-grid.css", "utf8");
   const detailCss = readFileSync("src/features/library/instance-detail.css", "utf8");
   const tokensCss = readFileSync("src/design/tokens.css", "utf8");
 
-  it("sizes every glyph at a whole number of 16-cell pixels", () => {
+  it("sizes every glyph at a whole pixel count", () => {
     expect(rule(gridCss, ".vx-instance-glyph")).toMatch(/width:\s*48px;\s*height:\s*48px;/);
     expect(rule(gridCss, ".vx-instance-sheet--list .vx-instance-glyph")).toMatch(/width:\s*32px;\s*height:\s*32px;/);
     expect(rule(detailCss, ".vx-detail-header .vx-instance-glyph")).toMatch(/width:\s*32px;\s*height:\s*32px;/);
   });
 
   it.each([
-    ["dark", ":root {"],
-    ["light", '[data-theme="light"] {'],
-  ])("keeps the %s glyph shade below its base and its light above", (_theme, scope) => {
-    const tokens = colorTokens(tokensCss, scope);
-    const block = rule(gridCss, scope === ":root {" ? ".vx-instance-glyph" : '[data-theme="light"] .vx-instance-glyph');
-    const base = mixedColor(block, "--vx-glyph-base", tokens);
-    const shade = mixedColor(block, "--vx-glyph-shade", tokens);
-    const light = mixedColor(block, "--vx-glyph-light", tokens);
-    expect(relativeLuminance(light)).toBeGreaterThan(relativeLuminance(base));
-    expect(relativeLuminance(base)).toBeGreaterThan(relativeLuminance(shade));
-    expect(contrastRatio(base, shade)).toBeGreaterThanOrEqual(1.5);
+    ["dark", ".vx-instance-glyph"],
+    ["light", '[data-theme="light"] .vx-instance-glyph'],
+  ])("defines a base hue token for every loader in the %s theme", (_theme, selector) => {
+    const block = rule(gridCss, selector);
+    for (const token of [...LOADERS, "old"]) {
+      expect(block).toMatch(new RegExp(`--vx-glyph-${token}:\\s*#[0-9a-f]{6}`, "i"));
+    }
   });
 
-  it("keeps a high-contrast mark distinct from the ink outline", () => {
+  it("maps every loader and the old kind to its own base token", () => {
+    for (const loader of LOADERS) {
+      const block = rule(gridCss, `.vx-instance-glyph[data-glyph-loader="${loader}"]`);
+      expect(block).toMatch(new RegExp(`--vx-glyph-base:\\s*var\\(--vx-glyph-${loader}\\)`));
+    }
+    expect(rule(gridCss, '.vx-instance-glyph[data-glyph-version="old"]'))
+      .toMatch(/--vx-glyph-base:\s*var\(--vx-glyph-old\)/);
+  });
+
+  it("derives all three face tones from the loader base with color-mix, never a hard-coded face", () => {
+    const block = rule(gridCss, ".vx-instance-glyph");
+    expect(faceMix(block, "top")).toEqual({ percent: 55, other: "white" });
+    expect(faceMix(block, "left")).toEqual({ percent: 85, other: "white" });
+    expect(faceMix(block, "right")).toEqual({ percent: 70, other: "black" });
+    const faces = block.match(/--vx-glyph-face-[\w-]+:\s*color-mix\([^;]+;/g) ?? [];
+    expect(faces).toHaveLength(3);
+    for (const face of faces) {
+      expect(face).toContain("var(--vx-glyph-base)");
+      expect(face).toMatch(/color-mix\(in srgb,/);
+      expect(face).not.toMatch(/#[0-9a-f]{3,8}/i);
+    }
+    expect(block).toMatch(/--vx-glyph-dot:\s*var\(--vx-glyph-face-right\)/);
+    expect(block).toMatch(/--vx-glyph-highlight-top:\s*color-mix\(in srgb, var\(--vx-glyph-face-top\) 55%, white\)/);
+    expect(block).toMatch(/--vx-glyph-highlight-left:\s*color-mix\(in srgb, var\(--vx-glyph-face-left\) 55%, white\)/);
+    expect(block).toMatch(/--vx-glyph-notch:\s*color-mix\(in srgb, var\(--vx-glyph-face-right\) 62%, black\)/);
+  });
+
+  it.each([
+    ["dark", ".vx-instance-glyph", ":root {"],
+    ["light", '[data-theme="light"] .vx-instance-glyph', '[data-theme="light"] {'],
+  ])("keeps every %s darkest face at least 3:1 against the card surface", (_theme, selector, scope) => {
+    const block = rule(gridCss, selector);
+    const baseBlock = rule(gridCss, ".vx-instance-glyph");
+    const bases = hexTokens(block);
+    const surface = hexTokens(colorTokens(tokensCss, scope))["--surface-card"];
+    expect(surface).toBeDefined();
+    const rightMix = faceMix(baseBlock, "right");
+    expect(rightMix.other).toBe("black");
+    for (const token of [...LOADERS, "old"]) {
+      const base = bases[`--vx-glyph-${token}`];
+      expect(base).toBeDefined();
+      const right = mix(base, [0, 0, 0], rightMix.percent / 100);
+      expect(contrastRatio(right, surface)).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it.each([
+    [".vx-instance-glyph"],
+    ['[data-theme="light"] .vx-instance-glyph'],
+  ])("orders the faces top-lightest, left-mid, right-darkest for every base", (selector) => {
+    const baseBlock = rule(gridCss, ".vx-instance-glyph");
+    const bases = hexTokens(rule(gridCss, selector));
+    const topMix = faceMix(baseBlock, "top");
+    const leftMix = faceMix(baseBlock, "left");
+    const rightMix = faceMix(baseBlock, "right");
+    for (const token of [...LOADERS, "old"]) {
+      const base = bases[`--vx-glyph-${token}`];
+      expect(base).toBeDefined();
+      const top = mixWith(base, topMix);
+      const left = mixWith(base, leftMix);
+      const right = mixWith(base, rightMix);
+      expect(relativeLuminance(top)).toBeGreaterThan(relativeLuminance(left));
+      expect(relativeLuminance(left)).toBeGreaterThan(relativeLuminance(right));
+    }
+  });
+
+  it("keeps the high-contrast override wired to the base token", () => {
     const block = rule(gridCss, '[data-high-contrast="true"] .vx-instance-glyph');
-    expect(block).toMatch(/--vx-glyph-mark:\s*var\(--accent-ink/);
-    expect(block).toMatch(/--vx-glyph-mark-old:\s*var\(--warning\)/);
+    expect(block).toMatch(/--vx-glyph-base:\s*var\(--text-primary\)/);
+  });
+
+  it.each([
+    ["dark", ":root {"],
+    ["light", '[data-theme="light"] {'],
+  ])("keeps the high-contrast %s darkest face at least 3:1 against the panel surface", (_theme, scope) => {
+    const tokens = hexTokens(colorTokens(tokensCss, scope));
+    const base = tokens["--text-primary"];
+    const surface = tokens["--surface-solid"];
+    expect(base).toBeDefined();
+    expect(surface).toBeDefined();
+    const rightMix = faceMix(rule(gridCss, ".vx-instance-glyph"), "right");
+    expect(contrastRatio(mix(base, [0, 0, 0], rightMix.percent / 100), surface)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("removes the dotted lattice and corner bracket behind a voxel glyph", () => {
+    expect(gridCss).toMatch(
+      /\.vx-instance-identity\[data-identity-face="glyph"\]::before,\s*\.vx-instance-identity\[data-identity-face="glyph"\]::after\s*\{[^}]*content:\s*none/,
+    );
   });
 });
+
+function bounds(points: readonly GlyphPoint[]) {
+  const xs = points.map(([x]) => x), ys = points.map(([, y]) => y);
+  const left = Math.min(...xs), right = Math.max(...xs);
+  const top = Math.min(...ys), bottom = Math.max(...ys);
+  return { left, right, top, bottom, width: right - left, height: bottom - top };
+}
+
+function polygonArea(points: readonly GlyphPoint[]) {
+  let area = 0;
+  for (let index = 0; index < points.length; index++) {
+    const [x, y] = points[index], [nextX, nextY] = points[(index + 1) % points.length];
+    area += x * nextY - nextX * y;
+  }
+  return Math.abs(area) / 2;
+}
+
+function insidePolygon([x, y]: GlyphPoint, points: readonly GlyphPoint[]) {
+  let inside = false;
+  for (let index = 0, previous = points.length - 1; index < points.length; previous = index++) {
+    const [xi, yi] = points[index], [xj, yj] = points[previous];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
 
 function rule(css: string, selector: string) {
   const start = css.indexOf(`${selector} {`);
@@ -276,26 +475,36 @@ function rule(css: string, selector: string) {
 function colorTokens(css: string, scope: string) {
   const start = css.indexOf(scope);
   expect(start).toBeGreaterThanOrEqual(0);
-  const block = css.slice(start, css.indexOf("\n}", start));
+  return css.slice(start, css.indexOf("\n}", start));
+}
+
+function hexTokens(block: string) {
   const result: Record<string, [number, number, number]> = {};
   for (const match of block.matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})/gi)) {
-    result[match[1]] = hexChannels(match[2]);
+    result[`--${match[1]}`] = hexChannels(match[2]);
   }
   return result;
 }
 
-function hexChannels(hex: string): [number, number, number] {
-  return [1, 3, 5].map(at => Number.parseInt(hex.slice(at, at + 2), 16)) as [number, number, number];
+function faceMix(block: string, tone: "top" | "left" | "right") {
+  const match = new RegExp(
+    `--vx-glyph-face-${tone}:\\s*color-mix\\(in srgb,\\s*var\\(--vx-glyph-base\\)\\s*(\\d+)%,\\s*(white|black)\\)`,
+  ).exec(block);
+  expect(match).not.toBeNull();
+  return { percent: Number(match![1]), other: match![2] as "white" | "black" };
 }
 
-function mixedColor(block: string, property: string, tokens: Record<string, [number, number, number]>) {
-  const match = new RegExp(`${property}:\\s*color-mix\\(in srgb,\\s*var\\(--([\\w-]+)\\)\\s*(\\d+)%,\\s*var\\(--([\\w-]+)\\)\\)`).exec(block);
-  expect(match).not.toBeNull();
-  const first = tokens[match![1]], second = tokens[match![3]];
-  expect(first).toBeDefined();
-  expect(second).toBeDefined();
-  const amount = Number(match![2]) / 100;
+function mixWith(base: [number, number, number], face: { percent: number; other: "white" | "black" }) {
+  const other: [number, number, number] = face.other === "white" ? [255, 255, 255] : [0, 0, 0];
+  return mix(base, other, face.percent / 100);
+}
+
+function mix(first: [number, number, number], second: [number, number, number], amount: number): [number, number, number] {
   return first.map((value, index) => value * amount + second[index] * (1 - amount)) as [number, number, number];
+}
+
+function hexChannels(hex: string): [number, number, number] {
+  return [1, 3, 5].map(at => Number.parseInt(hex.slice(at, at + 2), 16)) as [number, number, number];
 }
 
 function relativeLuminance([red, green, blue]: [number, number, number]) {

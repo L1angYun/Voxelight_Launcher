@@ -1072,6 +1072,106 @@ pub async fn apply_modpack_update(
 /// The whole update, in the order its guards need: the same-root check and
 /// no unfinished restore, no pending resource transaction, the plan
 /// unchanged, then the backup, the changed copy and the swap.
+/// Record the installed dependency on the updated instance. A version-folder
+/// instance keeps its folder name as `versionId`; its profile is rewritten in
+/// the staged copy, so it can be published atomically with the mods. The live
+/// folder must not change before the commit checks it.
+fn record_dependency_change(
+    state: &LauncherState,
+    current: &Instance,
+    after: &mut Instance,
+    stage: &Path,
+    installed: (String, String, String),
+) -> Result<Option<FileRecord>, String> {
+    let (version_id, loader, loader_version) = installed;
+    let record = if current.is_version_folder() {
+        let folder =
+            crate::commands::rewrite_version_folder_profile_at(state, current, stage, &version_id, &loader)?;
+        after.version_id = folder.clone();
+        let path = stage.join(format!("{folder}.json"));
+        let bytes = fs::read(&path).map_err(|error| format!("无法读取暂存实例配置：{error}"))?;
+        Some(FileRecord {
+            relative: format!("{folder}.json"),
+            size: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+        })
+    } else {
+        after.version_id = version_id;
+        None
+    };
+    after.loader = loader;
+    after.loader_version = loader_version;
+    Ok(record)
+}
+
+/// A test can stand in for a loader/vanilla install so the whole update flow
+/// (stage, dependency change, profile rewrite, commit) runs without downloads.
+#[cfg(test)]
+type DependencyInstaller =
+    Box<dyn FnOnce(&LauncherState, &BTreeMap<String, String>) -> Result<(String, String, String), String> + Send>;
+#[cfg(test)]
+static DEPENDENCY_INSTALLERS: std::sync::Mutex<Vec<(String, DependencyInstaller)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) fn install_dependencies_hook(
+    instance_id: &str,
+    install: impl FnOnce(&LauncherState, &BTreeMap<String, String>) -> Result<(String, String, String), String>
+        + Send
+        + 'static,
+) {
+    DEPENDENCY_INSTALLERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((instance_id.to_owned(), Box::new(install)));
+}
+
+async fn install_update_dependencies(
+    state: &Arc<LauncherState>,
+    app: Option<&AppHandle>,
+    dependencies: &BTreeMap<String, String>,
+    instance_id: &str,
+) -> Result<(String, String, String), String> {
+    #[cfg(not(test))]
+    let _ = instance_id;
+    #[cfg(test)]
+    {
+        let installer = {
+            let mut installers = DEPENDENCY_INSTALLERS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            installers
+                .iter()
+                .position(|(id, _)| id == instance_id)
+                .map(|index| installers.remove(index).1)
+        };
+        if let Some(install) = installer {
+            return install(state, dependencies);
+        }
+    }
+    let app = app.ok_or("安装新加载器需要启动器窗口")?;
+    install_dependencies(state, Some(app), dependencies).await
+}
+
+/// A stray profile backup from an older version must not be published with an
+/// update. Only this launcher's own `<name>.json.backup-*` shape is removed.
+fn remove_profile_backups(stage: &Path, expected: &mut BTreeMap<String, FileRecord>) {
+    let Ok(entries) = fs::read_dir(stage) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let lower = name.to_ascii_lowercase();
+        if lower.contains(".json.backup-")
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
+            if fs::remove_file(entry.path()).is_ok() {
+                expected.remove(&lower);
+            }
+        }
+    }
+}
+
 async fn apply_inner(
     app: Option<&AppHandle>,
     state: &Arc<LauncherState>,
@@ -1104,6 +1204,7 @@ async fn apply_inner(
     require_copy_matches(&prepared.disk, &stage.files)?;
     let mut expected: BTreeMap<String, FileRecord> =
         stage.files.iter().map(|record| (record.relative.to_lowercase(), record.clone())).collect();
+    remove_profile_backups(stage.path(), &mut expected);
     for step in &steps {
         state.control.checkpoint().await?;
         let name = step_name(step);
@@ -1149,11 +1250,18 @@ async fn apply_inner(
     }
     let mut after = current.clone();
     if dependency_change {
-        let app = app.ok_or("安装新加载器需要启动器窗口")?;
-        let (version_id, loader, loader_version) = install_dependencies(state, app, &prepared.dependencies).await?;
-        after.version_id = version_id;
-        after.loader = loader;
-        after.loader_version = loader_version;
+        let installed = install_update_dependencies(
+            state,
+            app,
+            &prepared.dependencies,
+            instance_id,
+        )
+        .await?;
+        if let Some(profile) =
+            record_dependency_change(state, &current, &mut after, stage.path(), installed)?
+        {
+            expected.insert(profile.relative.to_lowercase(), profile);
+        }
     }
     state.control.checkpoint().await?;
     let lock = safe_join(stage.path(), LOCK)?;

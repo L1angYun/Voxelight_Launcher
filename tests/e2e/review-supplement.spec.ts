@@ -129,9 +129,9 @@ async function capture(page: Page, info: TestInfo, label: string, target: string
 }
 
 test("supplement: closing the actual project details drawer retains release and dependency content in captured frames", async ({ page }, info) => {
-  await installLauncherFixture(page, { theme: "dark", effects: "full", instanceCount: 3 });
   const project = { project_id: "supplement-pack", slug: "supplement-pack", title: "Supplement pack", description: "Drawer close acceptance",
     icon_url: null, downloads: 1200, author: "Fixture author", project_type: "modpack", versions: ["1.21.1"] };
+  await installLauncherFixture(page, { theme: "dark", effects: "full", instanceCount: 3, modrinthSearch: { hits: [project], totalHits: 1 } });
   await page.addInitScript(project => {
     const api = (window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: Record<string, unknown>) => Promise<unknown> } }).__TAURI_INTERNALS__;
     const original = api.invoke;
@@ -140,7 +140,6 @@ test("supplement: closing the actual project details drawer retains release and 
       dependencies: [{ projectId: "supplement-dependency", kind: "unknown", name: "Supplement dependency" }],
     } : original(name, args);
   }, project);
-  await page.route("https://api.modrinth.com/v2/search?**", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ hits: [project] }) }));
   await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("data-world-intro", "off");
   await navigate(page, "discover");
@@ -181,7 +180,7 @@ for (const mode of ["lite", "reduced-motion", "reduced-transparency", "high-cont
       const api = (window as unknown as { __TAURI_INTERNALS__: { invoke: (name: string, args?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
       const original = api.invoke;
       api.invoke = async (name, args) => name === "get_system_appearance"
-        ? { accentColor: "#b4f17a", animationsEnabled: true, advancedEffectsEnabled: false, locale: "zh-CN" } : original(name, args);
+        ? { accentColor: "#0078d4", animationsEnabled: true, advancedEffectsEnabled: false, locale: "zh-CN" } : original(name, args);
     });
     await page.goto("/");
     const attribute = { lite: "data-effects", "reduced-motion": "data-reduced-motion", "reduced-transparency": "data-reduced-transparency", "high-contrast": "data-high-contrast" }[mode];

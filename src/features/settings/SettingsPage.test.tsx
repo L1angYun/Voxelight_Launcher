@@ -2,13 +2,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, createElement } from "react";
+import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import { command, defaults, type Bootstrap, type Config } from "../../lib/launcher";
 import { LauncherError } from "../../lib/errors";
 import type { LauncherContextValue } from "../../app/controller/types";
+import { LeaveGuardProvider, useLeaveGuardController } from "../../app/leaveGuard";
+import { resetViewState } from "../../app/viewState";
 import { createLauncherI18n } from "../../i18n";
 import { SettingsPage } from "./SettingsPage";
 import { settingsIndex } from "./settingsIndex";
@@ -51,7 +53,7 @@ function fixture(): LauncherContextValue {
     language: "en-US",
     theme: "dark",
     effects: "full",
-    accentSource: "voxelight",
+    accentSource: "system",
     soundEnabled: false,
     microsoftClientId: "11111111-1111-1111-1111-111111111111",
   };
@@ -96,7 +98,100 @@ function fixture(): LauncherContextValue {
 async function render() {
   const i18n = createLauncherI18n("en-US", "en-US");
   await i18n.initPromise;
-  await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(SettingsPage))));
+  await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(
+    LeaveGuardProvider,
+    null,
+    createElement(SettingsPage),
+  ))));
+}
+
+/** `keepMounted` leaves Settings on screen after leaving, so Discard's own effect is visible. */
+function LeaveHarness({ keepMounted = false }: { keepMounted?: boolean }) {
+  const { requestLeave } = useLeaveGuardController();
+  const [left, setLeft] = useState(false);
+  return createElement("div", null,
+    left && !keepMounted ? null : createElement(SettingsPage),
+    left ? createElement("p", { "data-testid": "left-settings" }, "Left settings") : null,
+    createElement("button", {
+      type: "button",
+      "data-testid": "attempt-leave",
+      onClick: () => {
+        void requestLeave().then((allowed) => {
+          if (allowed) setLeft(true);
+        });
+      },
+    }, "Leave settings"),
+  );
+}
+
+async function renderWithLeave(options: { keepMounted?: boolean } = {}) {
+  const i18n = createLauncherI18n("en-US", "en-US");
+  await i18n.initPromise;
+  await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(
+    LeaveGuardProvider,
+    null,
+    createElement(LeaveHarness, options),
+  ))));
+}
+
+async function renderEntry(props: { reviewUpdates?: number; focusAssistant?: number }) {
+  const i18n = createLauncherI18n("en-US", "en-US");
+  await i18n.initPromise;
+  await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(
+    LeaveGuardProvider,
+    null,
+    createElement(SettingsPage, props),
+  ))));
+}
+
+async function attemptLeave() {
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="attempt-leave"]')!.click());
+}
+
+function leaveDialog(): HTMLDialogElement | null {
+  return document.querySelector<HTMLDialogElement>("dialog[open]");
+}
+
+function dialogButton(label: string): HTMLButtonElement {
+  const found = [...(leaveDialog()?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+    .find((candidate) => candidate.textContent?.trim() === label);
+  if (!found) throw new Error(`Missing dialog button: ${label}`);
+  return found;
+}
+
+function leftSettings(): boolean {
+  return container.querySelector('[data-testid="left-settings"]') !== null;
+}
+
+function inputValue(label: string): string | undefined {
+  return container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)?.value;
+}
+
+function failCommand(name: string, error: unknown) {
+  const base = commandMock.getMockImplementation()!;
+  commandMock.mockImplementation(async (commandName, args) => {
+    if (commandName === name) throw error;
+    return base(commandName, args);
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((settleResolve, settleReject) => {
+    resolve = settleResolve;
+    reject = settleReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function withSavedProxyEndpoint() {
+  const saved = {
+    ...mockLauncher.config,
+    proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+    gameProxyMode: "off",
+  } satisfies Config;
+  mockLauncher.config = mockLauncher.data.config = saved;
 }
 
 function button(label: string): HTMLButtonElement {
@@ -173,7 +268,8 @@ async function select(label: string, value: string) {
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  appearance = { effects: "full", accentColor: "#b4f17a", resolvedTheme: "dark" };
+  resetViewState();
+  appearance = { effects: "full", accentColor: "#0078d4", resolvedTheme: "dark" };
   mockLauncher = fixture();
   updates.current = {
     result: null,
@@ -258,6 +354,17 @@ beforeEach(() => {
     configurable: true,
     writable: true,
     value: scrollIntoView,
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value: function (this: HTMLDialogElement) { this.open = true; },
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", {
+    configurable: true,
+    value: function (this: HTMLDialogElement) {
+      this.open = false;
+      this.dispatchEvent(new Event("close"));
+    },
   });
   container = document.createElement("div");
   document.body.append(container);
@@ -387,7 +494,7 @@ describe("global settings", () => {
     expect(appearance.effects).toBe("lite");
     expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
     expect(commandMock).not.toHaveBeenCalledWith("save_config", expect.anything());
-    await select("Accent source", "system");
+    await click("Follow system");
     await select("Theme", "light");
     await select("Language", "zh-CN");
     await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Sound effects"]')!.click());
@@ -398,33 +505,58 @@ describe("global settings", () => {
       theme: "light",
       language: "zh-CN",
       soundEnabled: true,
-    }), { appearancePatch: { effects: "lite", accentSource: "system", theme: "light", language: "zh-CN", soundEnabled: true } });
+    }), { appearancePatch: { effects: "lite", theme: "light", language: "zh-CN", soundEnabled: true } });
   });
 
-  it("supports custom accents without adding a third effects mode", async () => {
+  it("shows follow-system first and the traditional Chinese presets with accessible names", async () => {
     await render();
     await click("Appearance");
-    await select("Accent source", "custom");
-    await fill("Accent color", "#ff7fb5");
-    await click("Accent color #78ded5");
+    const group = container.querySelector<HTMLElement>('[role="radiogroup"][aria-label="Accent source"]');
+    expect(group).not.toBeNull();
+    const radios = [...group!.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(radios).toHaveLength(13);
+    expect(radios[0].getAttribute("aria-label")).toBe("Follow system");
+    expect(radios[0].getAttribute("aria-checked")).toBe("true");
+    expect(radios[0].tabIndex).toBe(0);
+    for (const name of ["Indigo", "Peacock blue", "Jade blue", "Bamboo green", "Reed green", "Vermilion", "Begonia red", "Rose red", "Blue lotus", "Amber yellow", "Swallow grey"]) {
+      expect(radios.some((radio) => radio.getAttribute("aria-label") === name), name).toBe(true);
+      expect(container.textContent).toContain(name);
+    }
+    expect(container.textContent).toContain("Current system accent: #0078d4");
+  });
+
+  it("supports custom accents and preset picks without adding a third effects mode", async () => {
+    await render();
+    await click("Appearance");
+    await click("Custom");
     expect(mockLauncher.config.accentSource).toBe("custom");
-    expect(mockLauncher.config.accentColor).toBe("#78ded5");
+    await fill("Accent color", "#ff7fb5");
+    expect(mockLauncher.config.accentColor).toBe("#ff7fb5");
+    await click("Indigo");
+    expect(mockLauncher.config.accentSource).toBe("custom");
+    expect(mockLauncher.config.accentColor).toBe("#1661ab");
+    expect(container.querySelector<HTMLButtonElement>('[role="radio"][aria-label="Indigo"]')!.getAttribute("aria-checked")).toBe("true");
+    await click("Follow system");
+    expect(mockLauncher.config.accentSource).toBe("system");
     await click("Effects level");
     expect([...document.querySelectorAll('[role="option"]')].filter((option) => !option.closest('[aria-hidden="true"]'))).toHaveLength(2);
   });
 
-  it("owns game directory, isolation and window fields", async () => {
+  it("owns game folders, isolation and window fields", async () => {
     mocks.open.mockResolvedValue("C:\\ChangedFixture");
     await render();
     await click("Game");
-    await click("Browse");
+    await click("Add game folder");
     await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Version isolation"]')!.click());
     await fill("Game window width", "1600");
     await fill("Game window height", "900");
     await click("Save settings");
     expect(commandMock).toHaveBeenCalledWith("choose_launcher_path", { purpose: "gameDirectory", suggestedName: undefined });
     expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
-      gameDirectory: "C:\\ChangedFixture",
+      gameDirectory: mockLauncher.config.gameDirectory,
+      gameFolders: expect.arrayContaining([
+        expect.objectContaining({ path: "C:\\ChangedFixture", active: false }),
+      ]),
       versionIsolation: false,
       screenWidth: 1600,
       screenHeight: 900,
@@ -549,6 +681,18 @@ describe("global settings", () => {
     }), { preserveAppearance: true });
   });
 
+  it("marks the chosen detected Java runtime as pressed", async () => {
+    await render();
+    await click("Java");
+    await click("Detect Java");
+    const detected = button("Java 21");
+    expect(detected.getAttribute("aria-pressed")).toBe("false");
+    await click("Java 21");
+    expect(button("Java 21").getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Java executable"]')?.value)
+      .toBe("C:\\SyntheticFixture\\java.exe");
+  });
+
   it("keeps download source, concurrency and rate limit together", async () => {
     await render();
     await click("Downloads");
@@ -653,6 +797,25 @@ describe("global settings", () => {
     expect(container.textContent).not.toContain("A built-in Microsoft app is available");
   });
 
+  it("explains under the CurseForge key that it saves separately from Save settings", async () => {
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="CurseForge API Key"]')!;
+    const hint = document.getElementById(input.getAttribute("aria-describedby") ?? "");
+    expect(hint?.textContent).toBe("This key is encrypted and saved separately; Save settings does not affect it.");
+    expect(hint?.closest("label")).toBe(input.closest("label"));
+  });
+
+  it("uses typographic settings group headings without icon decoration", async () => {
+    await render();
+    const general = [...container.querySelectorAll<HTMLElement>(".vx-settings-group > h3")];
+    expect(general.length).toBeGreaterThan(0);
+    expect(general.every((heading) => heading.querySelector("svg") === null)).toBe(true);
+    await click("Lumen & MCP");
+    const assistant = [...container.querySelectorAll<HTMLElement>(".vx-settings-group > h3")];
+    expect(assistant.map((heading) => heading.textContent)).toEqual(["Lumen AI provider and key", "Local MCP server"]);
+    expect(assistant.every((heading) => heading.querySelector("svg") === null)).toBe(true);
+  });
+
   it("sets and clears a custom background through the existing commands", async () => {
     mocks.open.mockResolvedValue("C:\\SyntheticFixture\\background.png");
     await render();
@@ -661,6 +824,41 @@ describe("global settings", () => {
     expect(commandMock).toHaveBeenCalledWith("set_launcher_background", { path: "C:\\SyntheticFixture\\background.png" });
     await click("Reset background");
     expect(commandMock).toHaveBeenCalledWith("set_launcher_background", { path: null });
+  });
+
+  it("previews and saves ambient light and background adjustments", async () => {
+    mockLauncher.config = { ...mockLauncher.config, customBackground: "C:\\SyntheticFixture\\bg.png" };
+    mockLauncher.data.config = mockLauncher.config;
+    await render();
+    await click("Appearance");
+    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Ambient light"]')!.click());
+    await fill("Ambient light intensity", "80");
+    await fill("Background blur", "16");
+    await fill("Background dim", "50");
+    await act(async () => container.querySelector<HTMLInputElement>('input[aria-label="Slow background drift"]')!.click());
+    expect(mockLauncher.setConfig).toHaveBeenLastCalledWith(expect.objectContaining({
+      ambientLightEnabled: false,
+      ambientLightIntensity: 80,
+      backgroundBlur: 16,
+      backgroundDim: 50,
+      backgroundDrift: true,
+    }));
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      ambientLightEnabled: false,
+      ambientLightIntensity: 80,
+      backgroundBlur: 16,
+      backgroundDim: 50,
+      backgroundDrift: true,
+    }), {
+      appearancePatch: {
+        ambientLightEnabled: false,
+        ambientLightIntensity: 80,
+        backgroundBlur: 16,
+        backgroundDim: 50,
+        backgroundDrift: true,
+      },
+    });
   });
 
   it("imports and exports presets without including service secrets", async () => {
@@ -706,14 +904,503 @@ describe("global settings", () => {
     expect(container.textContent).not.toContain("Something went wrong");
   });
 
+  it("adds, renames and removes game folders without deleting files", async () => {
+    mockLauncher.config = {
+      ...mockLauncher.config,
+      gameFolders: [
+        { path: "C:\\SyntheticFixture", label: "Vanilla", active: true },
+        { path: "D:\\OtherGame", label: "Other", active: false },
+      ],
+    };
+    mockLauncher.data.config = mockLauncher.config;
+    await render();
+    await click("Game");
+    const labels = [...container.querySelectorAll<HTMLInputElement>('input[aria-label="Folder label"]')];
+    expect(labels).toHaveLength(2);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(labels[1], "PCL");
+      labels[1].dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click("Remove PCL from the list");
+    expect(container.querySelectorAll('input[aria-label="Folder label"]')).toHaveLength(1);
+    const onlyRemove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove Vanilla from the list"]')!;
+    expect(onlyRemove.disabled).toBe(true);
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      gameDirectory: "C:\\SyntheticFixture",
+      gameFolders: [{ path: "C:\\SyntheticFixture", label: "Vanilla", active: true }],
+    }), { preserveAppearance: true });
+  });
+
+  it("is clean again after a game folder label is typed and deleted, so leaving does not prompt", async () => {
+    mockLauncher.config = {
+      ...mockLauncher.config,
+      gameFolders: [
+        { path: "C:\\SyntheticFixture", label: "Vanilla", active: true },
+        { path: "D:\\OtherGame", label: "Other", active: false },
+      ],
+    };
+    mockLauncher.data.config = mockLauncher.config;
+    await renderWithLeave();
+    await click("Game");
+    const label = () => container.querySelectorAll<HTMLInputElement>('input[aria-label="Folder label"]')[1];
+    for (const value of ["OtherX", "Other"]) {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(label(), value);
+        label().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    expect(container.querySelector(".vx-settings-dirty")).toBeNull();
+    await attemptLeave();
+    expect(leaveDialog()).toBeNull();
+    expect(leftSettings()).toBe(true);
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+  });
+
   it("shows the expected configuration error when explicit save is rejected", async () => {
     mockLauncher.saveConfig = vi.fn(async () => { throw new LauncherError("config.gameDirectory"); });
     await render();
     await click("Game");
-    await fill("Game directory", "relative-path");
+    await fill("Game window width", "1600");
     await click("Save settings");
     expect(container.textContent).toContain("The game directory must be an absolute path.");
     expect(container.textContent).not.toContain("Something went wrong");
+  });
+
+  it("asks before leaving a dirty draft and only navigates after a successful save", async () => {
+    await renderWithLeave();
+    await click("Game");
+    await fill("Game window width", "1600");
+    await attemptLeave();
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("Unsaved changes");
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+
+    await click("Stay");
+    expect(leaveDialog()).toBeNull();
+    expect(container.querySelector('[data-testid="left-settings"]')).toBeNull();
+
+    await attemptLeave();
+    await click("Save");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ screenWidth: 1600 }),
+      { preserveAppearance: true },
+    );
+    expect(container.querySelector('[data-testid="left-settings"]')).not.toBeNull();
+  });
+
+  it("keeps the page and shows the save error when saving from the leave prompt fails", async () => {
+    mockLauncher.saveConfig = vi.fn(async () => { throw new LauncherError("config.gameDirectory"); });
+    await renderWithLeave();
+    await click("Game");
+    await fill("Game window width", "1600");
+    await attemptLeave();
+    await click("Save");
+
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("The game directory must be an absolute path.");
+    expect(container.querySelector('[data-testid="left-settings"]')).toBeNull();
+    expect(container.textContent).toContain("The game directory must be an absolute path.");
+  });
+
+  it("reverts the draft and the appearance live preview through Discard itself, while Settings is still mounted", async () => {
+    await renderWithLeave({ keepMounted: true });
+    await click("Appearance");
+    await select("Effects level", "lite");
+    await select("Theme", "light");
+    expect(appearance.effects).toBe("lite");
+    expect(appearance.resolvedTheme).toBe("light");
+    expect(container.querySelector(".vx-settings-dirty")).not.toBeNull();
+
+    await attemptLeave();
+    expect(leaveDialog()).not.toBeNull();
+    await click("Discard");
+
+    expect(leaveDialog()).toBeNull();
+    expect(leftSettings()).toBe(true);
+    // Settings has not unmounted, so only Discard's own reset can have reverted these.
+    expect(container.querySelector(".vx-settings-page")).not.toBeNull();
+    expect(container.querySelector(".vx-settings-dirty")).toBeNull();
+    expect(appearance.effects).toBe("full");
+    expect(appearance.resolvedTheme).toBe("dark");
+    expect(mockLauncher.setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ effects: "full", theme: "dark" }));
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it("waits for a toolbar save that is still running and leaves once it succeeds, without offering Discard", async () => {
+    const running = deferred<void>();
+    mockLauncher.saveConfig = vi.fn(async (next: Config) => {
+      await running.promise;
+      return next;
+    });
+    await renderWithLeave();
+    await click("Game");
+    await fill("Game window width", "1600");
+    await click("Save settings");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledTimes(1);
+
+    await attemptLeave();
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("Your changes are still being saved.");
+    expect(dialogButton("Discard").disabled).toBe(true);
+    expect(dialogButton("Save").disabled).toBe(true);
+    expect(dialogButton("Stay").disabled).toBe(false);
+    expect(leftSettings()).toBe(false);
+
+    await act(async () => running.resolve());
+
+    expect(leaveDialog()).toBeNull();
+    expect(leftSettings()).toBe(true);
+    expect(mockLauncher.saveConfig).toHaveBeenCalledTimes(1);
+    expect(mockLauncher.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ screenWidth: 1600 }),
+      { preserveAppearance: true },
+    );
+    expect(container.textContent).not.toContain("could not be saved");
+  });
+
+  it("shows the real error of a running toolbar save and offers Discard only after it failed", async () => {
+    const running = deferred<void>();
+    mockLauncher.saveConfig = vi.fn(async () => {
+      await running.promise;
+      throw new LauncherError("config.gameDirectory");
+    });
+    await renderWithLeave();
+    await click("Game");
+    await fill("Game window width", "1600");
+    await click("Save settings");
+    await attemptLeave();
+    expect(dialogButton("Discard").disabled).toBe(true);
+
+    await act(async () => running.resolve());
+
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("The game directory must be an absolute path.");
+    expect(leaveDialog()?.textContent).not.toContain("still being saved");
+    expect(leaveDialog()?.textContent).not.toContain("Your changes could not be saved.");
+    expect(dialogButton("Discard").disabled).toBe(false);
+    expect(leftSettings()).toBe(false);
+    expect(mockLauncher.saveConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a Save from the leave prompt the real outcome of a toolbar save that is already running", async () => {
+    const running = deferred<void>();
+    mockLauncher.saveConfig = vi.fn(async (next: Config) => {
+      await running.promise;
+      return next;
+    });
+    await renderWithLeave();
+    await click("Game");
+    await fill("Game window width", "1600");
+    await attemptLeave();
+    // jsdom does not make the prompt modal, so a toolbar save can start behind it.
+    await click("Save settings");
+    await click("Save");
+    expect(mockLauncher.saveConfig).toHaveBeenCalledTimes(1);
+    expect(leaveDialog()?.textContent).not.toContain("could not be saved");
+    expect(leftSettings()).toBe(false);
+
+    await act(async () => running.resolve());
+
+    expect(leaveDialog()).toBeNull();
+    expect(leftSettings()).toBe(true);
+    expect(mockLauncher.saveConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("guards an unsaved Lumen API key even though it is not part of the config draft", async () => {
+    await renderWithLeave();
+    await click("Lumen & MCP");
+    await fill("Lumen API key", "sk-synthetic-key");
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+
+    await attemptLeave();
+    expect(leaveDialog()).not.toBeNull();
+    await click("Save");
+    expect(commandMock).toHaveBeenCalledWith("set_assistant_api_key", { secret: "sk-synthetic-key" });
+    expect(leftSettings()).toBe(true);
+  });
+
+  it("keeps Settings, the error and the typed Lumen key when saving it from the leave prompt fails", async () => {
+    failCommand("set_assistant_api_key", new LauncherError("config.busy"));
+    await renderWithLeave();
+    await click("Lumen & MCP");
+    await fill("Lumen API key", "sk-synthetic-key");
+    await attemptLeave();
+    await click("Save");
+
+    expect(commandMock).toHaveBeenCalledWith("set_assistant_api_key", { secret: "sk-synthetic-key" });
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("Your changes could not be saved.");
+    expect(leaveDialog()?.textContent).not.toContain("sk-synthetic-key");
+    expect(leftSettings()).toBe(false);
+    expect(container.textContent).toContain("Wait for the current installation or launch preparation to finish");
+    expect(inputValue("Lumen API key")).toBe("sk-synthetic-key");
+  });
+
+  it("guards a typed CurseForge API key and saves it only through the encrypted key command", async () => {
+    await renderWithLeave();
+    await fill("CurseForge API Key", "fixture-secret");
+    await attemptLeave();
+    expect(leaveDialog()).not.toBeNull();
+    await click("Save");
+
+    expect(commandMock).toHaveBeenCalledWith("set_service_secret", { service: "curseforge", secret: "fixture-secret" });
+    expect(leftSettings()).toBe(true);
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(mockLauncher.setConfig).mock.calls)).not.toContain("fixture-secret");
+  });
+
+  it("keeps Settings and the typed CurseForge key when saving it from the leave prompt fails", async () => {
+    failCommand("set_service_secret", new LauncherError("config.busy"));
+    await renderWithLeave();
+    await fill("CurseForge API Key", "fixture-secret");
+    await attemptLeave();
+    await click("Save");
+
+    expect(commandMock).toHaveBeenCalledWith("set_service_secret", { service: "curseforge", secret: "fixture-secret" });
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("Your changes could not be saved.");
+    expect(leaveDialog()?.textContent).not.toContain("fixture-secret");
+    expect(leftSettings()).toBe(false);
+    expect(container.textContent).toContain("Wait for the current installation or launch preparation to finish");
+    expect(inputValue("CurseForge API Key")).toBe("fixture-secret");
+  });
+
+  it("clears a typed CurseForge key on Discard without storing it", async () => {
+    await renderWithLeave({ keepMounted: true });
+    await fill("CurseForge API Key", "fixture-secret");
+    await attemptLeave();
+    await click("Discard");
+
+    expect(leftSettings()).toBe(true);
+    expect(inputValue("CurseForge API Key")).toBe("");
+    expect(commandMock).not.toHaveBeenCalledWith("set_service_secret", expect.anything());
+  });
+
+  it("guards typed proxy credentials and saves them only through the credential command", async () => {
+    withSavedProxyEndpoint();
+    await renderWithLeave();
+    await click("Downloads");
+    await fill("Proxy username", "synthetic-user");
+    await fill("Proxy password", "synthetic-pass");
+    await attemptLeave();
+    expect(leaveDialog()).not.toBeNull();
+    await click("Save");
+
+    expect(commandMock).toHaveBeenCalledWith("set_proxy_credentials", {
+      proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+      username: "synthetic-user", password: "synthetic-pass",
+    });
+    expect(leftSettings()).toBe(true);
+    expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(mockLauncher.setConfig).mock.calls)).not.toContain("synthetic-pass");
+  });
+
+  it("keeps Settings and the typed proxy credentials when saving them from the leave prompt fails", async () => {
+    withSavedProxyEndpoint();
+    failCommand("set_proxy_credentials", new LauncherError("proxy.invalidCredentials"));
+    await renderWithLeave();
+    await click("Downloads");
+    await fill("Proxy username", "synthetic-user");
+    await fill("Proxy password", "synthetic-pass");
+    await attemptLeave();
+    await click("Save");
+
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("Your changes could not be saved.");
+    expect(leaveDialog()?.textContent).not.toContain("synthetic-pass");
+    expect(leftSettings()).toBe(false);
+    expect(container.textContent).toContain("Proxy credentials could not be saved or read.");
+    expect(inputValue("Proxy username")).toBe("synthetic-user");
+    expect(inputValue("Proxy password")).toBe("synthetic-pass");
+  });
+
+  it("clears typed proxy credentials on Discard without storing them", async () => {
+    withSavedProxyEndpoint();
+    await renderWithLeave({ keepMounted: true });
+    await click("Downloads");
+    await fill("Proxy username", "synthetic-user");
+    await fill("Proxy password", "synthetic-pass");
+    await attemptLeave();
+    await click("Discard");
+
+    expect(leftSettings()).toBe(true);
+    expect(inputValue("Proxy username")).toBe("");
+    expect(inputValue("Proxy password")).toBe("");
+    expect(commandMock).not.toHaveBeenCalledWith("set_proxy_credentials", expect.anything());
+  });
+
+  it("lets a running proxy test finish before saving typed credentials from the leave prompt", async () => {
+    withSavedProxyEndpoint();
+    const probe = deferred<{ latencyMs: number }>();
+    const base = commandMock.getMockImplementation()!;
+    commandMock.mockImplementation(async (name, args) => (name === "test_proxy_connection" ? probe.promise : base(name, args)));
+    await renderWithLeave();
+    await click("Downloads");
+    await fill("Proxy username", "synthetic-user");
+    await fill("Proxy password", "synthetic-pass");
+    await click("Test proxy connection");
+    await attemptLeave();
+    await click("Save");
+    expect(commandMock).not.toHaveBeenCalledWith("set_proxy_credentials", expect.anything());
+
+    await act(async () => probe.resolve({ latencyMs: 9 }));
+
+    expect(commandMock).toHaveBeenCalledWith("set_proxy_credentials", {
+      proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+      username: "synthetic-user", password: "synthetic-pass",
+    });
+    expect(leftSettings()).toBe(true);
+    expect(container.textContent).not.toContain("could not be saved");
+  });
+
+  it("keeps typed proxy credentials and explains why when their proxy address is not saved", async () => {
+    // Open Downloads first so its credential fields register before the page itself.
+    await render();
+    await click("Downloads");
+    await act(async () => root.render(null));
+    const saved = {
+      ...mockLauncher.config,
+      proxyMode: "custom", proxyScheme: "http", proxyHost: "proxy.example.test", proxyPort: 3128,
+    } satisfies Config;
+    mockLauncher.data.config = saved;
+    mockLauncher.config = { ...saved, proxyHost: "other-proxy.example.test" };
+    await renderWithLeave();
+    expect(container.textContent).toContain("Save the proxy address before changing credentials.");
+    // The fields are disabled for an unsaved address; the guard must not trust that alone.
+    await fill("Proxy username", "synthetic-user");
+    await attemptLeave();
+    await click("Save");
+
+    expect(leaveDialog()).not.toBeNull();
+    expect(leaveDialog()?.textContent).toContain("the proxy address is not saved yet");
+    expect(leftSettings()).toBe(false);
+    expect(commandMock).not.toHaveBeenCalledWith("set_proxy_credentials", expect.anything());
+    expect(inputValue("Proxy username")).toBe("synthetic-user");
+  });
+
+  it("explains that a proxy password needs a username instead of trying to save it from the leave prompt", async () => {
+    withSavedProxyEndpoint();
+    await renderWithLeave();
+    await click("Downloads");
+    await fill("Proxy password", "synthetic-pass");
+    await attemptLeave();
+    expect(leaveDialog()).not.toBeNull();
+    await act(async () => dialogButton("Save").click());
+
+    expect(leaveDialog()?.textContent).toContain("no username is entered");
+    expect(leaveDialog()?.textContent).not.toContain("Your changes could not be saved.");
+    expect(leaveDialog()?.textContent).not.toContain("synthetic-pass");
+    expect(commandMock).not.toHaveBeenCalledWith("set_proxy_credentials", expect.anything());
+    expect(leftSettings()).toBe(false);
+    expect(inputValue("Proxy password")).toBe("synthetic-pass");
+  });
+
+  describe("section switches", () => {
+    const shownSection = () => container.querySelector(".vx-settings-section h2")?.textContent;
+
+    it("asks before another section replaces a typed CurseForge key, and Stay keeps the key", async () => {
+      await renderWithLeave();
+      await fill("CurseForge API Key", "fixture-secret");
+      await click("Downloads");
+
+      expect(leaveDialog()?.textContent).toContain("Save your changes before switching to another section");
+      await act(async () => dialogButton("Stay").click());
+      expect(leaveDialog()).toBeNull();
+      expect(shownSection()).toBe("General");
+      expect(inputValue("CurseForge API Key")).toBe("fixture-secret");
+
+      await click("Downloads");
+      await act(async () => dialogButton("Discard").click());
+      expect(shownSection()).toBe("Downloads");
+      expect(commandMock).not.toHaveBeenCalledWith("set_service_secret", expect.anything());
+      // The discarded key no longer holds Settings.
+      await attemptLeave();
+      expect(leaveDialog()).toBeNull();
+      expect(leftSettings()).toBe(true);
+    });
+
+    it("saves a typed CurseForge key from the section prompt and only then switches", async () => {
+      await renderWithLeave();
+      await fill("CurseForge API Key", "fixture-secret");
+      await click("Downloads");
+      await act(async () => dialogButton("Save").click());
+
+      expect(commandMock).toHaveBeenCalledWith("set_service_secret", { service: "curseforge", secret: "fixture-secret" });
+      expect(mockLauncher.saveConfig).not.toHaveBeenCalled();
+      expect(shownSection()).toBe("Downloads");
+    });
+
+    it("keeps typed proxy credentials when the section save fails, and stays in Downloads", async () => {
+      withSavedProxyEndpoint();
+      failCommand("set_proxy_credentials", new LauncherError("proxy.invalidCredentials"));
+      await renderWithLeave();
+      await click("Downloads");
+      await fill("Proxy username", "synthetic-user");
+      await fill("Proxy password", "synthetic-pass");
+      await click("General");
+      await act(async () => dialogButton("Save").click());
+
+      expect(leaveDialog()?.textContent).toContain("Your changes could not be saved.");
+      expect(shownSection()).toBe("Downloads");
+      expect(inputValue("Proxy username")).toBe("synthetic-user");
+      expect(inputValue("Proxy password")).toBe("synthetic-pass");
+    });
+
+    it("asks before a search result opens another section and keeps the query on Stay", async () => {
+      await renderWithLeave();
+      await click("Lumen & MCP");
+      await fill("Lumen API key", "sk-synthetic-key");
+      await search("memory");
+      await act(async () => searchResults()[0].click());
+
+      expect(leaveDialog()?.textContent).toContain("switching to another section");
+      await act(async () => dialogButton("Stay").click());
+      expect(shownSection()).toBe("Lumen & MCP");
+      expect(searchInput().value).toBe("memory");
+      expect(inputValue("Lumen API key")).toBe("sk-synthetic-key");
+    });
+
+    it("asks before View update replaces a section holding a typed key", async () => {
+      const i18n = createLauncherI18n("en-US", "en-US");
+      await i18n.initPromise;
+      const page = (reviewUpdates: number) => createElement(I18nextProvider, { i18n }, createElement(
+        LeaveGuardProvider, null, createElement(SettingsPage, { reviewUpdates }),
+      ));
+      await act(async () => root.render(page(0)));
+      await fill("CurseForge API Key", "fixture-secret");
+      await act(async () => root.render(page(1)));
+
+      expect(leaveDialog()?.textContent).toContain("switching to another section");
+      await act(async () => dialogButton("Discard").click());
+      expect(shownSection()).toBe("About");
+    });
+
+    it("switches without asking while only the shared draft has changes, and keeps them", async () => {
+      await renderWithLeave();
+      await click("Game");
+      await fill("Game window width", "1600");
+      await click("Lumen & MCP");
+      await fill("Model", "synthetic-model");
+      await click("Downloads");
+
+      expect(leaveDialog()).toBeNull();
+      expect(shownSection()).toBe("Downloads");
+      expect(container.querySelector(".vx-settings-dirty")).not.toBeNull();
+      // The draft still guards leaving Settings.
+      await attemptLeave();
+      expect(leaveDialog()?.textContent).toContain("Save your changes before leaving this page");
+    });
+  });
+
+  it("reopens the section that was active before leaving", async () => {
+    await render();
+    await click("Appearance");
+    expect(container.querySelector(".vx-settings-section h2")?.textContent).toBe("Appearance");
+
+    await act(async () => root.render(null));
+    await render();
+    expect(container.querySelector(".vx-settings-section h2")?.textContent).toBe("Appearance");
   });
 });
 
@@ -773,7 +1460,7 @@ describe("settings search", () => {
     await render();
     const cases = [
       { query: "proxy host", target: "downloads-proxy-host", fallback: "downloads-proxy-mode", name: "Launcher proxy mode" },
-      { query: "accent color", target: "appearance-accent-color", fallback: "appearance-accent-source", name: "Accent source" },
+      { query: "accent color", target: "appearance-accent-color", fallback: "appearance-accent-source", name: "Accent color" },
     ];
     for (const item of cases) {
       await search(item.query);
@@ -976,6 +1663,75 @@ describe("settings search styles", () => {
   });
 });
 
+describe("settings placeholders", () => {
+  it("keep the search and Lumen model hints short enough to show whole in every locale", () => {
+    const localesDir = join(dirname(fileURLToPath(import.meta.url)), "../../i18n/locales");
+    for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP", "ko-KR", "ru-RU", "es-ES"]) {
+      const settings = JSON.parse(readFileSync(join(localesDir, locale, "settings.json"), "utf8"));
+      for (const text of [settings.search.placeholder, settings.assistant.modelPlaceholder] as string[]) {
+        expect(text.length, `${locale}: ${text}`).toBeLessThanOrEqual(24);
+      }
+    }
+  });
+});
+
+describe("settings layout styles", () => {
+  const css = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), "settings.css"), "utf8").replace(/\s+/g, " ");
+  const rule = (selector: string) => {
+    const source = css();
+    const start = source.indexOf(`${selector} {`);
+    expect(start, selector).toBeGreaterThanOrEqual(0);
+    return source.slice(start + selector.length + 2, source.indexOf("}", start));
+  };
+
+  it("puts every group on the header's two-column grid, with or without a group title", () => {
+    expect(rule(".vx-settings-group")).toContain("grid-template-columns: minmax(160px, .6fr) minmax(0, 1.8fr);");
+    expect(rule(".vx-settings-group > *")).toContain("grid-column: 2;");
+    expect(rule(".vx-settings-group > h3")).toContain("grid-column: 1;");
+    expect(css()).not.toContain(".vx-settings-group:has(> h3)");
+    expect(rule(".vx-settings-section > header + .vx-settings-group:not(:has(> h3))")).toContain("border-top: 0;");
+    // A group modifier must not reset the shared column gap, or its content drifts off the right column edge.
+    expect(rule(".vx-settings-about")).not.toMatch(/(^|[ ;])gap:/);
+  });
+
+  it("wraps a long field hint inside its column instead of widening the field past the window", () => {
+    // A hint's min-content sizes its label's grid track, so one unbroken run would push the input and its button out.
+    expect(rule(".vx-settings-hint")).toContain("overflow-wrap: anywhere;");
+  });
+
+  it("keeps the MCP status beside its start action instead of in a field-like box", () => {
+    const status = rule(".vx-mcp-status");
+    expect(status).toContain("display: flex;");
+    expect(status).not.toContain("border");
+    expect(css()).not.toContain(".vx-mcp-status-card");
+  });
+
+  it("keeps group titles a step below the section title", () => {
+    expect(rule(".vx-settings-group h3")).toContain("font: var(--type-body-strong);");
+    expect(rule(".vx-settings-section > header h2")).toContain("font: var(--type-section);");
+  });
+
+  it("caps two-column fields and wells at the same 820px right edge", () => {
+    expect(rule(".vx-settings-fields")).toContain("max-width: 820px;");
+    expect(rule(".vx-proxy-detected")).toContain("max-width: 820px;");
+    expect(css()).toContain("} .vx-settings-group > label, .vx-settings-group > .vx-settings-labelled { max-width: 820px; }");
+  });
+
+  it("draws inline wells without nested borders", () => {
+    expect(rule(".vx-proxy-detected")).not.toContain("border:");
+    expect(rule(".vx-proxy-detected")).toContain("box-shadow: var(--edge-shade);");
+    expect(rule(".vx-proxy-detected__row")).not.toContain("border:");
+    expect(rule(".vx-settings-java-results button")).toContain("box-shadow: var(--edge-shade);");
+    expect(rule('.vx-settings-java-results button[aria-pressed="true"]')).toContain("background: var(--fill-selected);");
+  });
+
+  it("underlines About links and shows MCP state as a pixel square", () => {
+    expect(rule(".vx-settings-about a")).toContain("text-decoration: underline;");
+    expect(rule(".vx-status-pixel")).toContain("border-radius: 0;");
+    expect(rule('.vx-mcp-status__badge[data-running="true"] .vx-status-pixel')).toContain("background: var(--success);");
+  });
+});
+
 describe("Settings review request", () => {
   it("opens About and focuses the update action once, not on every return to About", async () => {
     const i18n = createLauncherI18n("en-US", "en-US");
@@ -986,6 +1742,59 @@ describe("Settings review request", () => {
     await click("General");
     await click("About");
     expect(document.activeElement?.textContent?.trim()).not.toBe("Check for updates");
+  });
+
+  it.each([
+    { entry: "View update", props: { reviewUpdates: 1 }, heading: "About" },
+    { entry: "Configure Lumen", props: { focusAssistant: 1 }, heading: "Lumen & MCP" },
+  ])("lets $entry win over the remembered section from the first render, for that visit only", async ({ props, heading }) => {
+    await render();
+    await click("Downloads");
+    expect(commandMock).toHaveBeenCalledWith("detect_local_proxies");
+    await act(async () => root.render(null));
+    commandMock.mockClear();
+
+    await renderEntry(props);
+    expect(container.querySelector(".vx-settings-section h2")?.textContent).toBe(heading);
+    // The remembered Downloads section never mounted, not even for one render.
+    expect(commandMock).not.toHaveBeenCalledWith("detect_local_proxies");
+
+    await act(async () => root.render(null));
+    await render();
+    expect(container.querySelector(".vx-settings-section h2")?.textContent).toBe("Downloads");
+  });
+
+  it("shows the MCP state as a pixel badge beside its action instead of a fake input", async () => {
+    await render();
+    await click("Lumen & MCP");
+    const status = container.querySelector<HTMLElement>(".vx-mcp-status")!;
+    expect(status).not.toBeNull();
+    expect(status.querySelector(".vx-status-pixel")).not.toBeNull();
+    expect(status.contains(button("Start MCP server"))).toBe(true);
+    expect(container.querySelector(".vx-mcp-status-card")).toBeNull();
+    expect(container.textContent).toContain("Stopped.");
+  });
+
+  it("keeps the running MCP badge short so it shares a row with Stop, and moves the endpoint and its actions into the well", async () => {
+    await render();
+    await click("Lumen & MCP");
+    await click("Start MCP server");
+    const card = container.querySelector<HTMLElement>('[data-testid="mcp-status-card"]')!;
+    const status = card.querySelector<HTMLElement>(".vx-mcp-status")!;
+    const badge = status.querySelector<HTMLElement>(".vx-mcp-status__badge")!;
+    expect(badge.getAttribute("role")).toBe("status");
+    expect(badge.textContent).toBe("Running.");
+    expect([...status.querySelectorAll("button")].map((node) => node.textContent?.trim())).toEqual(["Stop MCP server"]);
+    const details = card.querySelector<HTMLElement>(".vx-mcp-details")!;
+    expect(details.querySelector("dl")?.textContent).toContain("127.0.0.1:25590/mcp");
+    expect(details.contains(button("Copy MCP config JSON"))).toBe(true);
+    expect(details.contains(button("Rotate token"))).toBe(true);
+    // The status card still names the endpoint for anyone reading it as a whole.
+    expect(card.textContent).toContain("127.0.0.1:25590");
+
+    await click("Stop MCP server");
+    expect(badge.textContent).toBe("Stopped.");
+    expect(card.querySelector(".vx-mcp-details")).toBeNull();
   });
 
   it("configures Lumen provider, encrypted API key, permission tier, proactive wake, and local MCP server", async () => {
